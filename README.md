@@ -14,8 +14,8 @@ High level properties:
   max value. Blocks with tight range preserve accuracy better than wide ranges.
 * **Decimals**: If the block's samples fall close to a decimal grid, it is stored as exact
   decimals if the bit range allows. For example, 14.32 will be compressed as 1432e-2.
-* **Multi-Order Delta Encoding**: Chooses whether to store raw samples, first derivative,
-  second, or third based on an entropy estimate.
+* **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
+  difference, whichever has the lowest variance.
 * **Unit-Compressed zstd**: Blocks are assembled into units; for example, a minute might
   be a single unit with 60 blocks, each with 1000 samples. Their bit planes are
   interleaved and compressed with zstd to separate high and low entropy signals.
