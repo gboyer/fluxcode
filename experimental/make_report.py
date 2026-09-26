@@ -325,6 +325,11 @@ def curve_handles():
     return [Line2D([], [], color=FLUX_CURVE_COLOR, ls=ls, marker=".", label=label) for ls, label in CURVE_STYLES]
 
 
+# Noise-floor variants other than the default: on the median summary they only move sideways (the noisy datasets
+# get smaller, the median RMSE comes from clean ones), so they're left to the matrix and the per-dataset panels.
+SCATTER_HIDDEN = {c.name for c in FLUX_CODECS if "-f" in c.name and c.name != "fluxcode-16-f0.25"}
+
+
 def plot_scatter(results, curves):
     """Every codec: median bits/sample vs median RMSE over the 12 kinds; lossless ones in a band below. The
     fluxcode curves are built the same way: per B, the medians over the kinds."""
@@ -337,18 +342,19 @@ def plot_scatter(results, curves):
     ax.set_xlim(-0.3, X_MAX)
     ax.set_ylim(floor * 0.35, None)
     pts = []
-    for c in CODECS:
+    for c in (c for c in CODECS if c.name not in SCATTER_HIDDEN):
         exact = y[c.name] <= EXACT_PCT
         px, py = min(x[c.name], X_MAX - 0.2), band if exact else y[c.name]
         ax.scatter(px, py, marker=FAMILY_MARKERS[family(c)], s=48, color=COLORS[c.name], edgecolor="k", linewidth=0.4,
                    zorder=3)
-        pts.append((c.name + (f" ({x[c.name]:.0f} b/s, off scale)" if x[c.name] > X_MAX else ""), px, py))
+        label = c.name + (" (default)" if c.name == "fluxcode-16-f0.25" else "")
+        pts.append((label + (f" ({x[c.name]:.0f} b/s, off scale)" if x[c.name] > X_MAX else ""), px, py))
     fig.canvas.draw()  # label a point only where it does not overlap an earlier label
     taken = []
     for name, px, py in pts:
         u, v = ax.transData.transform((px, py))
         box = (u + 5, v + 2, u + 5 + 4.2 * len(name), v + 12)
-        if u + box[2] - box[0] > ax.bbox.x1 + 10:  # near the right edge: label to the left
+        if u + box[2] - box[0] > ax.bbox.x1 + 10 or "(default)" in name:  # near the right edge (or fluxcode-16's label): to the left
             box = (u - 5 - 4.2 * len(name), v + 2, u - 5, v + 12)
         if any(box[0] < t[2] and t[0] < box[2] and box[1] < t[3] and t[1] < box[3] for t in taken):
             continue
@@ -429,8 +435,9 @@ def write_report(results):
                 "with the noise floor off (solid: default; dashed: <code>try_byte_planes</code>), each point the medians "
                 "over the datasets like the markers. The dashed line's lead comes from the three sines, which sit mid-ranking "
                 "and so move the median; on the other datasets the two lines coincide (see the per-dataset panels). "
-                "The row of fluxcode-16-f markers is the noise floor: it lowers the "
-                "size on the noisy datasets only, so the median RMSE, set by the clean ones, doesn't move.</p>" + scatter
+                "fluxcode-16-f0.25 is the default (noise floor on): it sits below the line because the noise floor only "
+                "shrinks the noisy datasets, while the median RMSE comes from the clean ones. The other noise-floor "
+                "settings are in the matrix and the per-dataset panels.</p>" + scatter
                 + f"<h3 id='scatter-kinds'>Per dataset</h3><p>Each panel is one dataset: bits/sample over its {REPORT_MINUTES} "
                 "one-minute units, RMSE the median over their blocks. The solid line is fluxcode-B at B = 4..16 with the noise "
                 "floor off; a marker below it beats fluxcode at equal size. The dashed line adds "
