@@ -22,16 +22,19 @@ High level properties:
 * **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
   subnormal ranges, +/- Infinity, and NaN.
 
-Encoding specific features to balance size and :
+Encoding features to balance size, accuracy, and performance depending on data
+type:
 
 * **Noise floor**: For data with high frequency noise, you can optionally specify the
   sigma multiplier that you want to preserve, and the quantization grid is reduced
   accordingly. This helps compression for noisy data, but
   preserves clean periodic data (unless the frequency approaches the sample rate).
+  By default, 0.25 sigmas.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
-  exceed your bit rate after compression.
-* **Byte planes**: `try_byte_planes=True` also tries byte planes and keeps the smaller unit;
-  worth it for clean periodic data, at twice the zstd cost.
+  exceed your bit rate after compression. By default, off, to preserve quality.
+* **Byte planes**: `try_byte_planes=True` sees if organizing high/low bytes
+  works better than individual bit planes. Helpful for noise-free periodic
+  signals, but off by default for performance.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
 [docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
