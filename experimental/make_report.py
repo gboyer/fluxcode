@@ -300,7 +300,39 @@ def family_handles():
 
 
 EXACT_PCT = 1e-6  # RMSE at or below this (% of range) counts as lossless: float round-off, no place on a log axis
-X_MAX = 15  # bits/sample axis limit; codecs beyond it (gorilla-xor) are marked at the right edge
+X_MAX = 15  # bits/sample axis limit; codecs beyond it are marked at the right edge
+NOT_PLOTTED = {"gorilla-xor"}  # lossless at ~65 bits/sample: in the tables, but too far out for the charts
+ZERO_PCT = 1e-7  # where a lossless RMSE (0) is drawn on the log axes, labelled 0*
+ZERO_NOTE = f"0*: lossless (RMSE ≤ {EXACT_PCT:g}%), drawn at {ZERO_PCT:g}%"
+
+
+def shown(rmse_pct):
+    """RMSE (% of range) as drawn on a log axis: lossless values at ZERO_PCT."""
+    return ZERO_PCT if rmse_pct <= EXACT_PCT else rmse_pct
+
+
+def pct_label(v):
+    """Tick label for a log axis in % units: 0* for the lossless row, 1%, 10%, then 10^-d %."""
+    if v == ZERO_PCT:
+        return "0*"
+    d = round(np.log10(v))
+    return f"{10 ** d}%" if d >= 0 else f"$10^{{{d}}}$%"
+
+
+def rmse_axis(ax, fontsize, zero=False):
+    """Log RMSE axis in % of range: decade ticks labelled with %, and with zero, a 0* row at ZERO_PCT in a shaded
+    strip below the continuous scale (decades from EXACT_PCT up), so the row reads as separate from it."""
+    bottom, top = ax.get_ylim()
+    if zero:
+        bottom = ZERO_PCT / 3
+        ax.set_ylim(bottom, top)
+        ax.axhspan(bottom, 3 * ZERO_PCT, color="0.5", alpha=0.12, lw=0, zorder=0)
+    first = round(np.log10(EXACT_PCT)) if zero else int(np.ceil(np.log10(bottom)))
+    decades = [10.0 ** d for d in range(first, int(np.floor(np.log10(top))) + 1)]
+    major = ([ZERO_PCT] if zero else []) + decades
+    ax.set_yticks(major, [pct_label(v) for v in major], fontsize=fontsize)
+    minor = [m * v for v in [decades[0] / 10] + decades for m in range(2, 10) if max(bottom, EXACT_PCT) < m * v < top]
+    ax.set_yticks(minor, [""] * len(minor), minor=True)
 
 
 # The fluxcode curves, in the summary scatter and the per-dataset panels: the only lines there, so fluxcode
@@ -331,24 +363,29 @@ SCATTER_HIDDEN = {c.name for c in FLUX_CODECS if "-f" in c.name and c.name != "f
 
 
 def plot_scatter(results, curves):
-    """Every codec: median bits/sample vs median RMSE over the 12 kinds; lossless ones in a band below. The
+    """Every codec: median bits/sample vs median RMSE over the 12 kinds; lossless ones on the 0* row. The
     fluxcode curves are built the same way: per B, the medians over the kinds."""
     x = {c.name: float(np.median([results[k][c.name]["bps"] for k in KINDS])) for c in CODECS}
     y = {c.name: 100 * float(np.median([results[k][c.name]["rmse"] for k in KINDS])) for c in CODECS}
-    floor = 0.5 * min(v for v in y.values() if v > EXACT_PCT)
-    band = floor * 0.6
     fig, ax = plt.subplots(figsize=(11, 6.6), layout="constrained")
     ax.set_yscale("log")
     ax.set_xlim(-0.3, X_MAX)
-    ax.set_ylim(floor * 0.35, None)
+    med_rmse = []
+    for ls, per_kind in curves.items():
+        by_b = list(zip(*per_kind.values()))  # per B: one (bps, rmse) per kind
+        med = [(float(np.median([p[0] for p in ps])), float(np.median([p[1] for p in ps]))) for ps in by_b]
+        med_rmse += [r for _, r in med]
+        ax.plot(*zip(*[(b, shown(r)) for b, r in med]), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".", ms=4, zorder=2)
     pts = []
-    for c in (c for c in CODECS if c.name not in SCATTER_HIDDEN):
-        exact = y[c.name] <= EXACT_PCT
-        px, py = min(x[c.name], X_MAX - 0.2), band if exact else y[c.name]
+    for c in (c for c in CODECS if c.name not in SCATTER_HIDDEN | NOT_PLOTTED):
+        px, py = min(x[c.name], X_MAX - 0.2), shown(y[c.name])
         ax.scatter(px, py, marker=FAMILY_MARKERS[family(c)], s=48, color=COLORS[c.name], edgecolor="k", linewidth=0.4,
                    zorder=3)
         label = c.name + (" (default)" if c.name == "fluxcode-16-f0.25" else "")
         pts.append((label + (f" ({x[c.name]:.0f} b/s, off scale)" if x[c.name] > X_MAX else ""), px, py))
+    zero = (any(y[c.name] <= EXACT_PCT for c in CODECS if c.name not in NOT_PLOTTED)
+            or any(r <= EXACT_PCT for r in med_rmse))
+    rmse_axis(ax, 9, zero)
     fig.canvas.draw()  # label a point only where it does not overlap an earlier label
     taken = []
     for name, px, py in pts:
@@ -361,14 +398,8 @@ def plot_scatter(results, curves):
         taken.append(box)
         ax.annotate(name, (px, py), textcoords="offset points", xytext=(-5, 2) if box[2] < u else (5, 2),
                     ha="right" if box[2] < u else "left", fontsize=6.5)
-    for ls, per_kind in curves.items():
-        by_b = list(zip(*per_kind.values()))  # per B: one (bps, rmse) per kind
-        med = [(float(np.median([p[0] for p in ps])), float(np.median([p[1] for p in ps]))) for ps in by_b]
-        ax.plot(*zip(*[p for p in med if p[1] > EXACT_PCT]), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".", ms=4,
-                zorder=2)
-    ax.axhspan(floor * 0.2, floor, color="0.5", alpha=0.15, lw=0, zorder=0)
-    ax.text(0.01, 0.01, f"lossless: RMSE ≤ {EXACT_PCT:g}% (numerically exact)", transform=ax.transAxes, ha="left",
-            va="bottom", fontsize=8, color="0.4")
+    if zero:
+        ax.text(0.01, 0.01, ZERO_NOTE, transform=ax.transAxes, ha="left", va="bottom", fontsize=8, color="0.4")
     ax.set(xlabel="bits / sample (median over the 12 kinds)", ylabel="median RMSE (% of block range, log)",
            title="Size vs error, all codecs (unlabeled points: see the summary matrix)")
     ax.grid(alpha=0.3, lw=0.4, which="both")
@@ -377,29 +408,25 @@ def plot_scatter(results, curves):
 
 
 def plot_rd(results, curves):
-    """Per kind: every codec by family, the fluxcode curves; lossless codecs on the bottom edge."""
+    """Per kind: every codec by family, the fluxcode curves; lossless points on a 0* row where there are any."""
     cols = 3
     rows = -(-len(KINDS) // cols)
     fig, axes = plt.subplots(rows, cols, figsize=(15, 3.6 * rows), layout="constrained")
     for ax, kind in zip(axes.flat, KINDS):
-        for ls, per_kind in curves.items():
-            pts = [p for p in per_kind[kind] if p[1] > EXACT_PCT]
-            if pts:
-                ax.plot(*zip(*pts), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".", ms=4, zorder=2)
-        exact = []
-        for c in CODECS:
-            r = results[kind][c.name]
-            if 100 * r["rmse"] <= EXACT_PCT:
-                exact.append(r["bps"])
-                continue
-            ax.scatter(r["bps"], 100 * r["rmse"], marker=FAMILY_MARKERS[family(c)], s=26, color=COLORS[c.name],
-                       edgecolor="k", linewidth=0.3, zorder=3)
-        if exact:  # RMSE = 0 has no place on a log axis: marked along the bottom edge
-            ax.scatter(exact, [0.03] * len(exact), transform=ax.get_xaxis_transform(), marker="|", s=60, color="k",
-                       linewidth=1.0, zorder=4, clip_on=False)
-        ax.axvline(4, color="0.6", ls=":", lw=1, gid="ref")
         ax.set_yscale("log")
-        ax.set_xlim(0, 15)
+        lossless = False
+        for ls, per_kind in curves.items():
+            ax.plot(*zip(*[(b, shown(r)) for b, r in per_kind[kind]]), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".",
+                    ms=4, zorder=2)
+            lossless |= any(r <= EXACT_PCT for _, r in per_kind[kind])
+        for c in (c for c in CODECS if c.name not in NOT_PLOTTED):
+            r = results[kind][c.name]
+            lossless |= 100 * r["rmse"] <= EXACT_PCT
+            ax.scatter(r["bps"], shown(100 * r["rmse"]), marker=FAMILY_MARKERS[family(c)], s=26, color=COLORS[c.name],
+                       edgecolor="k", linewidth=0.3, zorder=3)
+        ax.axvline(4, color="0.6", ls=":", lw=1, gid="ref")
+        ax.set_xlim(0, X_MAX)
+        rmse_axis(ax, 7, zero=lossless)
         ax.set_title(kind, fontsize=10)
         ax.tick_params(labelsize=7)
         ax.grid(alpha=0.3, which="both", lw=0.4)
@@ -407,8 +434,7 @@ def plot_rd(results, curves):
         ax.set_ylabel("median RMSE (% FS, log)", fontsize=8)
     for ax in axes[-1]:
         ax.set_xlabel("bits / sample", fontsize=8)
-    handles = family_handles() + curve_handles() + [
-                                  Line2D([], [], marker="|", ls="", color="k", ms=8, label=f"lossless (RMSE ≤ {EXACT_PCT:g}%), on the bottom edge")]
+    handles = family_handles() + curve_handles() + [Line2D([], [], ls="", label=ZERO_NOTE)]
     fig.legend(handles=handles, loc="outside lower center", ncol=4, fontsize=9, frameon=False)
     return save_fig(fig, OUT, "rd", "Bits per sample vs RMSE per signal kind")
 
@@ -431,7 +457,7 @@ def write_report(results):
     rd = plot_rd(results, curves)
     body.append("<h2 id='scatter'>Size vs error</h2><p>Every codec, one marker per family (shade by position in the "
                 "family). Bits/sample and RMSE are medians over the 12 datasets, so this is a summary; the per-dataset panels "
-                "below show the spread. Lossless codecs sit in the band at the bottom instead of being dropped. The lines are fluxcode at B = 4..16 "
+                "below show the spread. gorilla-xor (lossless, about 65 bits/sample) is left out of the charts; it's in the tables. The lines are fluxcode at B = 4..16 "
                 "with the noise floor off (solid: default; dashed: <code>try_byte_planes</code>), each point the medians "
                 "over the datasets like the markers. The dashed line's lead comes from the three sines, which sit mid-ranking "
                 "and so move the median; on the other datasets the two lines coincide (see the per-dataset panels). "
@@ -443,7 +469,7 @@ def write_report(results):
                 "floor off; a marker below it beats fluxcode at equal size. The dashed line adds "
                 "<code>try_byte_planes</code> (each unit compressed with bit and with byte planes, the smaller kept); it "
                 "departs from the solid line on the sines, whose cycles repeat across the minute. "
-                "Codecs that are lossless (RMSE ≤ 10<sup>−6</sup>%) are ticks on the bottom edge. The dotted line is 4 bits/sample. Errors are against the "
+                "Lossless points (RMSE ≤ 10<sup>−6</sup>%) sit on a 0* row drawn at 10<sup>−7</sup>%. The dotted line is 4 bits/sample. Errors are against the "
                 "input, which for noisy-sine counts the noise as signal.</p>" + rd)
 
     body.append("<h2 id='datasets'>Per-dataset results</h2>")
@@ -519,6 +545,7 @@ def fluxcode_section():
                 title="Continuous signals (7,200 blocks): B = 9..16")
     axes[1].set(xlabel="B", ylabel="bits / sample", title="Discretized signals (5,400 blocks): size")
     axes[2].set(xlabel="B", ylabel="% of samples decoded bit-exact", title="Discretized signals: exactness", ylim=(0, 100))
+    rmse_axis(axes[0], 10)
     for ax in axes:
         ax.grid(alpha=0.3, lw=0.4, which="both")
         ax.legend(fontsize=8)
@@ -647,6 +674,7 @@ def dpcm_sweep():
             ax.annotate(f"{p[4]}{' (nibble)' if p[3] == 'nibble' else ''}", p[:2], textcoords="offset points", xytext=(4, 3), fontsize=6.5)
     ax.set(xlabel="bits / sample (mean over the kinds)", ylabel="median RMSE (% of range, log)", yscale="log",
            title="DPCM candidates: size vs error")
+    rmse_axis(ax, 10)
     ax.grid(alpha=0.3, lw=0.4, which="both")
     ax.legend(fontsize=8, loc="upper right")
     fig.tight_layout()
