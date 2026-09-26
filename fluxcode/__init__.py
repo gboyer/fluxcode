@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Garry Boyer
+"""Bounded-error and decimal-exact compression of float64 time series.
+
+Provides lossy (bounded-error) and decimal-exact compression for 1D float64
+arrays. Data is organized into self-describing units containing up to
+`blocks_per_unit` fixed-size blocks: a unit decodes on its own. Encoding also
+returns per-block summary statistics (minimum, maximum, and mean of finite
+samples) for the caller to store if useful. Short final blocks are padded to
+full block length upon encoding and trimmed upon decoding.
+
+Typical usage:
+
+    import fluxcode
+
+    # Encode a time series into a single storage unit:
+    unit, block_min, block_max, block_mean = fluxcode.encode_unit(x)
+
+    # Decode the unit (lossy: within the error bound, exact for decimal data):
+    x_rec = fluxcode.decode_unit(unit)
+
+    # Replace block 3 and append a block (appending needs a full last block):
+    unit, mins, maxs, means = fluxcode.update(
+        unit, indices=[3, len(block_min)], blocks=new_blocks
+    )
+"""
+
+from ._api import (
+    EncodedSeries,
+    EncodedUnit,
+    Params,
+    UpdatedUnit,
+    decode,
+    decode_unit,
+    encode,
+    encode_unit,
+    update,
+)
+
+__all__ = [
+    "EncodedSeries",
+    "EncodedUnit",
+    "Params",
+    "UpdatedUnit",
+    "decode",
+    "decode_unit",
+    "encode",
+    "encode_unit",
+    "update",
+]
+
+__version__: str = "0.1.0"
+"""Package version string."""
+

@@ -1,0 +1,66 @@
+[project]
+name = "fluxcode"
+version = "0.1.0"
+description = "Bounded-error / decimal-exact compression of float64 time series: power-of-two or decimal quantization, per-block delta order, bit-shuffled zstd"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Garry Boyer" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "numba>=0.59", "zstandard>=0.22"]
+keywords = ["compression", "time series", "float64", "quantization", "lossy", "zstd", "numba"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Archiving :: Compression",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/gboyer/fluxcode"
+Repository = "https://github.com/gboyer/fluxcode"
+Issues = "https://github.com/gboyer/fluxcode/issues"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=8",
+    "ruff>=0.16.9",
+    "ty>=0.0.84",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]  # PEP 639 license metadata
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fluxcode"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["fluxcode", "tests", "bench", "docs", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = ["experimental"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Params is a frozen dataclass, so a Params() default argument is safe to share.
+extend-immutable-calls = ["fluxcode.Params", "fluxcode._api.Params"]
+
+[tool.ty.src]
+exclude = ["experimental"]
+
+[tool.ty.environment]
+# bench/ imports the signal and series helpers from tests/ (it puts tests/ on sys.path).
+extra-paths = ["tests"]

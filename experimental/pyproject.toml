@@ -1,0 +1,32 @@
+[project]
+name = "fluxcode-experimental"
+version = "0.0.0"
+description = "Research behind fluxcode: toy time-series codecs, benchmarks, and the report generator"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "zstandard",
+    "pyflac",
+    "numba",
+    "fluxcode",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+fluxcode = { path = "..", editable = true }
+
+[dependency-groups]
+dev = ["ruff>=0.16.9"]
+
+[tool.ruff]
+line-length = 130
+
+[tool.ruff.lint]
+# Research code: pyflakes, the E4/E7/E9 subset and import order, relaxed for compact benchmark
+# style. Unused imports and undefined names stay errors.
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = ["E701", "E702", "E731", "E741"]
