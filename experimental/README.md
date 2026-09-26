@@ -72,7 +72,7 @@ uv run python make_rate_report.py   # report/rate.html                   (~3 min
 
 Charts are SVG, and the build fails if a chart has no data. Each script deletes its own earlier outputs
 in `report/` before writing. `make_rate_report.py` runs the rate-control experiment of REPORT.md §6 on
-"regime" minutes and writes `report/rate.html` in the same style. `report/` is generated and not tracked.
+"regime" minutes and writes `report/rate.html` in the same style. `report/` is generated, and committed so it can be read without rerunning.
 
 ## Benchmarks
 

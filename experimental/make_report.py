@@ -342,17 +342,26 @@ def plot_scatter(results):
     return save_fig(fig, OUT, "scatter", "Bits per sample vs RMSE, all codecs")
 
 
+# The per-dataset panels' curves: the only lines there, so fluxcode stands out from the markers.
+# Solid: bit planes only (the default); dashed: try_byte_planes, which keeps the smaller layout per unit.
+FLUX_CURVE, FLUX_CURVE_BYTE = ([FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6),
+                                                       noise_floor_sigma=None, try_byte_planes=t))
+                                for b in range(4, 17)] for t in (False, True))
+FLUX_CURVE_COLOR = COLORS["fluxcode-16"]
+
+
 def plot_rd(results):
-    """Per kind: every codec by family, the delta0123-zstd-B curve; lossless codecs on the bottom edge."""
+    """Per kind: every codec by family, the fluxcode-B curve; lossless codecs on the bottom edge."""
     groups = by_kind()
     cols = 3
     rows = -(-len(KINDS) // cols)
     fig, axes = plt.subplots(rows, cols, figsize=(15, 3.6 * rows), layout="constrained")
     for ax, kind in zip(axes.flat, KINDS):
-        pts = [(bps, 100 * rmse) for bps, rmse, _ in (unit_stats(DeltaZstd(bits), groups[kind]) for bits in range(4, 17))]
-        pts = [p for p in pts if p[1] > EXACT_PCT]
-        if pts:
-            ax.plot(*zip(*pts), "-", color="0.55", lw=1.2, marker=".", ms=4, zorder=1)
+        for curve, ls in ((FLUX_CURVE, "-"), (FLUX_CURVE_BYTE, "--")):
+            pts = [(bps, 100 * rmse) for bps, rmse, _ in (unit_stats(c, groups[kind]) for c in curve)]
+            pts = [p for p in pts if p[1] > EXACT_PCT]
+            if pts:
+                ax.plot(*zip(*pts), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".", ms=4, zorder=2)
         exact = []
         for c in CODECS:
             r = results[kind][c.name]
@@ -374,9 +383,10 @@ def plot_rd(results):
         ax.set_ylabel("median RMSE (% FS, log)", fontsize=8)
     for ax in axes[-1]:
         ax.set_xlabel("bits / sample", fontsize=8)
-    handles = family_handles() + [Line2D([], [], color="0.55", marker=".", label="delta0123-zstd-B, B = 4..16"),
+    handles = family_handles() + [Line2D([], [], color=FLUX_CURVE_COLOR, marker=".", label="fluxcode-B, B = 4..16, noise floor off"),
+                                  Line2D([], [], color=FLUX_CURVE_COLOR, ls="--", marker=".", label="same, try_byte_planes"),
                                   Line2D([], [], marker="|", ls="", color="k", ms=8, label=f"lossless (RMSE ≤ {EXACT_PCT:g}%), on the bottom edge")]
-    fig.legend(handles=handles, loc="outside lower center", ncol=6, fontsize=9, frameon=False)
+    fig.legend(handles=handles, loc="outside lower center", ncol=4, fontsize=9, frameon=False)
     return save_fig(fig, OUT, "rd", "Bits per sample vs RMSE per signal kind")
 
 
@@ -399,8 +409,10 @@ def write_report(results):
                 "family). Bits/sample and RMSE are medians over the 12 datasets, so this is a summary; the per-dataset panels "
                 "below show the spread. Lossless codecs sit in the band at the bottom instead of being dropped.</p>" + scatter
                 + f"<h3 id='scatter-kinds'>Per dataset</h3><p>Each panel is one dataset: bits/sample over its {REPORT_MINUTES} "
-                "one-minute units, RMSE the median over their blocks. The gray curve is delta0123-zstd-B at B = 4..16 (blocks "
-                "over 8 bits/sample drop bits, so it stops there); a marker below it beats that curve at equal size. "
+                "one-minute units, RMSE the median over their blocks. The solid line is fluxcode-B at B = 4..16 with the noise "
+                "floor off; a marker below it beats fluxcode at equal size. The dashed line adds "
+                "<code>try_byte_planes</code> (each unit compressed with bit and with byte planes, the smaller kept); it "
+                "departs from the solid line on the sines, whose cycles repeat across the minute. "
                 "Codecs that are lossless (RMSE ≤ 10<sup>−6</sup>%) are ticks on the bottom edge. The dotted line is 4 bits/sample. Errors are against the "
                 "input, which for noisy-sine counts the noise as signal.</p>" + rd)
 

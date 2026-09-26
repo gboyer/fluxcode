@@ -5,5 +5,4 @@ __pycache__/
 *.egg-info/
 .ruff_cache/
 .mypy_cache/
-experimental/report/
 experimental/.golden*/
