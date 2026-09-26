@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Rate control: quantize → predict → entropy code</title><style>
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--hl:#dcefdc;--l1:#e8f3e8;--l2:#fff3cc;--l3:#ffe0cc;--l4:#ffcccc}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--muted:#999;--line:#333;--hl:#254025;--l1:#1f2e1f;--l2:#3a3418;--l3:#40291a;--l4:#452020}}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:16px}
+table{border-collapse:collapse;margin:8px 0 16px;font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:3px 7px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+td.best{background:var(--hl);font-weight:600}
+td.r1{background:var(--l1)}td.r2{background:var(--l2)}td.r3{background:var(--l3)}td.r4{background:var(--l4)}
+tr.fam td:first-child{border-left:4px solid var(--c,var(--line))}
+img{max-width:100%;background:#fff}
+nav ul{columns:2;list-style:none;padding-left:0}nav li{margin:2px 0;break-inside:avoid}nav ul ul{columns:1;padding-left:16px}
+.muted{color:var(--muted)} code{font-size:13px} h2{margin-top:32px;border-top:1px solid var(--line);padding-top:12px}
+</style></head><body>
+<h1>Rate control: quantize → predict → entropy code</h1>
+
+<nav><h2 id='contents'>Contents</h2><ul><li><a href='#method'>Method</a></li><li><a href='#summary'>Summary</a></li><li><a href='#per-kind-chart'>Bits and error per signal kind</a></li><li><a href='#kind-delta0123-zstd-10-one-shot'>Per signal kind: delta0123-zstd-10 / one-shot</a></li><li><a href='#kind-delta0123-zstd-window'>Per signal kind: delta0123-zstd / window</a></li><li><a href='#kind-best--rice-zstd-flac-window'>Per signal kind: best: rice|zstd|flac / window</a></li><li><a href='#kind-best--rice-zstd-flac-fixed'>Per signal kind: best: rice|zstd|flac / fixed</a></li></ul></nav>
+<p><a href="index.html">← codec comparison (index.html)</a></p>
+<p>Window = one unit: a minute of 60 blocks, 5 consecutive seconds of each of the 12 signal kinds, every block
+rescaled to [0, 1], standing in for one sensor passing through different regimes. 5 units
+(one per report seed); bits/sample are whole units, every byte counted. Errors are absolute, which equals % of each
+block's full scale; they are per block, summarized over all blocks (or a kind's blocks).
+<b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_rate_report.py</code>.</p>
+<h2 id="method">Method</h2>
+<ul>
+<li><b>Pipeline per block:</b> q = round(x / Δ<sub>b</sub>) (the only lossy step, so |err| ≤ Δ<sub>b</sub>/2 is guaranteed),
+residual = diff(q, order) with order ∈ (0, 1, 2, 3) chosen per block, then an entropy coder. Everything but the
+Rice/FLAC bit-packing is vectorized numpy.</li>
+<li><b>window:</b> one Δ for the whole unit, bisected so the unit averages 4 bits/sample including all headers.
+A block that would exceed 8 bits/sample on its own gets its own coarser step Δ·2<sup>e/8</sup> (1-byte e per block).
+With uniform quantization, one shared step is the MSE-optimal way to spend a total budget.</li>
+<li><b>fixed:</b> every block individually driven to 4 bits/sample coded on its own (same format), for comparison;
+the unit then costs what it costs.</li>
+<li><b>Framing:</b> the rice coder stores its block payloads back to back with a length each; zstd and deflate make one
+compressor call per unit (flags, then start values, then byte planes); flac is one stream per unit, one frame per block;
+<code>best: …</code> stores a coder id per block, then each coder's unit of the blocks it won.</li>
+<li><b>Coders:</b> <code>delta0123-rice</code> — FLAC-style partitioned Rice (2<sup>p</sup> partitions, own k each; order/p/k chosen by exact cost);
+<code>delta0123-zstd</code> (level 9) / <code>delta0123-deflate</code> — zigzag residuals, narrowest byte width, byte-stream-split, then compress;
+<code>flac</code> — real libFLAC level 8 (LPC up to order 12) on the same integers, frame bytes only;
+<code>best: …</code> — per block, keep the coder whose standalone encoding is smallest (+1 byte coder id);
+<code>0-order entropy</code> — zero-order entropy of the best residual + headers. A reference, not a codec and not a
+true floor: partitioned Rice, LPC and LZ matching adapt within a block and can beat it.</li>
+<li><b>delta0123-zstd-B:</b> no search — step = block range/(2<sup>B</sup>−1), order = argmin var(diff(q, k)),
+one zstd (level 3) call per unit; lowers B if a block's estimated size would exceed 8 bits/sample.
+<code>delta12-zstd-8</code> only considers orders 1 and 2 (performance option).</li>
+<li>All real coders are round-trip verified per unit.</li>
+</ul>
+<h2 id='summary'>Summary</h2><table><tr><th class='l'>coder</th><th class='l'>rate control</th><th>avg bits/sample</th><th>overall RMSE</th><th>median block RMSE</th><th>worst block RMSE</th><th>worst max |err|</th><th>capped blocks</th><th>encode µs/block</th></tr>
+<tr><td><code>delta0123-rice</code></td><td class='l'>window</td><td>4.000</td><td>0.0584%</td><td>0.0570%</td><td>0.214%</td><td>0.367%</td><td>1</td><td>124155</td></tr>
+<tr><td><code>delta0123-rice</code></td><td class='l'>fixed</td><td>3.706</td><td>0.2493%</td><td>0.0633%</td><td>3.554%</td><td>6.246%</td><td>—</td><td>56232</td></tr>
+<tr><td><code>delta0123-zstd</code></td><td class='l'>window</td><td>3.996</td><td>0.0238%</td><td>0.0185%</td><td>0.236%</td><td>0.403%</td><td>38</td><td>20825</td></tr>
+<tr><td><code>delta0123-zstd</code></td><td class='l'>fixed</td><td>3.035</td><td>0.2426%</td><td>0.0402%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>6466</td></tr>
+<tr><td><code>delta0123-deflate</code></td><td class='l'>window</td><td>3.999</td><td>0.0255%</td><td>0.0214%</td><td>0.230%</td><td>0.399%</td><td>30</td><td>35513</td></tr>
+<tr><td><code>delta0123-deflate</code></td><td class='l'>fixed</td><td>2.972</td><td>0.2850%</td><td>0.0422%</td><td>3.335%</td><td>5.729%</td><td>—</td><td>10299</td></tr>
+<tr><td><code>flac</code></td><td class='l'>window</td><td>3.942</td><td>0.0422%</td><td>0.0396%</td><td>0.208%</td><td>0.356%</td><td>1</td><td>3915</td></tr>
+<tr><td><code>flac</code></td><td class='l'>fixed</td><td>3.484</td><td>0.2654%</td><td>0.0187%</td><td>3.857%</td><td>6.790%</td><td>—</td><td>2153</td></tr>
+<tr><td><code>best: rice|zstd</code></td><td class='l'>window</td><td>3.999</td><td>0.0206%</td><td>0.0166%</td><td>0.217%</td><td>0.373%</td><td>29</td><td>212269</td></tr>
+<tr><td><code>best: rice|zstd</code></td><td class='l'>fixed</td><td>2.976</td><td>0.2059%</td><td>0.0274%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>65555</td></tr>
+<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>window</td><td>3.990</td><td class="best">0.0153%</td><td>0.0078%</td><td>0.205%</td><td>0.359%</td><td>74</td><td>293136</td></tr>
+<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>fixed</td><td>3.102</td><td>0.1994%</td><td>0.0012%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>70287</td></tr>
+<tr><td><code>0-order entropy</code></td><td class='l'>window</td><td>4.000</td><td>0.0172%</td><td>0.0162%</td><td>0.103%</td><td>0.183%</td><td>2</td><td>10578</td></tr>
+<tr><td><code>0-order entropy</code></td><td class='l'>fixed</td><td>3.007</td><td>0.1720%</td><td>0.0144%</td><td>1.987%</td><td>3.406%</td><td>—</td><td>4269</td></tr>
+<tr><td><code>delta0123-zstd-8</code></td><td class='l'>one-shot</td><td>2.826</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>11</td></tr>
+<tr><td><code>delta0123-zstd-10</code></td><td class='l'>one-shot</td><td>3.844</td><td>0.0313%</td><td>0.0282%</td><td>0.226%</td><td>0.393%</td><td>36</td><td>12</td></tr>
+<tr><td><code>delta0123-zstd-12</code></td><td class='l'>one-shot</td><td>4.413</td><td>0.0224%</td><td>0.0071%</td><td>0.226%</td><td>0.393%</td><td>124</td><td>12</td></tr>
+<tr><td><code>delta12-zstd-8</code></td><td class='l'>one-shot</td><td>2.927</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>10</td></tr>
+<tr><td class='muted'><code>quant8-delta1-deflate</code> (earlier codec)</td><td class='l muted'>none</td><td>3.079</td><td>0.1080%</td><td>0.1127%</td><td>0.120%</td><td>0.196%</td><td>—</td><td>—</td></tr></table><p class='muted'>One-shot rows include each block's min and max, stored in the unit. Encode time is the full rate-control search for window/fixed rows (Python, single thread), per block; one-shot is a single pass. Every block spans [0, 1], so one-shot's per-block step and the shared window step mean the same thing.</p>
+<h2 id='per-kind-chart'>Bits and error per signal kind</h2><img src='rate-blocks.svg' alt='Per-kind bits and RMSE'>
+<h2 id='kind-delta0123-zstd-10-one-shot'>Per signal kind: delta0123-zstd-10 / one-shot</h2><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<tr><td>linear</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>0.43</td><td>0.0282%</td><td>-0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0487%</td></tr>
+<tr><td>quadratic</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>1.14</td><td>0.0289%</td><td>-0.0009%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0489%</td></tr>
+<tr><td>sin-4.12hz</td><td class='l'>B=10 order 2</td><td>0.000978</td><td>2.34</td><td>0.0281%</td><td>+0.0001%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
+<tr><td>sin-9.87hz</td><td class='l'>B=10 order 3</td><td>0.000978</td><td>2.82</td><td>0.0280%</td><td>+0.0004%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
+<tr><td>sin-50.3hz</td><td class='l'>B=10 order 3</td><td>0.000978</td><td>5.58</td><td>0.0281%</td><td>+0.0006%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0489%</td></tr>
+<tr><td>gauss-spikes</td><td class='l'>B=10 order 2</td><td>0.000978</td><td>6.47</td><td>0.0282%</td><td>-0.0002%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
+<tr><td>impulses</td><td class='l'>B=10 order 0</td><td>0.000978</td><td>5.98</td><td>0.0289%</td><td>-0.0007%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0489%</td></tr>
+<tr><td>square-2.24hz</td><td class='l'>B=9 order 1</td><td>0.00196</td><td>0.45</td><td>0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
+<tr><td>random-walk</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>7.38</td><td>0.0282%</td><td>+0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
+<tr><td>chirp</td><td class='l'>B=10 order 3</td><td>0.000978</td><td>7.12</td><td>0.0280%</td><td>+0.0001%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
+<tr><td>noisy-sine</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>8.02</td><td>0.0282%</td><td>-0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
+<tr><td>sensor-0.1</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>2.98</td><td>0.0283%</td><td>+0.0002%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0489%</td></tr>
+</table>
+<h2 id='kind-delta0123-zstd-window'>Per signal kind: delta0123-zstd / window</h2><p>Unit Δ = 0.000679, 0.000635, 0.00063, 0.00063, 0.000655</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<tr><td>linear</td><td class='l'>order 1</td><td>0.000635</td><td>0.33</td><td>0.0183%</td><td>-0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>quadratic</td><td class='l'>order 1</td><td>0.000635</td><td>0.77</td><td>0.0184%</td><td>+0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>sin-4.12hz</td><td class='l'>order 2</td><td>0.000635</td><td>2.02</td><td>0.0183%</td><td>+0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>sin-9.87hz</td><td class='l'>order 3</td><td>0.000635</td><td>2.67</td><td>0.0183%</td><td>+0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>sin-50.3hz</td><td class='l'>order 3</td><td>0.000635</td><td>5.86</td><td>0.0184%</td><td>+0.0000%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>gauss-spikes</td><td class='l'>order 2</td><td>0.000635</td><td>6.78</td><td>0.0185%</td><td>-0.0003%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>impulses</td><td class='l'>order 0</td><td>0.000635</td><td>6.53</td><td>0.0185%</td><td>+0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>square-2.24hz</td><td class='l'>order 0</td><td>0.000635</td><td>0.37</td><td>0.0063%</td><td>+0.0044%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0090%</td></tr>
+<tr><td>random-walk</td><td class='l'>order 1</td><td>0.000679</td><td>7.83</td><td>0.0197%</td><td>+0.0000%</td><td>+0.0052%</td><td>+0.0000%</td><td>0.0339%</td></tr>
+<tr><td>chirp</td><td class='l'>order 3</td><td>0.000635</td><td>7.55</td><td>0.0185%</td><td>+0.0003%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
+<tr><td>noisy-sine</td><td class='l'>order 1</td><td>0.00105</td><td>7.89</td><td>0.0294%</td><td>+0.0003%</td><td>-0.0076%</td><td>+0.0000%</td><td>0.0523%</td></tr>
+<tr><td>sensor-0.1</td><td class='l'>order 1</td><td>0.000635</td><td>2.72</td><td>0.0185%</td><td>-0.0002%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0316%</td></tr>
+</table>
+<h2 id='kind-best--rice-zstd-flac-window'>Per signal kind: best: rice|zstd|flac / window</h2><p>Unit Δ = 0.000278, 0.000275, 0.000266, 0.000261, 0.000245</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<tr><td>linear</td><td class='l'>delta0123-zstd order 1</td><td>0.000266</td><td>0.42</td><td>0.0077%</td><td>-0.0000%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>quadratic</td><td class='l'>delta0123-zstd order 1</td><td>0.000266</td><td>0.99</td><td>0.0076%</td><td>+0.0001%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>sin-4.12hz</td><td class='l'>delta0123-zstd order 2</td><td>0.000266</td><td>2.34</td><td>0.0076%</td><td>+0.0000%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>sin-9.87hz</td><td class='l'>delta0123-rice order 3</td><td>0.000266</td><td>2.74</td><td>0.0077%</td><td>-0.0001%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>sin-50.3hz</td><td class='l'>flac LPC</td><td>0.000266</td><td>3.10</td><td>0.0077%</td><td>+0.0001%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>gauss-spikes</td><td class='l'>flac LPC</td><td>0.000266</td><td>7.53</td><td>0.0078%</td><td>-0.0000%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>impulses</td><td class='l'>delta0123-zstd order 0</td><td>0.000316</td><td>7.70</td><td>0.0091%</td><td>-0.0000%</td><td>-0.0018%</td><td>+0.0000%</td><td>0.0158%</td></tr>
+<tr><td>square-2.24hz</td><td class='l'>delta0123-zstd order 0</td><td>0.000266</td><td>0.38</td><td>0.0028%</td><td>-0.0004%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0040%</td></tr>
+<tr><td>random-walk</td><td class='l'>delta0123-rice order 1</td><td>0.00044</td><td>7.94</td><td>0.0126%</td><td>-0.0000%</td><td>+0.0049%</td><td>+0.0000%</td><td>0.0220%</td></tr>
+<tr><td>chirp</td><td class='l'>flac LPC</td><td>0.000266</td><td>4.63</td><td>0.0077%</td><td>+0.0001%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
+<tr><td>noisy-sine</td><td class='l'>delta0123-rice order 1</td><td>0.00069</td><td>7.96</td><td>0.0196%</td><td>-0.0000%</td><td>-0.0036%</td><td>+0.0000%</td><td>0.0345%</td></tr>
+<tr><td>sensor-0.1</td><td class='l'>delta0123-zstd order 1</td><td>0.000266</td><td>2.73</td><td>0.0077%</td><td>-0.0003%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0131%</td></tr>
+</table>
+<h2 id='kind-best--rice-zstd-flac-fixed'>Per signal kind: best: rice|zstd|flac / fixed</h2><p>Unit Δ = 9.31e-10, 9.31e-10, 9.31e-10, 9.31e-10, 9.31e-10</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<tr><td>linear</td><td class='l'>delta0123-zstd order 1</td><td>9.31e-10</td><td>0.44</td><td>0.0000%</td><td>-0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
+<tr><td>quadratic</td><td class='l'>delta0123-zstd order 2</td><td>9.31e-10</td><td>1.32</td><td>0.0000%</td><td>-0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
+<tr><td>sin-4.12hz</td><td class='l'>flac LPC</td><td>1e-07</td><td>3.98</td><td>0.0000%</td><td>+0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
+<tr><td>sin-9.87hz</td><td class='l'>flac LPC</td><td>3.21e-06</td><td>3.98</td><td>0.0001%</td><td>-0.0000%</td><td>+0.0002%</td><td>+0.0000%</td><td>0.0002%</td></tr>
+<tr><td>sin-50.3hz</td><td class='l'>flac LPC</td><td>1.66e-05</td><td>3.69</td><td>0.0005%</td><td>+0.0000%</td><td>+0.0001%</td><td>+0.0000%</td><td>0.0008%</td></tr>
+<tr><td>gauss-spikes</td><td class='l'>delta0123-rice order 1</td><td>0.00358</td><td>3.94</td><td>0.1029%</td><td>-0.0026%</td><td>+0.0027%</td><td>+0.0000%</td><td>0.1786%</td></tr>
+<tr><td>impulses</td><td class='l'>delta0123-zstd order 0</td><td>0.00465</td><td>3.96</td><td>0.1378%</td><td>-0.0055%</td><td>-0.1252%</td><td>+0.0000%</td><td>0.2322%</td></tr>
+<tr><td>square-2.24hz</td><td class='l'>delta0123-zstd order 0</td><td>9.31e-10</td><td>0.50</td><td>0.0000%</td><td>-0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
+<tr><td>random-walk</td><td class='l'>delta0123-rice order 1</td><td>0.00716</td><td>3.90</td><td>0.2051%</td><td>-0.0034%</td><td>-0.0107%</td><td>+0.0000%</td><td>0.3576%</td></tr>
+<tr><td>chirp</td><td class='l'>flac LPC</td><td>0.00164</td><td>3.98</td><td>0.0472%</td><td>+0.0000%</td><td>+0.0207%</td><td>+0.0000%</td><td>0.0819%</td></tr>
+<tr><td>noisy-sine</td><td class='l'>delta0123-rice order 1</td><td>0.011</td><td>3.96</td><td>0.3188%</td><td>-0.0036%</td><td>+0.5417%</td><td>+0.0000%</td><td>0.5521%</td></tr>
+<tr><td>sensor-0.1</td><td class='l'>delta0123-zstd order 1</td><td>7.26e-05</td><td>3.29</td><td>0.0021%</td><td>+0.0000%</td><td>-0.0018%</td><td>+0.0000%</td><td>0.0036%</td></tr>
+</table>
+</body></html>
