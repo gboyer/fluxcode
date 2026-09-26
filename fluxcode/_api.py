@@ -99,6 +99,9 @@ class Params:
             65536).
         blocks_per_unit: Maximum number of blocks in a single compressed unit row
             (must be >= 1).
+        try_byte_planes: Also compress each unit with byte planes instead of bit
+            planes and keep the smaller. Doubles the zstd work of encoding; pays
+            off on clean periodic signals whose cycles repeat across a unit.
     """
 
     min_quantize_bits: int = 6
@@ -110,6 +113,7 @@ class Params:
     decimal_detection: bool = True
     block_len: int = 1000
     blocks_per_unit: int = 60
+    try_byte_planes: bool = False
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -150,6 +154,8 @@ class Params:
         # Blocks per unit must be at least 1
         if not (_is_int(self.blocks_per_unit) and self.blocks_per_unit >= 1):
             raise ValueError(f"blocks_per_unit must be >= 1, got {self.blocks_per_unit!r}")
+        if not isinstance(self.try_byte_planes, (bool, np.bool_)):
+            raise ValueError(f"try_byte_planes must be a bool, got {self.try_byte_planes!r}")  # noqa: TRY004
         # A full unit must fit the decoder's sanity bound on sample counts
         if self.blocks_per_unit * self.block_len > _format.MAX_UNIT_SAMPLES:
             raise ValueError(
@@ -281,6 +287,7 @@ def _compress(
     residuals: np.ndarray,
     codes: np.ndarray,
     num_samples: int,
+    try_byte_planes: bool = False,
 ) -> bytes:
     """Serializes unit fields and builds the unit: header plus zstd frame of the body.
 
@@ -291,13 +298,21 @@ def _compress(
         residuals: 2D int16 array of block residuals, shape (N, n).
         codes: 2D uint8 array of sample codes.
         num_samples: Real sample count S recorded in the header.
+        try_byte_planes: Also build the unit with byte planes and return the smaller.
 
     Returns:
         The unit bytes.
     """
     # Separate from the encode kernel (update shares it); fusing measured no gain (PERFORMANCE.md).
     body = _format.write_unit(headers, parameters, anchors, residuals, codes)
-    return _format.pack_header(residuals.shape[1], num_samples) + _zstd()[0].compress(body.data)
+    unit = _format.pack_header(residuals.shape[1], num_samples) + _zstd()[0].compress(body.data)
+    if try_byte_planes:
+        body = _format.write_unit(headers, parameters, anchors, residuals, codes, byte_planes=True)
+        byte_unit = _format.pack_header(residuals.shape[1], num_samples, True) + _zstd()[0].compress(body.data)
+        # Ties keep bit planes, so the choice is deterministic
+        if len(byte_unit) < len(unit):
+            return byte_unit
+    return unit
 
 
 def _as_series(series_input: object) -> np.ndarray:
@@ -353,7 +368,7 @@ def _encode_rows(series_samples: np.ndarray, params: Params) -> EncodedUnit:
         block_max,
         block_mean,
     ) = _encode_blocks(block_matrix, params, num_real_samples_last_block)
-    unit = _compress(headers, parameters, anchors, residuals, codes, total_samples)
+    unit = _compress(headers, parameters, anchors, residuals, codes, total_samples, params.try_byte_planes)
     return EncodedUnit(unit, block_min, block_max, block_mean)
 
 
@@ -419,21 +434,21 @@ def encode(x: object, params: Params = DEFAULT_PARAMS) -> EncodedSeries:
     return EncodedSeries(units, mins, maxs, means)
 
 
-def _decompress(unit: bytes) -> tuple[np.ndarray, int, int, int]:
+def _decompress(unit: bytes) -> tuple[np.ndarray, int, int, int, bool]:
     """Parses a unit's header, decompresses its body and validates the layout.
 
     Args:
         unit: Unit bytes (header and zstd frame).
 
     Returns:
-        A tuple of (raw_body, num_blocks, block_len, num_samples).
+        A tuple of (raw_body, num_blocks, block_len, num_samples, byte_planes).
 
     Raises:
         ValueError: If the header is invalid, the frame's content size is missing
             or doesn't fit the header, or block validation fails.
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
-    block_len, num_samples, num_blocks = _format.unpack_header(unit)
+    block_len, num_samples, num_blocks, byte_planes = _format.unpack_header(unit)
     frame = memoryview(unit)[_format.HEADER_BYTES:]
     # Check the recorded body size against the header before allocating it
     content_size = zstandard.frame_content_size(frame)
@@ -449,7 +464,7 @@ def _decompress(unit: bytes) -> tuple[np.ndarray, int, int, int]:
     if raw_body.shape[0] != _format.unit_size(num_blocks, block_len, num_flagged):
         raise ValueError(f"unit body of {raw_body.shape[0]} bytes doesn't match its {num_flagged} flagged blocks")
     _check_unit(raw_body, num_blocks)
-    return raw_body, num_blocks, block_len, num_samples
+    return raw_body, num_blocks, block_len, num_samples, byte_planes
 
 
 def _check_unit(raw_body: np.ndarray, num_blocks: int) -> None:
@@ -488,10 +503,10 @@ def decode_unit(unit: bytes) -> np.ndarray:
         ValueError: If the header or body is invalid or out of range.
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
-    raw_body, num_blocks, block_len, num_samples = _decompress(unit)
+    raw_body, num_blocks, block_len, num_samples, byte_planes = _decompress(unit)
     reconstructed_samples = np.empty(num_blocks * block_len)
     # Run fused dequantization kernel
-    _decoder.decode_unit(raw_body, reconstructed_samples.reshape(num_blocks, block_len))
+    _decoder.decode_unit(raw_body, reconstructed_samples.reshape(num_blocks, block_len), byte_planes)
     # Slice off the padding of a partial last block
     return reconstructed_samples[:num_samples]
 
@@ -551,7 +566,7 @@ def update(
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
     block_len = params.block_len
-    raw_body, num_existing_blocks, derived_block_len, num_samples = _decompress(unit)
+    raw_body, num_existing_blocks, derived_block_len, num_samples, byte_planes = _decompress(unit)
     if derived_block_len != block_len:
         raise ValueError(f"unit has blocks of {derived_block_len} samples but params.block_len is {block_len}")
     indices_arr = np.asarray(indices)
@@ -600,6 +615,7 @@ def update(
     # Unpack existing unit blocks into preallocated buffers
     _format.read_rows(
         raw_body,
+        byte_planes,
         headers[:num_existing_blocks],
         parameters[:num_existing_blocks],
         anchors[:num_existing_blocks],
@@ -624,5 +640,5 @@ def update(
     residuals[indices_arr] = new_residuals
     codes[indices_arr] = new_codes
     # Re-serialize and compress
-    new_unit = _compress(headers, parameters, anchors, residuals, codes, new_num_samples)
+    new_unit = _compress(headers, parameters, anchors, residuals, codes, new_num_samples, params.try_byte_planes)
     return UpdatedUnit(new_unit, new_minima, new_maxima, new_means)

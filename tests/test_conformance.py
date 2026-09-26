@@ -296,7 +296,7 @@ def test_units_are_self_describing(block_len, n_blocks, flagged):
     elif flagged:
         x[0] = np.inf
     unit, _, _, _ = fluxcode.encode_unit(x, Params(block_len=block_len, blocks_per_unit=60))
-    assert _format.unpack_header(unit) == (block_len, len(x), n_blocks)
+    assert _format.unpack_header(unit) == (block_len, len(x), n_blocks, False)
     y = fluxcode.decode_unit(unit)
     assert y.shape == x.shape
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
@@ -311,7 +311,7 @@ def _with_header(unit, **fields):
 
 @pytest.mark.parametrize("fields,msg", [
     ({"version": 2}, "version 2"),
-    ({"flags": 1}, "reserved"),
+    ({"flags": 2}, "reserved"),
     ({"reserved": 1}, "reserved"),
     ({"block_len": 1001}, "block length"),
     ({"block_len": 0}, "block length"),
@@ -326,6 +326,46 @@ def test_bad_headers_are_rejected(fields, msg):
         fluxcode.decode_unit(_with_header(unit, **fields))
     with pytest.raises(ValueError, match="shorter"):
         fluxcode.decode_unit(unit[:10])
+
+
+def _periodic(n=60_000):
+    """A clean sine with an exact 125-sample period: its residuals repeat across the unit."""
+    return 100 * np.sin(2 * np.pi * np.arange(n) / 125)
+
+
+@pytest.mark.parametrize("kind", [*KINDS, "periodic"])
+def test_try_byte_planes_never_bigger_and_decodes_the_same(kind):
+    x = _periodic() if kind == "periodic" else minute(kind, 7)
+    x[123] = np.nan  # a flagged block too
+    for bits in (10, 16):
+        bit_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits)).unit
+        best_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits, try_byte_planes=True)).unit
+        assert len(best_unit) <= len(bit_unit)
+        np.testing.assert_array_equal(fluxcode.decode_unit(best_unit), fluxcode.decode_unit(bit_unit))
+        if not _format.unpack_header(best_unit)[3]:
+            assert best_unit == bit_unit
+
+
+def test_try_byte_planes_picks_byte_planes_on_repeating_cycles():
+    params = Params(max_quantize_bits=10, try_byte_planes=True)
+    unit = fluxcode.encode_unit(_periodic(), params).unit
+    assert _format.unpack_header(unit)[3]
+    assert len(unit) < 0.8 * len(fluxcode.encode_unit(_periodic(), Params(max_quantize_bits=10)).unit)
+
+
+def test_update_byte_plane_unit():
+    params = Params(max_quantize_bits=10, try_byte_planes=True)
+    x = _periodic()
+    unit = fluxcode.encode_unit(x, params).unit
+    new = 50 * np.cos(2 * np.pi * np.arange(1000) / 125)
+    x2 = x.copy()
+    x2[5000:6000] = new
+    # Same params: byte-identical to encoding the edited series from scratch
+    assert fluxcode.update(unit, [5], new, params).unit == fluxcode.encode_unit(x2, params).unit
+    # Default params re-encode with bit planes; untouched blocks still decode identically
+    unit2 = fluxcode.update(unit, [5], new, Params(max_quantize_bits=10)).unit
+    assert not _format.unpack_header(unit2)[3]
+    np.testing.assert_array_equal(fluxcode.decode_unit(unit2), fluxcode.decode_unit(fluxcode.encode_unit(x2, params).unit))
 
 
 def test_partial_last_block_is_trimmed():

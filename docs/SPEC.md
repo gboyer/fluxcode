@@ -24,6 +24,7 @@ decimal step) and anchor, so a decoder needs only the unit.
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
 | `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§3.1a; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§3.6): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
+| `try_byte_planes` | on / off | off | also compress the unit with byte planes instead of bit planes (§5) and keep the smaller; ties keep bit planes. Doubles the zstd work of encoding. Worth it on clean periodic signals whose cycles repeat across a unit (TUNING.md) |
 
 **Precedence.** e_fine is the §3.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
@@ -31,12 +32,13 @@ clamped to e_coarse; decimal detection then looks for a decimal grid coarser tha
 finally the target (if set and the unit is over budget) coarsens blocks further, still never past
 e_coarse. With both the noise floor and the target on, each block takes the coarser step.
 
-Fixed by this spec: bit-shuffled residual planes, zstd level 3, blocks interleaved by field.
+Fixed by this spec: zstd level 3, blocks interleaved by field.
 Block length `n` (`block_len`) is fixed per deployment and must be a multiple of 8 (1000 in everything
 measured); `N` ≤ `blocks_per_unit` (60) blocks per unit.
 
-Bit-shuffle is not optional: one format. It's smaller overall than byte planes and bounds the
-cost of noisy, wide signals best (measurements, and the B ≤ 11 caveat, in TUNING.md).
+Residuals are bit-shuffled by default: smaller overall than byte planes, and the best bound on
+the cost of noisy, wide signals. A unit may use byte planes instead (header flag, §5), which
+`try_byte_planes` picks when they come out smaller (measurements in TUNING.md).
 
 ## 2. Units and summary statistics
 
@@ -297,7 +299,7 @@ decompressing:
 | header field | type (little-endian) | contents |
 |---|---|---|
 | version | uint8 | 1 (a decoder rejects others) |
-| flags | uint8 | 0 (a decoder rejects others) |
+| flags | uint8 | bit 0: residuals in byte planes instead of bit planes; bits 1–7: 0 (a decoder rejects them) |
 | reserved | uint16 | 0 (a decoder rejects others) |
 | n | uint32 | block length: a multiple of 8, 8 to 65,536 |
 | S | uint64 | sample count, 1 to 2^26. The unit holds N = ceil(S / n) blocks |
@@ -310,7 +312,7 @@ order:
 | head | N bytes | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bits 4–7: 0 (a decoder rejects them) |
 | param | 8 × N bytes | the block's int64 parameter (exponent −1074 ≤ `e` ≤ 1023, or −22 ≤ `p` ≤ 22 in decimal mode), little-endian, **byte-planed**: byte 0 of every block, then byte 1 of every block, … byte 7 |
 | anchor | 8 × N bytes | the block's anchor (§3.3), byte-planed like param: the bits of the float64 `lo` (finite; 0.0 for a block with no finite samples), or the int64 `K0` in decimal mode (\|K0\| < 2^52) |
-| residual bits | 16 × N × n/8 bytes | bit plane j = 0..15, then block b = 0..N−1, then byte i = 0..n/8−1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]` |
+| residual | 2 × N × n bytes | flags bit 0 clear: bit plane j = 0..15, then block b = 0..N−1, then byte i = 0..n/8−1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block b, then sample i |
 | nonfinite | 2 × F × n/8 bytes | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
 
 ```

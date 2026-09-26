@@ -12,10 +12,17 @@ signals, which were already cheap.
 
 The size advantage holds for B ≥ 13. At B ≤ 11 byte planes are 0.1–0.2 bits/sample smaller: the
 residuals fit in about a byte, and the low/high byte split already separates the random bits
-from the mostly-zero ones. Bit-shuffle stays mandatory for a single format; if a deployment runs
-at B ≤ 11, measure both layouts on its data. Nibble planes (four 4-bit planes) fall between the
+from the mostly-zero ones. Nibble planes (four 4-bit planes) fall between the
 two layouts at B ≥ 13 and never beat bit-shuffle overall ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design) in
 `experimental/`).
+
+**`try_byte_planes`** compresses each unit both ways and keeps the smaller (the header records
+which). On clean periodic signals whose cycles repeat across the unit, zstd finds long matches in
+the byte planes that the 8-sample bit groups break up: in the prototype on synthetic minute units,
+sines at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99). Elsewhere the gain
+is small (about 1% overall at B = 16) and encoding does twice the zstd work, so it's off by
+default: turn it on for clean periodic tags, or at B ≤ 11. A cheap size heuristic instead of
+encoding twice was tried and misjudged decimal sensor data by 20%.
 
 ## Noise floor: measured behaviour
 

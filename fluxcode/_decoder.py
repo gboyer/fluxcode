@@ -24,6 +24,7 @@ from ._format import (
     P_MAX,
     P_MIN,
     anchor_start,
+    byte_planes_view,
     code_planes_view,
     count_flagged,
     get_int64,
@@ -212,7 +213,7 @@ def check_unit(raw_unit: np.ndarray, num_blocks: int) -> tuple[int, int]:
 
 
 @njit(nogil=True, cache=True)
-def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray) -> None:
+def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool) -> None:
     """Decodes all blocks of an uncompressed body into output array.
 
     Fuses unshuffling, unzigzagging, integration, dequantization, and
@@ -221,6 +222,7 @@ def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray) -> None:
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes (must pass check_unit).
         out_blocks: Output 2D float64 array of shape (N, n) receiving decoded samples.
+        byte_planes: Whether the residuals are stored as byte planes (unit flags bit 0).
     """
     num_blocks, block_len = out_blocks.shape
     # Anchors: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
@@ -233,15 +235,25 @@ def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray) -> None:
     block_residuals = np.empty(block_len, np.int32)
     # Obtain views into residual and code bit planes
     bit_planes = planes_view(raw_unit, num_blocks, block_len)
+    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, block_len)
     code_planes = code_planes_view(raw_unit, num_blocks, block_len, count_flagged(raw_unit, num_blocks))
     flagged_block_counter = 0
     for block_idx in range(num_blocks):
         header_byte = raw_unit[block_idx]
         param_val = int(get_int64(raw_unit, param_start(num_blocks), num_blocks, block_idx))
-        # Gather bit planes into low and high zigzag bytes
-        unshuffle_block(bit_planes, block_idx, scratch_low_bytes, scratch_high_bytes)
-        # Unzigzag into signed differences
-        unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
+        if byte_planes:
+            # Byte planes: the block's low and high zigzag bytes are contiguous
+            sample_start = block_idx * block_len
+            unzigzag(
+                byte_planes_2d[0, sample_start:sample_start + block_len],
+                byte_planes_2d[1, sample_start:sample_start + block_len],
+                block_residuals,
+            )
+        else:
+            # Gather bit planes into low and high zigzag bytes
+            unshuffle_block(bit_planes, block_idx, scratch_low_bytes, scratch_high_bytes)
+            # Unzigzag into signed differences
+            unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
         # Integrate mod 2^16 by predictor order (bits 0-1)
         integrate(block_residuals, header_byte & HEAD_ORDER)
         # Dequantize according to grid type (decimal or power-of-two)

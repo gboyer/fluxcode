@@ -3,8 +3,9 @@
 """Binary layout and bit-shuffling routines for units.
 
 A unit is a 16-byte header followed by one zstd frame holding the body. The
-header (little-endian) is: format version (uint8, 1), flags (uint8, 0),
-reserved (uint16, 0), block length n (uint32), sample count S (uint64). The unit
+header (little-endian) is: format version (uint8, 1), flags (uint8; bit 0 selects
+byte planes for the residual field, bits 1-7 are 0), reserved (uint16, 0), block
+length n (uint32), sample count S (uint64). The unit
 holds N = ceil(S / n) blocks; the last one is padded when S isn't a multiple of n.
 
 The body, for N blocks of n samples with F of the blocks containing non-finite
@@ -20,9 +21,9 @@ values (NaN, +inf, -inf), consists of five consecutive fields:
     3. anchor (8 * N bytes, byte-planed like param):
        Per-block reconstruction base: the bits of the float64 minimum lo on the
        power-of-two grid, or the int64 grid index K0 of the minimum on a decimal grid.
-    4. residual (16 * N * n / 8 bytes):
-       16 bit planes across all N blocks, storing zigzag-encoded int16
-       differences mod 2^16.
+    4. residual (2 * N * n bytes):
+       Zigzag-encoded int16 differences mod 2^16, as 16 bit planes across all N
+       blocks, or (flags bit 0) as 2 byte planes: every low byte, then every high byte.
     5. nonfinite (2 * F * n / 8 bytes, omitted if F == 0):
        2 code bit planes for the F flagged blocks, encoding sample categories
        (00: finite, 01: NaN, 10: +inf, 11: -inf).
@@ -45,6 +46,9 @@ HEAD_NONFINITE: int = 0x08
 
 HEAD_RESERVED: int = 0xF0
 """Reserved bits in the header byte (bits 4-7); decoders must reject these."""
+
+FLAG_BYTE_PLANES: int = 0x01
+"""Unit header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
 
 MAX_BLOCK_LEN: int = 65536
 """Maximum plausible block length used as a sanity bound for unit validation."""
@@ -152,44 +156,45 @@ def count_flagged(raw_unit: np.ndarray, num_blocks: int) -> int:
     return flagged_count
 
 
-def pack_header(block_len: int, num_samples: int) -> bytes:
+def pack_header(block_len: int, num_samples: int, byte_planes: bool = False) -> bytes:
     """Builds the 16-byte unit header.
 
     Args:
         block_len: Samples per block n.
         num_samples: Real sample count S of the unit.
+        byte_planes: Whether the residual field holds byte planes (flags bit 0).
 
     Returns:
         The header bytes.
     """
-    return UNIT_HEADER.pack(FORMAT_VERSION, 0, 0, block_len, num_samples)
+    return UNIT_HEADER.pack(FORMAT_VERSION, FLAG_BYTE_PLANES if byte_planes else 0, 0, block_len, num_samples)
 
 
-def unpack_header(unit: bytes) -> tuple[int, int, int]:
+def unpack_header(unit: bytes) -> tuple[int, int, int, bool]:
     """Parses and validates a unit header.
 
     Args:
         unit: Unit bytes (header followed by the zstd frame).
 
     Returns:
-        A tuple of (block_len, num_samples, num_blocks).
+        A tuple of (block_len, num_samples, num_blocks, byte_planes).
 
     Raises:
         ValueError: If the header is truncated, has an unsupported version or
-            nonzero flags, or describes an implausible block length or sample count.
+            reserved bits set, or describes an implausible block length or sample count.
     """
     if len(unit) < HEADER_BYTES:
         raise ValueError(f"unit of {len(unit)} bytes is shorter than its {HEADER_BYTES}-byte header")
     version, flags, reserved, block_len, num_samples = UNIT_HEADER.unpack_from(unit)
     if version != FORMAT_VERSION:
         raise ValueError(f"unit format version {version} is not supported (expected {FORMAT_VERSION})")
-    if flags or reserved:
+    if flags & ~FLAG_BYTE_PLANES or reserved:
         raise ValueError("unit header sets reserved bits (not supported by this version)")
     if not (0 < block_len <= MAX_BLOCK_LEN and block_len % 8 == 0):
         raise ValueError(f"unit block length {block_len} is not a multiple of 8 from 8 to {MAX_BLOCK_LEN}")
     if not 0 < num_samples <= MAX_UNIT_SAMPLES:
         raise ValueError(f"unit sample count {num_samples} is outside 1..{MAX_UNIT_SAMPLES}")
-    return block_len, num_samples, -(-num_samples // block_len)
+    return block_len, num_samples, -(-num_samples // block_len), bool(flags & FLAG_BYTE_PLANES)
 
 
 @njit(inline="always")
@@ -234,6 +239,40 @@ def planes_view(raw_unit: np.ndarray, num_blocks: int, block_len: int) -> np.nda
     return raw_unit[start_offset:end_offset].reshape(16, num_blocks * (block_len // 8))
 
 
+@njit(inline="always")
+def byte_planes_view(raw_unit: np.ndarray, num_blocks: int, block_len: int) -> np.ndarray:
+    """Provides a 2D view into the residual field as 2 byte planes (flags bit 0).
+
+    Args:
+        raw_unit: 1D uint8 array containing uncompressed unit data.
+        num_blocks: Total number of blocks N.
+        block_len: Block length n.
+
+    Returns:
+        2D uint8 array of shape (2, N * n): the low bytes, then the high bytes.
+    """
+    start_offset = METADATA_BYTES_PER_BLOCK * num_blocks
+    end_offset = num_blocks * (METADATA_BYTES_PER_BLOCK + BYTES_PER_RESIDUAL_SAMPLE * block_len)
+    return raw_unit[start_offset:end_offset].reshape(2, num_blocks * block_len)
+
+
+@njit(inline="always")
+def zigzag_block(residuals: np.ndarray, out_low_bytes: np.ndarray, out_high_bytes: np.ndarray) -> None:
+    """Zigzag-encodes int16 residuals and splits them into low and high bytes.
+
+    Args:
+        residuals: 1D int16 array of residual differences for the block.
+        out_low_bytes: Output uint8 array of length n receiving the lower 8 bits.
+        out_high_bytes: Output uint8 array of length n receiving the upper 8 bits.
+    """
+    for sample_idx in range(residuals.shape[0]):
+        signed_residual = residuals[sample_idx]
+        # Zigzag transform: maps 0->0, -1->1, 1->2, -2->3 to keep small magnitudes small
+        zigzag_val = np.uint16((signed_residual << np.int16(1)) ^ (signed_residual >> np.int16(15)))
+        out_low_bytes[sample_idx] = np.uint8(zigzag_val)
+        out_high_bytes[sample_idx] = np.uint8(zigzag_val >> np.uint16(8))
+
+
 @njit(nogil=True, cache=True)
 def shuffle_block(
     residuals: np.ndarray,
@@ -256,13 +295,7 @@ def shuffle_block(
         scratch_high_bytes: Preallocated uint8 scratch array for upper bytes.
     """
     num_samples = residuals.shape[0]
-    for sample_idx in range(num_samples):
-        signed_residual = residuals[sample_idx]
-        # Zigzag transform: maps 0->0, -1->1, 1->2, -2->3 to keep small magnitudes small
-        zigzag_val = np.uint16((signed_residual << np.int16(1)) ^ (signed_residual >> np.int16(15)))
-        # Split into lower 8 bits and upper 8 bits
-        scratch_low_bytes[sample_idx] = np.uint8(zigzag_val)
-        scratch_high_bytes[sample_idx] = np.uint8(zigzag_val >> np.uint16(8))
+    zigzag_block(residuals, scratch_low_bytes, scratch_high_bytes)
     # Reinterpret byte scratch buffers as 64-bit words for 8-byte group transposition
     low_words64 = scratch_low_bytes.view(np.uint64)
     high_words64 = scratch_high_bytes.view(np.uint64)
@@ -475,6 +508,7 @@ def write_rows(
     anchors: np.ndarray,
     residuals: np.ndarray,
     codes: np.ndarray,
+    byte_planes: bool,
     out_raw_unit: np.ndarray,
 ) -> None:
     """Serializes unit components into a preallocated uncompressed body buffer.
@@ -486,6 +520,7 @@ def write_rows(
         residuals: 2D int16 array of shape (N, n) holding difference residuals.
         codes: 2D uint8 array of shape (N, n) holding sample codes (only rows of
             flagged blocks are read; may be empty if no block is flagged).
+        byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
         out_raw_unit: Output 1D uint8 array of length unit_size(N, n, F).
     """
     num_blocks, block_len = residuals.shape
@@ -493,6 +528,7 @@ def write_rows(
     scratch_high_bytes = np.empty(block_len, np.uint8)
     # Obtain views into residual and non-finite plane regions
     planes = planes_view(out_raw_unit, num_blocks, block_len)
+    bplanes = byte_planes_view(out_raw_unit, num_blocks, block_len)
     cplanes = code_planes_view(out_raw_unit, num_blocks, block_len, count_flagged(headers, num_blocks))
     flagged_counter = 0
     for block_idx in range(num_blocks):
@@ -501,8 +537,17 @@ def write_rows(
         # Store 8-byte parameter and anchor in byte-planed layout
         put_int64(out_raw_unit, param_start(num_blocks), num_blocks, block_idx, parameters[block_idx])
         put_int64(out_raw_unit, anchor_start(num_blocks), num_blocks, block_idx, anchors[block_idx])
-        # Zigzag, transpose, and store residual bit planes
-        shuffle_block(residuals[block_idx], planes, block_idx, scratch_low_bytes, scratch_high_bytes)
+        if byte_planes:
+            # Zigzag and store the low and high bytes in place
+            sample_start = block_idx * block_len
+            zigzag_block(
+                residuals[block_idx],
+                bplanes[0, sample_start:sample_start + block_len],
+                bplanes[1, sample_start:sample_start + block_len],
+            )
+        else:
+            # Zigzag, transpose, and store residual bit planes
+            shuffle_block(residuals[block_idx], planes, block_idx, scratch_low_bytes, scratch_high_bytes)
         if headers[block_idx] & HEAD_NONFINITE:
             # Store 2-bit code planes for flagged blocks
             put_codes(codes[block_idx], cplanes, flagged_counter)
@@ -512,6 +557,7 @@ def write_rows(
 @njit(nogil=True, cache=True)
 def read_rows(
     raw_unit: np.ndarray,
+    byte_planes: bool,
     out_headers: np.ndarray,
     out_parameters: np.ndarray,
     out_anchors: np.ndarray,
@@ -522,6 +568,7 @@ def read_rows(
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed body bytes.
+        byte_planes: Whether the residuals are stored as byte planes (flags bit 0).
         out_headers: Output 1D uint8 array of length N receiving header bytes.
         out_parameters: Output 1D int64 array of length N receiving parameters.
         out_anchors: Output 1D int64 array of length N receiving anchors.
@@ -534,6 +581,7 @@ def read_rows(
     scratch_high_bytes = np.empty(block_len, np.uint8)
     # Access views into bit plane sections
     planes = planes_view(raw_unit, num_blocks, block_len)
+    bplanes = byte_planes_view(raw_unit, num_blocks, block_len)
     cplanes = code_planes_view(raw_unit, num_blocks, block_len, count_flagged(raw_unit, num_blocks))
     flagged_counter = 0
     for block_idx in range(num_blocks):
@@ -542,8 +590,13 @@ def read_rows(
         # Read byte-planed parameter and anchor
         out_parameters[block_idx] = get_int64(raw_unit, param_start(num_blocks), num_blocks, block_idx)
         out_anchors[block_idx] = get_int64(raw_unit, anchor_start(num_blocks), num_blocks, block_idx)
-        # Unshuffle bit planes into zigzag low/high bytes
-        unshuffle_block(planes, block_idx, scratch_low_bytes, scratch_high_bytes)
+        if byte_planes:
+            sample_start = block_idx * block_len
+            scratch_low_bytes[:] = bplanes[0, sample_start:sample_start + block_len]
+            scratch_high_bytes[:] = bplanes[1, sample_start:sample_start + block_len]
+        else:
+            # Unshuffle bit planes into zigzag low/high bytes
+            unshuffle_block(planes, block_idx, scratch_low_bytes, scratch_high_bytes)
         for sample_idx in range(block_len):
             # Reverse zigzag mapping to recover signed residual differences
             out_residuals[block_idx, sample_idx] = unzigzag16(scratch_low_bytes, scratch_high_bytes, sample_idx)
@@ -559,6 +612,7 @@ def write_unit(
     anchors: np.ndarray,
     residuals: np.ndarray,
     codes: np.ndarray | None = None,
+    byte_planes: bool = False,
 ) -> np.ndarray:
     """Serializes unit components into a newly allocated uncompressed body.
 
@@ -569,6 +623,7 @@ def write_unit(
         residuals: 2D int16 array of shape (N, n) holding difference residuals.
         codes: Optional 2D uint8 array of shape (N, n) holding sample codes.
             Required if any block has the HEAD_NONFINITE flag set.
+        byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
 
     Returns:
         1D uint8 array containing the serialized uncompressed body.
@@ -584,12 +639,12 @@ def write_unit(
             raise ValueError("flagged blocks need codes")
         codes = np.zeros((0, block_len), np.uint8)
     raw_unit = np.empty(unit_size(num_blocks, block_len, num_flagged_blocks), np.uint8)
-    write_rows(headers, parameters, anchors, residuals, codes, raw_unit)
+    write_rows(headers, parameters, anchors, residuals, codes, byte_planes, raw_unit)
     return raw_unit
 
 
 def read_unit(
-    raw_unit: bytes | np.ndarray, num_blocks: int, block_len: int
+    raw_unit: bytes | np.ndarray, num_blocks: int, block_len: int, byte_planes: bool = False
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Deserializes an uncompressed body into constituent arrays.
 
@@ -597,6 +652,7 @@ def read_unit(
         raw_unit: Byte buffer or uint8 array containing the uncompressed body.
         num_blocks: Number of blocks N in the unit.
         block_len: Block length n.
+        byte_planes: Whether the residuals are stored as byte planes (flags bit 0).
 
     Returns:
         A tuple of (headers, parameters, anchors, residuals, codes):
@@ -621,5 +677,5 @@ def read_unit(
     anchors = np.empty(num_blocks, np.int64)
     residuals = np.empty((num_blocks, block_len), np.int16)
     codes = np.zeros((num_blocks, block_len), np.uint8)
-    read_rows(raw_arr, headers, parameters, anchors, residuals, codes)
+    read_rows(raw_arr, byte_planes, headers, parameters, anchors, residuals, codes)
     return headers, parameters, anchors, residuals, codes

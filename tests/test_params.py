@@ -15,7 +15,7 @@ from fluxcode import Params, _encoder
                                 {"diff_orders": frozenset()}, {"diff_orders": {4}}, {"diff_orders": "0"},
                                 {"noise_floor_sigma": -1}, {"noise_floor_sigma": float("nan")},
                                 {"target_bits_per_sample": 0}, {"target_bits_per_sample": 5.99},
-                                {"target_bits_per_sample": True},
+                                {"target_bits_per_sample": True}, {"try_byte_planes": 1},
                                 {"block_len": 1001}, {"block_len": 0}, {"blocks_per_unit": 0},
                                 {"block_len": 65_536, "blocks_per_unit": 1025}])  # over MAX_UNIT_SAMPLES
 def test_invalid(kw):

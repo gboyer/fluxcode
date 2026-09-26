@@ -332,7 +332,7 @@ def breakdown(wl, reps=200):
         rows.append((k, len(unit) * 8 / x.size,
                      t(_api._encode_blocks, X, p), t(_format.write_unit, head, param, anchor, resid, codes),
                      t(cz.compress, raw), t(fluxcode.encode_unit, x, p),
-                     t(dz.decompress, frame), t(_decoder.decode_unit, rawd, out),
+                     t(dz.decompress, frame), t(_decoder.decode_unit, rawd, out, False),
                      t(fluxcode.decode_unit, unit)))
     return rows
 

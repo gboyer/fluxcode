@@ -30,6 +30,8 @@ Encoding specific features to balance size and :
   preserves clean periodic data (unless the frequency approaches the sample rate).
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression.
+* **Byte planes**: `try_byte_planes=True` also tries byte planes and keeps the smaller unit;
+  worth it for clean periodic data, at twice the zstd cost.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
 [docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
@@ -91,7 +93,7 @@ which set the step to 0.25σ.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `block_len=1000` (a multiple of 8, at most 65,536),
-  `blocks_per_unit=60`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  `blocks_per_unit=60`, `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -103,23 +105,26 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 | 0.0000% | 2.26 | 1.51 |
-| square wave | 0.05 | 0.0000% | 2.38 | 1.60 |
-| sine, 4.12 Hz | 2.78 | 0.0010% | 2.95 | 1.91 |
-| sine, 50.3 Hz | 6.73 | 0.0010% | 3.46 | 1.96 |
-| chirp | 7.84 | 0.0010% | 4.64 | 1.86 |
-| random walk | 12.66 | 0.0015% | 3.71 | 1.66 |
-| random walk rounded to 0.01 | 9.28 | 0% (exact) | 3.56 | 1.74 |
-| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 3.48 | 1.99 |
-| noisy sine (σ = 5) | 5.49 | 0.2333 | 3.07% | 2.18 |
-| Gaussian spikes on uniform noise | 6.68% | 1.4667 | 3.46 | 1.68 |
-| **all 15 signals** | **4.88** | | **3.17** | **1.86** |
+| linear ramp | 0.02 | 0.0000% | 2.32 | 1.53 |
+| square wave | 0.05 | 0.0000% | 2.45 | 1.68 |
+| sine, 4.12 Hz | 2.78 | 0.0010% | 3.02 | 1.93 |
+| sine, 50.3 Hz | 6.73 | 0.0010% | 3.54 | 2.04 |
+| chirp | 7.84 | 0.0010% | 4.71 | 1.91 |
+| random walk | 12.66 | 0.0015% | 3.80 | 1.72 |
+| random walk rounded to 0.01 | 9.28 | 0% (exact) | 3.73 | 1.76 |
+| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 3.56 | 2.09 |
+| noisy sine (σ = 5) | 5.49 | 0.2333% | 3.13 | 2.18 |
+| Gaussian spikes on uniform noise | 6.68 | 1.4667% | 3.55 | 1.70 |
+| **all 15 signals** | **4.88** | | **3.25** | **1.91** |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
+With `try_byte_planes=True` the whole set is 4.80 bits/sample (sines 4.12 Hz 2.44, 9.87 Hz 3.44)
+at 4.94 µs/block to encode; the gain is much larger at lower `max_quantize_bits` (see the
+[research report](experimental/report/index.html#scatter-kinds)).
 
-Decoding runs at about 4i GB/s per core, and the kernels release the GIL:
+Decoding runs at about 4 GB/s per core, and the kernels release the GIL:
 8 threads encode about 10 GB/s (note: 4 of those are "efficiency cores").
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) has a sample industrial-scale run
 (1000 channels × 1 day at 1 kHz) and where the time goes.

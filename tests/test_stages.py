@@ -139,6 +139,27 @@ def test_shuffle_round_trip_and_layout():
         _format.read_unit(raw[:-1], N, n)
 
 
+def test_byte_planes_round_trip_and_layout():
+    N, n = 3, 64
+    resid = RNG.integers(-2 ** 15, 2 ** 15, (N, n)).astype(np.int16)
+    head = np.array([1, 2, 3], np.uint8)
+    param = np.array([-5, 17, -(2 ** 40)], np.int64)
+    anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
+    raw = _format.write_unit(head, param, anchor, resid, byte_planes=True)
+    assert raw.shape[0] == _format.unit_size(N, n)
+    np.testing.assert_array_equal(raw[:17 * N], _format.write_unit(head, param, anchor, resid)[:17 * N])
+    s = resid.astype(np.int32)
+    u = ((s << 1) ^ (s >> 15)) & 0xFFFF
+    planes = raw[17 * N:].reshape(2, N, n)  # every low byte, then every high byte
+    np.testing.assert_array_equal(planes[0], u & 0xFF)
+    np.testing.assert_array_equal(planes[1], u >> 8)
+    h2, p2, a2, r2, _ = _format.read_unit(raw, N, n, byte_planes=True)
+    np.testing.assert_array_equal(h2, head)
+    np.testing.assert_array_equal(p2, param)
+    np.testing.assert_array_equal(a2, anchor)
+    np.testing.assert_array_equal(r2, resid)
+
+
 def test_dequantize():
     q = np.arange(10, dtype=np.int32)
     y = np.empty(10)

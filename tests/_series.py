@@ -24,8 +24,8 @@ def decode_series(units):
 
 def unit_rows(unit):
     """(head, param, anchor, residual, codes) of a unit."""
-    raw_body, num_blocks, block_len, _ = _api._decompress(unit)
-    return _format.read_unit(raw_body, num_blocks, block_len)
+    raw_body, num_blocks, block_len, _, byte_planes = _api._decompress(unit)
+    return _format.read_unit(raw_body, num_blocks, block_len, byte_planes)
 
 
 def heads_params(units):
