@@ -303,8 +303,31 @@ EXACT_PCT = 1e-6  # RMSE at or below this (% of range) counts as lossless: float
 X_MAX = 15  # bits/sample axis limit; codecs beyond it (gorilla-xor) are marked at the right edge
 
 
-def plot_scatter(results):
-    """Every codec: median bits/sample vs median RMSE over the 12 kinds; lossless ones in a band below."""
+# The fluxcode curves, in the summary scatter and the per-dataset panels: the only lines there, so fluxcode
+# stands out from the markers. Solid: bit planes only (the default); dashed: try_byte_planes, which keeps the
+# smaller layout per unit.
+FLUX_CURVE, FLUX_CURVE_BYTE = ([FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6),
+                                                       noise_floor_sigma=None, try_byte_planes=t))
+                                for b in range(4, 17)] for t in (False, True))
+FLUX_CURVE_COLOR = COLORS["fluxcode-16"]
+CURVE_STYLES = (("-", "fluxcode-B, B = 4..16, noise floor off"), ("--", "same, try_byte_planes"))
+
+
+def curve_stats():
+    """Line style -> kind -> [(bits/sample, median RMSE in % of range)] for B = 4..16."""
+    groups = by_kind()
+    return {ls: {kind: [(bps, 100 * rmse) for bps, rmse, _ in (unit_stats(c, groups[kind]) for c in curve)]
+                 for kind in KINDS}
+            for (ls, _), curve in zip(CURVE_STYLES, (FLUX_CURVE, FLUX_CURVE_BYTE))}
+
+
+def curve_handles():
+    return [Line2D([], [], color=FLUX_CURVE_COLOR, ls=ls, marker=".", label=label) for ls, label in CURVE_STYLES]
+
+
+def plot_scatter(results, curves):
+    """Every codec: median bits/sample vs median RMSE over the 12 kinds; lossless ones in a band below. The
+    fluxcode curves are built the same way: per B, the medians over the kinds."""
     x = {c.name: float(np.median([results[k][c.name]["bps"] for k in KINDS])) for c in CODECS}
     y = {c.name: 100 * float(np.median([results[k][c.name]["rmse"] for k in KINDS])) for c in CODECS}
     floor = 0.5 * min(v for v in y.values() if v > EXACT_PCT)
@@ -332,34 +355,29 @@ def plot_scatter(results):
         taken.append(box)
         ax.annotate(name, (px, py), textcoords="offset points", xytext=(-5, 2) if box[2] < u else (5, 2),
                     ha="right" if box[2] < u else "left", fontsize=6.5)
+    for ls, per_kind in curves.items():
+        by_b = list(zip(*per_kind.values()))  # per B: one (bps, rmse) per kind
+        med = [(float(np.median([p[0] for p in ps])), float(np.median([p[1] for p in ps]))) for ps in by_b]
+        ax.plot(*zip(*[p for p in med if p[1] > EXACT_PCT]), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".", ms=4,
+                zorder=2)
     ax.axhspan(floor * 0.2, floor, color="0.5", alpha=0.15, lw=0, zorder=0)
     ax.text(0.01, 0.01, f"lossless: RMSE ≤ {EXACT_PCT:g}% (numerically exact)", transform=ax.transAxes, ha="left",
             va="bottom", fontsize=8, color="0.4")
     ax.set(xlabel="bits / sample (median over the 12 kinds)", ylabel="median RMSE (% of block range, log)",
            title="Size vs error, all codecs (unlabeled points: see the summary matrix)")
     ax.grid(alpha=0.3, lw=0.4, which="both")
-    ax.legend(handles=family_handles(), loc="upper right", fontsize=9)
+    ax.legend(handles=family_handles() + curve_handles(), loc="upper right", fontsize=9)
     return save_fig(fig, OUT, "scatter", "Bits per sample vs RMSE, all codecs")
 
 
-# The per-dataset panels' curves: the only lines there, so fluxcode stands out from the markers.
-# Solid: bit planes only (the default); dashed: try_byte_planes, which keeps the smaller layout per unit.
-FLUX_CURVE, FLUX_CURVE_BYTE = ([FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6),
-                                                       noise_floor_sigma=None, try_byte_planes=t))
-                                for b in range(4, 17)] for t in (False, True))
-FLUX_CURVE_COLOR = COLORS["fluxcode-16"]
-
-
-def plot_rd(results):
-    """Per kind: every codec by family, the fluxcode-B curve; lossless codecs on the bottom edge."""
-    groups = by_kind()
+def plot_rd(results, curves):
+    """Per kind: every codec by family, the fluxcode curves; lossless codecs on the bottom edge."""
     cols = 3
     rows = -(-len(KINDS) // cols)
     fig, axes = plt.subplots(rows, cols, figsize=(15, 3.6 * rows), layout="constrained")
     for ax, kind in zip(axes.flat, KINDS):
-        for curve, ls in ((FLUX_CURVE, "-"), (FLUX_CURVE_BYTE, "--")):
-            pts = [(bps, 100 * rmse) for bps, rmse, _ in (unit_stats(c, groups[kind]) for c in curve)]
-            pts = [p for p in pts if p[1] > EXACT_PCT]
+        for ls, per_kind in curves.items():
+            pts = [p for p in per_kind[kind] if p[1] > EXACT_PCT]
             if pts:
                 ax.plot(*zip(*pts), ls, color=FLUX_CURVE_COLOR, lw=1.4, marker=".", ms=4, zorder=2)
         exact = []
@@ -383,8 +401,7 @@ def plot_rd(results):
         ax.set_ylabel("median RMSE (% FS, log)", fontsize=8)
     for ax in axes[-1]:
         ax.set_xlabel("bits / sample", fontsize=8)
-    handles = family_handles() + [Line2D([], [], color=FLUX_CURVE_COLOR, marker=".", label="fluxcode-B, B = 4..16, noise floor off"),
-                                  Line2D([], [], color=FLUX_CURVE_COLOR, ls="--", marker=".", label="same, try_byte_planes"),
+    handles = family_handles() + curve_handles() + [
                                   Line2D([], [], marker="|", ls="", color="k", ms=8, label=f"lossless (RMSE ≤ {EXACT_PCT:g}%), on the bottom edge")]
     fig.legend(handles=handles, loc="outside lower center", ncol=4, fontsize=9, frameon=False)
     return save_fig(fig, OUT, "rd", "Bits per sample vs RMSE per signal kind")
@@ -403,11 +420,17 @@ def write_report(results):
                 "&lt; 0.03%, none 0.03–0.2%, yellow 0.2–1%, orange 1–5%, red ≥ 5%. Sizes differ, so read both numbers.</p>"
                 + summary_matrix(results))
 
-    scatter = plot_scatter(results)
-    rd = plot_rd(results)
+    curves = curve_stats()
+    scatter = plot_scatter(results, curves)
+    rd = plot_rd(results, curves)
     body.append("<h2 id='scatter'>Size vs error</h2><p>Every codec, one marker per family (shade by position in the "
                 "family). Bits/sample and RMSE are medians over the 12 datasets, so this is a summary; the per-dataset panels "
-                "below show the spread. Lossless codecs sit in the band at the bottom instead of being dropped.</p>" + scatter
+                "below show the spread. Lossless codecs sit in the band at the bottom instead of being dropped. The lines are fluxcode at B = 4..16 "
+                "with the noise floor off (solid: default; dashed: <code>try_byte_planes</code>), each point the medians "
+                "over the datasets like the markers. The dashed line's lead comes from the three sines, which sit mid-ranking "
+                "and so move the median; on the other datasets the two lines coincide (see the per-dataset panels). "
+                "The row of fluxcode-16-f markers is the noise floor: it lowers the "
+                "size on the noisy datasets only, so the median RMSE, set by the clean ones, doesn't move.</p>" + scatter
                 + f"<h3 id='scatter-kinds'>Per dataset</h3><p>Each panel is one dataset: bits/sample over its {REPORT_MINUTES} "
                 "one-minute units, RMSE the median over their blocks. The solid line is fluxcode-B at B = 4..16 with the noise "
                 "floor off; a marker below it beats fluxcode at equal size. The dashed line adds "
