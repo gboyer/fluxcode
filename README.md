@@ -1,17 +1,39 @@
 # fluxcode
 
-Compression for float64 time series (sensor readings, prices, telemetry) that stores every block
-of samples on a quantization grid with a guaranteed maximum error, and losslessly when the data
-are decimals. Each 1000-sample block gets a power-of-two step (at most 2^16 steps across its
-range) or, when every sample sits on one, an exact decimal grid (0.01, 0.1, 1, …). The quantized
-integers go through a per-block polynomial predictor, zigzag, bit-shuffle and zstd. On white
-measurement noise a noise floor coarsens the step to a fraction of the noise, so noisy channels
-don't pay for digits that are only noise. Encoding takes about 3 µs per 1000-sample block on one
-core, decoding about 2 µs.
+Compression for float64 time series, geared towards scientific and engineering usage.
+
+Guarantees a maximum error using a quantization, and is exact for decimal series up
+to 4 significant figures, or more when the range is narrow.
+
+High level properties:
+
+* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 2 GiB/s.
+* **Blocks**: Uses fixed-sized blocks of regularly sampled data, usually
+  1000 samples/block.
+* **Min-Max Quantization**: Each block is quantized up to 2^16 steps between its min and
+  max value. Blocks with tight range preserve accuracy better than wide ranges.
+* **Decimals**: If the block's samples fall close to a decimal grid, it is stored as exact
+  decimals if the bit range allows. For example, 14.32 will be compressed as 1432e-2.
+* **Multi-Order Delta Encoding**: Chooses whether to store raw samples, first derivative,
+  second, or third based on an entropy estimate.
+* **Unit-Compressed zstd**: Blocks are assembled into units; for example, a minute might
+  be a single unit with 60 blocks, each with 1000 samples. Their bit planes are
+  interleaved and compressed with zstd to separate high and low entropy signals.
+* **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
+  subnormal ranges, +/- Infinity, and NaN.
+
+Encoding specific features to balance size and :
+
+* **Noise floor**: For data with high frequency noise, you can optionally specify the
+  sigma multiplier that you want to preserve, and the quantization grid is reduced
+  accordingly. This helps compression for noisy data, but
+  preserves clean periodic data (unless the frequency approaches the sample rate).
+* **Target bit rate**: Uses an entropy estimator to determine if the above would likely
+  exceed your bit rate after compression.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
-[docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may still change
-before 1.0.
+[docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
+still change before 1.0.
 
 ## Install
 
@@ -81,24 +103,27 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 | 0.0000 | 2.26 | 1.51 |
-| square wave | 0.05 | 0.0000 | 2.38 | 1.60 |
-| sine, 4.12 Hz | 2.78 | 0.0010 | 2.95 | 1.91 |
-| sine, 50.3 Hz | 6.73 | 0.0010 | 3.46 | 1.96 |
-| chirp | 7.84 | 0.0010 | 4.64 | 1.86 |
-| random walk | 12.66 | 0.0015 | 3.71 | 1.66 |
-| random walk rounded to 0.01 | 9.28 | 0 (exact) | 3.56 | 1.74 |
-| sensor drift rounded to 0.1 | 1.78 | 0 (exact) | 3.48 | 1.99 |
-| noisy sine (σ = 5) | 5.49 | 0.2333 | 3.07 | 2.18 |
-| Gaussian spikes on uniform noise | 6.68 | 1.4667 | 3.46 | 1.68 |
+| linear ramp | 0.02 | 0.0000% | 2.26 | 1.51 |
+| square wave | 0.05 | 0.0000% | 2.38 | 1.60 |
+| sine, 4.12 Hz | 2.78 | 0.0010% | 2.95 | 1.91 |
+| sine, 50.3 Hz | 6.73 | 0.0010% | 3.46 | 1.96 |
+| chirp | 7.84 | 0.0010% | 4.64 | 1.86 |
+| random walk | 12.66 | 0.0015% | 3.71 | 1.66 |
+| random walk rounded to 0.01 | 9.28 | 0% (exact) | 3.56 | 1.74 |
+| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 3.48 | 1.99 |
+| noisy sine (σ = 5) | 5.49 | 0.2333 | 3.07% | 2.18 |
+| Gaussian spikes on uniform noise | 6.68% | 1.4667 | 3.46 | 1.68 |
 | **all 15 signals** | **4.88** | | **3.17** | **1.86** |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
-the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. Decoding runs
-at about 4 GB/s per core, and the kernels release the GIL: 8 threads encode about 10 GB/s.
-[docs/PERFORMANCE.md](docs/PERFORMANCE.md) has a day-scale run (1000 channels × 1 day at 1 kHz)
-and where the time goes.
+the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
+
+Decoding runs at about 4i GB/s per core, and the kernels release the GIL:
+8 threads encode about 10 GB/s (note: 4 of those are "efficiency cores").
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) has a sample industrial-scale run
+(1000 channels × 1 day at 1 kHz) and where the time goes.
+The implementation is fully in numba, SIMD optimized, and tuned for ARM NEON.
 
 ## Guarantees
 
