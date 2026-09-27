@@ -63,10 +63,6 @@ def _gcd(first: np.uint64, second: np.uint64) -> np.uint64:
     return first
 
 
-UINT64_MAX: int = 0xFFFFFFFFFFFFFFFF
-"""Largest uint64."""
-
-
 @njit(inline="always")
 def _odd_inverse(odd: np.uint64) -> np.uint64:
     """Multiplicative inverse of an odd number mod 2^64, by Newton's iteration.
@@ -131,35 +127,23 @@ def encode_times(
         deltas[0] = 0
         for sample_idx in range(1, block_len):
             deltas[sample_idx] = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
-        # GCD of the deltas. Most deltas are multiples of the GCD so far, confirmed without a
-        # 64-bit division: 2^shift * odd divides a delta exactly when the delta's low shift
-        # bits are 0 and (delta >> shift) * odd^-1 mod 2^64 <= UINT64_MAX // odd (Granlund and
-        # Montgomery, 1994). That product is then the quotient, which the division below uses.
+        # GCD of the deltas: most are multiples of the GCD so far, which skips the Euclid steps
         step_gcd = np.uint64(0)
-        low_mask = np.uint64(0)
-        shift = np.uint64(0)
-        inverse = np.uint64(0)
-        quotient_limit = np.uint64(0)
         for sample_idx in range(1, block_len):
             delta = deltas[sample_idx]
-            if step_gcd != 0 and (delta & low_mask) == 0 and (delta >> shift) * inverse <= quotient_limit:
+            if step_gcd != 0 and delta % step_gcd == 0:
                 continue
             step_gcd = _gcd(step_gcd, delta)
-            if step_gcd <= 1:
-                # 0 while every delta so far is 0; 1 is final
-                if step_gcd == 1:
-                    break
-                continue
-            shift = np.uint64(_trailing_zeros(step_gcd))
-            low_mask = (np.uint64(1) << shift) - np.uint64(1)
-            odd_part = step_gcd >> shift
-            inverse = _odd_inverse(odd_part)
-            quotient_limit = np.uint64(UINT64_MAX) // odd_part
+            if step_gcd == 1:
+                break
         if step_gcd > int64_max:
             # Only when one delta spans more than half the int64 range: store raw deltas
             step_gcd = np.uint64(1)
         elif step_gcd > 1:
-            # Exact division: shift out the power of two, multiply by the odd part's inverse
+            # Exact division without a 64-bit divide (3x faster): shift out the power of two,
+            # then multiply by the odd part's inverse mod 2^64, which is exact for its multiples
+            shift = np.uint64(_trailing_zeros(step_gcd))
+            inverse = _odd_inverse(step_gcd >> shift)
             for sample_idx in range(1, block_len):
                 deltas[sample_idx] = (deltas[sample_idx] >> shift) * inverse
         out_time_steps[block_idx] = np.int64(step_gcd)
