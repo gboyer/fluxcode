@@ -440,7 +440,7 @@ def plot_rd(results, curves):
 
 
 def write_report(results):
-    clean_outputs(OUT, ("*.png", "*.svg", "index.html"), keep_prefix="rate")  # rate.html and its chart are the other script's
+    clean_outputs(OUT, ("*.png", "*.svg", "index.html"), keep_prefix=("rate", "time"))  # the other scripts' pages and charts
     body = []
     body.append("<h2 id='legend'>Codec legend</h2><p>One row per codec, in the order used by every table and chart: family "
                 "(classic, constant width, entropy, fluxcode), then nominal bits per sample. The colored bar is the family's "
@@ -501,7 +501,7 @@ def write_report(results):
     body.append(dpcm_sweep())
     body.append(DECISIONS)
 
-    intro = f"""<p><b>See also:</b> <a href="rate.html">rate-controlled quantize → predict → entropy code experiment</a>.</p>
+    intro = f"""<p><b>See also:</b> <a href="rate.html">rate-controlled quantize → predict → entropy code experiment</a>; <a href="time.html">fluxcode timestamps: the time axis</a>.</p>
 <p>A comparison of {len(CODECS)} time-series codecs on synthetic 1 kHz signals. <b>Data:</b> {REPORT_MINUTES} one-minute
 signals of each of the {len(KINDS)} kinds ({REPORT_MINUTES * 60 * len(KINDS):,} blocks of 1000 samples, fixed seeds). Every codec
 encodes whole one-minute units (60 blocks) and is charged every byte needed to decode the unit from those bytes alone;
@@ -511,7 +511,7 @@ anything that depends on a range (quantizer grids, % of range thresholds) works 
 median and the worst over the dataset's blocks. “Max err” is decoded max − true max (negative = peak clipped). Bits/sample
 counts whole units.</p>
 <p><b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_report.py</code> (writes this page and its SVGs
-into <code>report/</code>; <code>make_rate_report.py</code> writes rate.html).</p>"""
+into <code>report/</code>; <code>make_rate_report.py</code> writes rate.html, <code>make_time_report.py</code> time.html).</p>"""
     toc = [("legend", "Codec legend", []), ("matrix", "Summary matrix", []),
            ("scatter", "Size vs error", [("scatter-kinds", "per dataset")]),
            ("datasets", "Per-dataset results", [(k, k) for k in KINDS]),

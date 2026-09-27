@@ -53,7 +53,8 @@ def save_fig(fig, out_dir, name, alt):
 
 def clean_outputs(out_dir, patterns, keep_prefix=None):
     """Delete this script's earlier outputs (files in out_dir matching patterns) so stale charts don't pile up.
-    Files starting with keep_prefix belong to the other script and are left alone. Only touches out_dir."""
+    Files starting with keep_prefix (a string or a tuple of them) belong to other scripts and are left alone.
+    Only touches out_dir."""
     out_dir.mkdir(exist_ok=True)
     for pat in patterns:
         for f in out_dir.glob(pat):

@@ -1128,12 +1128,14 @@ Everything runs from `experimental/` (see [README.md](README.md) for the full mo
 | `tslab/flux/` | fluxproto, the fluxcode prototype (`proto.py`, §11), and adapters for the fluxcode package (`adapters.py`) |
 | `make_report.py` | the codec matrix → `report/index.html` (summary by size class, size-vs-error chart, fluxcode and noise-floor sweeps, DPCM sweep, per-kind tables and plots) |
 | `make_rate_report.py` | the rate-control experiment (§6) → `report/rate.html` |
+| `make_time_report.py` | fluxcode's time axis (timestamp shapes and their cost) → `report/time.html` |
 | `bench/` | one script per experiment, below |
 
 ```sh
 uv sync                                         # installs fluxcode from .. (editable)
 uv run python make_report.py                    # report/index.html          (~3 min)
 uv run python make_rate_report.py               # report/rate.html           (~3 min)
+uv run python make_time_report.py               # report/time.html           (~5 s)
 uv run python -m bench.native_speed             # §8: Python reference vs numba ports          (~45 s)
 uv run python -m bench.chunking                 # §9: per-block vs one-minute chunks           (~11 s)
 uv run python -m bench.delta_zstd               # §9: delta0123-zstd per minute, 200 signals/day (~7 s)

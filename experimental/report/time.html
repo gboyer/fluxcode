@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>fluxcode timestamps: the time axis</title><style>
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--hl:#dcefdc;--l1:#e8f3e8;--l2:#fff3cc;--l3:#ffe0cc;--l4:#ffcccc}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--muted:#999;--line:#333;--hl:#254025;--l1:#1f2e1f;--l2:#3a3418;--l3:#40291a;--l4:#452020}}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:16px}
+table{border-collapse:collapse;margin:8px 0 16px;font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:3px 7px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+td.best{background:var(--hl);font-weight:600}
+td.r1{background:var(--l1)}td.r2{background:var(--l2)}td.r3{background:var(--l3)}td.r4{background:var(--l4)}
+tr.fam td:first-child{border-left:4px solid var(--c,var(--line))}
+img{max-width:100%;background:#fff}
+nav ul{columns:2;list-style:none;padding-left:0}nav li{margin:2px 0;break-inside:avoid}nav ul ul{columns:1;padding-left:16px}
+.muted{color:var(--muted)} code{font-size:13px} h2{margin-top:32px;border-top:1px solid var(--line);padding-top:12px}
+</style></head><body>
+<h1>fluxcode timestamps: the time axis</h1>
+
+<nav><h2 id='contents'>Contents</h2><ul><li><a href='#how'>How timestamps are stored</a></li><li><a href='#shapes'>The common shapes</a></li><li><a href='#gaps'>Cost per gap</a></li><li><a href='#harder'>Harder shapes</a></li></ul></nav>
+<p><a href="index.html">← codec comparison (index.html)</a> ·
+<a href="https://github.com/gboyer/fluxcode/blob/main/docs/SPEC.md#2a-time-axis">SPEC §2a: time axis</a></p>
+<p>fluxcode can store each sample's timestamp <b>exactly</b> next to its values. This page covers only that time
+axis: what the timestamps add to a one-minute unit (60 blocks of 1,000 samples, nominally 1 kHz, int64 ns ticks).
+Every number here is the unit with times minus the same unit without them. For scale, that unit's values alone take
+20,951 bytes (a 4.12 Hz sine at the default settings), 178 µs to encode and
+113 µs to decode.
+<b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_time_report.py</code>.</p>
+<h2 id="how">How timestamps are stored</h2>
+<ul>
+<li><b>Per block, one of two layouts.</b> A block whose 999 intervals are all equal is <b>regular</b>: it stores
+only its start and that step (16 bytes before compression, a few after). Any other block is <b>irregular</b>:
+it also stores each interval divided by the GCD of the block's intervals, as 64 bit planes. Most of those planes
+are zero, and zstd removes them.</li>
+<li><b>A gap costs only its own block.</b> The blocks before and after it stay regular.</li>
+<li><b>The resolution is free.</b> The GCD takes out the grid, so a millisecond grid costs the same in ns, µs or ms
+ticks.</li>
+<li>Block starts are stored as increases over the previous start, so a regular unit's 60 starts compress to a few
+bytes.</li>
+</ul>
+<h2 id="shapes">The common shapes</h2>
+<p>A perfect grid, and a perfect grid with a few gaps, are by far the most common timestamps in practice. A noisy
+clock (host timestamps on arrival) is the third common shape, and the only one of the three where the timestamps
+cost more than the values (here about three times as much).</p>
+<img src='time-shapes.svg' alt='Sample interval over one minute for each clock shape'>
+<table><tr><th class='l'>shape</th><th class='l'>what it is</th><th>bytes (example)</th><th>bits/sample</th>
+<th>irregular blocks</th><th>vs values</th><th>bytes over 64 units: median</th><th>max</th>
+<th>encode +µs</th><th>decode +µs</th></tr>
+<tr><td>Perfect grid</td><td class='l'>Every interval exactly 1 ms: hardware-clocked acquisition, resampled or synthesized series.</td><td>40</td><td>0.005</td><td>0/60</td><td>0.2%</td><td>40</td><td>44</td><td>16</td><td>11</td></tr>
+<tr><td>Grid with a few gaps</td><td class='l'>A perfect grid that sometimes skips: dropped packets, reconnects, a paused logger (Poisson, mean 2 gaps per minute, each 5 ms to 3 s).</td><td>232</td><td>0.031</td><td>2/60</td><td>1.1%</td><td>231</td><td>807</td><td>25</td><td>16</td></tr>
+<tr><td>Noisy clock</td><td class='l'>Host timestamps on arrival: 1 ms nominal, σ = 20 µs jitter, µs resolution.</td><td>63,623</td><td>8.483</td><td>60/60</td><td>303.7%</td><td>63,614</td><td>64,588</td><td>250</td><td>156</td></tr>
+</table>
+<p class='muted'>The example is the median-size unit of 64 seeds per shape. µs are single thread, best of 30,
+Apple M3; <i>vs values</i> is the timestamps' bytes as a share of the values' 20,951.</p>
+<ul>
+<li><b>Perfect grid:</b> 40 bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
+writes the 60,000 int64 ticks, and that is most of its cost.</li>
+<li><b>A few gaps:</b> each gap makes one block irregular. Its intervals are all 1 except one, so the block's
+planes are nearly all zero and it costs about 25 to 100 bytes (next section).</li>
+<li><b>Noisy clock:</b> the jitter is real entropy (here 8.5 bits per sample: the intervals spread over about
+±60 µs at µs resolution), and no lossless coder can remove it. If the jitter is measurement noise rather than information, round the timestamps
+to the grid before encoding.</li>
+</ul>
+<h2 id="gaps">Cost per gap</h2>
+<p>A grid with <i>k</i> gaps per minute, each 5 ms to 3 s; median of 16 units per row.</p>
+<table><tr><th>gaps per minute</th><th>irregular blocks</th><th>bytes</th><th>bits/sample</th><th>bytes per gap</th></tr>
+<tr><td>0</td><td>0/60</td><td>41</td><td>0.005</td><td>—</td></tr>
+<tr><td>1</td><td>1/60</td><td>94</td><td>0.013</td><td>53</td></tr>
+<tr><td>2</td><td>2/60</td><td>229</td><td>0.031</td><td>94</td></tr>
+<tr><td>5</td><td>5/60</td><td>357</td><td>0.048</td><td>63</td></tr>
+<tr><td>10</td><td>9/60</td><td>520</td><td>0.069</td><td>48</td></tr>
+<tr><td>20</td><td>17/60</td><td>820</td><td>0.109</td><td>39</td></tr>
+<tr><td>60</td><td>38/60</td><td>1,430</td><td>0.191</td><td>23</td></tr>
+</table>
+<h2 id="harder">Harder shapes</h2>
+<p>For comparison, shapes with many more irregular blocks (from <code>bench/time_axis.py</code>). Only the
+cases with random intervals cost more than the values.</p>
+<table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>
+<th>encode +µs</th><th>decode +µs</th></tr>
+<tr><td>1 kHz, 20 gaps</td><td>664</td><td>0.089</td><td>19/60</td><td>73</td><td>50</td></tr>
+<tr><td>1 kHz, 1% dropped</td><td>3,016</td><td>0.402</td><td>60/60</td><td>180</td><td>153</td></tr>
+<tr><td>drifting clock (0.99998 ms)</td><td>1,372</td><td>0.183</td><td>60/60</td><td>177</td><td>166</td></tr>
+<tr><td>jitter σ=10 µs, ns resolution</td><td>125,367</td><td>16.716</td><td>60/60</td><td>251</td><td>212</td></tr>
+<tr><td>jitter σ=10 µs, µs resolution</td><td>51,974</td><td>6.930</td><td>60/60</td><td>268</td><td>171</td></tr>
+<tr><td>Poisson events, mean 1 ms, µs</td><td>88,379</td><td>11.784</td><td>60/60</td><td>288</td><td>185</td></tr>
+<tr><td>Poisson events, mean 1 ms, ns</td><td>163,155</td><td>21.754</td><td>60/60</td><td>293</td><td>192</td></tr>
+<tr><td>deadband logging, ms grid</td><td>56,875</td><td>7.583</td><td>60/60</td><td>348</td><td>234</td></tr>
+<tr><td>bursts 10 kHz / idle</td><td>122</td><td>0.016</td><td>60/60</td><td>166</td><td>108</td></tr>
+</table>
+<p class='muted'>1% dropped and a drifting clock stay cheap: their intervals take two or three values. Jitter,
+Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
+really is at ns resolution.</p>
+</body></html>

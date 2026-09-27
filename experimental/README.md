@@ -54,6 +54,7 @@ last: `[cw<bits>-|quant<bits>-|ratectl-]<predictor>-<coder or step mapping>[-<va
 ```sh
 uv run python make_report.py        # report/index.html and its SVGs    (~3 min)
 uv run python make_rate_report.py   # report/rate.html                   (~3 min)
+uv run python make_time_report.py   # report/time.html                   (~5 s)
 ```
 
 `make_report.py` runs every codec on the report's units (`tslab.common.datasets.units()`: 12 kinds ×
@@ -72,7 +73,10 @@ uv run python make_rate_report.py   # report/rate.html                   (~3 min
 
 Charts are SVG, and the build fails if a chart has no data. Each script deletes its own earlier outputs
 in `report/` before writing. `make_rate_report.py` runs the rate-control experiment of REPORT.md §6 on
-"regime" minutes and writes `report/rate.html` in the same style. `report/` is generated, and committed so it can be read without rerunning.
+"regime" minutes and writes `report/rate.html` in the same style. `make_time_report.py` writes
+`report/time.html`: only fluxcode's time axis (docs/SPEC.md §2a), i.e. what exact timestamps cost for the
+common clock shapes (a perfect grid, a grid with a few gaps, a noisy clock) and some harder ones; its
+timings need a quiet machine. `report/` is generated, and committed so it can be read without rerunning.
 
 ## Benchmarks
 
