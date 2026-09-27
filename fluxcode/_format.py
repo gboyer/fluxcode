@@ -685,8 +685,8 @@ def shuffle_time_deltas(time_deltas: np.ndarray, time_planes: np.ndarray, irregu
     """Packs a block's uint64 time delta quotients into the 64 time delta bit planes.
 
     Bit k of byte i of plane j is bit j of time_deltas[8 * i + k], as for the residual
-    planes. Planes above the highest set bit of any delta are written as zeros without
-    transposing.
+    planes. Only the bytes up to the highest set bit of any delta are written: the planes
+    above it must already be zero (write_time_rows zeroes the field first).
 
     Args:
         time_deltas: 1D uint64 array of block_len time delta quotients.
@@ -702,7 +702,6 @@ def shuffle_time_deltas(time_deltas: np.ndarray, time_planes: np.ndarray, irregu
     num_active_bytes = 0
     while num_active_bytes < 8 and (all_bits >> np.uint64(8 * num_active_bytes)) != 0:
         num_active_bytes += 1
-    time_planes[8 * num_active_bytes:, plane_byte_offset:plane_byte_offset + num_8byte_groups] = 0
     for group_idx in range(num_8byte_groups):
         # Hold the group's 8 samples in registers across the byte levels
         base = 8 * group_idx
@@ -779,6 +778,8 @@ def write_time_rows(
     time_planes = time_planes_view(
         out_raw_unit, num_blocks, block_len, num_flagged_blocks, count_irregular(block_flags, num_blocks)
     )
+    # One contiguous fill: each block then writes only the planes its deltas reach
+    time_planes[:, :] = 0
     irregular_counter = 0
     for block_idx in range(num_blocks):
         # The first start is stored as is; later starts as the uint64 increase over the previous start

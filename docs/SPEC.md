@@ -125,16 +125,16 @@ gap costs only its own block. Measured on one-minute units (`bench/time_axis.py`
 
 | timestamps | irregular blocks | bytes | bits/sample | encode +µs | decode +µs |
 |---|---|---|---|---|---|
-| regular 1 kHz | 0/60 | 41 | 0.005 | 56 | 30 |
-| 1 kHz, 20 gaps | 19/60 | 664 | 0.089 | 154 | 106 |
-| 1 kHz, 1% dropped | 60/60 | 3,016 | 0.40 | 361 | 326 |
-| drifting clock (0.99998 ms) | 60/60 | 1,372 | 0.18 | 321 | 357 |
-| jitter σ = 10 µs, µs resolution | 60/60 | 51,974 | 6.9 | 555 | 351 |
-| jitter σ = 10 µs, ns resolution | 60/60 | 125,367 | 16.7 | 452 | 409 |
-| Poisson events (mean 1 ms), µs | 60/60 | 88,379 | 11.8 | 581 | 355 |
-| deadband logging on a ms grid | 60/60 | 56,875 | 7.6 | 714 | 472 |
+| regular 1 kHz | 0/60 | 41 | 0.005 | 31 | 30 |
+| 1 kHz, 20 gaps | 19/60 | 664 | 0.089 | 128 | 105 |
+| 1 kHz, 1% dropped | 60/60 | 3,016 | 0.40 | 316 | 327 |
+| drifting clock (0.99998 ms) | 60/60 | 1,372 | 0.18 | 316 | 345 |
+| jitter σ = 10 µs, µs resolution | 60/60 | 51,974 | 6.9 | 471 | 349 |
+| jitter σ = 10 µs, ns resolution | 60/60 | 125,367 | 16.7 | 443 | 426 |
+| Poisson events (mean 1 ms), µs | 60/60 | 88,379 | 11.8 | 506 | 365 |
+| deadband logging on a ms grid | 60/60 | 56,875 | 7.6 | 613 | 462 |
 
-For scale, the same unit's values take 20,951 bytes, 307 µs to encode and 196 µs to decode.
+For scale, the same unit's values take 20,951 bytes, 307 µs to encode and 197 µs to decode.
 Irregular timestamps can cost more than the values: their entropy is what it is.
 
 **Design notes** (measured while designing, on the timestamps above):

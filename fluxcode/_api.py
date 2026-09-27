@@ -472,8 +472,9 @@ def _encode_time_rows(block_times: np.ndarray, out_block_flags: np.ndarray) -> _
     across = np.flatnonzero(block_times[1:, 0] < block_times[:-1, -1])
     if across.shape[0]:
         raise _decrease_error(flat_ticks, int(across[0] + 1) * block_len)
+    # Zeroed: the kernel leaves regular blocks' delta rows untouched
     time_rows = _format.TimeRows(
-        np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty((num_blocks, block_len), np.uint64)
+        np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.zeros((num_blocks, block_len), np.uint64)
     )
     status, sample_idx = _time.encode_times(
         block_times, out_block_flags, time_rows.starts, time_rows.steps, time_rows.deltas
