@@ -23,7 +23,7 @@ High level properties:
   subnormal ranges, +/- Infinity, and NaN.
 * **Timestamps**: Optionally stores exact timestamps (s, ms, µs or ns) for irregular sampling.
   Regular stretches cost next to nothing; each irregular block stores its deltas divided by
-  their GCD in bit planes. See [docs/SPEC.md §2a](docs/SPEC.md#2a-time-axis).
+  their GCD, relative to a per-block reference (mean or minimum), in bit planes. See [docs/SPEC.md §2a](docs/SPEC.md#2a-time-axis).
 
 Encoding features to balance size, accuracy, and performance depending on data
 type:
@@ -97,7 +97,7 @@ which set the step to 0.25σ.
   decoding doesn't need them. A short last block is padded, and trimmed again on decode.
   `times` optionally stores one timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or
   integer ticks with `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and
-  non-decreasing; equal timestamps are fine. A regular grid costs about 40 bytes per unit.
+  non-decreasing; equal timestamps are fine. A regular grid costs about 45 bytes per unit.
 - `decode_unit(unit)`: returns `DecodedUnit(values, times)`. `times` is `datetime64` in the
   encoded unit, or `None` for a unit encoded without times. The unit records everything needed.
 - `update(unit, indices, blocks, params, *, times=None)`: replace or append whole blocks;
@@ -232,6 +232,11 @@ uv run mypy fluxcode
 uv run ty check
 uv run python bench/bench_gb.py --gib 0.05   # a quick benchmark; the full run is 1 GiB
 ```
+
+The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
+defining each kernel, not the constants and helpers it inlines from other modules. After editing
+`fluxcode/_format.py` (for example), a benchmark can run stale compiled code: clear the cache with
+`find fluxcode -name '*.nb[ic]' -delete`. The tests always compile from source (`tests/conftest.py`).
 
 ## License
 

@@ -110,47 +110,66 @@ decrease. Equal consecutive timestamps are allowed. The format itself enforces t
 block (deltas are unsigned) and between block starts (start increases are unsigned), so any
 decoded unit has non-decreasing times within each block and non-decreasing block starts.
 
-**Per block** (`time_start`, `time_step`, `time_delta_planes` in §5):
-- **Regular block:** every delta `time[i] − time[i−1]` is equal (possibly 0). It stores only its
-  start and that step: `time[i] = time_start + i · time_step`. No per-sample data.
-- **Irregular block:** any other block. `time_step` is the GCD of its deltas, and each sample
-  stores the quotient `(time[i] − time[i−1]) / time_step` (0 for sample 0) in 64 bit planes.
+**Per block** (`time_start`, `time_step`, `time_ref`, `time_residual_planes` in §5): every block
+stores its start, a step and a reference. The step is the GCD of the block's deltas
+`time[i] − time[i−1]`, and each sample i > 0 has the **quotient** `(time[i] − time[i−1]) / time_step`,
+which is `time_ref` plus the sample's residual:
+- **Regular block:** every delta is equal (possibly 0). Every quotient is `time_ref` = 1 (0 when
+  all times are equal, with `time_step` = 0), so `time[i] = time_start + i · time_step`, and the block
+  stores no per-sample data.
+- **Irregular block:** any other block. It stores each sample's residual `quotient − time_ref`
+  (mod 2^64, zigzagged; 0 for sample 0) in 64 bit planes. The encoder picks `time_ref` per block:
+  the rounded mean of the quotients when they spread around a center (clock jitter), and their
+  minimum when they are skewed (gaps, events, deadband logging), where the mean would sit away
+  from most of them. With σ² the quotients' variance, it takes the mean when
+  3σ² < (mean − min)²: zigzagged residuals from the mean are about 2σ, while those from the minimum
+  are non-negative, so zigzag only shifts them up a bit plane (plane 0 all zero) and they are about
+  √(σ² + (mean − min)²). The decoder doesn't depend on the choice: any `time_ref` decodes.
   If a single delta exceeds int64 maximum (a block spanning more than half the int64 range), the
-  GCD can't be stored and the block uses `time_step = 1` with the raw deltas.
+  GCD can't be stored and the block uses `time_step = 1` with the raw deltas as quotients.
 - **Padding** of a short last block extends the grid when its real samples are regular (so the
   block stays regular), and otherwise repeats the last timestamp. Decoding trims it.
 
-A regular series costs only its per-block start and step (about 40 bytes per 60-block unit). A
+A regular series costs only its per-block start, step and reference (about 45 bytes per 60-block unit). A
 gap costs only its own block. Measured on one-minute units (`bench/time_axis.py`, Apple M3, AC
 power, single thread); the first three rows are the common shapes, and
 [experimental/report/time.html](../experimental/report/time.html) shows them in detail:
 
-| timestamps | irregular blocks | bytes | bits/sample | encode +µs | decode +µs |
+| timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
 |---|---|---|---|---|---|
-| perfect 1 kHz grid | 0/60 | 39 | 0.005 | 18 | 13 |
-| grid with 2 gaps | 2/60 | 781 | 0.10 | 28 | 23 |
-| noisy clock (σ = 20 µs, µs resolution) | 60/60 | 63,177 | 8.4 | 260 | 159 |
-| 1 kHz, 20 gaps | 19/60 | 664 | 0.089 | 73 | 52 |
-| 1 kHz, 1% dropped | 60/60 | 3,016 | 0.40 | 180 | 129 |
-| drifting clock (0.99998 ms) | 60/60 | 1,372 | 0.18 | 178 | 167 |
-| jitter σ = 10 µs, µs resolution | 60/60 | 51,974 | 6.9 | 268 | 170 |
-| jitter σ = 10 µs, ns resolution | 60/60 | 125,367 | 16.7 | 251 | 212 |
-| Poisson events (mean 1 ms), µs | 60/60 | 88,379 | 11.8 | 289 | 187 |
-| deadband logging on a ms grid | 60/60 | 56,875 | 7.6 | 348 | 235 |
+| perfect 1 kHz grid | 0/60 | 44 | 0.006 | +16 µs (+9%) | +11 µs (+10%) |
+| grid with 2 gaps | 2/60 | 793 | 0.11 | +26 µs (+15%) | +21 µs (+19%) |
+| noisy clock (σ = 20 µs, µs resolution) | 60/60 | 53,596 | 7.1 | +263 µs (+149%) | +147 µs (+131%) |
+| 1 kHz, 20 gaps | 19/60 | 678 | 0.090 | +83 µs (+47%) | +53 µs (+47%) |
+| 1 kHz, 1% dropped | 60/60 | 1,474 | 0.20 | +212 µs (+120%) | +121 µs (+108%) |
+| drifting clock (0.99998 ms) | 60/60 | 285 | 0.038 | +167 µs (+95%) | +107 µs (+96%) |
+| jitter σ = 10 µs, µs resolution | 60/60 | 46,085 | 6.1 | +263 µs (+149%) | +138 µs (+123%) |
+| jitter σ = 10 µs, ns resolution | 60/60 | 120,968 | 16.1 | +291 µs (+165%) | +201 µs (+179%) |
+| Poisson events (mean 1 ms), µs | 60/60 | 87,761 | 11.7 | +311 µs (+177%) | +182 µs (+162%) |
+| deadband logging on a ms grid | 60/60 | 55,487 | 7.4 | +418 µs (+238%) | +257 µs (+229%) |
 
-For scale, the same unit's values take 20,951 bytes, 176 µs to encode and 112 µs to decode.
+For scale, the same unit's values take 20,951 bytes, 176 µs to encode and 112 µs to decode; the
+percentages are of those times.
 Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
 grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:
-on 4 threads, where memory bandwidth is shared, that costs about 18% (docs/PERFORMANCE.md).
+on 4 threads, where memory bandwidth is shared, that costs 12–18% (docs/PERFORMANCE.md).
 
 **Design notes** (measured while designing, on the timestamps above):
 - The GCD matters: without it, µs or ms data stored in ns ticks costs 1.4–2.6× more (zstd alone
   doesn't find the grid). With it, the unit's resolution doesn't change the size.
 - Plain deltas beat delta-of-deltas and residuals from the nominal grid overall: the grid
   residual saves about 1 bit/sample on jitter around a fixed grid but loses on gaps, drift and
-  events.
-- Bit planes and byte planes for the deltas are within a few percent either way; bit planes
-  match the residuals.
+  events. Delta-of-deltas measured worse again with the reference below (for example 2,682 bytes
+  against 1,489 for 1% dropped samples).
+- The per-block reference: bit planes of raw quotients around a center like 1000 waste about a
+  bit per sample, because a spread of ±60 flips planes 3–10 together (and crossing 1024 flips
+  more), and each plane is coded on its own. Residuals from the reference cut jitter by 4–16%,
+  dropped samples by half and a drifting clock by 80%, and cost about 15 bytes per unit with gaps
+  (the `time_ref` column). The mean alone lost 4–17% on skewed deltas, and the median matched
+  the mean-or-minimum choice at the cost of a selection per block; the variance rule matched a
+  per-block best of both on every shape measured.
+- Bit planes and byte planes for the residuals are within a few percent either way; bit planes
+  match the value residuals.
 - Block starts are stored as unsigned increases (monotonic by requirement), which costs 45
   bytes per regular unit against 280 raw. The value anchor is not transformed: XOR with the
   previous anchor (+0.1% overall) and zigzagged integer deltas (−0.03%) were both noise.
@@ -358,9 +377,11 @@ so evaluate at half scale: `y = min(2·(lo/2 + q·2^(e−1)), DBL_MAX)`, with `y
 (lo/2 rounds if lo is subnormal). That is bit-identical to `lo + q·2^e` wherever the latter is finite.
 
 **Time axis** (header time unit ≠ 0): block starts are the running sum of the `time_start` field
-(§5). A regular block (block flag bit 4 clear) is `time[i] = start + i · time_step`; an irregular
-one is `time[i] = start + time_step · (quotient[1] + … + quotient[i])`. All arithmetic is exact
-in 64 bits; a decoder rejects a unit whose times would exceed int64 maximum (§5).
+(§5). Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64 (residuals
+are 0 in a regular block, block flag bit 4 clear), and
+`time[i] = start + time_step · (quotient[1] + … + quotient[i])`. A regular block is therefore
+`time[i] = start + i · time_ref · time_step`. All arithmetic is exact in 64 bits; a decoder rejects
+a unit whose times would exceed int64 maximum (§5).
 
 **Non-finite codes** (head bit 3): after dequantizing, samples with code 01, 10 or 11 are
 overwritten with NaN (the canonical quiet NaN), +inf or −inf. Groups of 8 samples whose two code
@@ -382,23 +403,24 @@ decompressing:
 | 13–15 | reserved | 3 bytes | 0 (a decoder rejects others): the top 3 bytes of a uint64 whose low 40 bits are `num_samples` |
 
 Counts used below: `num_nonfinite_blocks` blocks have block flag bit 3 set, and
-`num_irregular_blocks` have bit 4 set. The body is these fields, in this order; the three time
+`num_irregular_blocks` have bit 4 set. The body is these fields, in this order; the four time
 fields are present only when `time_unit` ≠ 0:
 
 | field | size in bytes | contents |
 |---|---|---|
-| `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bit 4: irregular time axis (§2a; rejected when `time_unit` = 0); bits 5–7: 0 (rejected otherwise) |
+| `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bit 4: irregular times, with time residual planes (§2a; rejected when `time_unit` = 0); bits 5–7: 0 (rejected otherwise) |
 | `grid_params` | 8 × `num_blocks` | the block's grid parameter as int64: the power-of-two exponent (−1074 to 1023) or, in decimal mode, the decimal power (−22 to 22). Byte-planed: byte 0 of every block, then byte 1 of every block, … byte 7. Eight bytes leave room for other grid parameters; the unused byte planes compress to almost nothing |
 | `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed like `grid_params`: the bits of the float64 block minimum (finite; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52) |
 | `time_start` | 8 × `num_blocks` | block 0: its start time as int64; block b > 0: its start minus block b − 1's start, as uint64. Byte-planed |
-| `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the constant step of a regular block (≥ 0), or the GCD of an irregular block's deltas (≥ 1) |
+| `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the GCD of its deltas (≥ 0; ≥ 1 in an irregular block) |
+| `time_ref` | 8 × `num_blocks` | the block's reference quotient as uint64, byte-planed: 1 in a regular block (0 if its times are all equal); in an irregular block, the value the residuals are taken from (§2a) |
 | `residual_planes` | 2 × `num_blocks` × `block_len` | flags bit 0 clear: bit plane j = 0..15, then block, then byte i = 0..`block_len`/8 − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block, then sample |
 | `nonfinite_code_planes` | 2 × `num_nonfinite_blocks` × `block_len` / 8 | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
-| `time_delta_planes` | 64 × `num_irregular_blocks` × `block_len` / 8 | per sample of an irregular block, the uint64 quotient `(time[i] − time[i−1]) / time_step`, 0 for sample 0. Bit plane j = 0..63, then the irregular blocks in block order, then byte i; bit k of byte i is bit j of the quotient of sample 8i + k |
+| `time_residual_planes` | 64 × `num_irregular_blocks` × `block_len` / 8 | per sample of an irregular block, the uint64 residual: `zigzag(quotient − time_ref)` mod 2^64, with the quotient `(time[i] − time[i−1]) / time_step`; 0 for sample 0. Bit plane j = 0..63, then the irregular blocks in block order, then byte i; bit k of byte i is bit j of the residual of sample 8i + k |
 
 ```
 body_size = 17 × num_blocks + 2 × num_blocks × block_len + num_nonfinite_blocks × block_len / 4
-          + (time_unit ≠ 0) × (16 × num_blocks + 8 × num_irregular_blocks × block_len)
+          + (time_unit ≠ 0) × (24 × num_blocks + 8 × num_irregular_blocks × block_len)
 ```
 
 A decoder checks the frame's recorded content size against the header before decompressing (it
@@ -407,11 +429,11 @@ must lie between the sizes with no flagged and all blocks flagged), then the exa
 ranges, and, for a time axis, rejects:
 - a first start of int64 minimum, or a running sum of `time_start` above int64 maximum;
 - `time_step` < 0, or `time_step` = 0 on an irregular block;
-- an irregular block whose first quotient isn't 0;
+- an irregular block whose first residual isn't 0;
 - any time above int64 maximum.
 
 A unit with no flagged blocks has an empty `nonfinite_code_planes` field, and one with only
-regular blocks an empty `time_delta_planes` field.
+regular blocks an empty `time_residual_planes` field.
 
 **Test vector for the bit order:** a block whose `u[3] = 0x0020` and `u[6] = 0x0400` (all others 0)
 has byte 0 of plane 5 = `0b00001000` and byte 0 of plane 10 = `0b01000000`. All other plane bytes are 0.
@@ -427,7 +449,7 @@ values  constant per block: 2.5, 2.25, 3.0   (power-of-two mode)
 ```
 
 Header: `01 08 00 00 08 00 00 00 14 00 00 00 00 00 00 00` (flags 0x08: `time_unit` 4 in bits 1–3).
-Body: 211 bytes = 17 × 3 + 2 × 3 × 8 + 16 × 3 + 8 × 1 × 8.
+Body: 235 bytes = 17 × 3 + 2 × 3 × 8 + 24 × 3 + 8 × 1 × 8.
 
 ```
 offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
@@ -438,9 +460,12 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 51–74    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
                                      planes 2–7 = 00 00 00
 75–98    time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
-99–146   residual_planes      48
-147–210  time_delta_planes    64     block 1's quotients [0, 1, 1, 3, 1, 1, 1, 1]:
-                                     plane 0 = 0xFE, plane 1 = 0x08, planes 2–63 = 0x00
+99–122   time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
+123–170  residual_planes      48
+171–234  time_residual_planes 64     block 1's quotients [1, 1, 3, 1, 1, 1, 1] from sample 1:
+                                     minimum 1 (3σ² > (mean − min)²), residuals
+                                     [0, 0, 0, 2, 0, 0, 0, 0], zigzagged [0, 0, 0, 4, 0, 0, 0, 0]:
+                                     plane 2 = 0x08, all other planes 0x00
 ```
 
 ## 6. Guarantees
@@ -519,7 +544,8 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    byte-identical with the noise floor on (f = 0.01–1) and off.
 11. **Time axis:** datetime64 in s, ms, µs and ns, and integer ticks with a time unit, round-trip
    exactly and in their unit; units without times decode `times = None`; regular series store no
-   planes; a gap makes only its block irregular, with the GCD as its step; equal timestamps,
+   planes; a gap makes only its block irregular, with the GCD as its step; jitter takes the rounded
+   mean as its reference and skewed deltas the minimum; any reference decodes; equal timestamps,
    all-equal blocks, short last blocks, ticks at both ends of int64 and a block spanning more than
    half of it round-trip; the worked example in §5 matches byte for byte. The encoder rejects
    decreasing times (within and across blocks), NaT, unsupported dtypes and units, and length

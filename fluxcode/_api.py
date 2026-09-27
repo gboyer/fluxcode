@@ -472,13 +472,8 @@ def _encode_time_rows(block_times: np.ndarray, out_block_flags: np.ndarray) -> _
     across = np.flatnonzero(block_times[1:, 0] < block_times[:-1, -1])
     if across.shape[0]:
         raise _decrease_error(flat_ticks, int(across[0] + 1) * block_len)
-    # Zeroed: the kernel leaves regular blocks' delta rows untouched
-    time_rows = _format.TimeRows(
-        np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.zeros((num_blocks, block_len), np.uint64)
-    )
-    status, sample_idx = _time.encode_times(
-        block_times, out_block_flags, time_rows.starts, time_rows.steps, time_rows.deltas
-    )
+    time_rows = _format.allocate_time_rows(num_blocks, block_len)
+    status, sample_idx = _time.encode_times(block_times, out_block_flags, *time_rows)
     if status != _time.OK:
         raise _decrease_error(flat_ticks, sample_idx)
     return time_rows
@@ -692,7 +687,7 @@ def _decompress(unit: bytes) -> tuple[np.ndarray, _format.UnitHeader]:
     if not smallest <= content_size <= largest:
         raise ValueError(f"unit body of {content_size} bytes doesn't fit {num_blocks} blocks of {block_len}")
     raw_body = np.frombuffer(_zstd()[1].decompress(frame), np.uint8)
-    # The exact size depends on how many blocks carry non-finite code planes and time delta planes
+    # The exact size depends on how many blocks carry non-finite code planes and time residual planes
     num_flagged = _format.count_flagged(raw_body, num_blocks)
     num_irregular = _format.count_irregular(raw_body, num_blocks) if has_time else 0
     if raw_body.shape[0] != _format.unit_size(num_blocks, block_len, num_flagged, has_time, num_irregular):
@@ -735,12 +730,8 @@ def _read_time_rows(raw_body: np.ndarray, header: _format.UnitHeader) -> _format
         ValueError: If a block start time is int64 minimum or overflows int64.
     """
     num_blocks, block_len = header.num_blocks, header.block_len
-    time_rows = _format.TimeRows(
-        np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty((num_blocks, block_len), np.uint64)
-    )
-    status, block_idx = _format.read_time_rows(
-        raw_body, _format.count_flagged(raw_body, num_blocks), time_rows.starts, time_rows.steps, time_rows.deltas
-    )
+    time_rows = _format.allocate_time_rows(num_blocks, block_len)
+    status, block_idx = _format.read_time_rows(raw_body, _format.count_flagged(raw_body, num_blocks), *time_rows)
     if status != _format.TIME_ROWS_OK:
         raise ValueError(f"block {block_idx}: start time out of range (corrupt unit)")
     return time_rows
@@ -754,14 +745,14 @@ def _expand_times(block_flags: np.ndarray, time_rows: _format.TimeRows) -> np.nd
 
     Raises:
         ValueError: If a time step is negative (or zero on an irregular block), an
-            irregular block's first delta isn't 0, or a time overflows int64.
+            irregular block's first residual isn't 0, or a time overflows int64.
     """
-    block_times = np.empty(time_rows.deltas.shape, np.int64)
-    status, block_idx = _time.expand_times(block_flags, time_rows.starts, time_rows.steps, time_rows.deltas, block_times)
+    block_times = np.empty(time_rows.residuals.shape, np.int64)
+    status, block_idx = _time.expand_times(block_flags, *time_rows, block_times)
     if status == _time.BAD_STEP:
         raise ValueError(f"block {block_idx}: time step out of range (corrupt unit)")
-    if status == _time.BAD_FIRST_DELTA:
-        raise ValueError(f"block {block_idx}: first time delta is not 0 (corrupt unit)")
+    if status == _time.BAD_FIRST_RESIDUAL:
+        raise ValueError(f"block {block_idx}: first time residual is not 0 (corrupt unit)")
     if status == _time.OVERFLOW:
         raise ValueError(f"block {block_idx}: times overflow int64 (corrupt unit)")
     return block_times

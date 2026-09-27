@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Time axis kernels: per-block regularity and GCD analysis, and exact reconstruction.
+"""Time axis kernels: per-block regularity, GCD and reference analysis, and exact reconstruction.
 
 Timestamps are int64 ticks in the unit's time unit (seconds to nanoseconds), naive
-(no time zone). Within a block they must be non-decreasing. A block whose time deltas
-are all equal is regular: time[i] = start + i * step, with no per-sample data. Any
-other block is irregular: its step is the GCD of its deltas, and each sample stores
-(time[i] - time[i-1]) / step as a uint64 delta quotient (0 for sample 0).
+(no time zone). Within a block they must be non-decreasing. Every block stores a start,
+a step (the GCD of its time deltas) and a reference quotient; sample i > 0 has the
+quotient (time[i] - time[i-1]) / step, stored as the zigzagged residual
+quotient - reference (mod 2^64; 0 for sample 0). A block whose deltas are all equal is
+regular: every quotient equals the reference (1, or 0 when all times are equal), so it
+stores no residuals. Any other block is irregular and stores them.
 """
 
 import enum
@@ -35,7 +37,7 @@ class TimeStatus(enum.IntEnum):
     OK = 0
     DECREASING = 1
     BAD_STEP = 2
-    BAD_FIRST_DELTA = 3
+    BAD_FIRST_RESIDUAL = 3
     OVERFLOW = 4
 
 
@@ -48,8 +50,8 @@ DECREASING: int = int(TimeStatus.DECREASING)
 BAD_STEP: int = int(TimeStatus.BAD_STEP)
 """Decoding: a time step is negative, or zero on an irregular block."""
 
-BAD_FIRST_DELTA: int = int(TimeStatus.BAD_FIRST_DELTA)
-"""Decoding: an irregular block's first delta quotient is not 0."""
+BAD_FIRST_RESIDUAL: int = int(TimeStatus.BAD_FIRST_RESIDUAL)
+"""Decoding: an irregular block's first time residual is not 0."""
 
 OVERFLOW: int = int(TimeStatus.OVERFLOW)
 """Decoding: a time exceeds int64 maximum."""
@@ -76,15 +78,73 @@ def _odd_inverse(odd: np.uint64) -> np.uint64:
     return inverse
 
 
+@njit(inline="always")
+def _reference_quotient(quotients: np.ndarray) -> np.uint64:
+    """The reference that the block's quotients (from index 1) are stored relative to.
+
+    The rounded mean suits quotients spread around a center (clock jitter); the minimum
+    suits skewed ones (gaps, events, deadband logging), which the mean would shift away
+    from most of them. Residuals from the mean are about 2 sigma once zigzagged; from the
+    minimum they are non-negative, so zigzag only moves them up one bit plane (a free,
+    all-zero plane 0), and their size is about sqrt(sigma^2 + (mean - min)^2). So the mean
+    wins when 3 sigma^2 < (mean - min)^2. The float statistics only choose between two
+    exact integer references, shifted by the first quotient to keep their precision.
+    """
+    num_quotients = quotients.shape[0] - 1
+    first = np.float64(quotients[1])
+    minimum = quotients[1]
+    total = np.uint64(0)
+    for sample_idx in range(1, quotients.shape[0]):
+        minimum = min(minimum, quotients[sample_idx])
+        # The quotients sum to (last time - first time) / step, below 2^64: no overflow
+        total += quotients[sample_idx]
+    # Float sums in four fixed-order lanes: float addition doesn't reassociate, so one running
+    # sum is a serial chain, while fastmath would make the result (and so the unit bytes)
+    # depend on the machine's vector width
+    sum0 = sum1 = sum2 = sum3 = 0.0
+    squares0 = squares1 = squares2 = squares3 = 0.0
+    sample_idx = 1
+    while sample_idx + 4 <= quotients.shape[0]:
+        shifted0 = np.float64(quotients[sample_idx]) - first
+        shifted1 = np.float64(quotients[sample_idx + 1]) - first
+        shifted2 = np.float64(quotients[sample_idx + 2]) - first
+        shifted3 = np.float64(quotients[sample_idx + 3]) - first
+        sum0 += shifted0
+        sum1 += shifted1
+        sum2 += shifted2
+        sum3 += shifted3
+        squares0 += shifted0 * shifted0
+        squares1 += shifted1 * shifted1
+        squares2 += shifted2 * shifted2
+        squares3 += shifted3 * shifted3
+        sample_idx += 4
+    while sample_idx < quotients.shape[0]:
+        shifted0 = np.float64(quotients[sample_idx]) - first
+        sum0 += shifted0
+        squares0 += shifted0 * shifted0
+        sample_idx += 1
+    shifted_sum = (sum0 + sum1) + (sum2 + sum3)
+    shifted_squares = (squares0 + squares1) + (squares2 + squares3)
+    shifted_mean = shifted_sum / num_quotients
+    variance = shifted_squares / num_quotients - shifted_mean * shifted_mean
+    mean_above_minimum = shifted_mean - (np.float64(minimum) - first)
+    if 3.0 * variance < mean_above_minimum * mean_above_minimum:
+        # Rounded mean, without the overflow of total + num_quotients // 2
+        count = np.uint64(num_quotients)
+        return total // count + np.uint64(2 * (total % count) >= count)
+    return minimum
+
+
 @njit(nogil=True, cache=True)
 def encode_times(
     block_times: np.ndarray,
     out_block_flags: np.ndarray,
     out_time_starts: np.ndarray,
     out_time_steps: np.ndarray,
-    out_time_deltas: np.ndarray,
+    out_time_refs: np.ndarray,
+    out_time_residuals: np.ndarray,
 ) -> tuple[int, int]:
-    """Analyzes each block's times into a start, a step and (if irregular) delta quotients.
+    """Analyzes each block's times into a start, a step, a reference and (if irregular) residuals.
 
     Sets HEAD_IRREGULAR_TIME in out_block_flags for irregular blocks; other bits are kept.
     Only checks order within blocks: callers check the order across blocks.
@@ -94,8 +154,10 @@ def encode_times(
         out_block_flags: In-out 1D uint8 array of block flags.
         out_time_starts: Output 1D int64 array receiving block start times.
         out_time_steps: Output 1D int64 array receiving block time steps.
-        out_time_deltas: Output 2D uint64 array of shape (num_blocks, block_len) receiving
-            the delta quotients of irregular blocks (rows of regular blocks are not written).
+        out_time_refs: Output 1D uint64 array receiving block reference quotients.
+        out_time_residuals: Output 2D uint64 array of shape (num_blocks, block_len)
+            receiving the zigzagged residuals of irregular blocks (rows of regular blocks
+            are not written).
 
     Returns:
         A tuple of (status, sample_idx): OK, or DECREASING and the flat index
@@ -119,18 +181,20 @@ def encode_times(
                 if times[sample_idx] < times[sample_idx - 1]:
                     return DECREASING, block_idx * block_len + sample_idx
         if differing_bits == 0:
-            # block_len - 1 >= 7 equal deltas span less than 2^64, so the step fits int64
+            # Every quotient is 1 (0 when all times are equal). block_len - 1 >= 7 equal
+            # deltas span less than 2^64, so the step fits int64.
             out_time_steps[block_idx] = np.int64(first_delta)
+            out_time_refs[block_idx] = np.uint64(first_delta != 0)
             out_block_flags[block_idx] &= ~HEAD_IRREGULAR_TIME
             continue
-        deltas = out_time_deltas[block_idx]
-        deltas[0] = 0
+        quotients = out_time_residuals[block_idx]
+        quotients[0] = 0
         for sample_idx in range(1, block_len):
-            deltas[sample_idx] = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
+            quotients[sample_idx] = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
         # GCD of the deltas: most are multiples of the GCD so far, which skips the Euclid steps
         step_gcd = np.uint64(0)
         for sample_idx in range(1, block_len):
-            delta = deltas[sample_idx]
+            delta = quotients[sample_idx]
             if step_gcd != 0 and delta % step_gcd == 0:
                 continue
             step_gcd = _gcd(step_gcd, delta)
@@ -145,8 +209,14 @@ def encode_times(
             shift = np.uint64(_trailing_zeros(step_gcd))
             inverse = _odd_inverse(step_gcd >> shift)
             for sample_idx in range(1, block_len):
-                deltas[sample_idx] = (deltas[sample_idx] >> shift) * inverse
+                quotients[sample_idx] = (quotients[sample_idx] >> shift) * inverse
+        reference = _reference_quotient(quotients)
+        # Zigzagged residuals, in place: wrapping mod 2^64 keeps them exact for any quotient
+        for sample_idx in range(1, block_len):
+            residual = np.int64(quotients[sample_idx] - reference)
+            quotients[sample_idx] = np.uint64((residual << 1) ^ (residual >> 63))
         out_time_steps[block_idx] = np.int64(step_gcd)
+        out_time_refs[block_idx] = reference
         out_block_flags[block_idx] |= HEAD_IRREGULAR_TIME
     return OK, 0
 
@@ -156,50 +226,60 @@ def expand_times(
     block_flags: np.ndarray,
     time_starts: np.ndarray,
     time_steps: np.ndarray,
-    time_deltas: np.ndarray,
+    time_refs: np.ndarray,
+    time_residuals: np.ndarray,
     out_times: np.ndarray,
 ) -> tuple[int, int]:
-    """Reconstructs every block's ticks from its start, step and delta quotients.
+    """Reconstructs every block's ticks from its start, step, reference and residuals.
 
     Args:
-        block_flags: 1D uint8 array of block flags (HEAD_IRREGULAR_TIME selects the deltas).
+        block_flags: 1D uint8 array of block flags (HEAD_IRREGULAR_TIME selects the residuals).
         time_starts: 1D int64 array of block start times.
         time_steps: 1D int64 array of block time steps.
-        time_deltas: 2D uint64 array of shape (num_blocks, block_len) of delta quotients.
+        time_refs: 1D uint64 array of block reference quotients.
+        time_residuals: 2D uint64 array of shape (num_blocks, block_len) of zigzagged
+            residuals (only rows of irregular blocks are read).
         out_times: Output 2D int64 array of shape (num_blocks, block_len) receiving ticks.
 
     Returns:
-        A tuple of (status, block_idx): OK, or BAD_STEP, BAD_FIRST_DELTA or OVERFLOW and
+        A tuple of (status, block_idx): OK, or BAD_STEP, BAD_FIRST_RESIDUAL or OVERFLOW and
         the first failing block.
     """
     num_blocks, block_len = out_times.shape
     int64_max = np.uint64(INT64_MAX)
     for block_idx in range(num_blocks):
-        start = time_starts[block_idx]
+        start = np.uint64(time_starts[block_idx])
         step = time_steps[block_idx]
+        reference = time_refs[block_idx]
         irregular = block_flags[block_idx] & HEAD_IRREGULAR_TIME
         if step < 0 or (irregular and step == 0):
             return BAD_STEP, block_idx
-        step_unsigned = np.uint64(step)
         times = out_times[block_idx]
-        times[0] = start
-        if not irregular:
-            # The last time start + (block_len - 1) * step must not exceed int64 maximum
-            if step > 0 and np.uint64(block_len - 1) > (int64_max - np.uint64(start)) // step_unsigned:
-                return OVERFLOW, block_idx
-            for sample_idx in range(1, block_len):
-                times[sample_idx] = np.int64(np.uint64(start) + np.uint64(sample_idx) * step_unsigned)
+        if step == 0:
+            times[:] = time_starts[block_idx]
             continue
-        deltas = time_deltas[block_idx]
-        if deltas[0] != 0:
-            return BAD_FIRST_DELTA, block_idx
+        step_unsigned = np.uint64(step)
         # time[i] = start + step * (sum of quotients up to i) stays at most int64 maximum iff
         # that sum stays at most (int64 maximum - start) // step: one division per block
-        quotient_limit = (int64_max - np.uint64(start)) // step_unsigned
+        quotient_limit = (int64_max - start) // step_unsigned
+        times[0] = time_starts[block_idx]
+        if not irregular:
+            # Every quotient is the reference
+            if reference > quotient_limit // np.uint64(block_len - 1):
+                return OVERFLOW, block_idx
+            increment = reference * step_unsigned
+            for sample_idx in range(1, block_len):
+                times[sample_idx] = np.int64(start + np.uint64(sample_idx) * increment)
+            continue
+        residuals = time_residuals[block_idx]
+        if residuals[0] != 0:
+            return BAD_FIRST_RESIDUAL, block_idx
         quotient_sum = np.uint64(0)
         for sample_idx in range(1, block_len):
-            if deltas[sample_idx] > quotient_limit - quotient_sum:
+            zigzagged = residuals[sample_idx]
+            quotient = reference + ((zigzagged >> np.uint64(1)) ^ (np.uint64(0) - (zigzagged & np.uint64(1))))
+            if quotient > quotient_limit - quotient_sum:
                 return OVERFLOW, block_idx
-            quotient_sum += deltas[sample_idx]
-            times[sample_idx] = np.int64(np.uint64(start) + quotient_sum * step_unsigned)
+            quotient_sum += quotient
+            times[sample_idx] = np.int64(start + quotient_sum * step_unsigned)
     return OK, 0

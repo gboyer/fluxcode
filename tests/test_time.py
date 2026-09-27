@@ -32,8 +32,10 @@ def decoded_times(unit):
 
 
 def round_trip(values, times, params=Params(), **kwargs):
+    """Encodes and decodes with times; the values must decode as they do without times."""
     unit = fluxcode.encode_unit(values, params, times=times, **kwargs).unit
     decoded = fluxcode.decode_unit(unit)
+    np.testing.assert_array_equal(decoded.values, fluxcode.decode_unit(fluxcode.encode_unit(values, params).unit).values)
     return unit, decoded
 
 
@@ -93,6 +95,30 @@ def test_irregular_block_step_is_gcd():
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     assert irregular_flags(unit).all()
     assert (unit_rows(unit).time_rows.steps % 250 == 0).all()
+
+
+def test_reference_is_rounded_mean_for_jitter_and_minimum_for_skewed_deltas():
+    rng = np.random.default_rng(4)
+    index = np.arange(3000)
+    jitter = index * 1000 + np.round(rng.normal(0, 20, index.size)).astype(np.int64)
+    events = np.cumsum(1 + np.round(rng.exponential(300, index.size))).astype(np.int64)
+    gap = index.copy()
+    gap[1500:] += 5000
+    for name, ticks, expected in [
+        ("jitter", jitter, lambda quotients: round(quotients.mean())),
+        ("events", events, lambda quotients: quotients.min()),
+        ("gap", gap, lambda quotients: quotients.min()),
+    ]:
+        unit = fluxcode.encode_unit(np.zeros(ticks.size), times=ticks, time_unit="us").unit
+        time_rows = unit_rows(unit).time_rows
+        for block_idx in range(3):
+            block = ticks[1000 * block_idx:1000 * (block_idx + 1)]
+            quotients = np.diff(block) // time_rows.steps[block_idx]
+            if (quotients == quotients[0]).all():
+                assert time_rows.refs[block_idx] == 1, name
+            else:
+                assert time_rows.refs[block_idx] == expected(quotients), name
+        np.testing.assert_array_equal(decoded_times(unit).view(np.int64), ticks)
 
 
 def test_equal_timestamps_are_allowed():
@@ -176,7 +202,7 @@ def test_worked_example_layout():
     assert header == bytes([1, 0x08, 0, 0, 8, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0])
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)
     num_blocks = 3
-    assert body.shape[0] == 211 == _format.unit_size(num_blocks, 8, 0, True, 1)
+    assert body.shape[0] == 235 == _format.unit_size(num_blocks, 8, 0, True, 1)
     np.testing.assert_array_equal(body[:3] & 0x10, [0, 0x10, 0])
     value_anchor_planes = body[27:51].reshape(8, num_blocks)
     np.testing.assert_array_equal(value_anchor_planes[6], [0x04, 0x02, 0x08])
@@ -189,9 +215,14 @@ def test_worked_example_layout():
     time_step_planes = body[75:99].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_step_planes[0], [0x0A, 0x0A, 0x0A])
     assert not time_step_planes[1:].any()
-    time_delta_planes = body[147:211]
-    assert time_delta_planes[0] == 0xFE and time_delta_planes[1] == 0x08
-    assert not time_delta_planes[2:].any()
+    time_ref_planes = body[99:123].reshape(8, num_blocks)
+    np.testing.assert_array_equal(time_ref_planes[0], [0x01, 0x01, 0x01])
+    assert not time_ref_planes[1:].any()
+    # Block 1's quotients [1, 1, 3, 1, 1, 1, 1] from sample 1: reference 1, zigzagged residuals
+    # [0, 0, 0, 4, 0, 0, 0, 0], so only bit 2 of sample 3 is set
+    time_residual_planes = body[171:235]
+    assert time_residual_planes[2] == 0x08
+    assert not np.delete(time_residual_planes, 2).any()
     np.testing.assert_array_equal(decoded_times(unit).view(np.int64), ticks)
 
 
@@ -223,12 +254,19 @@ def test_time_unit_without_times_is_rejected():
         fluxcode.encode_unit(np.zeros(10), time_unit="ns")
 
 
-def corrupt_unit(block_flags_irregular, starts, steps, deltas, block_len=8):
+def zigzag(residuals):
+    """Zigzagged int64 residuals, as the format stores them."""
+    residuals = np.asarray(residuals, np.int64)
+    return ((residuals << 1) ^ (residuals >> 63)).view(np.uint64)
+
+
+def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_len=8):
     """A unit with the given time rows (bypassing the encoder's checks) and zero values."""
     num_blocks = len(starts)
     block_flags = np.where(block_flags_irregular, HEAD_IRREGULAR_TIME, 0).astype(np.uint8)
     time_rows = _format.TimeRows(
-        np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(deltas, np.uint64).reshape(num_blocks, block_len)
+        np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(refs, np.uint64),
+        zigzag(residuals).reshape(num_blocks, block_len),
     )
     body = _format.write_unit(
         block_flags, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
@@ -238,25 +276,31 @@ def corrupt_unit(block_flags_irregular, starts, steps, deltas, block_len=8):
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
-@pytest.mark.parametrize("irregular,starts,steps,deltas,message", [
-    ([False, False], [0, 100], [1, -1], np.zeros(16), "block 1: time step out of range"),
-    ([True, False], [0, 100], [0, 1], np.r_[0, np.ones(7), np.zeros(8)], "block 0: time step out of range"),
-    ([True, False], [0, 100], [1, 1], np.r_[1, np.ones(7), np.zeros(8)], "block 0: first time delta is not 0"),
-    ([False, False], [0, INT64_MAX - 6], [1, 1], np.zeros(16), "block 1: times overflow"),
-    ([False, True], [0, INT64_MAX - 10], [1, 1], np.r_[np.zeros(8), 0, np.full(7, 2)], "block 1: times overflow"),
-    ([False, False], [100, 50], [1, 1], np.zeros(16), "block 1: start time out of range"),  # a decreasing start
-    ([False, False], [INT64_MIN, 0], [1, 1], np.zeros(16), "block 0: start time out of range"),
+@pytest.mark.parametrize("irregular,starts,steps,refs,residuals,message", [
+    ([False, False], [0, 100], [1, -1], [1, 1], np.zeros(16), "block 1: time step out of range"),
+    ([True, False], [0, 100], [0, 1], [1, 1], np.r_[0, np.ones(7), np.zeros(8)], "block 0: time step out of range"),
+    ([True, False], [0, 100], [1, 1], [1, 1], np.r_[1, np.ones(7), np.zeros(8)], "block 0: first time residual is not 0"),
+    ([False, False], [0, INT64_MAX - 6], [1, 1], [1, 1], np.zeros(16), "block 1: times overflow"),
+    ([False, False], [0, 100], [1, 1], [1, 2 ** 62], np.zeros(16), "block 1: times overflow"),  # the reference
+    ([False, True], [0, INT64_MAX - 10], [1, 1], [1, 0], np.r_[np.zeros(8), 0, np.full(7, 2)], "block 1: times overflow"),
+    ([False, True], [0, 100], [1, 1], [1, 0], np.r_[np.zeros(8), 0, np.full(7, -1)], "block 1: times overflow"),  # wraps
+    ([False, False], [100, 50], [1, 1], [1, 1], np.zeros(16), "block 1: start time out of range"),  # a decreasing start
+    ([False, False], [INT64_MIN, 0], [1, 1], [1, 1], np.zeros(16), "block 0: start time out of range"),
 ])
-def test_corrupt_time_fields_are_rejected(irregular, starts, steps, deltas, message):
+def test_corrupt_time_fields_are_rejected(irregular, starts, steps, refs, residuals, message):
     with pytest.raises(ValueError, match=message):
-        fluxcode.decode_unit(corrupt_unit(irregular, starts, steps, deltas))
+        fluxcode.decode_unit(corrupt_unit(irregular, starts, steps, refs, residuals))
 
 
 def test_corrupt_rows_decode_when_valid():
-    """The corrupt_unit helper itself builds decodable units."""
-    unit = corrupt_unit([False, True], [0, 100], [1, 5], np.r_[np.zeros(8), 0, np.arange(1, 8)])
+    """The corrupt_unit helper itself builds decodable units, with any reference: a quotient
+    is the reference plus its residual, mod 2^64."""
+    quotients = np.arange(1, 8)
+    unit = corrupt_unit([False, True, False], [0, 100, 200], [1, 5, 3], [1, 4, 2],
+                        np.r_[np.zeros(8), 0, quotients - 4, np.zeros(8)])
     np.testing.assert_array_equal(
-        decoded_times(unit).view(np.int64), np.r_[np.arange(8), 100 + 5 * np.cumsum(np.r_[0, np.arange(1, 8)])]
+        decoded_times(unit).view(np.int64),
+        np.r_[np.arange(8), 100 + 5 * np.cumsum(np.r_[0, quotients]), 200 + 6 * np.arange(8)],
     )
 
 
