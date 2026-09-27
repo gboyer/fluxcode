@@ -694,7 +694,7 @@ def _decompress(unit: bytes) -> tuple[np.ndarray, _format.UnitHeader]:
     raw_body = np.frombuffer(_zstd()[1].decompress(frame), np.uint8)
     # The exact size depends on how many blocks carry non-finite code planes and time delta planes
     num_flagged = _format.count_flagged(raw_body, num_blocks)
-    num_irregular = _format.count_irregular(raw_body, num_blocks)
+    num_irregular = _format.count_irregular(raw_body, num_blocks) if has_time else 0
     if raw_body.shape[0] != _format.unit_size(num_blocks, block_len, num_flagged, has_time, num_irregular):
         raise ValueError(
             f"unit body of {raw_body.shape[0]} bytes doesn't match its {num_flagged} flagged blocks "
