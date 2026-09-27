@@ -103,24 +103,27 @@ with a few gaps (Poisson, mean 2 per minute, each 5 ms to 3 s) and 10% a noisy h
 | run | encode | decode | compressed | bits/sample |
 |---|---|---|---|---|
 | no timestamps | 81.4 s | 41.9 s | 40.78 GB | 3.78 |
-| `--times clock-mix` | 103.7 s | 54.7 s | 49.92 GB | 4.62 |
+| `--times clock-mix` | 101.1 s (+24%) | 55.6 s (+33%) | 48.51 GB (+19%) | 4.49 |
 
-Per clock kind, every tag on that clock (250 tags, the same session):
+Per clock kind, every tag on that clock (250 tags, the same session; percentages against no timestamps):
 
 | clock | encode µs/block/worker | decode µs/block/worker | bits/sample |
 |---|---|---|---|
-| none | 3.66 | 1.91 | 3.75 |
-| perfect grid | 4.27 (+17%) | 2.28 (+19%) | 3.76 |
-| grid with a few gaps | 4.54 (+24%) | 2.38 (+25%) | 3.76 |
-| noisy clock | 8.74 (+139%) | 4.87 (+155%) | 12.16 |
+| none | 3.78 | 1.92 | 3.75 |
+| perfect grid | 4.23 (+12%) | 2.27 (+18%) | 3.76 |
+| grid with a few gaps | 4.43 (+17%) | 2.38 (+24%) | 3.76 |
+| noisy clock | 9.07 (+140%) | 5.05 (+163%) | 10.86 |
 
-- **Grids cost bandwidth, not bits.** A regular block stores 16 bytes before compression, but
+- **Grids cost bandwidth, not bits.** A regular block stores 24 bytes before compression, but
   encode reads and decode writes 8 bytes of ticks per sample, as many as the values. Single
-  threaded that is +18 / +13 µs per unit (`bench/time_axis.py`); on 4 threads, which share
-  memory bandwidth, it is the 17-19% above.
-- **Noisy clocks dominate the mix.** The 10% of tags on a noisy clock add 8.4 bits/sample of real
-  jitter entropy, most of the day's extra 9.1 GB, and each irregular block goes through the GCD,
-  64 delta planes and zstd.
+  threaded that is +16 µs (+9%) to encode and +11 µs (+10%) to decode a unit
+  (`bench/time_axis.py`); on 4 threads, which share memory bandwidth, it is the 12-18% above.
+- **Noisy clocks dominate the mix.** The 10% of tags on a noisy clock add 7.1 bits/sample of real
+  jitter entropy, most of the day's extra 7.7 GB, and each irregular block goes through the GCD,
+  the reference, 64 residual planes and zstd.
+- **The per-block reference** (the rounded mean or the minimum of the quotients) cut the day's
+  timestamps from 9.14 to 7.73 GB (the noisy clocks from 12.16 to 10.86 bits/sample) at no
+  measurable encode cost and about 2% on decode (alternating quarter-day runs, 3 each).
 - **No regression without timestamps.** Alternating quarter-day runs of this version and the
   version before the time axis (3 each) differ by about 1.5% (3.74 against 3.70 µs/block encode,
   1.92 against 1.89 decode), within the run-to-run spread of a fanless machine; sizes are

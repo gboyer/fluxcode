@@ -233,7 +233,7 @@ def check_pool(wl):
         decoded = fluxcode.decode_unit(wl.enc[k][j] if c is None else wl.enc[k][c][j])
         y = decoded.values
         if c is not None:
-            assert np.array_equal(decoded.times, wl.time_pool[c][j]), f"{wl.clocks[c]}: times differ"
+            assert decoded.times is not None and np.array_equal(decoded.times, wl.time_pool[c][j]), f"{wl.clocks[c]}: times differ"
         nx = ~np.isfinite(x)
         assert np.array_equal(nx, ~np.isfinite(y)), f"{wl.kinds[k]}: non-finite positions differ"
         X, Y, F = x.reshape(BLOCKS, BLOCK), y.reshape(BLOCKS, BLOCK), ~nx.reshape(BLOCKS, BLOCK)

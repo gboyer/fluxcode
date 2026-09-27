@@ -74,6 +74,8 @@ def main():
         unit = fluxcode.encode_unit(values, times=times).unit
         decoded = fluxcode.decode_unit(unit)
         assert decoded.times is not None and np.array_equal(decoded.times, times)
+        # The values mustn't depend on the time axis (fails on a stale numba cache: see README)
+        assert np.array_equal(decoded.values, fluxcode.decode_unit(plain_unit).values)
         raw_body, header = _api._decompress(unit)
         num_irregular = _format.count_irregular(raw_body, header.num_blocks)
         extra_bytes = len(unit) - len(plain_unit)
