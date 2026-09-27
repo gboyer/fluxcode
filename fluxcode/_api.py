@@ -646,6 +646,12 @@ def encode(
     ticks, time_unit_code = _series_ticks(times, time_unit, series_arr.shape[0])
     # Samples per full unit
     samples_per_unit = params.blocks_per_unit * params.block_len
+    if ticks is not None:
+        # Each unit checks its own times: check the unit boundaries here
+        unit_starts = np.arange(samples_per_unit, ticks.shape[0], samples_per_unit)
+        decreases = unit_starts[ticks[unit_starts] < ticks[unit_starts - 1]]
+        if decreases.shape[0]:
+            raise _decrease_error(ticks, int(decreases[0]))
     parts = [
         _encode_rows(
             series_arr[idx:idx + samples_per_unit],

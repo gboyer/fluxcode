@@ -143,6 +143,14 @@ def test_bulk_encode_splits_times():
     np.testing.assert_array_equal(np.concatenate([part.times for part in decoded]), times)
 
 
+def test_bulk_encode_rejects_decrease_at_unit_boundary():
+    params = Params(block_len=8, blocks_per_unit=2)
+    ticks = np.arange(40, dtype=np.int64)
+    ticks[16:] -= 100
+    with pytest.raises(ValueError, match="sample 16 is -84, below sample 15"):
+        fluxcode.encode(np.zeros(40), params, times=ticks, time_unit="ns")
+
+
 def test_byte_planes_and_nonfinite_with_times():
     """The time fields sit around the residual and nonfinite planes: all three coexist."""
     values = np.tile(100 * np.sin(2 * np.pi * np.arange(125) / 125), 480)

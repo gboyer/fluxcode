@@ -193,12 +193,13 @@ def expand_times(
         deltas = time_deltas[block_idx]
         if deltas[0] != 0:
             return BAD_FIRST_DELTA, block_idx
-        current = np.uint64(start)
+        # time[i] = start + step * (sum of quotients up to i) stays at most int64 maximum iff
+        # that sum stays at most (int64 maximum - start) // step: one division per block
+        quotient_limit = (int64_max - np.uint64(start)) // step_unsigned
+        quotient_sum = np.uint64(0)
         for sample_idx in range(1, block_len):
-            # headroom = int64 maximum - current time, exact in uint64 arithmetic
-            headroom = int64_max - current
-            if deltas[sample_idx] > headroom // step_unsigned:
+            if deltas[sample_idx] > quotient_limit - quotient_sum:
                 return OVERFLOW, block_idx
-            current += deltas[sample_idx] * step_unsigned
-            times[sample_idx] = np.int64(current)
+            quotient_sum += deltas[sample_idx]
+            times[sample_idx] = np.int64(np.uint64(start) + quotient_sum * step_unsigned)
     return OK, 0

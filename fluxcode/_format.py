@@ -726,32 +726,35 @@ def unshuffle_time_deltas(time_planes: np.ndarray, irregular_block_idx: int, out
     """
     num_8byte_groups = out_time_deltas.shape[0] // 8
     plane_byte_offset = irregular_block_idx * num_8byte_groups
-    mask = np.uint64(0xFF)
-    for group_idx in range(num_8byte_groups):
-        # Accumulate the group's 8 samples in registers across the byte levels
-        v0 = v1 = v2 = v3 = v4 = v5 = v6 = v7 = np.uint64(0)
-        for byte_idx in range(8):
+    # Byte levels above the highest nonzero plane byte of this block are zero in every
+    # sample: find them with a contiguous scan and skip them (quotients are mostly small)
+    num_active_bytes = 8
+    while num_active_bytes > 0:
+        level_nonzero = False
+        for plane_idx in range(8 * num_active_bytes - 8, 8 * num_active_bytes):
+            plane = time_planes[plane_idx, plane_byte_offset:plane_byte_offset + num_8byte_groups]
+            for group_idx in range(num_8byte_groups):
+                level_nonzero |= plane[group_idx] != 0
+        if level_nonzero:
+            break
+        num_active_bytes -= 1
+    if num_active_bytes < 8:
+        out_time_deltas[:] = 0
+    # Little-endian bytes of the quotients: byte byte_idx of sample s is at 8 * s + byte_idx
+    out_bytes = out_time_deltas.view(np.uint8)
+    for byte_idx in range(num_active_bytes):
+        level_planes = time_planes[8 * byte_idx:8 * byte_idx + 8, plane_byte_offset:plane_byte_offset + num_8byte_groups]
+        for group_idx in range(num_8byte_groups):
             gathered_word = np.uint64(0)
             for bit_idx in range(8):
-                gathered_word |= np.uint64(
-                    time_planes[8 * byte_idx + bit_idx, plane_byte_offset + group_idx]
-                ) << np.uint64(8 * bit_idx)
-            if gathered_word == 0:
-                continue
+                gathered_word |= np.uint64(level_planes[bit_idx, group_idx]) << np.uint64(8 * bit_idx)
             # Transpose back: byte k of the result is byte byte_idx of sample 8 * group_idx + k
             transposed_word = _transpose8(gathered_word)
-            shift = np.uint64(8 * byte_idx)
-            v0 |= (transposed_word & mask) << shift
-            v1 |= ((transposed_word >> np.uint64(8)) & mask) << shift
-            v2 |= ((transposed_word >> np.uint64(16)) & mask) << shift
-            v3 |= ((transposed_word >> np.uint64(24)) & mask) << shift
-            v4 |= ((transposed_word >> np.uint64(32)) & mask) << shift
-            v5 |= ((transposed_word >> np.uint64(40)) & mask) << shift
-            v6 |= ((transposed_word >> np.uint64(48)) & mask) << shift
-            v7 |= ((transposed_word >> np.uint64(56)) & mask) << shift
-        base = 8 * group_idx
-        out_time_deltas[base], out_time_deltas[base + 1], out_time_deltas[base + 2], out_time_deltas[base + 3] = v0, v1, v2, v3
-        out_time_deltas[base + 4], out_time_deltas[base + 5], out_time_deltas[base + 6], out_time_deltas[base + 7] = v4, v5, v6, v7
+            out_byte_idx = 64 * group_idx + byte_idx
+            for sample_offset in range(8):
+                out_bytes[out_byte_idx + 8 * sample_offset] = np.uint8(
+                    (transposed_word >> np.uint64(8 * sample_offset)) & np.uint64(0xFF)
+                )
 
 
 @njit(nogil=True, cache=True)
@@ -816,7 +819,7 @@ def read_time_rows(
         out_time_starts: Output 1D int64 array receiving the block start times.
         out_time_steps: Output 1D int64 array receiving the block time steps.
         out_time_deltas: Output 2D uint64 array of shape (num_blocks, block_len) receiving
-            the time delta quotients of irregular blocks (rows of regular blocks are zeroed).
+            the time delta quotients of irregular blocks (rows of regular blocks are not written).
 
     Returns:
         A tuple of (status, block_idx): TIME_ROWS_OK, or TIME_ROWS_BAD_START and the
@@ -845,8 +848,6 @@ def read_time_rows(
         if raw_unit[block_idx] & HEAD_IRREGULAR_TIME:
             unshuffle_time_deltas(time_planes, irregular_counter, out_time_deltas[block_idx])
             irregular_counter += 1
-        else:
-            out_time_deltas[block_idx, :] = 0
     return TIME_ROWS_OK, 0
 
 
@@ -1087,8 +1088,9 @@ def read_unit(
     read_rows(raw_arr, byte_planes, has_time, block_flags, grid_params, value_anchors, residuals, codes)
     time_rows = None
     if has_time:
+        # Zeroed: read_time_rows leaves regular blocks' delta rows untouched
         time_rows = TimeRows(
-            np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty((num_blocks, block_len), np.uint64)
+            np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.zeros((num_blocks, block_len), np.uint64)
         )
         status, block_idx = read_time_rows(
             raw_arr, count_flagged(raw_arr, num_blocks), time_rows.starts, time_rows.steps, time_rows.deltas
