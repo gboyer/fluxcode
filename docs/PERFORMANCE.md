@@ -93,6 +93,39 @@ Encode is about half numba kernels (quantization, order pick, residual), a fixed
   avoids it (3.48 µs/block). The note is
   in the spec, §3.2.
 
+### Timestamps (`--times`, 2026-09-27)
+
+The same day with an exact timestamp per sample (datetime64[ns]; docs/SPEC.md §2a). Each tag gets
+one clock kind, from a pool like the values: `clock-mix` is 60% a perfect 1 kHz grid, 30% a grid
+with a few gaps (Poisson, mean 2 per minute, each 5 ms to 3 s) and 10% a noisy host clock
+(σ = 20 µs jitter at µs resolution). Full day, 4 threads, AC power:
+
+| run | encode | decode | compressed | bits/sample |
+|---|---|---|---|---|
+| no timestamps | 81.4 s | 41.9 s | 40.78 GB | 3.78 |
+| `--times clock-mix` | 103.7 s | 54.7 s | 49.92 GB | 4.62 |
+
+Per clock kind, every tag on that clock (250 tags, the same session):
+
+| clock | encode µs/block/worker | decode µs/block/worker | bits/sample |
+|---|---|---|---|
+| none | 3.66 | 1.91 | 3.75 |
+| perfect grid | 4.27 (+17%) | 2.28 (+19%) | 3.76 |
+| grid with a few gaps | 4.54 (+24%) | 2.38 (+25%) | 3.76 |
+| noisy clock | 8.74 (+139%) | 4.87 (+155%) | 12.16 |
+
+- **Grids cost bandwidth, not bits.** A regular block stores 16 bytes before compression, but
+  encode reads and decode writes 8 bytes of ticks per sample, as many as the values. Single
+  threaded that is +18 / +13 µs per unit (`bench/time_axis.py`); on 4 threads, which share
+  memory bandwidth, it is the 17-19% above.
+- **Noisy clocks dominate the mix.** The 10% of tags on a noisy clock add 8.4 bits/sample of real
+  jitter entropy, most of the day's extra 9.1 GB, and each irregular block goes through the GCD,
+  64 delta planes and zstd.
+- **No regression without timestamps.** Alternating quarter-day runs of this version and the
+  version before the time axis (3 each) differ by about 1.5% (3.74 against 3.70 µs/block encode,
+  1.92 against 1.89 decode), within the run-to-run spread of a fanless machine; sizes are
+  byte-identical. `bench_gb.py` shows the same (within 1-2% either way).
+
 ### Single thread, per signal type (`bench/bench_gb.py`)
 
 A separate benchmark from the day-scale stress run above: 1 GiB of float64 (134,100 blocks, 15 signal
@@ -200,4 +233,6 @@ walk). At most ~3% of encode, with a regression on noisy data. Not worth the cod
 
     uv run python bench/stress.py --breakdown                   # full target, ~2 minutes
     uv run python bench/stress.py --scale 0.25 --sprinkle 0.01  # an adversarial variant
+    uv run python bench/stress.py --times clock-mix             # with exact timestamps, ~3 minutes
+    uv run python bench/time_axis.py                            # timestamp cost per clock shape, one unit
     uv run python bench/stress.py --list                        # signal kinds and presets

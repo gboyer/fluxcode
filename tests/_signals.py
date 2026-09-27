@@ -75,3 +75,32 @@ def discrete_minute(name, seed):
     if "float32" in name:
         x = x.astype(np.float32).astype(np.float64)
     return x
+
+
+# --- Timestamps: one minute of int64 ns ticks per clock kind, nominally 1 kHz ---
+
+CLOCKS = ["grid", "grid+gaps", "noisy"]
+"""Common timestamp shapes: a perfect grid; a perfect grid with a few gaps (dropped packets,
+reconnects); a noisy host clock (µs resolution, σ = 20 µs jitter around the grid)."""
+
+CLOCK_START_NS = 1_790_000_000_000_000_000  # 2026-09-21, in ns since 1970
+
+
+def clock_minute(kind, seed):
+    """MINUTE non-decreasing int64 ns ticks of a clock kind, starting at a seed-dependent minute."""
+    rng = np.random.default_rng(seed)
+    start = CLOCK_START_NS + int(rng.integers(0, 1_000_000)) * 60_000_000_000
+    index = np.arange(MINUTE, dtype=np.int64)
+    if kind == "grid":
+        return start + index * 1_000_000
+    if kind == "grid+gaps":
+        # Poisson(2) gaps per minute, each skipping 5 ms to 3 s of the grid
+        steps = np.ones(MINUTE, np.int64)
+        num_gaps = rng.poisson(2)
+        steps[rng.integers(1, MINUTE, num_gaps)] += rng.integers(5, 3000, num_gaps)
+        steps[0] = 0
+        return start + np.cumsum(steps) * 1_000_000
+    if kind == "noisy":
+        jitter_us = np.round(rng.normal(0, 20, MINUTE)).astype(np.int64)
+        return start + np.maximum.accumulate(index * 1000 + jitter_us) * 1000
+    raise ValueError(kind)

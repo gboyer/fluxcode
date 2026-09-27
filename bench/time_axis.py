@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
-from _signals import MINUTE, minute
+from _signals import MINUTE, clock_minute, minute
 
 import fluxcode
 from fluxcode import _api, _format
@@ -34,7 +34,9 @@ def patterns(rng):
     gaps[rng.choice(MINUTE, 20, replace=False)] = rng.integers(2, 500, 20)
     deadband = np.where(rng.random(MINUTE) < 0.05, rng.integers(1, 60_000, MINUTE), rng.integers(1, 20, MINUTE))
     return [
-        ("regular 1 kHz", START_NS + index * MS),
+        ("grid: regular 1 kHz", clock_minute("grid", 1)),
+        ("grid + a few gaps (2 per minute)", clock_minute("grid+gaps", 1)),
+        ("noisy clock (σ=20 µs, µs resolution)", clock_minute("noisy", 1)),
         ("1 kHz, 20 gaps", START_NS + np.cumsum(gaps) * MS),
         ("1 kHz, 1% dropped", START_NS + np.sort(rng.choice(MINUTE * 101 // 100, MINUTE, replace=False)) * MS),
         ("drifting clock (0.99998 ms)", START_NS + np.round(index * 0.99998731 * MS).astype(np.int64)),

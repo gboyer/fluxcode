@@ -121,21 +121,27 @@ decoded unit has non-decreasing times within each block and non-decreasing block
   block stays regular), and otherwise repeats the last timestamp. Decoding trims it.
 
 A regular series costs only its per-block start and step (about 40 bytes per 60-block unit). A
-gap costs only its own block. Measured on one-minute units (`bench/time_axis.py`, Apple M3):
+gap costs only its own block. Measured on one-minute units (`bench/time_axis.py`, Apple M3, AC
+power, single thread); the first three rows are the common shapes, and
+[experimental/report/time.html](../experimental/report/time.html) shows them in detail:
 
 | timestamps | irregular blocks | bytes | bits/sample | encode +µs | decode +µs |
 |---|---|---|---|---|---|
-| regular 1 kHz | 0/60 | 41 | 0.005 | 31 | 30 |
-| 1 kHz, 20 gaps | 19/60 | 664 | 0.089 | 128 | 105 |
-| 1 kHz, 1% dropped | 60/60 | 3,016 | 0.40 | 316 | 327 |
-| drifting clock (0.99998 ms) | 60/60 | 1,372 | 0.18 | 316 | 345 |
-| jitter σ = 10 µs, µs resolution | 60/60 | 51,974 | 6.9 | 471 | 349 |
-| jitter σ = 10 µs, ns resolution | 60/60 | 125,367 | 16.7 | 443 | 426 |
-| Poisson events (mean 1 ms), µs | 60/60 | 88,379 | 11.8 | 506 | 365 |
-| deadband logging on a ms grid | 60/60 | 56,875 | 7.6 | 613 | 462 |
+| perfect 1 kHz grid | 0/60 | 39 | 0.005 | 18 | 13 |
+| grid with 2 gaps | 2/60 | 781 | 0.10 | 28 | 23 |
+| noisy clock (σ = 20 µs, µs resolution) | 60/60 | 63,177 | 8.4 | 260 | 159 |
+| 1 kHz, 20 gaps | 19/60 | 664 | 0.089 | 73 | 52 |
+| 1 kHz, 1% dropped | 60/60 | 3,016 | 0.40 | 180 | 129 |
+| drifting clock (0.99998 ms) | 60/60 | 1,372 | 0.18 | 178 | 167 |
+| jitter σ = 10 µs, µs resolution | 60/60 | 51,974 | 6.9 | 268 | 170 |
+| jitter σ = 10 µs, ns resolution | 60/60 | 125,367 | 16.7 | 251 | 212 |
+| Poisson events (mean 1 ms), µs | 60/60 | 88,379 | 11.8 | 289 | 187 |
+| deadband logging on a ms grid | 60/60 | 56,875 | 7.6 | 348 | 235 |
 
-For scale, the same unit's values take 20,951 bytes, 307 µs to encode and 197 µs to decode.
-Irregular timestamps can cost more than the values: their entropy is what it is.
+For scale, the same unit's values take 20,951 bytes, 176 µs to encode and 112 µs to decode.
+Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
+grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:
+on 4 threads, where memory bandwidth is shared, that costs about 18% (docs/PERFORMANCE.md).
 
 **Design notes** (measured while designing, on the timestamps above):
 - The GCD matters: without it, µs or ms data stored in ns ticks costs 1.4–2.6× more (zstd alone

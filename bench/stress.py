@@ -11,7 +11,9 @@ between units, so the work per unit is what distinct data would cost. NaN runs a
 tag and day (--nan-minutes in --nan-runs runs at random, non-block-aligned sample offsets) and
 written over a copy of the pool unit in the worker; that copy is outside the per-call timings but
 inside the wall time. --sprinkle bakes isolated NaNs into every pool unit (the slow path on every
-block: the adversarial case).
+block: the adversarial case). --times gives every unit exact timestamps too: each tag gets a clock
+kind (a perfect grid, a grid with a few gaps, or a noisy clock; tests/_signals.py) whose units come
+from a pool the same way.
 
 Timed: encode_unit per unit (index columns and zstd included), then decode_unit per unit. The
 decode phase reads the encoded pool (plus pre-encoded NaN units), so it does the same per-unit
@@ -21,6 +23,7 @@ work as decoding the day. Workers claim whole tags (a day each) from a shared co
     uv run python bench/stress.py --scale 0.05                     # 5% of the tags (quick)
     uv run python bench/stress.py --data random-walk --mode processes
     uv run python bench/stress.py --data "analog:3,sensor-0.1:1" --sprinkle 0.001
+    uv run python bench/stress.py --times clock-mix                # with timestamps
     uv run python bench/stress.py --list                           # signal kinds
 """
 
@@ -40,7 +43,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
-from _signals import DISCRETE, KINDS, MINUTE, discrete_minute, minute
+from _signals import (
+    CLOCKS,
+    DISCRETE,
+    KINDS,
+    MINUTE,
+    clock_minute,
+    discrete_minute,
+    minute,
+)
 
 import fluxcode
 from fluxcode import Params, _api, _decoder, _format
@@ -90,6 +101,8 @@ PRESETS = {
                 "sensor-0.1": 5, "noisy-sine": 5, "random-walk": 5},
     "all": {k: 1 for k in ALL_KINDS},
 }
+# A guess at a fleet's clocks: mostly on a perfect grid, many with a few gaps, some noisy.
+TIME_PRESETS = {"none": {}, "clock-mix": {"grid": 60, "grid+gaps": 30, "noisy": 10}} | {c: {c: 1} for c in CLOCKS}
 
 
 def gen_minute(kind, seed):
@@ -98,6 +111,15 @@ def gen_minute(kind, seed):
     if kind in DISCRETE_NAMES:
         return discrete_minute(kind, seed)
     return minute(kind, seed)
+
+
+def _assign(mix, count, rng):
+    """Deterministic proportional assignment (largest remainder) of count items to mix's keys, shuffled."""
+    w = np.array(list(mix.values()), float)
+    counts = np.floor(w / w.sum() * count).astype(int)
+    for i in np.argsort(-(w / w.sum() * count - counts))[:count - counts.sum()]:
+        counts[i] += 1
+    return rng.permutation(np.repeat(np.arange(len(mix)), counts))
 
 
 def parse_data(spec):
@@ -121,16 +143,16 @@ class Workload:
         self.mix = parse_data(a.data)
         self.tags, self.units = a.tags, a.units
         rng = np.random.default_rng(a.seed)
-        kinds, w = list(self.mix), np.array(list(self.mix.values()), float)
-        # deterministic proportional assignment (largest remainder), shuffled across tags
-        counts = np.floor(w / w.sum() * self.tags).astype(int)
-        for i in np.argsort(-(w / w.sum() * self.tags - counts))[:self.tags - counts.sum()]:
-            counts[i] += 1
-        self.tag_kind = rng.permutation(np.repeat(np.arange(len(kinds)), counts))
-        self.kinds = kinds
+        self.tag_kind = _assign(self.mix, self.tags, rng)
+        self.kinds = list(self.mix)
         self.nan_spans = self._nan_spans(rng)
+        time_mix = TIME_PRESETS[a.times]
+        self.clocks = list(time_mix)
+        # A separate generator, so --times leaves the values and NaN layout unchanged
+        self.tag_clock = _assign(time_mix, self.tags, np.random.default_rng(a.seed + 2)) if time_mix else None
         self.pool: list[np.ndarray] = []  # filled by build_pool
-        self.enc: list[list[bytes]] = []
+        self.time_pool: list[np.ndarray] = []
+        self.enc: list = []  # [kind][j] without times, [kind][clock][j] with
 
     def _nan_spans(self, rng):
         """{(tag, unit): [(start, stop), ...]} sample spans within the unit, from runs laid out over
@@ -162,17 +184,30 @@ class Workload:
             if a.sprinkle > 0:
                 xs[rng.random(xs.shape) < a.sprinkle] = np.nan
             self.pool.append(xs)
-            self.enc.append([fluxcode.encode_unit(x, self.params).unit for x in xs])
-        self.nan_enc = {tu: fluxcode.encode_unit(self.unit(*tu)[0], self.params).unit for tu in self.nan_spans}
+        self.time_pool = [np.stack([clock_minute(c, 2_000_000 * ci + j) for j in range(a.pool)]).view("datetime64[ns]")
+                          for ci, c in enumerate(self.clocks)]
+        if self.tag_clock is None:
+            self.enc = [[fluxcode.encode_unit(x, self.params).unit for x in xs] for xs in self.pool]
+        else:
+            self.enc = [[[fluxcode.encode_unit(x, self.params, times=ts).unit for x, ts in zip(xs, tp)]
+                         for tp in self.time_pool] for xs in self.pool]
+        self.nan_enc = {tu: fluxcode.encode_unit(self.unit(*tu)[0], self.params, times=self.times(*tu)).unit
+                        for tu in self.nan_spans}
 
     def slot(self, t, u):
         return self.tag_kind[t], (t * self.units + u) % self.a.pool
+
+    def times(self, t, u):
+        """The unit's timestamps (datetime64[ns]), or None without --times."""
+        if self.tag_clock is None:
+            return None
+        return self.time_pool[self.tag_clock[t]][self.slot(t, u)[1]]
 
     def encoded(self, t, u):
         e = self.nan_enc.get((t, u))
         if e is None:
             k, j = self.slot(t, u)
-            e = self.enc[k][j]
+            e = self.enc[k][j] if self.tag_clock is None else self.enc[k][self.tag_clock[t]][j]
         return e
 
     def unit(self, t, u):
@@ -189,22 +224,27 @@ class Workload:
 
 
 def check_pool(wl):
-    """Roundtrip every pool unit: NaN positions exact, finite error within the step's half (<= range/2^6/2)."""
+    """Roundtrip every pool unit: NaN positions exact, finite error within the step's half (<= range/2^6/2),
+    timestamps exact."""
     worst = 0.0
-    for k, (xs, encs) in enumerate(zip(wl.pool, wl.enc)):
-        for x, u in zip(xs, encs):
-            y = fluxcode.decode_unit(u).values
-            nx = ~np.isfinite(x)
-            assert np.array_equal(nx, ~np.isfinite(y)), f"{wl.kinds[k]}: non-finite positions differ"
-            X, Y, F = x.reshape(BLOCKS, BLOCK), y.reshape(BLOCKS, BLOCK), ~nx.reshape(BLOCKS, BLOCK)
-            for b in range(BLOCKS):
-                f = F[b]
-                if f.any():
-                    r = X[b][f].max() - X[b][f].min()
-                    err = np.abs(X[b][f] - Y[b][f]).max()
-                    if err > 0:
-                        assert err <= r / 2 ** 6, f"{wl.kinds[k]}: error {err} over range {r}"
-                        worst = max(worst, err / r)
+    clocks = [None] if wl.tag_clock is None else range(len(wl.clocks))
+    for k, c, j in ((k, c, j) for k in range(len(wl.kinds)) for c in clocks for j in range(wl.a.pool)):
+        x = wl.pool[k][j]
+        decoded = fluxcode.decode_unit(wl.enc[k][j] if c is None else wl.enc[k][c][j])
+        y = decoded.values
+        if c is not None:
+            assert np.array_equal(decoded.times, wl.time_pool[c][j]), f"{wl.clocks[c]}: times differ"
+        nx = ~np.isfinite(x)
+        assert np.array_equal(nx, ~np.isfinite(y)), f"{wl.kinds[k]}: non-finite positions differ"
+        X, Y, F = x.reshape(BLOCKS, BLOCK), y.reshape(BLOCKS, BLOCK), ~nx.reshape(BLOCKS, BLOCK)
+        for b in range(BLOCKS):
+            f = F[b]
+            if f.any():
+                r = X[b][f].max() - X[b][f].min()
+                err = np.abs(X[b][f] - Y[b][f]).max()
+                if err > 0:
+                    assert err <= r / 2 ** 6, f"{wl.kinds[k]}: error {err} over range {r}"
+                    worst = max(worst, err / r)
     return worst
 
 
@@ -227,8 +267,9 @@ def _work(wl, go, switch, counters, out):
     while (t := _claim(counters[0])) < wl.tags:
         for u in range(wl.units):
             x, private = wl.unit(t, u)
+            ts = wl.times(t, u)
             t0 = time.perf_counter()
-            unit, _, _, _ = fluxcode.encode_unit(x, p)
+            unit, _, _, _ = fluxcode.encode_unit(x, p, times=ts)
             enc_t += time.perf_counter() - t0
             nbytes += len(unit)
             nan_units += private
@@ -255,11 +296,13 @@ def _process_main(a, ready, go, switch, counters, out):
 
 
 def _warm(wl):
-    for xs, encs in zip(wl.pool, wl.enc):
-        fluxcode.decode_unit(encs[0])
+    for k, xs in enumerate(wl.pool):
+        for enc in [wl.enc[k][0]] if wl.tag_clock is None else [by_clock[0] for by_clock in wl.enc[k]]:
+            fluxcode.decode_unit(enc)
         x = xs[0].copy()
         x[123:4567] = np.nan
-        fluxcode.decode_unit(fluxcode.encode_unit(x, wl.params).unit)
+        for ts in [None] if wl.tag_clock is None else [tp[0] for tp in wl.time_pool]:
+            fluxcode.decode_unit(fluxcode.encode_unit(x, wl.params, times=ts).unit)
 
 
 def _watch(counter, total, t0, bins, interval=0.01):
@@ -359,6 +402,8 @@ def main():
     ap.add_argument("--nan-minutes", type=float, default=3.0, help="NaN minutes per tag per day")
     ap.add_argument("--nan-runs", type=int, default=2, help="runs those minutes are split into")
     ap.add_argument("--sprinkle", type=float, default=0.0, help="fraction of samples set to isolated NaN, every unit")
+    ap.add_argument("--times", choices=list(TIME_PRESETS), default="none",
+                    help="timestamps: none, a clock kind, or clock-mix (60%% grid, 30%% grid+gaps, 10%% noisy)")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--breakdown", action="store_true", help="also print a single-thread per-stage breakdown")
     ap.add_argument("--list", action="store_true")
@@ -388,6 +433,9 @@ def main():
           f"({100 * n_nan / n_units:.2f}%), {100 * nan_samples / samples:.3f}% of samples"
           + (f"; sprinkle {a.sprinkle:g} in every unit" if a.sprinkle else ""))
     print("tags per kind: " + ", ".join(f"{k} {int((wl.tag_kind == i).sum())}" for i, k in enumerate(wl.kinds)))
+    if wl.tag_clock is not None:
+        print("timestamps (datetime64[ns], exact), tags per clock: "
+              + ", ".join(f"{c} {int((wl.tag_clock == i).sum())}" for i, c in enumerate(wl.clocks)))
     print(f"(pool generated, roundtrip-checked (worst error {worst:.2e} of block range) and warmed in {gen_s:.0f} s)\n")
 
     if a.breakdown:
@@ -399,7 +447,7 @@ def main():
         print()
 
     if a.mode == "processes":
-        wl.pool, wl.enc = [], []  # the workers build their own
+        wl.pool, wl.time_pool, wl.enc = [], [], []  # the workers build their own
     te, td, res, eb, db = run(a, wl)
     enc_cpu = sum(r[0] for r in res)
     dec_cpu = sum(r[1] for r in res)

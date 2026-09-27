@@ -67,3 +67,43 @@ block before failing. Single thread, µs/block; the method is in the script's do
 
 An earlier figure of 2.96 µs/block with detection off had no recorded script and isn't reproduced
 here.
+
+## Timestamps: `uv run python bench/stress.py --times clock-mix` (2026-09-27, AC power, one run)
+
+Apple M3 Mac15,13, Darwin 25.6.0, Python 3.11.13, numpy 2.4.6
+
+data `sensor-mix`: 1000 tags x 1440 units x 60 x 1000 = 86.40e9 samples (691.2 GB float64); 4 threads; pool 32 units/kind
+NaN: 3 min/tag/day in 2 runs -> 5,011 units touched (0.35%), 0.208% of samples
+tags per kind: analog 350, held 250, digital 100, vibration 100, counter 50, sensor-0.1 50, noisy-sine 50, random-walk 50
+timestamps (datetime64[ns], exact), tags per clock: grid 600, grid+gaps 300, noisy 100
+(pool generated, roundtrip-checked (worst error 1.41e-02 of block range) and warmed in 2 s)
+
+## Result
+
+| phase | wall | float64 GB/s | samples/s | µs/block/worker | in-call % |
+|---|---|---|---|---|---|
+| encode | 103.7 s | 6.67 GB/s | 833 M | 4.80 | 99% |
+| decode | 54.7 s | 12.64 GB/s | 1580 M | 2.53 | 100% |
+
+compressed 49.92 GB (4.62 bits/sample, ratio 13.8); real time is 86,400 s per day, so encode runs at 833x real time for 1000 tags.
+
+encode GB/s per tenth of the phase: 6.8 6.5 6.5 6.8 6.9 6.3 6.9 6.5 6.5 6.7
+decode GB/s per tenth of the phase: 12.6 12.4 12.6 12.3 13.3 13.0 12.6 12.8 12.1 12.6
+
+### Per clock kind: `--scale 0.25 --times <clock>` (same session)
+
+| clock | phase | wall | float64 GB/s | samples/s | µs/block/worker | in-call % |
+|---|---|---|---|---|---|---|
+| none | encode | 19.8 s | 8.75 GB/s | 1093 M | 3.66 | 99% |
+| none | decode | 10.3 s | 16.73 GB/s | 2092 M | 1.91 | 99% |
+| grid | encode | 23.1 s | 7.49 GB/s | 936 M | 4.27 | 99% |
+| grid | decode | 12.3 s | 14.07 GB/s | 1758 M | 2.28 | 99% |
+| grid+gaps | encode | 24.5 s | 7.05 GB/s | 882 M | 4.54 | 99% |
+| grid+gaps | decode | 12.9 s | 13.44 GB/s | 1680 M | 2.38 | 99% |
+| noisy | encode | 47.2 s | 3.66 GB/s | 458 M | 8.74 | 99% |
+| noisy | decode | 26.3 s | 6.57 GB/s | 822 M | 4.87 | 100% |
+
+- none compressed 10.13 GB (3.75 bits/sample, ratio 17.1);
+- grid compressed 10.14 GB (3.76 bits/sample, ratio 17.0);
+- grid+gaps compressed 10.15 GB (3.76 bits/sample, ratio 17.0);
+- noisy compressed 32.84 GB (12.16 bits/sample, ratio 5.3);

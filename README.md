@@ -105,7 +105,7 @@ which set the step to 0.25σ.
   when the unit has a time axis. Returns the new unit and min/max/mean of the updated blocks, in
   `indices` order. A partial last block must be replaced by a full one before appending after it.
 - `encode(x, params, *, times=None, time_unit=None)` / `decode(units)`: bulk versions. `encode`
-  splits a long series (and its times) into full units and returns
+  splits a long series (and its times, non-decreasing across unit boundaries too) into full units and returns
   `(units, block_mins, block_maxs, block_means)`, one entry per unit; `decode` returns one
   `DecodedUnit` per unit.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
