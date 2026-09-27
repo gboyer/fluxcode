@@ -78,6 +78,11 @@ def measure(values, ticks, plain_unit, reps, plain_times):
     return row
 
 
+def added(added_us, base_us):
+    """An added time with its share of the values-only time, e.g. "+30 µs (+17%)"."""
+    return f"+{added_us:.0f} µs (+{100 * added_us / base_us:.0f}%)"
+
+
 def plot_shapes(examples):
     """Small multiples: the sample interval over one minute per shape, irregular blocks shaded."""
     fig, axes = plt.subplots(len(examples), 1, figsize=(11, 2.3 * len(examples)), layout="constrained")
@@ -165,10 +170,15 @@ Every number here is the unit with times minus the same unit without them. For s
 <b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_time_report.py</code>.</p>
 <h2 id="how">How timestamps are stored</h2>
 <ul>
-<li><b>Per block, one of two layouts.</b> A block whose 999 intervals are all equal is <b>regular</b>: it stores
-only its start and that step (16 bytes before compression, a few after). Any other block is <b>irregular</b>:
-it also stores each interval divided by the GCD of the block's intervals, as 64 bit planes. Most of those planes
-are zero, and zstd removes them.</li>
+<li><b>Per block: a start, a step and a reference.</b> The step is the GCD of the block's intervals, and each
+interval divided by it is a quotient: the reference plus a residual. A block whose 999 intervals are all equal is
+<b>regular</b>: every quotient equals the reference, so it stores nothing else (24 bytes before compression, a few
+after). Any other block is <b>irregular</b> and stores the residuals, zigzagged, as 64 bit planes. Most of those
+planes are zero, and zstd removes them.</li>
+<li><b>The reference is the rounded mean or the minimum,</b> chosen per block. The mean suits jitter around a
+center; the minimum suits skewed intervals (a gap, events, deadband logging), whose mean sits away from most of
+them. Without a reference, intervals near 1000 flip several bit planes together as they wobble, which costs about
+a bit per sample.</li>
 <li><b>A gap costs only its own block.</b> The blocks before and after it stay regular.</li>
 <li><b>The resolution is free.</b> The GCD takes out the grid, so a millisecond grid costs the same in ns, µs or ms
 ticks.</li>
@@ -178,28 +188,31 @@ bytes.</li>
 <h2 id="shapes">The common shapes</h2>
 <p>A perfect grid, and a perfect grid with a few gaps, are by far the most common timestamps in practice. A noisy
 clock (host timestamps on arrival) is the third common shape, and the only one of the three where the timestamps
-cost more than the values (here about three times as much).</p>
+cost more than the values (here about two and a half times as much).</p>
 {chart}
 <table><tr><th class='l'>shape</th><th class='l'>what it is</th><th>bytes (example)</th><th>bits/sample</th>
 <th>irregular blocks</th><th>vs values</th><th>bytes over {SEEDS} units: median</th><th>max</th>
-<th>encode +µs</th><th>decode +µs</th></tr>"""]
+<th>encode time added</th><th>decode time added</th></tr>"""]
     for shape, _, row in examples:
         sizes = row["sizes"]
         h.append(f"<tr><td>{SHAPE_LABELS[shape]}</td><td class='l'>{SHAPE_NOTES[shape]}</td>"
                  f"<td>{row['bytes']:,}</td><td>{8 * row['bytes'] / MINUTE:.3f}</td>"
                  f"<td>{int(row['irregular'].sum())}/60</td><td>{100 * row['bytes'] / plain_bytes:.1f}%</td>"
                  f"<td>{int(np.median(sizes)):,}</td><td>{int(sizes.max()):,}</td>"
-                 f"<td>{row['encode_us']:.0f}</td><td>{row['decode_us']:.0f}</td></tr>")
+                 f"<td>{added(row['encode_us'], plain_times[0])}</td><td>{added(row['decode_us'], plain_times[1])}</td></tr>")
     h.append(f"""</table>
-<p class='muted'>The example is the median-size unit of {SEEDS} seeds per shape. µs are single thread, best of {reps},
-Apple M3; <i>vs values</i> is the timestamps' bytes as a share of the values' {plain_bytes:,}.</p>
+<p class='muted'>The example is the median-size unit of {SEEDS} seeds per shape. Times are single thread, best of
+{reps}, Apple M3 on AC power; each added time's percentage is of the same unit's values-only encode
+({plain_times[0]:.0f} µs) or decode ({plain_times[1]:.0f} µs). <i>vs values</i> is the timestamps' bytes as a share
+of the values' {plain_bytes:,}.</p>
 <ul>
 <li><b>Perfect grid:</b> {grid_bytes} bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
 writes the 60,000 int64 ticks, and that is most of its cost.</li>
 <li><b>A few gaps:</b> each gap makes one block irregular. Its intervals are all 1 except one, so the block's
-planes are nearly all zero and it costs about 25 to 100 bytes (next section).</li>
-<li><b>Noisy clock:</b> the jitter is real entropy (here 8.5 bits per sample: the intervals spread over about
-±60 µs at µs resolution), and no lossless coder can remove it. If the jitter is measurement noise rather than information, round the timestamps
+planes are nearly all zero and it costs about 20 to 90 bytes (next section).</li>
+<li><b>Noisy clock:</b> the jitter is real entropy, and no lossless coder can remove it: σ = 20 µs at µs
+resolution carries about 6.4 bits per sample, and the unit spends 7.1. The rest comes from storing intervals
+(each the difference of two jitters) with each bit plane coded on its own. If the jitter is measurement noise rather than information, round the timestamps
 to the grid before encoding.</li>
 </ul>
 <h2 id="gaps">Cost per gap</h2>
@@ -213,12 +226,14 @@ to the grid before encoding.</li>
     h.append("""</table>
 <h2 id="harder">Harder shapes</h2>
 <p>For comparison, shapes with many more irregular blocks (from <code>bench/time_axis.py</code>). Only the
-cases with random intervals cost more than the values.</p>
+cases with random intervals cost more than the values. Percentages are of the values-only encode and decode, as
+above.</p>
 <table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>
-<th>encode +µs</th><th>decode +µs</th></tr>""")
+<th>encode time added</th><th>decode time added</th></tr>""")
     for name, row in others:
         h.append(f"<tr><td>{name}</td><td>{row['bytes']:,}</td><td>{8 * row['bytes'] / MINUTE:.3f}</td>"
-                 f"<td>{int(row['irregular'].sum())}/60</td><td>{row['encode_us']:.0f}</td><td>{row['decode_us']:.0f}</td></tr>")
+                 f"<td>{int(row['irregular'].sum())}/60</td><td>{added(row['encode_us'], plain_times[0])}</td>"
+                 f"<td>{added(row['decode_us'], plain_times[1])}</td></tr>")
     h.append("""</table>
 <p class='muted'>1% dropped and a drifting clock stay cheap: their intervals take two or three values. Jitter,
 Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
