@@ -21,6 +21,9 @@ High level properties:
   interleaved and compressed with zstd to separate high and low entropy signals.
 * **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
   subnormal ranges, +/- Infinity, and NaN.
+* **Timestamps**: Optionally stores exact timestamps (s, ms, µs or ns) for irregular sampling.
+  Regular stretches cost next to nothing; each irregular block stores its deltas divided by
+  their GCD in bit planes. See [docs/SPEC.md §2a](docs/SPEC.md#2a-time-axis).
 
 Encoding features to balance size, accuracy, and performance depending on data
 type:
@@ -62,37 +65,49 @@ x = 100 * np.sin(2 * np.pi * 3.3 * t) + rng.normal(0, 1, t.size)
 
 # One unit = one storage row (up to 60 blocks). Units are self-describing.
 unit, block_min, block_max, block_mean = fluxcode.encode_unit(x)
-y = fluxcode.decode_unit(unit)
+y, _ = fluxcode.decode_unit(unit)                           # (values, times); times is None here
 print(f"{8 * len(unit) / x.size:.2f} bits/sample, max error {np.abs(y - x).max():.3f}")
 
 # Decimal data (here a price rounded to cents) decodes to the identical float64.
 price = np.round(20 + np.cumsum(rng.normal(0, 0.05, 5_000)), 2)
-assert np.array_equal(fluxcode.decode_unit(fluxcode.encode_unit(price).unit), price)
+assert np.array_equal(fluxcode.decode_unit(fluxcode.encode_unit(price).unit).values, price)
+
+# Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly.
+stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(1, "ms")
+stamps[12_345:] += np.timedelta64(2, "s")                  # a gap: only its block pays for it
+values, times = fluxcode.decode_unit(fluxcode.encode_unit(x, times=stamps).unit)
+assert np.array_equal(times, stamps)
 
 # Replace block 3 and append block 30 as more of the stream arrives.
 new_blocks = 100 * np.sin(2 * np.pi * 3.3 * (np.arange(2000).reshape(2, 1000) / 1000 + 30))
 unit, mins, maxs, means = fluxcode.update(unit, indices=[3, 30], blocks=new_blocks)
-assert fluxcode.decode_unit(unit).size == 31_000
+assert fluxcode.decode_unit(unit).values.size == 31_000
 
-# Long series: encode() splits into units; decode() returns one array per unit.
+# Long series: encode() splits into units; decode() returns one (values, times) per unit.
 units, mins, maxs, means = fluxcode.encode(np.tile(x, 5))
-assert sum(map(len, fluxcode.decode(units))) == 5 * x.size
+assert sum(len(decoded.values) for decoded in fluxcode.decode(units)) == 5 * x.size
 ```
 
 This prints `5.81 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
 which set the step to 0.25σ.
 
-- `encode_unit(x, params)`: one unit (a 16-byte header and a zstd frame) of up to
-  `blocks_per_unit` blocks of `block_len` samples. It also returns per-block min, max and mean
-  (over finite samples) as summary statistics: they come free with encoding, and decoding
-  doesn't need them. A short last block is padded, and trimmed again on decode.
-- `decode_unit(unit)`: the unit records its block length and sample count; nothing else is needed.
-- `update(unit, indices, blocks, params)`: replace or append whole blocks; untouched blocks decode
-  to identical values. Returns the new unit and min/max/mean of the updated blocks, in `indices`
-  order. A partial last block must be replaced by a full one before appending after it.
-- `encode(x, params)` / `decode(units)`: bulk versions. `encode` splits a long series into full
-  units and returns `(units, block_mins, block_maxs, block_means)`, one entry per unit; `decode`
-  returns one array per unit.
+- `encode_unit(x, params, *, times=None, time_unit=None)`: one unit (a 16-byte header and a zstd
+  frame) of up to `blocks_per_unit` blocks of `block_len` samples. It also returns per-block min,
+  max and mean (over finite samples) as summary statistics: they come free with encoding, and
+  decoding doesn't need them. A short last block is padded, and trimmed again on decode.
+  `times` optionally stores one timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or
+  integer ticks with `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and
+  non-decreasing; equal timestamps are fine. A regular grid costs about 40 bytes per unit.
+- `decode_unit(unit)`: returns `DecodedUnit(values, times)`. `times` is `datetime64` in the
+  encoded unit, or `None` for a unit encoded without times. The unit records everything needed.
+- `update(unit, indices, blocks, params, *, times=None)`: replace or append whole blocks;
+  untouched blocks decode to identical values. `times` (shaped like `blocks`) is required exactly
+  when the unit has a time axis. Returns the new unit and min/max/mean of the updated blocks, in
+  `indices` order. A partial last block must be replaced by a full one before appending after it.
+- `encode(x, params, *, times=None, time_unit=None)` / `decode(units)`: bulk versions. `encode`
+  splits a long series (and its times) into full units and returns
+  `(units, block_mins, block_maxs, block_means)`, one entry per unit; `decode` returns one
+  `DecodedUnit` per unit.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `block_len=1000` (a multiple of 8, at most 65,536),

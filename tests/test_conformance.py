@@ -16,7 +16,7 @@ OFF = Params(noise_floor_sigma=None)
 
 def rows(unit):
     """(head, param, residual) of a one-unit encoding."""
-    head, param, _, residual, _ = unit_rows(unit)
+    head, param, _, residual, _, _ = unit_rows(unit)
     return head, param, residual
 
 
@@ -153,7 +153,7 @@ def test_lengths_and_short_units(n):
     last = x[(len(lo) - 1) * 1000:]
     assert lo[-1] == last.min() and hi[-1] == last.max()
     assert np.isclose(mean[-1], last.mean())
-    assert fluxcode.decode_unit(units[-1]).shape == (n - (len(units) - 1) * 60_000,)
+    assert fluxcode.decode_unit(units[-1]).values.shape == (n - (len(units) - 1) * 60_000,)
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -296,8 +296,8 @@ def test_units_are_self_describing(block_len, n_blocks, flagged):
     elif flagged:
         x[0] = np.inf
     unit, _, _, _ = fluxcode.encode_unit(x, Params(block_len=block_len, blocks_per_unit=60))
-    assert _format.unpack_header(unit) == (block_len, len(x), n_blocks, False)
-    y = fluxcode.decode_unit(unit)
+    assert _format.unpack_header(unit) == (block_len, len(x), n_blocks, False, 0)
+    y = fluxcode.decode_unit(unit).values
     assert y.shape == x.shape
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
 
@@ -311,8 +311,14 @@ def _with_header(unit, **fields):
 
 @pytest.mark.parametrize("fields,msg", [
     ({"version": 2}, "version 2"),
-    ({"flags": 2}, "reserved"),
+    ({"flags": 0x10}, "reserved"),
+    ({"flags": 0x80}, "reserved"),
+    ({"flags": 5 << 1}, "time unit 5"),
+    ({"flags": 7 << 1}, "time unit 7"),
+    ({"flags": 4 << 1}, "doesn't fit"),  # a time axis, but the body has no time fields
     ({"reserved": 1}, "reserved"),
+    ({"num_samples": 2500 | (1 << 40)}, "reserved"),  # the top 3 bytes of the sample count
+    ({"num_samples": 2500 | (1 << 63)}, "reserved"),
     ({"block_len": 1001}, "block length"),
     ({"block_len": 0}, "block length"),
     ({"num_samples": 0}, "sample count"),
@@ -341,15 +347,15 @@ def test_try_byte_planes_never_bigger_and_decodes_the_same(kind):
         bit_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits)).unit
         best_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits, try_byte_planes=True)).unit
         assert len(best_unit) <= len(bit_unit)
-        np.testing.assert_array_equal(fluxcode.decode_unit(best_unit), fluxcode.decode_unit(bit_unit))
-        if not _format.unpack_header(best_unit)[3]:
+        np.testing.assert_array_equal(fluxcode.decode_unit(best_unit).values, fluxcode.decode_unit(bit_unit).values)
+        if not _format.unpack_header(best_unit).byte_planes:
             assert best_unit == bit_unit
 
 
 def test_try_byte_planes_picks_byte_planes_on_repeating_cycles():
     params = Params(max_quantize_bits=10, try_byte_planes=True)
     unit = fluxcode.encode_unit(_periodic(), params).unit
-    assert _format.unpack_header(unit)[3]
+    assert _format.unpack_header(unit).byte_planes
     assert len(unit) < 0.8 * len(fluxcode.encode_unit(_periodic(), Params(max_quantize_bits=10)).unit)
 
 
@@ -364,13 +370,13 @@ def test_update_byte_plane_unit():
     assert fluxcode.update(unit, [5], new, params).unit == fluxcode.encode_unit(x2, params).unit
     # Default params re-encode with bit planes; untouched blocks still decode identically
     unit2 = fluxcode.update(unit, [5], new, Params(max_quantize_bits=10)).unit
-    assert not _format.unpack_header(unit2)[3]
-    np.testing.assert_array_equal(fluxcode.decode_unit(unit2), fluxcode.decode_unit(fluxcode.encode_unit(x2, params).unit))
+    assert not _format.unpack_header(unit2).byte_planes
+    np.testing.assert_array_equal(fluxcode.decode_unit(unit2).values, fluxcode.decode_unit(fluxcode.encode_unit(x2, params).unit).values)
 
 
 def test_partial_last_block_is_trimmed():
     x = np.arange(2500.0)
-    np.testing.assert_array_equal(fluxcode.decode_unit(fluxcode.encode_unit(x)[0]), x)
+    np.testing.assert_array_equal(fluxcode.decode_unit(fluxcode.encode_unit(x)[0]).values, x)
 
 
 def test_decode_many_independent_units():
@@ -379,7 +385,8 @@ def test_decode_many_independent_units():
     encs = [fluxcode.encode_unit(x) for x in xs]
     ys = fluxcode.decode([e[0] for e in encs])
     for x, y in zip(xs, ys):
-        np.testing.assert_array_equal(y, x)
+        np.testing.assert_array_equal(y.values, x)
+        assert y.times is None
 
 
 def test_encode_unit_limit():

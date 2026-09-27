@@ -17,7 +17,11 @@ Typical usage:
     unit, block_min, block_max, block_mean = fluxcode.encode_unit(x)
 
     # Decode the unit (lossy: within the error bound, exact for decimal data):
-    x_rec = fluxcode.decode_unit(unit)
+    x_rec, _ = fluxcode.decode_unit(unit)
+
+    # With timestamps (datetime64, or integer ticks with time_unit), stored exactly:
+    unit, *_ = fluxcode.encode_unit(x, times=t)
+    x_rec, t_rec = fluxcode.decode_unit(unit)
 
     # Replace block 3 and append a block (appending needs a full last block):
     unit, mins, maxs, means = fluxcode.update(
@@ -26,9 +30,11 @@ Typical usage:
 """
 
 from ._api import (
+    DecodedUnit,
     EncodedSeries,
     EncodedUnit,
     Params,
+    TimeUnit,
     UpdatedUnit,
     decode,
     decode_unit,
@@ -38,9 +44,11 @@ from ._api import (
 )
 
 __all__ = [
+    "DecodedUnit",
     "EncodedSeries",
     "EncodedUnit",
     "Params",
+    "TimeUnit",
     "UpdatedUnit",
     "decode",
     "decode_unit",

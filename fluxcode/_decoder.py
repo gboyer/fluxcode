@@ -18,20 +18,21 @@ from ._format import (
     E_MAX,
     E_MIN,
     HEAD_DECIMAL,
+    HEAD_IRREGULAR_TIME,
     HEAD_NONFINITE,
     HEAD_ORDER,
     HEAD_RESERVED,
     P_MAX,
     P_MIN,
-    anchor_start,
     byte_planes_view,
     code_planes_view,
     count_flagged,
     get_int64,
-    param_start,
+    grid_params_start,
     planes_view,
     unshuffle_block,
     unzigzag16,
+    value_anchor_start,
 )
 from ._nonfinite import restore_nonfinite
 
@@ -173,16 +174,18 @@ def dequantize_decimal(
 
 
 @njit(nogil=True, cache=True)
-def check_unit(raw_unit: np.ndarray, num_blocks: int) -> tuple[int, int]:
-    """Validates header bytes, parameters and anchors across all blocks in a unit.
+def check_unit(raw_unit: np.ndarray, num_blocks: int, has_time: bool) -> tuple[int, int]:
+    """Validates block flags, grid parameters and value anchors across all blocks in a unit.
 
-    Inspects each block to verify that reserved header bits (4-7) are zero, that
-    exponents/parameters fall within permissible format limits, and that anchors
-    are finite floats (power-of-two blocks) or grid indices below 2^52 (decimal).
+    Inspects each block to verify that reserved block flag bits (5-7) are zero, that the
+    irregular time bit (4) is set only in units with a time axis, that grid parameters
+    fall within permissible format limits, and that value anchors are finite floats
+    (power-of-two blocks) or grid indices below 2^52 (decimal).
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit bytes.
         num_blocks: Number of blocks in the unit.
+        has_time: Whether the unit has a time axis.
 
     Returns:
         A tuple of (status, b):
@@ -193,10 +196,10 @@ def check_unit(raw_unit: np.ndarray, num_blocks: int) -> tuple[int, int]:
     anchor_float = anchor_bits.view(np.float64)
     for block_idx in range(num_blocks):
         header_byte = raw_unit[block_idx]
-        param_val = int(get_int64(raw_unit, param_start(num_blocks), num_blocks, block_idx))
-        anchor_bits[0] = get_int64(raw_unit, anchor_start(num_blocks), num_blocks, block_idx)
-        # Check that reserved bits 4-7 are all zero
-        if header_byte & HEAD_RESERVED:
+        param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
+        anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
+        # Check that reserved bits 5-7 are zero, and bit 4 only set with a time axis
+        if header_byte & HEAD_RESERVED or (header_byte & HEAD_IRREGULAR_TIME and not has_time):
             return BAD_HEAD, block_idx
         if header_byte & HEAD_DECIMAL:
             # Check decimal exponent range [-22, 22]
@@ -213,7 +216,7 @@ def check_unit(raw_unit: np.ndarray, num_blocks: int) -> tuple[int, int]:
 
 
 @njit(nogil=True, cache=True)
-def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool) -> None:
+def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool, has_time: bool) -> None:
     """Decodes all blocks of an uncompressed body into output array.
 
     Fuses unshuffling, unzigzagging, integration, dequantization, and
@@ -223,24 +226,25 @@ def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool)
         raw_unit: 1D uint8 array of uncompressed body bytes (must pass check_unit).
         out_blocks: Output 2D float64 array of shape (N, n) receiving decoded samples.
         byte_planes: Whether the residuals are stored as byte planes (unit flags bit 0).
+        has_time: Whether the unit has a time axis (time columns before the residuals).
     """
     num_blocks, block_len = out_blocks.shape
     # Anchors: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
     anchor_bits = np.empty(num_blocks, np.int64)
     for block_idx in range(num_blocks):
-        anchor_bits[block_idx] = get_int64(raw_unit, anchor_start(num_blocks), num_blocks, block_idx)
+        anchor_bits[block_idx] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
     anchor_floats = anchor_bits.view(np.float64)
     scratch_low_bytes = np.empty(block_len, np.uint8)
     scratch_high_bytes = np.empty(block_len, np.uint8)
     block_residuals = np.empty(block_len, np.int32)
     # Obtain views into residual and code bit planes
-    bit_planes = planes_view(raw_unit, num_blocks, block_len)
-    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, block_len)
-    code_planes = code_planes_view(raw_unit, num_blocks, block_len, count_flagged(raw_unit, num_blocks))
+    bit_planes = planes_view(raw_unit, num_blocks, block_len, has_time)
+    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, block_len, has_time)
+    code_planes = code_planes_view(raw_unit, num_blocks, block_len, count_flagged(raw_unit, num_blocks), has_time)
     flagged_block_counter = 0
     for block_idx in range(num_blocks):
         header_byte = raw_unit[block_idx]
-        param_val = int(get_int64(raw_unit, param_start(num_blocks), num_blocks, block_idx))
+        param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
         if byte_planes:
             # Byte planes: the block's low and high zigzag bytes are contiguous
             sample_start = block_idx * block_len

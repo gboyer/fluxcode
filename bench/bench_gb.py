@@ -92,8 +92,8 @@ def main():
         te_sum = td_sum = bits = 0.0
         for s, x in data.items():
             te, (units, lo, hi, _) = best(lambda x=x, p=p: encode_series(x, p), a.reps)
-            td, ys = best(lambda units=units: fluxcode.decode(units), a.reps)  # one array per unit, as rows are read
-            err = np.abs(np.concatenate(ys) - x).reshape(-1, 1000).max(1)
+            td, ys = best(lambda units=units: fluxcode.decode(units), a.reps)  # one DecodedUnit per unit, as rows are read
+            err = np.abs(np.concatenate([decoded.values for decoded in ys]) - x).reshape(-1, 1000).max(1)
             worst = 100 * (err / np.where(hi > lo, hi - lo, 1.0)).max()
             nb = len(lo)
             b = 8 * sum(map(len, units))

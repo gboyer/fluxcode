@@ -582,7 +582,7 @@ def encode_block(
 
 @njit(inline="always")
 def _store_anchor(
-    out_anchors: np.ndarray,
+    out_value_anchors: np.ndarray,
     anchor_floats: np.ndarray,
     block_idx: int,
     head_byte: int,
@@ -592,8 +592,8 @@ def _store_anchor(
     """Writes block b's anchor: the decimal grid index K0, or the float64 bits of lower_bound.
 
     Args:
-        out_anchors: Output 1D int64 array of length N receiving anchors.
-        anchor_floats: out_anchors viewed as float64, made once per unit rather
+        out_value_anchors: Output 1D int64 array of length N receiving anchors.
+        anchor_floats: out_value_anchors viewed as float64, made once per unit rather
             than per block.
         block_idx: Zero-based block index.
         head_byte: Block header byte; HEAD_DECIMAL selects the decimal anchor.
@@ -601,7 +601,7 @@ def _store_anchor(
         decimal_base: Grid index K0 of lo on a detected decimal grid.
     """
     if head_byte & HEAD_DECIMAL:
-        out_anchors[block_idx] = decimal_base
+        out_value_anchors[block_idx] = decimal_base
     else:
         anchor_floats[block_idx] = lower_bound
 
@@ -667,21 +667,21 @@ def _apply_target_reallocation(
     actual_pick_len: int,
     scratch_quantized: np.ndarray,
     scratch_held: np.ndarray,
-    out_headers: np.ndarray,
-    out_parameters: np.ndarray,
-    out_anchors: np.ndarray,
+    out_block_flags: np.ndarray,
+    out_grid_params: np.ndarray,
+    out_value_anchors: np.ndarray,
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
 ) -> None:
     """Re-encodes blocks selected by target allocation and rolls back if bits do not drop."""
     num_blocks, block_len = block_matrix.shape
     backup_residuals = np.empty(block_len, np.int16)
-    anchor_floats = out_anchors.view(np.float64)
+    anchor_floats = out_value_anchors.view(np.float64)
     for block_idx in range(num_blocks):
         if bit_reductions[block_idx] > 0:
-            prev_header = out_headers[block_idx]
-            prev_param = out_parameters[block_idx]
-            prev_anchor = out_anchors[block_idx]
+            prev_header = out_block_flags[block_idx]
+            prev_param = out_grid_params[block_idx]
+            prev_anchor = out_value_anchors[block_idx]
             backup_residuals[:] = out_residuals[block_idx]
             block_samples = block_matrix[block_idx]
             has_nonfinite = prev_header & HEAD_NONFINITE
@@ -689,7 +689,7 @@ def _apply_target_reallocation(
                 fill_nonfinite(block_samples, scratch_held, out_codes[block_idx])
                 block_samples = scratch_held
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
-            out_headers[block_idx], out_parameters[block_idx], decimal_base = encode_block(
+            out_block_flags[block_idx], out_grid_params[block_idx], decimal_base = encode_block(
                 block_samples,
                 base_lower_bounds[block_idx],
                 base_upper_bounds[block_idx],
@@ -701,20 +701,20 @@ def _apply_target_reallocation(
                 out_residuals[block_idx],
             )
             _store_anchor(
-                out_anchors,
+                out_value_anchors,
                 anchor_floats,
                 block_idx,
-                out_headers[block_idx],
+                out_block_flags[block_idx],
                 base_lower_bounds[block_idx],
                 decimal_base,
             )
             if has_nonfinite:
-                out_headers[block_idx] |= HEAD_NONFINITE
+                out_block_flags[block_idx] |= HEAD_NONFINITE
             # Roll back if re-quantization failed to reduce estimated bits
             if estimate_bits(out_residuals[block_idx]) >= estimated_bits_per_block[block_idx]:
-                out_headers[block_idx] = prev_header
-                out_parameters[block_idx] = prev_param
-                out_anchors[block_idx] = prev_anchor
+                out_block_flags[block_idx] = prev_header
+                out_grid_params[block_idx] = prev_param
+                out_value_anchors[block_idx] = prev_anchor
                 out_residuals[block_idx, :] = backup_residuals
 
 
@@ -729,9 +729,9 @@ def encode_unit(
     target_bits: float,
     decimal: bool,
     pick_len: int,
-    out_headers: np.ndarray,
-    out_parameters: np.ndarray,
-    out_anchors: np.ndarray,
+    out_block_flags: np.ndarray,
+    out_grid_params: np.ndarray,
+    out_value_anchors: np.ndarray,
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
     out_block_minima: np.ndarray,
@@ -750,9 +750,9 @@ def encode_unit(
         target_bits: Target bits per sample (0.0 if disabled).
         decimal: Whether decimal detection is active.
         pick_len: Sample count used for predictor order selection.
-        out_headers: Output 1D uint8 array of length N receiving header bytes.
-        out_parameters: Output 1D int64 array of length N receiving parameters.
-        out_anchors: Output 1D int64 array of length N receiving anchors (float64 bits of
+        out_block_flags: Output 1D uint8 array of length N receiving header bytes.
+        out_grid_params: Output 1D int64 array of length N receiving parameters.
+        out_value_anchors: Output 1D int64 array of length N receiving anchors (float64 bits of
             the block minimum, or its decimal grid index).
         out_residuals: Output 2D int16 array of shape (N, n) receiving residuals.
         out_codes: Output 2D uint8 array of shape (N, n) receiving sample codes.
@@ -772,7 +772,7 @@ def encode_unit(
     base_lower_bounds = np.empty(num_blocks)
     base_upper_bounds = np.empty(num_blocks)
     estimated_bits_per_block = np.zeros(num_blocks)
-    anchor_floats = out_anchors.view(np.float64)
+    anchor_floats = out_value_anchors.view(np.float64)
     for block_idx in range(num_blocks):
         block_samples = block_matrix[block_idx]
         block_min, block_max, block_mean, bad_sample_idx = block_stats(block_samples)
@@ -818,7 +818,7 @@ def encode_unit(
             block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits
         )
         block_exponents[block_idx] = planned_exp
-        out_headers[block_idx], out_parameters[block_idx], decimal_base = encode_block(
+        out_block_flags[block_idx], out_grid_params[block_idx], decimal_base = encode_block(
             block_samples,
             block_min,
             block_max,
@@ -829,13 +829,13 @@ def encode_unit(
             scratch_quantized,
             out_residuals[block_idx],
         )
-        _store_anchor(out_anchors, anchor_floats, block_idx, out_headers[block_idx], block_min, decimal_base)
+        _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], block_min, decimal_base)
         if has_nonfinite:
-            out_headers[block_idx] |= HEAD_NONFINITE
+            out_block_flags[block_idx] |= HEAD_NONFINITE
         if use_target:
-            if out_headers[block_idx] & HEAD_DECIMAL:
+            if out_block_flags[block_idx] & HEAD_DECIMAL:
                 # Decimal grid is already 10^p; track equivalent binary exponent
-                block_exponents[block_idx] = math.floor(math.log2(10.0 ** out_parameters[block_idx]))
+                block_exponents[block_idx] = math.floor(math.log2(10.0 ** out_grid_params[block_idx]))
             coarsest_exponents[block_idx] = max(
                 range_exponent(block_min, block_max, min_bits), block_exponents[block_idx]
             )
@@ -862,9 +862,9 @@ def encode_unit(
                 actual_pick_len,
                 scratch_quantized,
                 scratch_held,
-                out_headers,
-                out_parameters,
-                out_anchors,
+                out_block_flags,
+                out_grid_params,
+                out_value_anchors,
                 out_residuals,
                 out_codes,
             )

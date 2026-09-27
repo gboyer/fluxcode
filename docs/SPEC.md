@@ -1,8 +1,8 @@
 # fluxcode — specification
 
 Lossy (bounded-error) and, for decimal data, lossless compression of 1 kHz float64 time
-series. One compressed unit holds one channel-minute: up to 60 blocks of 1000 samples.
-Implementation: the `fluxcode` package (`encode_unit` / `decode_unit` / `update`, bulk `encode` /
+series, with their timestamps stored exactly if given (§2a). One compressed unit holds one
+channel-minute: up to 60 blocks of 1000 samples. Implementation: the `fluxcode` package (`encode_unit` / `decode_unit` / `update`, bulk `encode` /
 `decode`, `Params`).
 
 This document covers the format, the encoding algorithm and its guarantees. Speed and
@@ -13,8 +13,9 @@ choices are in [REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quanti
 ## 1. Parameters
 
 All parameters are **encoder-only**. The unit is self-describing: its header records the block
-length and sample count, and each block records its own order, grid (power-of-two exponent or
-decimal step) and anchor, so a decoder needs only the unit.
+length, sample count and time unit, and each block records its own order, grid (power-of-two
+exponent or decimal step) and anchor, and its start time and time step, so a decoder needs only
+the unit. Timestamps are data, not parameters (§2a).
 
 | parameter | values | default | effect |
 |---|---|---|---|
@@ -33,8 +34,8 @@ finally the target (if set and the unit is over budget) coarsens blocks further,
 e_coarse. With both the noise floor and the target on, each block takes the coarser step.
 
 Fixed by this spec: zstd level 3, blocks interleaved by field.
-Block length `n` (`block_len`) is fixed per deployment and must be a multiple of 8 (1000 in everything
-measured); `N` ≤ `blocks_per_unit` (60) blocks per unit.
+The block length `block_len` is fixed per deployment and must be a multiple of 8 (1000 in everything
+measured); `num_blocks` ≤ `blocks_per_unit` (60) blocks per unit.
 
 Residuals are bit-shuffled by default: smaller overall than byte planes, and the best bound on
 the cost of noisy, wide signals. A unit may use byte planes instead (header flag, §5), which
@@ -42,22 +43,23 @@ the cost of noisy, wide signals. A unit may use byte planes instead (header flag
 
 ## 2. Units and summary statistics
 
-**A unit is one storage artifact** (e.g. a database row): up to `blocks_per_unit` blocks of `n`
-samples, encoded and decoded together. Units are independent. Each can hold a different number of
-blocks (a stream's row may hold half an hour, then later be updated to the full hour), and even a
-different `n`. The bulk `encode` just splits a long series into full units.
+**A unit is one storage artifact** (e.g. a database row): up to `blocks_per_unit` blocks of
+`block_len` samples, encoded and decoded together. Units are independent. Each can hold a different
+number of blocks (a stream's row may hold half an hour, then later be updated to the full hour), and
+even a different `block_len`. The bulk `encode` just splits a long series into full units.
 
-**Decoding needs only the unit.** The header records `n` and the sample count S, and each block
-stores its own anchor (§5), so no index column or length has to be kept beside it. **A short last
-block is padded by repeating its last sample** (which leaves its min and max unchanged), and
-decoding trims it back to S samples.
+**Decoding needs only the unit.** The header records `block_len` and the sample count
+`num_samples`, and each block stores its own anchor (§5), so no index column or length has to be
+kept beside it. **A short last block is padded by repeating its last sample** (which leaves its min
+and max unchanged), and decoding trims it back to `num_samples` samples.
 
 Per block the encoder also returns `lo = min(x)`, `hi = max(x)` and the mean (over the real,
 finite samples) as **summary statistics**. They come free with encoding (min and max size the
 grid; the sum is the non-finite check), and the caller may store them as index columns, but
 decoding never uses them.
 
-`n` is at most 65,536 and S at most 2^26: not format limits, but the bounds decoders use to reject
+`block_len` is at most 65,536 and `num_samples` at most 2^26: not format limits (the header field holds
+up to 2^40 − 1 samples), but the bounds decoders use to reject
 implausible headers before decompressing.
 **Any finite block encodes**, from ranges of a few subnormals (2^−1074) to ranges past 2^1023,
 where `hi − lo` itself overflows (§3.1, §3.3, §4). Each extreme costs one decision per block;
@@ -83,6 +85,69 @@ two code planes in the unit's nonfinite field (§5): 00 finite, 01 NaN, 10 +inf,
   (noisy-sine 5.42 → 5.41 bits/sample); skipping the noise floor there would cost 2.5×.
 - **Cost:** a block with no non-finite values encodes exactly as if the feature didn't exist. A
   flagged block adds n/4 bytes of mostly-zero planes before compression.
+
+## 2a. Time axis
+
+A unit may also store the samples' **timestamps, exactly**. They are optional: a unit without them
+is byte-identical to one written before the time axis existed, and decodes with `times = None`.
+
+**Ticks and units.** Timestamps are int64 ticks since 1970-01-01 in one of the Arrow and numpy
+datetime64 units, recorded in the header (§5). The unit only fixes the range and meaning of a
+tick; storage cost doesn't depend on it (the per-block GCD below absorbs a coarser grid):
+
+| time unit | code | int64 range around 1970 |
+|---|---|---|
+| s | 1 | ± 2.9 · 10^11 years |
+| ms | 2 | ± 2.9 · 10^8 years |
+| µs | 3 | ± 292,000 years |
+| ns | 4 | ± 292 years (1677–2262) |
+
+Timestamps are **naive**: the format stores no time zone. Store UTC: local time can repeat or skip
+an hour, which breaks the ordering rule. int64 minimum (datetime64's NaT) is never a timestamp.
+
+**Ordering.** The encoder requires the whole series to be **non-decreasing** and rejects any
+decrease. Equal consecutive timestamps are allowed. The format itself enforces the order within a
+block (deltas are unsigned) and between block starts (start increases are unsigned), so any
+decoded unit has non-decreasing times within each block and non-decreasing block starts.
+
+**Per block** (`time_start`, `time_step`, `time_delta_planes` in §5):
+- **Regular block:** every delta `time[i] − time[i−1]` is equal (possibly 0). It stores only its
+  start and that step: `time[i] = time_start + i · time_step`. No per-sample data.
+- **Irregular block:** any other block. `time_step` is the GCD of its deltas, and each sample
+  stores the quotient `(time[i] − time[i−1]) / time_step` (0 for sample 0) in 64 bit planes.
+  If a single delta exceeds int64 maximum (a block spanning more than half the int64 range), the
+  GCD can't be stored and the block uses `time_step = 1` with the raw deltas.
+- **Padding** of a short last block extends the grid when its real samples are regular (so the
+  block stays regular), and otherwise repeats the last timestamp. Decoding trims it.
+
+A regular series costs only its per-block start and step (about 40 bytes per 60-block unit). A
+gap costs only its own block. Measured on one-minute units (`bench/time_axis.py`, Apple M3):
+
+| timestamps | irregular blocks | bytes | bits/sample | encode +µs | decode +µs |
+|---|---|---|---|---|---|
+| regular 1 kHz | 0/60 | 41 | 0.005 | 56 | 30 |
+| 1 kHz, 20 gaps | 19/60 | 664 | 0.089 | 154 | 106 |
+| 1 kHz, 1% dropped | 60/60 | 3,016 | 0.40 | 361 | 326 |
+| drifting clock (0.99998 ms) | 60/60 | 1,372 | 0.18 | 321 | 357 |
+| jitter σ = 10 µs, µs resolution | 60/60 | 51,974 | 6.9 | 555 | 351 |
+| jitter σ = 10 µs, ns resolution | 60/60 | 125,367 | 16.7 | 452 | 409 |
+| Poisson events (mean 1 ms), µs | 60/60 | 88,379 | 11.8 | 581 | 355 |
+| deadband logging on a ms grid | 60/60 | 56,875 | 7.6 | 714 | 472 |
+
+For scale, the same unit's values take 20,951 bytes, 307 µs to encode and 196 µs to decode.
+Irregular timestamps can cost more than the values: their entropy is what it is.
+
+**Design notes** (measured while designing, on the timestamps above):
+- The GCD matters: without it, µs or ms data stored in ns ticks costs 1.4–2.6× more (zstd alone
+  doesn't find the grid). With it, the unit's resolution doesn't change the size.
+- Plain deltas beat delta-of-deltas and residuals from the nominal grid overall: the grid
+  residual saves about 1 bit/sample on jitter around a fixed grid but loses on gaps, drift and
+  events.
+- Bit planes and byte planes for the deltas are within a few percent either way; bit planes
+  match the residuals.
+- Block starts are stored as unsigned increases (monotonic by requirement), which costs 45
+  bytes per regular unit against 280 raw. The value anchor is not transformed: XOR with the
+  previous anchor (+0.1% overall) and zigzagged integer deltas (−0.03%) were both noise.
 
 ## 3. Encoding one block
 
@@ -286,6 +351,11 @@ and decoders compute it directly. From 971 up, `q·2^e` itself can overflow whil
 so evaluate at half scale: `y = min(2·(lo/2 + q·2^(e−1)), DBL_MAX)`, with `y = lo` where q = 0
 (lo/2 rounds if lo is subnormal). That is bit-identical to `lo + q·2^e` wherever the latter is finite.
 
+**Time axis** (header time unit ≠ 0): block starts are the running sum of the `time_start` field
+(§5). A regular block (block flag bit 4 clear) is `time[i] = start + i · time_step`; an irregular
+one is `time[i] = start + time_step · (quotient[1] + … + quotient[i])`. All arithmetic is exact
+in 64 bits; a decoder rejects a unit whose times would exceed int64 maximum (§5).
+
 **Non-finite codes** (head bit 3): after dequantizing, samples with code 01, 10 or 11 are
 overwritten with NaN (the canonical quiet NaN), +inf or −inf. Groups of 8 samples whose two code
 bytes are both 0 are skipped.
@@ -296,36 +366,76 @@ A unit is a 16-byte header followed by one zstd frame holding the body (level 3,
 recorded, no checksum). The header is uncompressed, so a decoder can validate it before
 decompressing:
 
-| header field | type (little-endian) | contents |
-|---|---|---|
-| version | uint8 | 1 (a decoder rejects others) |
-| flags | uint8 | bit 0: residuals in byte planes instead of bit planes; bits 1–7: 0 (a decoder rejects them) |
-| reserved | uint16 | 0 (a decoder rejects others) |
-| n | uint32 | block length: a multiple of 8, 8 to 65,536 |
-| S | uint64 | sample count, 1 to 2^26. The unit holds N = ceil(S / n) blocks |
+| offset | header field | type (little-endian) | contents |
+|---|---|---|---|
+| 0 | version | uint8 | 1 (a decoder rejects others) |
+| 1 | flags | uint8 | bit 0: `residual_planes` are byte planes instead of bit planes; bits 1–3: `time_unit`, 0 for no time axis, 1 s, 2 ms, 3 µs, 4 ns (5–7 rejected); bits 4–7: 0 (rejected otherwise) |
+| 2–3 | reserved | uint16 | 0 (a decoder rejects others) |
+| 4–7 | `block_len` | uint32 | block length: a multiple of 8, 8 to 65,536 |
+| 8–12 | `num_samples` | uint40 | sample count, 1 to 2^26 (§2). The unit holds `num_blocks` = ceil(`num_samples` / `block_len`) blocks |
+| 13–15 | reserved | 3 bytes | 0 (a decoder rejects others): the top 3 bytes of a uint64 whose low 40 bits are `num_samples` |
 
-For `N` blocks of `n` samples, `F` of them flagged non-finite, the body is these fields, in this
-order:
+Counts used below: `num_nonfinite_blocks` blocks have block flag bit 3 set, and
+`num_irregular_blocks` have bit 4 set. The body is these fields, in this order; the three time
+fields are present only when `time_unit` ≠ 0:
 
-| field | size | contents |
+| field | size in bytes | contents |
 |---|---|---|
-| head | N bytes | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bits 4–7: 0 (a decoder rejects them) |
-| param | 8 × N bytes | the block's int64 parameter (exponent −1074 ≤ `e` ≤ 1023, or −22 ≤ `p` ≤ 22 in decimal mode), little-endian, **byte-planed**: byte 0 of every block, then byte 1 of every block, … byte 7 |
-| anchor | 8 × N bytes | the block's anchor (§3.3), byte-planed like param: the bits of the float64 `lo` (finite; 0.0 for a block with no finite samples), or the int64 `K0` in decimal mode (\|K0\| < 2^52) |
-| residual | 2 × N × n bytes | flags bit 0 clear: bit plane j = 0..15, then block b = 0..N−1, then byte i = 0..n/8−1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block b, then sample i |
-| nonfinite | 2 × F × n/8 bytes | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
+| `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bit 4: irregular time axis (§2a; rejected when `time_unit` = 0); bits 5–7: 0 (rejected otherwise) |
+| `grid_params` | 8 × `num_blocks` | the block's grid parameter as int64: the power-of-two exponent (−1074 to 1023) or, in decimal mode, the decimal power (−22 to 22). Byte-planed: byte 0 of every block, then byte 1 of every block, … byte 7. Eight bytes leave room for other grid parameters; the unused byte planes compress to almost nothing |
+| `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed like `grid_params`: the bits of the float64 block minimum (finite; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52) |
+| `time_start` | 8 × `num_blocks` | block 0: its start time as int64; block b > 0: its start minus block b − 1's start, as uint64. Byte-planed |
+| `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the constant step of a regular block (≥ 0), or the GCD of an irregular block's deltas (≥ 1) |
+| `residual_planes` | 2 × `num_blocks` × `block_len` | flags bit 0 clear: bit plane j = 0..15, then block, then byte i = 0..`block_len`/8 − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block, then sample |
+| `nonfinite_code_planes` | 2 × `num_nonfinite_blocks` × `block_len` / 8 | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
+| `time_delta_planes` | 64 × `num_irregular_blocks` × `block_len` / 8 | per sample of an irregular block, the uint64 quotient `(time[i] − time[i−1]) / time_step`, 0 for sample 0. Bit plane j = 0..63, then the irregular blocks in block order, then byte i; bit k of byte i is bit j of the quotient of sample 8i + k |
 
 ```
-body size = 17N + 2Nn + F·n/4
+body_size = 17 × num_blocks + 2 × num_blocks × block_len + num_nonfinite_blocks × block_len / 4
+          + (time_unit ≠ 0) × (16 × num_blocks + 8 × num_irregular_blocks × block_len)
 ```
 
-A decoder checks the frame's recorded content size against the header's N and n before
-decompressing (it must lie between the sizes for F = 0 and F = N), then the exact size once the
-head bytes give F, and each block's parameter and anchor ranges. A unit with no flagged blocks has
-an empty nonfinite field.
+A decoder checks the frame's recorded content size against the header before decompressing (it
+must lie between the sizes with no flagged and all blocks flagged), then the exact size once
+`block_flags` give both counts. It then checks each block's flags, grid parameter and value anchor
+ranges, and, for a time axis, rejects:
+- a first start of int64 minimum, or a running sum of `time_start` above int64 maximum;
+- `time_step` < 0, or `time_step` = 0 on an irregular block;
+- an irregular block whose first quotient isn't 0;
+- any time above int64 maximum.
+
+A unit with no flagged blocks has an empty `nonfinite_code_planes` field, and one with only
+regular blocks an empty `time_delta_planes` field.
 
 **Test vector for the bit order:** a block whose `u[3] = 0x0020` and `u[6] = 0x0400` (all others 0)
 has byte 0 of plane 5 = `0b00001000` and byte 0 of plane 10 = `0b01000000`. All other plane bytes are 0.
+
+**Worked example with a time axis** (`tests/test_time.py::test_worked_example_layout`):
+`block_len` = 8, `num_samples` = 20, so `num_blocks` = 3; ns ticks (small, for readability).
+
+```
+times   block 0: 1000 1010 1020 1030 1040 1050 1060 1070   regular
+        block 1: 1080 1090 1100 1130 1140 1150 1160 1170   irregular: a gap after 1100
+        block 2: 1180 1190 1200 1210 + 4 padding samples   regular: padding extends the grid, 1220 … 1250
+values  constant per block: 2.5, 2.25, 3.0   (power-of-two mode)
+```
+
+Header: `01 08 00 00 08 00 00 00 14 00 00 00 00 00 00 00` (flags 0x08: `time_unit` 4 in bits 1–3).
+Body: 211 bytes = 17 × 3 + 2 × 3 × 8 + 16 × 3 + 8 × 1 × 8.
+
+```
+offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
+0–2      block_flags          3      bit 4 set on block 1 only
+3–26     grid_params          24
+27–50    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
+                                     plane 6 = 04 02 08, plane 7 = 40 40 40
+51–74    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
+                                     planes 2–7 = 00 00 00
+75–98    time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
+99–146   residual_planes      48
+147–210  time_delta_planes    64     block 1's quotients [0, 1, 1, 3, 1, 1, 1, 1]:
+                                     plane 0 = 0xFE, plane 1 = 0x08, planes 2–63 = 0x00
+```
 
 ## 6. Guarantees
 
@@ -352,12 +462,17 @@ has byte 0 of plane 5 = `0b00001000` and byte 0 of plane 10 = `0b01000000`. All 
   decodes as the decimal itself.
 - **Decoded data is a fixed point:** decode(encode(y)) = y for any decoded y. The unit bytes are
   identical from the second encode on.
+- **Timestamps are exact.** Given times decode to the identical int64 ticks, in the same unit.
+  Decoded times are non-decreasing within every block, and block starts never decrease (§2a).
 - **Edits are stable.** Changing a sample moves the grid only when the range crosses a power of
   two. (With the grid scaled to the range, a new max re-rounds every sample: in testing, 95% of
   untouched samples changed, against 3% here.)
 - **`update` leaves other blocks untouched.** Replacing or appending whole blocks of a unit
-  carries the other blocks' head, parameter, anchor and residuals over unchanged, so they decode to
-  identical values. Without a target, the updated unit is byte-identical to encoding the updated
+  carries the other blocks' flags, grid parameter, value anchor and residuals over unchanged, so
+  they decode to identical values. With a time axis, `update` takes the new blocks' times (required
+  exactly when the unit has one), decodes the other blocks' times exactly and re-derives every
+  block's time rows, which reproduces the untouched blocks' rows byte for byte; the updated series
+  must be non-decreasing throughout. Without a target, the updated unit is byte-identical to encoding the updated
   series from scratch (every block is encoded independently). The sample count follows the blocks:
   a partial last block stays partial until it is replaced by a full one, and blocks can be
   appended only after a full last block.
@@ -374,9 +489,11 @@ has byte 0 of plane 5 = `0b00001000` and byte 0 of plane 10 = `0b01000000`. All 
 5. **Order independence:** a unit written with any `diff_orders` setting decodes with the same decoder.
 6. **Edge cases:** constant block (all q = 0, decodes to lo exactly); range just below a power
    of two (exponent bump); a block whose range exceeds 2^B decimal steps (falls back to the
-   power-of-two grid); N < 60; a short last block; units of different N and n.
-   **Self-describing units:** decode_unit needs only the unit and returns exactly S samples;
-   headers with another version, nonzero flags or reserved bits, an invalid n or S, or a body
+   power-of-two grid); fewer than 60 blocks; a short last block; units of different block counts
+   and block lengths.
+   **Self-describing units:** decode_unit needs only the unit and returns exactly `num_samples`
+   samples; headers with another version, reserved flag bits, a time unit of 5–7, nonzero reserved
+   bytes (including the top 3 bytes of the sample count), an invalid `block_len` or `num_samples`, or a body
    size that doesn't fit them are rejected, as are non-finite float anchors and decimal anchors
    of 2^52 or more.
 7. **Update:** untouched blocks decode identically; without a target, `update` is byte-identical
@@ -394,6 +511,15 @@ has byte 0 of plane 5 = `0b00001000` and byte 0 of plane 10 = `0b01000000`. All 
    It may fire on the float rounding noise of a smooth polynomial (the quadratic), with no
    effect, since that σ is far below the B-bit step. On all clean test signals the unit is
    byte-identical with the noise floor on (f = 0.01–1) and off.
+11. **Time axis:** datetime64 in s, ms, µs and ns, and integer ticks with a time unit, round-trip
+   exactly and in their unit; units without times decode `times = None`; regular series store no
+   planes; a gap makes only its block irregular, with the GCD as its step; equal timestamps,
+   all-equal blocks, short last blocks, ticks at both ends of int64 and a block spanning more than
+   half of it round-trip; the worked example in §5 matches byte for byte. The encoder rejects
+   decreasing times (within and across blocks), NaT, unsupported dtypes and units, and length
+   mismatches; the decoder rejects each corrupt time field listed in §5. `update` with times is
+   byte-identical to encoding the edited series, and rejects missing, unexpected, mis-shaped,
+   wrong-unit or out-of-order times.
 
 ## References
 

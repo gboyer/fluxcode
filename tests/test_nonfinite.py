@@ -25,7 +25,7 @@ def same(y, x):
 
 def check_round_trip(x, params=Params()):
     unit, lo, hi, mean = fluxcode.encode_unit(x, params)
-    y = fluxcode.decode_unit(unit)
+    y = fluxcode.decode_unit(unit).values
     yv, xv = same(y, x)
     inf = np.isinf(xv)
     np.testing.assert_array_equal(yv[inf], xv[inf])
@@ -71,7 +71,7 @@ def test_all_non_finite_unit_and_padded_last_block():
     check_round_trip(np.full(2500, np.nan))
     x = np.r_[np.arange(2000.0), np.nan, np.inf]  # the padding repeats the last (non-finite) sample
     unit, _ = check_round_trip(x)
-    assert fluxcode.decode_unit(unit)[-1] == np.inf
+    assert fluxcode.decode_unit(unit).values[-1] == np.inf
 
 
 @pytest.mark.parametrize("tail,mean", [([1e308] * 500, 1e308), ([np.nan, 1.0, 2.0, np.inf, np.nan], 1.5),
@@ -90,8 +90,8 @@ def test_finite_blocks_unchanged():
     y = x.copy()
     y[30_500] = np.nan  # block 30
     unit, _, _, _ = fluxcode.encode_unit(y)
-    ha, pa, _, ra, _ = unit_rows(ref)
-    hb, pb, _, rb, codes = unit_rows(unit)
+    ha, pa, _, ra, _, _ = unit_rows(ref)
+    hb, pb, _, rb, codes, _ = unit_rows(unit)
     keep = np.arange(60) != 30
     np.testing.assert_array_equal(ha[keep], hb[keep])
     np.testing.assert_array_equal(pa[keep], pb[keep])
@@ -194,7 +194,7 @@ def test_only_canonical_nan():
     odd = np.array([0x7FF0000000000001, 0xFFF8000000001234], np.uint64).view(np.float64)
     x = np.r_[odd, np.zeros(998)]
     unit, _, _, _ = fluxcode.encode_unit(x)
-    y = fluxcode.decode_unit(unit)
+    y = fluxcode.decode_unit(unit).values
     assert np.isnan(y[:2]).all()
     assert (y[:2].view(np.uint64) == np.array(np.nan).view(np.uint64)).all()
 
@@ -213,7 +213,7 @@ def test_whole_unit_of_one_non_finite_value(n, value, pname):
     x = np.full(n, WHOLE[value])
     unit, lo, hi, mean = fluxcode.encode_unit(x, PARAMS[pname])
     assert np.isnan(lo).all() and np.isnan(hi).all() and np.isnan(mean).all()
-    y = fluxcode.decode_unit(unit)
+    y = fluxcode.decode_unit(unit).values
     np.testing.assert_array_equal(y, x)
     assert len(unit) < 100 + n // 400  # all-zero residuals, one code per sample: compresses to almost nothing
 
@@ -228,7 +228,7 @@ def test_whole_blocks_between_finite_ones(pname):
     x = np.concatenate(blocks)
     check_round_trip(x, PARAMS[pname])
     unit, _, _, _ = fluxcode.encode_unit(x, PARAMS[pname])
-    head, _, _, _, codes = unit_rows(unit)
+    head, _, _, _, codes, _ = unit_rows(unit)
     assert [bool(h & HEAD_NONFINITE) for h in head] == [False, True, False, True, False, True, True, False, True]
     assert (codes[1] == 1).all() and (codes[3] == 2).all() and (codes[5] == 3).all()
 
@@ -239,12 +239,12 @@ def test_update_whole_non_finite_blocks():
     unit, _, _, _ = fluxcode.encode_unit(x)
     unit, mins, maxs, means = fluxcode.update(unit, [2, 5], np.stack([np.full(L, -np.inf), np.full(L, np.nan)]))
     assert np.isnan(mins).all() and np.isnan(maxs).all() and np.isnan(means).all()
-    y = fluxcode.decode_unit(unit).reshape(-1, L)
+    y = fluxcode.decode_unit(unit).values.reshape(-1, L)
     assert (y[2] == -np.inf).all() and np.isnan(y[5]).all()
-    np.testing.assert_array_equal(y[[0, 1, 3, 4]], fluxcode.decode_unit(fluxcode.encode_unit(x)[0]).reshape(-1, L)[[0, 1, 3, 4]])
+    np.testing.assert_array_equal(y[[0, 1, 3, 4]], fluxcode.decode_unit(fluxcode.encode_unit(x)[0]).values.reshape(-1, L)[[0, 1, 3, 4]])
     new = minute("sin-4.12hz", 9)[:L]
     unit, _, _, _ = fluxcode.update(unit, [5], new[None])
-    y2 = fluxcode.decode_unit(unit).reshape(-1, L)
+    y2 = fluxcode.decode_unit(unit).values.reshape(-1, L)
     np.testing.assert_array_equal(y2[:5], y[:5])
     assert np.abs(y2[5] - new).max() <= (new.max() - new.min()) / (2 ** 16 - 0.5)
 
@@ -257,7 +257,7 @@ def test_bulk_encode_rows_round_trip():
     units, mins, maxs, means = fluxcode.encode(x)
     assert [len(m) for m in mins] == [60, 13] and len(units) == len(maxs) == len(means) == 2
     ys = fluxcode.decode(units)
-    y = np.concatenate(ys)
+    y = np.concatenate([decoded.values for decoded in ys])
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
     assert np.nanmax(np.abs(y - x)) < 1.0
 

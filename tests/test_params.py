@@ -44,7 +44,7 @@ def test_accepts_lists_and_float32():
 
 def exponents(x, params):
     units, lo, hi, _ = encode_series(x, params)
-    head, param, _, _, _ = unit_rows(units[0])
+    head, param, _, _, _, _ = unit_rows(units[0])
     return head, param, hi - lo
 
 

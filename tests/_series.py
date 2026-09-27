@@ -19,17 +19,17 @@ def encode_series(x, params=Params()):
 
 def decode_series(units):
     """decode() of encode_series' units, joined back into one series."""
-    return np.concatenate(fluxcode.decode(units))
+    return np.concatenate([decoded.values for decoded in fluxcode.decode(units)])
 
 
 def unit_rows(unit):
-    """(head, param, anchor, residual, codes) of a unit."""
-    raw_body, num_blocks, block_len, _, byte_planes = _api._decompress(unit)
-    return _format.read_unit(raw_body, num_blocks, block_len, byte_planes)
+    """UnitRows (block_flags, grid_params, value_anchors, residuals, codes, time_rows) of a unit."""
+    raw_body, header = _api._decompress(unit)
+    return _format.read_unit(raw_body, header.num_blocks, header.block_len, header.byte_planes, header.time_unit != 0)
 
 
 def heads_params(units):
-    hp = [unit_rows(u)[:2] for u in units]
+    hp = [tuple(unit_rows(u)[:2]) for u in units]
     return np.concatenate([h for h, _ in hp]), np.concatenate([p for _, p in hp])
 
 

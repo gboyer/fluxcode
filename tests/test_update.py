@@ -21,10 +21,10 @@ def encoded(kind="random-walk", seed=41, n=60_000, params=Params()):
 
 
 def rebuilt(unit, edit):
-    """unit with its body rows changed by edit(head, param, anchor, resid, codes), same header."""
+    """unit with its body rows changed by edit(head, param, anchor, resid, codes, time_rows), same header."""
     rows = unit_rows(unit)
     edit(*rows)
-    body = _format.write_unit(*rows)
+    body = _format.write_unit(*rows[:5], time_rows=rows.time_rows)
     return unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -44,10 +44,10 @@ def test_replace_matches_reencode(indices):
 
 def test_untouched_blocks_identical():
     _, unit, _, _, _ = encoded("noisy-sine")
-    before = fluxcode.decode_unit(unit).reshape(-1, L)
+    before = fluxcode.decode_unit(unit).values.reshape(-1, L)
     idx = [7, 30]
     unit2, _, _, _ = fluxcode.update(unit, idx, np.zeros((2, L)) + [[1.5], [-2.0]])
-    after = fluxcode.decode_unit(unit2).reshape(-1, L)
+    after = fluxcode.decode_unit(unit2).values.reshape(-1, L)
     keep = np.setdiff1d(np.arange(60), idx)
     np.testing.assert_array_equal(after[keep], before[keep])
     np.testing.assert_array_equal(after[idx], [np.full(L, 1.5), np.full(L, -2.0)])
@@ -57,9 +57,9 @@ def test_untouched_blocks_identical_with_target():
     """With a target, re-encoding the whole unit would reallocate; update carries residuals over."""
     p = Params(noise_floor_sigma=None, target_bits_per_sample=6.0)
     _, unit, _, _, _ = encoded("noisy-sine", params=p)
-    before = fluxcode.decode_unit(unit).reshape(-1, L)
+    before = fluxcode.decode_unit(unit).values.reshape(-1, L)
     unit2, _, _, _ = fluxcode.update(unit, [0], minute("chirp", 1)[:L][None], p)
-    np.testing.assert_array_equal(fluxcode.decode_unit(unit2).reshape(-1, L)[1:], before[1:])
+    np.testing.assert_array_equal(fluxcode.decode_unit(unit2).values.reshape(-1, L)[1:], before[1:])
 
 
 def test_append():
@@ -70,7 +70,7 @@ def test_append():
     ref_units, ref_lo, _, _ = encode_series(np.concatenate([x, new.ravel()]))
     assert unit2 == ref_units[0]
     np.testing.assert_array_equal(np.concatenate([lo, lo2]), ref_lo)
-    assert fluxcode.decode_unit(unit2).shape == (23 * L,)
+    assert fluxcode.decode_unit(unit2).values.shape == (23 * L,)
 
 
 def test_replace_and_append_together():
@@ -87,11 +87,11 @@ def test_partial_last_block():
     x, unit, _, _, _ = encoded(n=10_500)
     new = np.ones((1, L))
     unit2, _, _, _ = fluxcode.update(unit, [3], new)  # an earlier block: still 10,500 samples
-    assert fluxcode.decode_unit(unit2).shape == (10_500,)
+    assert fluxcode.decode_unit(unit2).values.shape == (10_500,)
     with pytest.raises(ValueError, match="partial"):
         fluxcode.update(unit, [11], new)  # appending after the partial block 10
     unit3, _, _, _ = fluxcode.update(unit, [10, 11], np.ones((2, L)))  # replace it, then append
-    y = fluxcode.decode_unit(unit3)
+    y = fluxcode.decode_unit(unit3).values
     assert y.shape == (12 * L,)
     np.testing.assert_array_equal(y[10 * L:], 1.0)
     ref = x.copy()
@@ -127,10 +127,10 @@ def test_update_with_non_finite_blocks():
     b = np.zeros((2, L))
     b[1, 5], b[1, 6] = np.nan, -np.inf
     unit2, _, _, _ = fluxcode.update(unit, [0, 1], b)
-    y = fluxcode.decode_unit(unit2).reshape(-1, L)
+    y = fluxcode.decode_unit(unit2).values.reshape(-1, L)
     np.testing.assert_array_equal(y[:2], b)
     unit3, _, _, _ = fluxcode.update(unit2, [10, 20], np.ones((2, L)))  # replace one, append one
-    y3 = fluxcode.decode_unit(unit3).reshape(-1, L)
+    y3 = fluxcode.decode_unit(unit3).values.reshape(-1, L)
     np.testing.assert_array_equal(y3[:2], b)
     np.testing.assert_array_equal(y3[2:10], y[2:10])
     np.testing.assert_array_equal(y3[[10, 20]], np.ones((2, L)))
@@ -138,13 +138,12 @@ def test_update_with_non_finite_blocks():
 
 @pytest.mark.parametrize("head_bits", [0x10, 0x20, 0x40, 0x80])
 def test_update_refuses_units_it_cannot_read(head_bits):
-    """A unit with reserved head bits (a future feature) isn't rewritten: that could drop what they mean."""
+    """A unit with reserved head bits (a future feature), or the irregular time bit (0x10) without a
+    time axis, isn't rewritten: that could drop what they mean."""
     _, unit, _, _, _ = encoded()
-
-    def set_bits(head, *_):
-        head[5] |= head_bits
-
-    bad = rebuilt(unit, set_bits)
+    raw_body = _format.write_unit(*unit_rows(unit)[:5])
+    raw_body[5] |= head_bits  # block_flags are the body's first bytes
+    bad = unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: head byte"):
         fluxcode.update(bad, [0], np.zeros((1, L)))
     with pytest.raises(ValueError, match="block 5: head byte"):

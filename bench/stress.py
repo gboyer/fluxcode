@@ -193,7 +193,7 @@ def check_pool(wl):
     worst = 0.0
     for k, (xs, encs) in enumerate(zip(wl.pool, wl.enc)):
         for x, u in zip(xs, encs):
-            y = fluxcode.decode_unit(u)
+            y = fluxcode.decode_unit(u).values
             nx = ~np.isfinite(x)
             assert np.array_equal(nx, ~np.isfinite(y)), f"{wl.kinds[k]}: non-finite positions differ"
             X, Y, F = x.reshape(BLOCKS, BLOCK), y.reshape(BLOCKS, BLOCK), ~nx.reshape(BLOCKS, BLOCK)
@@ -332,7 +332,7 @@ def breakdown(wl, reps=200):
         rows.append((k, len(unit) * 8 / x.size,
                      t(_api._encode_blocks, X, p), t(_format.write_unit, head, param, anchor, resid, codes),
                      t(cz.compress, raw), t(fluxcode.encode_unit, x, p),
-                     t(dz.decompress, frame), t(_decoder.decode_unit, rawd, out, False),
+                     t(dz.decompress, frame), t(_decoder.decode_unit, rawd, out, False, False),
                      t(fluxcode.decode_unit, unit)))
     return rows
 
