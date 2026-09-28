@@ -683,17 +683,18 @@ def _decompress(unit: bytes) -> tuple[np.ndarray, _format.UnitHeader]:
     if content_size < 0:
         raise ValueError("unit's zstd frame doesn't record its content size")
     smallest = _format.unit_size(num_blocks, block_len, 0, has_time, 0)
-    largest = _format.unit_size(num_blocks, block_len, num_blocks, has_time, num_blocks if has_time else 0)
+    largest = _format.unit_size(num_blocks, block_len, num_blocks, has_time, num_blocks, num_blocks)
     if not smallest <= content_size <= largest:
         raise ValueError(f"unit body of {content_size} bytes doesn't fit {num_blocks} blocks of {block_len}")
     raw_body = np.frombuffer(_zstd()[1].decompress(frame), np.uint8)
     # The exact size depends on how many blocks carry non-finite code planes and time residual planes
     num_flagged = _format.count_flagged(raw_body, num_blocks)
     num_irregular = _format.count_irregular(raw_body, num_blocks) if has_time else 0
-    if raw_body.shape[0] != _format.unit_size(num_blocks, block_len, num_flagged, has_time, num_irregular):
+    num_long = _format.count_long(raw_body, num_blocks) if has_time else 0
+    if raw_body.shape[0] != _format.unit_size(num_blocks, block_len, num_flagged, has_time, num_irregular, num_long):
         raise ValueError(
-            f"unit body of {raw_body.shape[0]} bytes doesn't match its {num_flagged} flagged blocks "
-            f"and {num_irregular} irregular time blocks"
+            f"unit body of {raw_body.shape[0]} bytes doesn't match its {num_flagged} flagged blocks, "
+            f"{num_irregular} irregular and {num_long} long time blocks"
         )
     _check_unit(raw_body, num_blocks, has_time)
     return raw_body, header
@@ -709,7 +710,8 @@ def _check_unit(raw_body: np.ndarray, num_blocks: int, has_time: bool) -> None:
 
     Raises:
         ValueError: If any block's flags set reserved bits (or the irregular time bit
-            without a time axis) or it has an out-of-range grid parameter or value anchor.
+            without a time axis, or the long time bit without it) or it has an out-of-range
+            grid parameter or value anchor.
     """
     validation_status, failing_block_idx = _decoder.check_unit(raw_body, num_blocks, has_time)
     if validation_status == _decoder.BAD_HEAD:
@@ -727,13 +729,16 @@ def _read_time_rows(raw_body: np.ndarray, header: _format.UnitHeader) -> _format
     """Reads a unit's time rows, validating the start times.
 
     Raises:
-        ValueError: If a block start time is int64 minimum or overflows int64.
+        ValueError: If a block start time is int64 minimum or overflows int64, or a long
+            block's residuals fit in 32 bits.
     """
     num_blocks, block_len = header.num_blocks, header.block_len
     time_rows = _format.allocate_time_rows(num_blocks, block_len)
     status, block_idx = _format.read_time_rows(raw_body, _format.count_flagged(raw_body, num_blocks), *time_rows)
-    if status != _format.TIME_ROWS_OK:
+    if status == _format.TIME_ROWS_BAD_START:
         raise ValueError(f"block {block_idx}: start time out of range (corrupt unit)")
+    if status == _format.TIME_ROWS_BAD_LONG:
+        raise ValueError(f"block {block_idx}: long time residuals fit in 32 bits (corrupt unit)")
     return time_rows
 
 

@@ -19,7 +19,7 @@ import numpy as np
 from numba import njit
 from numba.cpython.unsafe.numbers import trailing_zeros as _trailing_zeros_intrinsic
 
-from ._format import HEAD_IRREGULAR_TIME
+from ._format import HEAD_IRREGULAR_TIME, HEAD_LONG_TIME
 
 _trailing_zeros = cast("Callable[[int | np.integer], int]", _trailing_zeros_intrinsic)
 """Numba intrinsic counting trailing zero bits, typed as its jitted call signature."""
@@ -201,7 +201,8 @@ def encode_times(
 ) -> tuple[int, int]:
     """Analyzes each block's times into a start, a step, a reference and (if irregular) residuals.
 
-    Sets HEAD_IRREGULAR_TIME in out_block_flags for irregular blocks; other bits are kept.
+    Sets HEAD_IRREGULAR_TIME in out_block_flags for irregular blocks, and HEAD_LONG_TIME for
+    those with a residual of 2^32 or more; other bits are kept.
     Only checks order within blocks: callers check the order across blocks.
 
     Args:
@@ -240,7 +241,7 @@ def encode_times(
             # deltas span less than 2^64, so the step fits int64.
             out_time_steps[block_idx] = np.int64(first_delta)
             out_time_refs[block_idx] = np.uint64(first_delta != 0)
-            out_block_flags[block_idx] &= ~HEAD_IRREGULAR_TIME
+            out_block_flags[block_idx] &= ~(HEAD_IRREGULAR_TIME | HEAD_LONG_TIME)
             continue
         quotients = out_time_residuals[block_idx]
         quotients[0] = 0
@@ -258,12 +259,19 @@ def encode_times(
             _, minimum, total = _divide_deltas(times, step_gcd, quotients)
         reference = _reference_quotient(quotients, minimum, total)
         # Zigzagged residuals, in place: wrapping mod 2^64 keeps them exact for any quotient
+        all_bits = np.uint64(0)
         for sample_idx in range(1, block_len):
             residual = np.int64(quotients[sample_idx] - reference)
             quotients[sample_idx] = np.uint64((residual << 1) ^ (residual >> 63))
+            all_bits |= quotients[sample_idx]
         out_time_steps[block_idx] = np.int64(step_gcd)
         out_time_refs[block_idx] = reference
         out_block_flags[block_idx] |= HEAD_IRREGULAR_TIME
+        # Long: a residual needs more than the 32 planes every irregular block stores
+        if all_bits >> np.uint64(32):
+            out_block_flags[block_idx] |= HEAD_LONG_TIME
+        else:
+            out_block_flags[block_idx] &= ~HEAD_LONG_TIME
     return OK, 0
 
 

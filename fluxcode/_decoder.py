@@ -19,6 +19,7 @@ from ._format import (
     E_MIN,
     HEAD_DECIMAL,
     HEAD_IRREGULAR_TIME,
+    HEAD_LONG_TIME,
     HEAD_NONFINITE,
     HEAD_ORDER,
     HEAD_RESERVED,
@@ -177,8 +178,9 @@ def dequantize_decimal(
 def check_unit(raw_unit: np.ndarray, num_blocks: int, has_time: bool) -> tuple[int, int]:
     """Validates block flags, grid parameters and value anchors across all blocks in a unit.
 
-    Inspects each block to verify that reserved block flag bits (5-7) are zero, that the
-    irregular time bit (4) is set only in units with a time axis, that grid parameters
+    Inspects each block to verify that reserved block flag bits (6-7) are zero, that the
+    irregular time bit (4) is set only in units with a time axis and the long time bit (5)
+    only with bit 4, that grid parameters
     fall within permissible format limits, and that value anchors are finite floats
     (power-of-two blocks) or grid indices below 2^52 (decimal).
 
@@ -198,8 +200,11 @@ def check_unit(raw_unit: np.ndarray, num_blocks: int, has_time: bool) -> tuple[i
         header_byte = raw_unit[block_idx]
         param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
         anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
-        # Check that reserved bits 5-7 are zero, and bit 4 only set with a time axis
-        if header_byte & HEAD_RESERVED or (header_byte & HEAD_IRREGULAR_TIME and not has_time):
+        # Reserved bits 6-7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
+        irregular_time = header_byte & HEAD_IRREGULAR_TIME
+        if header_byte & HEAD_RESERVED or (irregular_time and not has_time):
+            return BAD_HEAD, block_idx
+        if header_byte & HEAD_LONG_TIME and not irregular_time:
             return BAD_HEAD, block_idx
         if header_byte & HEAD_DECIMAL:
             # Check decimal exponent range [-22, 22]

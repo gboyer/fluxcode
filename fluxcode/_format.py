@@ -11,15 +11,15 @@ num_blocks = ceil(num_samples / block_len) blocks; the last one is padded when
 num_samples isn't a multiple of block_len.
 
 The body, for num_blocks blocks of block_len samples, of which num_nonfinite_blocks
-hold non-finite values (NaN, +inf, -inf) and num_irregular_blocks have irregular
-times, consists of these consecutive fields (the time fields only when the
+hold non-finite values (NaN, +inf, -inf), num_irregular_blocks have irregular times and
+num_long_blocks of those have long time residuals, consists of these consecutive fields (the time fields only when the
 header's time unit is not 0):
 
     1. block_flags (num_blocks bytes):
        Bits 0-1 encode the predictor difference order (0-3); bit 2 indicates
        decimal quantization; bit 3 indicates non-finite code planes; bit 4
-       indicates irregular times (time residual planes); bits 5-7 are reserved and
-       must be zero.
+       indicates irregular times (time residual planes); bit 5 (with bit 4) indicates
+       long time residuals (64 planes instead of 32); bits 6-7 are reserved and must be zero.
     2. grid_params (8 * num_blocks bytes):
        Per-block int64 grid parameter (power-of-two exponent or decimal power),
        stored little-endian in byte-planed order (all byte 0s, all byte 1s, ...).
@@ -41,9 +41,10 @@ header's time unit is not 0):
     8. nonfinite_code_planes (2 * num_nonfinite_blocks * block_len / 8 bytes):
        2 code bit planes for the flagged blocks, encoding sample categories
        (00: finite, 01: NaN, 10: +inf, 11: -inf).
-    9. time_residual_planes (64 * num_irregular_blocks * block_len / 8 bytes; time only):
-       Per sample of an irregular block, its quotient minus time_ref, mod 2^64 and
-       zigzagged (0 for sample 0), as 64 bit planes like the residual planes.
+    9. time_residual_planes (32 * (num_irregular_blocks + num_long_blocks) * block_len / 8
+       bytes; time only): per sample of an irregular block, its quotient minus time_ref,
+       mod 2^64 and zigzagged (0 for sample 0), as bit planes like the residual planes:
+       planes 0-31 of every irregular block, then planes 32-63 of the long blocks.
 """
 
 import enum
@@ -66,8 +67,12 @@ HEAD_IRREGULAR_TIME: int = 0x10
 """Bit flag indicating irregular times, with time residual planes (bit 4); only valid in
 units with a time axis."""
 
-HEAD_RESERVED: int = 0xE0
-"""Reserved bits in the header byte (bits 5-7); decoders must reject these."""
+HEAD_LONG_TIME: int = 0x20
+"""Bit flag indicating long time residuals, stored in 64 bit planes instead of 32 (bit 5);
+only valid with HEAD_IRREGULAR_TIME."""
+
+HEAD_RESERVED: int = 0xC0
+"""Reserved bits in the header byte (bits 6-7); decoders must reject these."""
 
 FLAG_BYTE_PLANES: int = 0x01
 """Unit header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
@@ -180,8 +185,8 @@ NONFINITE_BITS_PER_SAMPLE: int = 2
 TIME_BYTES_PER_BLOCK: int = 24
 """Bytes of time_start, time_step and time_ref per block in units with a time axis."""
 
-TIME_RESIDUAL_BITS: int = 64
-"""Number of time residual bit planes (uint64 per sample) for irregular blocks."""
+TIME_SHORT_PLANES: int = 32
+"""Time residual bit planes stored for every irregular block; a long block stores as many again."""
 
 
 def unit_size(
@@ -190,6 +195,7 @@ def unit_size(
     num_flagged_blocks: int = 0,
     has_time: bool = False,
     num_irregular_blocks: int = 0,
+    num_long_blocks: int = 0,
 ) -> int:
     """Calculates the size in bytes of a unit's uncompressed body.
 
@@ -199,6 +205,7 @@ def unit_size(
         num_flagged_blocks: Number of blocks containing non-finite samples.
         has_time: Whether the unit has a time axis (time_start, time_step and time_ref fields).
         num_irregular_blocks: Number of blocks with time residual planes.
+        num_long_blocks: Number of those blocks with long time residuals.
 
     Returns:
         Size of the uncompressed body in bytes.
@@ -208,7 +215,9 @@ def unit_size(
     nonfinite_bytes = num_flagged_blocks * (block_len * NONFINITE_BITS_PER_SAMPLE // 8)
     time_bytes = 0
     if has_time:
-        time_bytes = num_blocks * TIME_BYTES_PER_BLOCK + num_irregular_blocks * (block_len * TIME_RESIDUAL_BITS // 8)
+        time_bytes = num_blocks * TIME_BYTES_PER_BLOCK + (num_irregular_blocks + num_long_blocks) * (
+            block_len * TIME_SHORT_PLANES // 8
+        )
     return metadata_bytes + residual_bytes + nonfinite_bytes + time_bytes
 
 
@@ -245,6 +254,23 @@ def count_irregular(raw_unit: np.ndarray, num_blocks: int) -> int:
     for block_idx in range(num_blocks):
         irregular_count += (raw_unit[block_idx] & HEAD_IRREGULAR_TIME) != 0
     return irregular_count
+
+
+@njit(nogil=True, cache=True)
+def count_long(raw_unit: np.ndarray, num_blocks: int) -> int:
+    """Counts blocks in an uncompressed unit flagged with long time residuals.
+
+    Args:
+        raw_unit: 1D uint8 array of uncompressed unit bytes.
+        num_blocks: Number of blocks whose headers are inspected.
+
+    Returns:
+        Count of blocks with the long time flag set.
+    """
+    long_count = 0
+    for block_idx in range(num_blocks):
+        long_count += (raw_unit[block_idx] & HEAD_LONG_TIME) != 0
+    return long_count
 
 
 class UnitHeader(NamedTuple):
@@ -591,28 +617,32 @@ def code_planes_view(
 
 
 @njit(inline="always")
-def time_planes_view(
-    raw_unit: np.ndarray, num_blocks: int, block_len: int, num_flagged_blocks: int, num_irregular_blocks: int
-) -> np.ndarray:
-    """Provides a 2D view into the time residual planes of an uncompressed unit with a time axis.
+def time_planes_views(
+    raw_unit: np.ndarray, num_blocks: int, block_len: int, num_flagged_blocks: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Provides 2D views into the time residual planes of an uncompressed unit with a time axis.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit data.
         num_blocks: Total number of blocks.
         block_len: Block length.
         num_flagged_blocks: Number of blocks carrying non-finite codes.
-        num_irregular_blocks: Number of blocks carrying time residual planes.
 
     Returns:
-        2D uint8 array of shape (64, num_irregular_blocks * (block_len // 8)).
+        A tuple of (short_planes, long_planes): 2D uint8 arrays of shape
+        (32, num_irregular_blocks * (block_len // 8)) holding planes 0-31 of every irregular
+        block, and (32, num_long_blocks * (block_len // 8)) holding planes 32-63 of the long ones.
     """
-    start_offset = code_planes_start(num_blocks, block_len, True) + num_flagged_blocks * (
+    num_groups = block_len // 8
+    short_start = code_planes_start(num_blocks, block_len, True) + num_flagged_blocks * (
         block_len * NONFINITE_BITS_PER_SAMPLE // 8
     )
-    total_bytes = num_irregular_blocks * (block_len * TIME_RESIDUAL_BITS // 8)
-    return raw_unit[start_offset:start_offset + total_bytes].reshape(
-        TIME_RESIDUAL_BITS, num_irregular_blocks * (block_len // 8)
-    )
+    short_bytes = TIME_SHORT_PLANES * count_irregular(raw_unit, num_blocks) * num_groups
+    long_bytes = TIME_SHORT_PLANES * count_long(raw_unit, num_blocks) * num_groups
+    short_planes = raw_unit[short_start:short_start + short_bytes].reshape(TIME_SHORT_PLANES, short_bytes // TIME_SHORT_PLANES)
+    long_start = short_start + short_bytes
+    long_planes = raw_unit[long_start:long_start + long_bytes].reshape(TIME_SHORT_PLANES, long_bytes // TIME_SHORT_PLANES)
+    return short_planes, long_planes
 
 
 @njit(nogil=True, cache=True)
@@ -690,21 +720,37 @@ def _byte_word(v0: np.uint64, v1: np.uint64, v2: np.uint64, v3: np.uint64, v4: n
     )
 
 
+@njit(inline="always")
+def _level_planes(
+    short_planes: np.ndarray, long_planes: np.ndarray, short_rank: int, long_rank: int, byte_idx: int, num_groups: int
+) -> np.ndarray:
+    """The 8 bit planes of a block's byte level byte_idx: levels 0-3 are in the short planes
+    (at the block's rank among irregular blocks), 4-7 in the long planes (rank among long blocks)."""
+    if byte_idx < 4:
+        return short_planes[8 * byte_idx:8 * byte_idx + 8, short_rank * num_groups:(short_rank + 1) * num_groups]
+    level = byte_idx - 4
+    return long_planes[8 * level:8 * level + 8, long_rank * num_groups:(long_rank + 1) * num_groups]
+
+
 @njit(nogil=True, cache=True)
-def shuffle_time_residuals(time_residuals: np.ndarray, time_planes: np.ndarray, irregular_block_idx: int) -> None:
-    """Packs a block's zigzagged uint64 time residuals into the 64 time residual bit planes.
+def shuffle_time_residuals(
+    time_residuals: np.ndarray, short_planes: np.ndarray, long_planes: np.ndarray, short_rank: int, long_rank: int
+) -> None:
+    """Packs a block's zigzagged uint64 time residuals into its time residual bit planes.
 
     Bit k of byte i of plane j is bit j of time_residuals[8 * i + k], as for the residual
     planes. Only the bytes up to the highest set bit of any residual are written: the planes
     above it must already be zero (write_time_rows zeroes the field first).
 
     Args:
-        time_residuals: 1D uint64 array of block_len zigzagged time residuals.
-        time_planes: 2D uint8 array of shape (64, num_irregular_blocks * (block_len // 8)).
-        irregular_block_idx: Rank of the block among the irregular blocks.
+        time_residuals: 1D uint64 array of block_len zigzagged time residuals, below 2^32
+            unless the block is long.
+        short_planes: 2D uint8 array of planes 0-31 of the irregular blocks.
+        long_planes: 2D uint8 array of planes 32-63 of the long blocks.
+        short_rank: Rank of the block among the irregular blocks.
+        long_rank: Rank of the block among the long blocks (unused for a short block).
     """
-    num_8byte_groups = time_residuals.shape[0] // 8
-    plane_byte_offset = irregular_block_idx * num_8byte_groups
+    num_groups = time_residuals.shape[0] // 8
     # Bytes above the highest set bit of every residual are zero in all samples
     all_bits = np.uint64(0)
     for sample_idx in range(time_residuals.shape[0]):
@@ -712,39 +758,46 @@ def shuffle_time_residuals(time_residuals: np.ndarray, time_planes: np.ndarray, 
     num_active_bytes = 0
     while num_active_bytes < 8 and (all_bits >> np.uint64(8 * num_active_bytes)) != 0:
         num_active_bytes += 1
-    for group_idx in range(num_8byte_groups):
-        # Hold the group's 8 samples in registers across the byte levels
-        base = 8 * group_idx
-        v0, v1, v2, v3 = time_residuals[base], time_residuals[base + 1], time_residuals[base + 2], time_residuals[base + 3]
-        v4, v5, v6, v7 = time_residuals[base + 4], time_residuals[base + 5], time_residuals[base + 6], time_residuals[base + 7]
-        for byte_idx in range(num_active_bytes):
-            transposed_word = _transpose8(_byte_word(v0, v1, v2, v3, v4, v5, v6, v7, np.uint64(8 * byte_idx)))
+    for byte_idx in range(num_active_bytes):
+        level_planes = _level_planes(short_planes, long_planes, short_rank, long_rank, byte_idx, num_groups)
+        shift = np.uint64(8 * byte_idx)
+        for group_idx in range(num_groups):
+            base = 8 * group_idx
+            transposed_word = _transpose8(_byte_word(
+                time_residuals[base], time_residuals[base + 1], time_residuals[base + 2], time_residuals[base + 3],
+                time_residuals[base + 4], time_residuals[base + 5], time_residuals[base + 6], time_residuals[base + 7],
+                shift,
+            ))
             for bit_idx in range(8):
-                time_planes[8 * byte_idx + bit_idx, plane_byte_offset + group_idx] = np.uint8(
-                    (transposed_word >> np.uint64(8 * bit_idx)) & np.uint64(0xFF)
-                )
+                level_planes[bit_idx, group_idx] = np.uint8((transposed_word >> np.uint64(8 * bit_idx)) & np.uint64(0xFF))
 
 
 @njit(nogil=True, cache=True)
-def unshuffle_time_residuals(time_planes: np.ndarray, irregular_block_idx: int, out_time_residuals: np.ndarray) -> None:
-    """Reconstructs a block's zigzagged uint64 time residuals from the 64 time residual bit planes.
+def unshuffle_time_residuals(
+    short_planes: np.ndarray, long_planes: np.ndarray, short_rank: int, long_rank: int, out_time_residuals: np.ndarray
+) -> int:
+    """Reconstructs a block's zigzagged uint64 time residuals from its time residual bit planes.
 
     Args:
-        time_planes: 2D uint8 array of shape (64, num_irregular_blocks * (block_len // 8)).
-        irregular_block_idx: Rank of the block among the irregular blocks.
+        short_planes: 2D uint8 array of planes 0-31 of the irregular blocks.
+        long_planes: 2D uint8 array of planes 32-63 of the long blocks.
+        short_rank: Rank of the block among the irregular blocks.
+        long_rank: Rank of the block among the long blocks, or -1 for a short block.
         out_time_residuals: Output 1D uint64 array of block_len receiving the residuals.
+
+    Returns:
+        The number of byte levels with a nonzero plane byte (at most 4 for a short block).
     """
-    num_8byte_groups = out_time_residuals.shape[0] // 8
-    plane_byte_offset = irregular_block_idx * num_8byte_groups
+    num_groups = out_time_residuals.shape[0] // 8
     # Byte levels above the highest nonzero plane byte of this block are zero in every
     # sample: find them with a contiguous scan and skip them (residuals are mostly small)
-    num_active_bytes = 8
+    num_active_bytes = 8 if long_rank >= 0 else 4
     while num_active_bytes > 0:
+        level_planes = _level_planes(short_planes, long_planes, short_rank, long_rank, num_active_bytes - 1, num_groups)
         level_nonzero = False
-        for plane_idx in range(8 * num_active_bytes - 8, 8 * num_active_bytes):
-            plane = time_planes[plane_idx, plane_byte_offset:plane_byte_offset + num_8byte_groups]
-            for group_idx in range(num_8byte_groups):
-                level_nonzero |= plane[group_idx] != 0
+        for bit_idx in range(8):
+            for group_idx in range(num_groups):
+                level_nonzero |= level_planes[bit_idx, group_idx] != 0
         if level_nonzero:
             break
         num_active_bytes -= 1
@@ -753,8 +806,8 @@ def unshuffle_time_residuals(time_planes: np.ndarray, irregular_block_idx: int, 
     # Little-endian bytes of the residuals: byte byte_idx of sample s is at 8 * s + byte_idx
     out_bytes = out_time_residuals.view(np.uint8)
     for byte_idx in range(num_active_bytes):
-        level_planes = time_planes[8 * byte_idx:8 * byte_idx + 8, plane_byte_offset:plane_byte_offset + num_8byte_groups]
-        for group_idx in range(num_8byte_groups):
+        level_planes = _level_planes(short_planes, long_planes, short_rank, long_rank, byte_idx, num_groups)
+        for group_idx in range(num_groups):
             gathered_word = np.uint64(0)
             for bit_idx in range(8):
                 gathered_word |= np.uint64(level_planes[bit_idx, group_idx]) << np.uint64(8 * bit_idx)
@@ -765,6 +818,7 @@ def unshuffle_time_residuals(time_planes: np.ndarray, irregular_block_idx: int, 
                 out_bytes[out_byte_idx + 8 * sample_offset] = np.uint8(
                     (transposed_word >> np.uint64(8 * sample_offset)) & np.uint64(0xFF)
                 )
+    return num_active_bytes
 
 
 @njit(nogil=True, cache=True)
@@ -790,12 +844,12 @@ def write_time_rows(
         out_raw_unit: Uncompressed body whose value fields are written by write_rows.
     """
     num_blocks, block_len = time_residuals.shape
-    time_planes = time_planes_view(
-        out_raw_unit, num_blocks, block_len, num_flagged_blocks, count_irregular(block_flags, num_blocks)
-    )
+    short_planes, long_planes = time_planes_views(out_raw_unit, num_blocks, block_len, num_flagged_blocks)
     # One contiguous fill: each block then writes only the planes its residuals reach
-    time_planes[:, :] = 0
+    short_planes[:, :] = 0
+    long_planes[:, :] = 0
     irregular_counter = 0
+    long_counter = 0
     for block_idx in range(num_blocks):
         # The first start is stored as is; later starts as the uint64 increase over the previous start
         start_increase = time_starts[block_idx]
@@ -805,8 +859,9 @@ def write_time_rows(
         put_int64(out_raw_unit, time_step_start(num_blocks), num_blocks, block_idx, time_steps[block_idx])
         put_int64(out_raw_unit, time_ref_start(num_blocks), num_blocks, block_idx, np.int64(time_refs[block_idx]))
         if block_flags[block_idx] & HEAD_IRREGULAR_TIME:
-            shuffle_time_residuals(time_residuals[block_idx], time_planes, irregular_counter)
+            shuffle_time_residuals(time_residuals[block_idx], short_planes, long_planes, irregular_counter, long_counter)
             irregular_counter += 1
+            long_counter += (block_flags[block_idx] & HEAD_LONG_TIME) != 0
 
 
 TIME_ROWS_OK: int = 0
@@ -814,6 +869,9 @@ TIME_ROWS_OK: int = 0
 
 TIME_ROWS_BAD_START: int = 1
 """read_time_rows status: a start time is int64 minimum (NaT) or overflows int64."""
+
+TIME_ROWS_BAD_LONG: int = 2
+"""read_time_rows status: a long block's planes 32-63 are all zero (it should be short)."""
 
 
 @njit(nogil=True, cache=True)
@@ -839,14 +897,14 @@ def read_time_rows(
 
     Returns:
         A tuple of (status, block_idx): TIME_ROWS_OK, or TIME_ROWS_BAD_START and the
-        first block whose start is int64 minimum or overflows int64.
+        first block whose start is int64 minimum or overflows int64, or TIME_ROWS_BAD_LONG
+        and the first long block whose planes 32-63 are all zero.
     """
     num_blocks, block_len = out_time_residuals.shape
-    time_planes = time_planes_view(
-        raw_unit, num_blocks, block_len, num_flagged_blocks, count_irregular(raw_unit, num_blocks)
-    )
+    short_planes, long_planes = time_planes_views(raw_unit, num_blocks, block_len, num_flagged_blocks)
     int64_max = np.uint64(0x7FFFFFFFFFFFFFFF)
     irregular_counter = 0
+    long_counter = 0
     for block_idx in range(num_blocks):
         stored_start = get_int64(raw_unit, time_start_start(num_blocks), num_blocks, block_idx)
         if block_idx == 0:
@@ -863,8 +921,14 @@ def read_time_rows(
         out_time_steps[block_idx] = get_int64(raw_unit, time_step_start(num_blocks), num_blocks, block_idx)
         out_time_refs[block_idx] = np.uint64(get_int64(raw_unit, time_ref_start(num_blocks), num_blocks, block_idx))
         if raw_unit[block_idx] & HEAD_IRREGULAR_TIME:
-            unshuffle_time_residuals(time_planes, irregular_counter, out_time_residuals[block_idx])
+            is_long = raw_unit[block_idx] & HEAD_LONG_TIME
+            num_active_bytes = unshuffle_time_residuals(
+                short_planes, long_planes, irregular_counter, long_counter if is_long else -1, out_time_residuals[block_idx]
+            )
+            if is_long and num_active_bytes <= 4:
+                return TIME_ROWS_BAD_LONG, block_idx
             irregular_counter += 1
+            long_counter += is_long != 0
     return TIME_ROWS_OK, 0
 
 
@@ -1056,6 +1120,7 @@ def write_unit(
     # Count flagged blocks to size the non-finite code planes and the time residual planes
     num_flagged_blocks = int(np.count_nonzero(block_flags & HEAD_NONFINITE))
     num_irregular_blocks = int(np.count_nonzero(block_flags & HEAD_IRREGULAR_TIME))
+    num_long_blocks = int(np.count_nonzero(block_flags & HEAD_LONG_TIME))
     if codes is None:
         if num_flagged_blocks:
             raise ValueError("flagged blocks need codes")
@@ -1064,7 +1129,7 @@ def write_unit(
     if num_irregular_blocks and not has_time:
         raise ValueError("irregular time blocks need time rows")
     raw_unit = np.empty(
-        unit_size(num_blocks, block_len, num_flagged_blocks, has_time, num_irregular_blocks), np.uint8
+        unit_size(num_blocks, block_len, num_flagged_blocks, has_time, num_irregular_blocks, num_long_blocks), np.uint8
     )
     write_rows(block_flags, grid_params, value_anchors, residuals, codes, byte_planes, has_time, raw_unit)
     if time_rows is not None:
@@ -1103,6 +1168,7 @@ def read_unit(
         count_flagged(raw_arr, num_blocks),
         has_time,
         count_irregular(raw_arr, num_blocks),
+        count_long(raw_arr, num_blocks),
     ):
         raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold {num_blocks} blocks of {block_len}")
     block_flags = np.empty(num_blocks, np.uint8)
@@ -1116,6 +1182,8 @@ def read_unit(
         # Zeroed: read_time_rows leaves regular blocks' residual rows untouched
         time_rows = allocate_time_rows(num_blocks, block_len, zero_residuals=True)
         status, block_idx = read_time_rows(raw_arr, count_flagged(raw_arr, num_blocks), *time_rows)
-        if status != TIME_ROWS_OK:
+        if status == TIME_ROWS_BAD_START:
             raise ValueError(f"block {block_idx}: start time out of range (corrupt unit)")
+        if status == TIME_ROWS_BAD_LONG:
+            raise ValueError(f"block {block_idx}: long time residuals fit in 32 bits (corrupt unit)")
     return UnitRows(block_flags, grid_params, value_anchors, residuals, codes, time_rows)

@@ -11,7 +11,7 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _format
-from fluxcode._format import HEAD_IRREGULAR_TIME
+from fluxcode._format import HEAD_IRREGULAR_TIME, HEAD_LONG_TIME
 
 INT64_MAX = np.iinfo(np.int64).max
 INT64_MIN = np.iinfo(np.int64).min
@@ -214,7 +214,7 @@ def test_worked_example_layout():
     assert header == bytes([1, 0x08, 0, 0, 8, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0])
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)
     num_blocks = 3
-    assert body.shape[0] == 235 == _format.unit_size(num_blocks, 8, 0, True, 1)
+    assert body.shape[0] == 203 == _format.unit_size(num_blocks, 8, 0, True, 1)
     np.testing.assert_array_equal(body[:3] & 0x10, [0, 0x10, 0])
     value_anchor_planes = body[27:51].reshape(8, num_blocks)
     np.testing.assert_array_equal(value_anchor_planes[6], [0x04, 0x02, 0x08])
@@ -232,7 +232,7 @@ def test_worked_example_layout():
     assert not time_ref_planes[1:].any()
     # Block 1's quotients [1, 1, 3, 1, 1, 1, 1] from sample 1: reference 1, zigzagged residuals
     # [0, 0, 0, 4, 0, 0, 0, 0], so only bit 2 of sample 3 is set
-    time_residual_planes = body[171:235]
+    time_residual_planes = body[171:203]
     assert time_residual_planes[2] == 0x08
     assert not np.delete(time_residual_planes, 2).any()
     np.testing.assert_array_equal(decoded_times(unit).view(np.int64), ticks)
@@ -272,10 +272,13 @@ def zigzag(residuals):
     return ((residuals << 1) ^ (residuals >> 63)).view(np.uint64)
 
 
-def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_len=8):
-    """A unit with the given time rows (bypassing the encoder's checks) and zero values."""
+def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_len=8, long=None):
+    """A unit with the given time rows (bypassing the encoder's checks) and zero values;
+    long optionally flags blocks as long."""
     num_blocks = len(starts)
     block_flags = np.where(block_flags_irregular, HEAD_IRREGULAR_TIME, 0).astype(np.uint8)
+    if long is not None:
+        block_flags |= np.where(long, HEAD_LONG_TIME, 0).astype(np.uint8)
     time_rows = _format.TimeRows(
         np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(refs, np.uint64),
         zigzag(residuals).reshape(num_blocks, block_len),
@@ -302,6 +305,26 @@ def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_le
 def test_corrupt_time_fields_are_rejected(irregular, starts, steps, refs, residuals, message):
     with pytest.raises(ValueError, match=message):
         fluxcode.decode_unit(corrupt_unit(irregular, starts, steps, refs, residuals))
+
+
+def test_long_flag_without_irregular_or_needed_is_rejected():
+    residuals = np.r_[np.zeros(8), 0, np.ones(7)]
+    with pytest.raises(ValueError, match="block 0: head byte 0x20 sets reserved bits"):
+        fluxcode.decode_unit(corrupt_unit([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[True, False]))
+    with pytest.raises(ValueError, match="block 1: long time residuals fit in 32 bits"):
+        fluxcode.decode_unit(corrupt_unit([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[False, True]))
+
+
+def test_long_blocks_only_where_residuals_need_64_bits():
+    """ns ticks with GCD 1: a gap of seconds needs residuals of 2^32 or more, in its block only."""
+    rng = np.random.default_rng(8)
+    ticks = np.sort(np.arange(4000) * 1_000_000 + rng.integers(0, 1000, 4000))
+    ticks[2500:] += 5_000_000_000
+    unit, decoded = round_trip(np.zeros(4000), ticks, time_unit="ns")
+    np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
+    flags = unit_rows(unit).block_flags
+    np.testing.assert_array_equal((flags & HEAD_LONG_TIME) != 0, [False, False, True, False])
+    assert irregular_flags(unit).all()
 
 
 def test_corrupt_rows_decode_when_valid():
