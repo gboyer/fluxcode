@@ -1,8 +1,9 @@
 # fluxcode — specification
 
 Lossy (bounded-error) and, for decimal data, lossless compression of 1 kHz float64 time
-series, with their timestamps stored exactly if given (§2a). One compressed unit holds one
-channel-minute: up to 60 blocks of 1000 samples. Implementation: the `fluxcode` package (`encode_unit` / `decode_unit` / `update`, bulk `encode` /
+series, with their timestamps stored exactly if given (§2a). One compressed unit holds up to
+`blocks_per_unit` blocks of `block_len` samples (encoder parameters; the unit records `block_len` and
+its sample count). The defaults, 60 blocks of 1000, make a unit one channel-minute. Implementation: the `fluxcode` package (`encode_unit` / `decode_unit` / `update`, bulk `encode` /
 `decode`, `Params`).
 
 This document covers the format, the encoding algorithm and its guarantees. Speed and
