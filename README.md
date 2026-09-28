@@ -22,8 +22,8 @@ High level properties:
 * **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
   subnormal ranges, +/- Infinity, and NaN.
 * **Timestamps**: Optionally stores exact timestamps (s, ms, µs or ns) for irregular sampling.
-  Regular stretches cost next to nothing; each irregular block stores its deltas divided by
-  their GCD, relative to a per-block reference (mean or minimum), in bit planes. See [docs/SPEC.md §2a](docs/SPEC.md#2a-time-axis).
+  Regular intervals store very cheaply, but noisy timestamps dramatically
+  increase compressed size.
 
 Encoding features to balance size, accuracy, and performance depending on data
 type:
@@ -165,6 +165,7 @@ From [docs/SPEC.md §6](docs/SPEC.md#6-guarantees), which states them exactly:
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so
   they decode identically; without a size target, the updated unit is byte-identical to encoding
   the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
+- **Timestamps decode exactly.**
 
 ## How it works
 
