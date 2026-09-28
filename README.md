@@ -17,7 +17,8 @@ High level properties:
 * **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
   difference, whichever has the lowest variance.
 * **Unit-Compressed zstd**: Blocks are assembled into units; for example, a minute might
-  be a single unit with 60 blocks, each with 1000 samples. Their bit planes are
+  be a single unit with 60 blocks, each with 1000 samples (the defaults; both are
+  parameters, and the unit records them). Their bit planes are
   interleaved and compressed with zstd to separate high and low entropy signals.
 * **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
   subnormal ranges, +/- Infinity, and NaN.
@@ -63,7 +64,7 @@ rng = np.random.default_rng(0)
 t = np.arange(30_000) / 1000                                # 30 s at 1 kHz: 30 blocks of 1000
 x = 100 * np.sin(2 * np.pi * 3.3 * t) + rng.normal(0, 1, t.size)
 
-# One unit = one storage row (up to 60 blocks). Units are self-describing.
+# One unit = one storage row (up to blocks_per_unit blocks, 60 by default). Units are self-describing.
 unit, block_min, block_max, block_mean = fluxcode.encode_unit(x)
 y, _ = fluxcode.decode_unit(unit)                           # (values, times); times is None here
 print(f"{8 * len(unit) / x.size:.2f} bits/sample, max error {np.abs(y - x).max():.3f}")
@@ -111,7 +112,8 @@ which set the step to 0.25σ.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `block_len=1000` (a multiple of 8, at most 65,536),
-  `blocks_per_unit=60`, `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  `blocks_per_unit=60` (at most 2^26 = 67,108,864 samples per unit, the bound decoders accept),
+  `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -187,8 +189,8 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
 - **[Bit-shuffle](https://github.com/kiyo-masui/bitshuffle)** ([paper](https://arxiv.org/abs/1503.00638))
   across the whole unit: bit plane j of every residual is stored together, so the high planes are
   long runs of zeros.
-- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** level 3 compresses the unit (up to 60
-  blocks) as one frame.
+- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** level 3 compresses the whole unit as one
+  frame.
 
 ## Documentation
 
