@@ -68,7 +68,7 @@ block before failing. Single thread, µs/block; the method is in the script's do
 An earlier figure of 2.96 µs/block with detection off had no recorded script and isn't reproduced
 here.
 
-## Timestamps: `uv run python bench/stress.py --times clock-mix` (2026-09-27, AC power, one run; format with per-block time references)
+## Timestamps: `uv run python bench/stress.py --times clock-mix` (2026-09-27, AC power, one run; per-block time references, 32 residual planes)
 
 Apple M3 Mac15,13, Darwin 25.6.0, Python 3.11.13, numpy 2.4.6
 
@@ -82,28 +82,28 @@ timestamps (datetime64[ns], exact), tags per clock: grid 600, grid+gaps 300, noi
 
 | phase | wall | float64 GB/s | samples/s | µs/block/worker | in-call % |
 |---|---|---|---|---|---|
-| encode | 101.1 s | 6.83 GB/s | 854 M | 4.68 | 99% |
-| decode | 55.6 s | 12.42 GB/s | 1553 M | 2.58 | 100% |
+| encode | 92.5 s | 7.47 GB/s | 934 M | 4.28 | 99% |
+| decode | 53.9 s | 12.82 GB/s | 1602 M | 2.50 | 100% |
 
-compressed 48.51 GB (4.49 bits/sample, ratio 14.3); real time is 86,400 s per day, so encode runs at 854x real time for 1000 tags.
+compressed 48.51 GB (4.49 bits/sample, ratio 14.2); real time is 86,400 s per day, so encode runs at 934x real time for 1000 tags.
 
-encode GB/s per tenth of the phase: 7.3 6.9 6.7 7.0 7.0 6.8 6.7 6.7 6.5 6.6
-decode GB/s per tenth of the phase: 12.3 12.1 12.7 11.9 12.9 12.7 13.0 12.4 11.8 12.3
+encode GB/s per tenth of the phase: 8.0 7.8 7.4 7.5 7.5 7.4 7.4 7.3 7.1 7.2
+decode GB/s per tenth of the phase: 12.6 12.7 12.8 12.6 13.2 13.0 13.3 12.9 12.3 12.8
 
 ### Per clock kind: `--scale 0.25 --times <clock>` (same session)
 
 | clock | phase | wall | float64 GB/s | samples/s | µs/block/worker | in-call % |
 |---|---|---|---|---|---|---|
-| none | encode | 20.4 s | 8.48 GB/s | 1060 M | 3.78 | 99% |
-| none | decode | 10.4 s | 16.68 GB/s | 2086 M | 1.92 | 99% |
-| grid | encode | 22.8 s | 7.57 GB/s | 946 M | 4.23 | 99% |
-| grid | decode | 12.3 s | 14.10 GB/s | 1762 M | 2.27 | 99% |
-| grid+gaps | encode | 23.9 s | 7.22 GB/s | 903 M | 4.43 | 99% |
-| grid+gaps | decode | 12.8 s | 13.46 GB/s | 1683 M | 2.38 | 99% |
-| noisy | encode | 49.0 s | 3.53 GB/s | 441 M | 9.07 | 99% |
-| noisy | decode | 27.3 s | 6.34 GB/s | 792 M | 5.05 | 99% |
+| none | encode | 19.5 s | 8.88 GB/s | 1110 M | 3.60 | 99% |
+| none | decode | 10.2 s | 16.99 GB/s | 2124 M | 1.88 | 99% |
+| grid | encode | 22.3 s | 7.75 GB/s | 968 M | 4.13 | 99% |
+| grid | decode | 12.2 s | 14.14 GB/s | 1768 M | 2.26 | 99% |
+| grid+gaps | encode | 23.0 s | 7.50 GB/s | 937 M | 4.27 | 99% |
+| grid+gaps | decode | 12.9 s | 13.40 GB/s | 1675 M | 2.39 | 99% |
+| noisy | encode | 42.5 s | 4.07 GB/s | 508 M | 7.87 | 99% |
+| noisy | decode | 25.4 s | 6.81 GB/s | 851 M | 4.70 | 99% |
 
 - none compressed 10.13 GB (3.75 bits/sample, ratio 17.1);
 - grid compressed 10.14 GB (3.76 bits/sample, ratio 17.0);
-- grid+gaps compressed 10.15 GB (3.76 bits/sample, ratio 17.0);
-- noisy compressed 29.31 GB (10.86 bits/sample, ratio 5.9);
+- grid+gaps compressed 10.16 GB (3.76 bits/sample, ratio 17.0);
+- noisy compressed 29.31 GB (10.85 bits/sample, ratio 5.9);

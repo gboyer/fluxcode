@@ -173,8 +173,9 @@ Every number here is the unit with times minus the same unit without them. For s
 <li><b>Per block: a start, a step and a reference.</b> The step is the GCD of the block's intervals, and each
 interval divided by it is a quotient: the reference plus a residual. A block whose 999 intervals are all equal is
 <b>regular</b>: every quotient equals the reference, so it stores nothing else (24 bytes before compression, a few
-after). Any other block is <b>irregular</b> and stores the residuals, zigzagged, as 64 bit planes. Most of those
-planes are zero, and zstd removes them.</li>
+after). Any other block is <b>irregular</b> and stores the residuals, zigzagged, as 32 bit planes (64 in the rare
+<i>long</i> block, with a residual of 2<sup>32</sup> or more: in ns ticks, a gap of seconds). Most of those planes are
+zero, and zstd removes them.</li>
 <li><b>The reference is the rounded mean or the minimum,</b> chosen per block. The mean suits jitter around a
 center; the minimum suits skewed intervals (a gap, events, deadband logging), whose mean sits away from most of
 them. Without a reference, intervals near 1000 flip several bit planes together as they wobble, which costs about
@@ -209,7 +210,7 @@ of the values' {plain_bytes:,}.</p>
 <li><b>Perfect grid:</b> {grid_bytes} bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
 writes the 60,000 int64 ticks, and that is most of its cost.</li>
 <li><b>A few gaps:</b> each gap makes one block irregular. Its intervals are all 1 except one, so the block's
-planes are nearly all zero and it costs about 20 to 90 bytes (next section).</li>
+planes are nearly all zero and it costs about 20 to 60 bytes (next section).</li>
 <li><b>Noisy clock:</b> the jitter is real entropy, and no lossless coder can remove it: σ = 20 µs at µs
 resolution carries about 6.4 bits per sample, and the unit spends 7.1. The rest comes from storing intervals
 (each the difference of two jitters) with each bit plane coded on its own. If the jitter is measurement noise rather than information, round the timestamps
