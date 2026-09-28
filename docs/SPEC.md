@@ -138,17 +138,17 @@ power, single thread); the first three rows are the common shapes, and
 | timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
 |---|---|---|---|---|---|
 | perfect 1 kHz grid | 0/60 | 44 | 0.006 | +16 µs (+9%) | +11 µs (+10%) |
-| grid with 2 gaps | 2/60 | 793 | 0.11 | +26 µs (+15%) | +21 µs (+19%) |
-| noisy clock (σ = 20 µs, µs resolution) | 60/60 | 53,596 | 7.1 | +263 µs (+149%) | +147 µs (+131%) |
-| 1 kHz, 20 gaps | 19/60 | 678 | 0.090 | +83 µs (+47%) | +53 µs (+47%) |
-| 1 kHz, 1% dropped | 60/60 | 1,474 | 0.20 | +212 µs (+120%) | +121 µs (+108%) |
-| drifting clock (0.99998 ms) | 60/60 | 285 | 0.038 | +167 µs (+95%) | +107 µs (+96%) |
-| jitter σ = 10 µs, µs resolution | 60/60 | 46,085 | 6.1 | +263 µs (+149%) | +138 µs (+123%) |
-| jitter σ = 10 µs, ns resolution | 60/60 | 120,968 | 16.1 | +291 µs (+165%) | +201 µs (+179%) |
-| Poisson events (mean 1 ms), µs | 60/60 | 87,761 | 11.7 | +311 µs (+177%) | +182 µs (+162%) |
-| deadband logging on a ms grid | 60/60 | 55,487 | 7.4 | +418 µs (+238%) | +257 µs (+229%) |
+| grid with 2 gaps | 2/60 | 793 | 0.11 | +25 µs (+14%) | +21 µs (+19%) |
+| noisy clock (σ = 20 µs, µs resolution) | 60/60 | 53,596 | 7.1 | +234 µs (+133%) | +148 µs (+131%) |
+| 1 kHz, 20 gaps | 19/60 | 678 | 0.090 | +65 µs (+37%) | +51 µs (+45%) |
+| 1 kHz, 1% dropped | 60/60 | 1,474 | 0.20 | +162 µs (+92%) | +109 µs (+96%) |
+| drifting clock (0.99998 ms) | 60/60 | 285 | 0.038 | +161 µs (+91%) | +95 µs (+84%) |
+| jitter σ = 10 µs, µs resolution | 60/60 | 46,085 | 6.1 | +236 µs (+134%) | +127 µs (+112%) |
+| jitter σ = 10 µs, ns resolution | 60/60 | 120,968 | 16.1 | +259 µs (+147%) | +183 µs (+162%) |
+| Poisson events (mean 1 ms), µs | 60/60 | 87,761 | 11.7 | +256 µs (+145%) | +183 µs (+162%) |
+| deadband logging on a ms grid | 60/60 | 55,487 | 7.4 | +396 µs (+225%) | +254 µs (+225%) |
 
-For scale, the same unit's values take 20,951 bytes, 176 µs to encode and 112 µs to decode; the
+For scale, the same unit's values take 20,951 bytes, 176 µs to encode and 113 µs to decode; the
 percentages are of those times.
 Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
 grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:

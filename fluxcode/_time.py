@@ -79,8 +79,69 @@ def _odd_inverse(odd: np.uint64) -> np.uint64:
 
 
 @njit(inline="always")
-def _reference_quotient(quotients: np.ndarray) -> np.uint64:
-    """The reference that the block's quotients (from index 1) are stored relative to.
+def _deltas_gcd(times: np.ndarray, num_deltas: int) -> np.uint64:
+    """GCD of the first num_deltas time deltas (0 if they are all 0).
+
+    Most deltas are multiples of the GCD so far, which skips the Euclid steps.
+    """
+    step_gcd = np.uint64(0)
+    for sample_idx in range(1, num_deltas + 1):
+        delta = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
+        if step_gcd != 0 and delta % step_gcd == 0:
+            continue
+        step_gcd = _gcd(step_gcd, delta)
+        if step_gcd == 1:
+            break
+    return step_gcd
+
+
+@njit(inline="always")
+def _divide_deltas(
+    times: np.ndarray, step: np.uint64, out_quotients: np.ndarray
+) -> tuple[bool, np.uint64, np.uint64]:
+    """Divides every time delta by step (> 0), if step divides them all.
+
+    Exact division without a 64-bit divide: shift out the power of two, then multiply by the
+    odd part's inverse mod 2^64. That is exact for multiples of the odd part, and a delta is
+    one iff its shifted-out bits are 0 and the product is at most (2^64 - 1) // odd.
+
+    Returns:
+        A tuple of (divisible, minimum, total): whether step divides every delta, and the
+        minimum and sum of the quotients written to out_quotients[1:] (valid if divisible).
+    """
+    minimum = np.uint64(0xFFFFFFFFFFFFFFFF)
+    total = np.uint64(0)
+    if step == 1:
+        # The deltas themselves (the common ns case): no multiply, always divisible
+        for sample_idx in range(1, times.shape[0]):
+            quotient = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
+            out_quotients[sample_idx] = quotient
+            minimum = min(minimum, quotient)
+            total += quotient
+        return True, minimum, total
+    shift = np.uint64(_trailing_zeros(step))
+    odd = step >> shift
+    inverse = _odd_inverse(odd)
+    multiple_limit = np.uint64(0xFFFFFFFFFFFFFFFF) // odd
+    low_mask = (np.uint64(1) << shift) - np.uint64(1)
+    low_bits = np.uint64(0)
+    largest = np.uint64(0)
+    for sample_idx in range(1, times.shape[0]):
+        delta = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
+        quotient = (delta >> shift) * inverse
+        low_bits |= delta & low_mask
+        largest = max(largest, quotient)
+        out_quotients[sample_idx] = quotient
+        minimum = min(minimum, quotient)
+        # The quotients sum to (last time - first time) / step, below 2^64: no overflow
+        total += quotient
+    return bool(low_bits == 0 and largest <= multiple_limit), minimum, total
+
+
+@njit(inline="always")
+def _reference_quotient(quotients: np.ndarray, minimum: np.uint64, total: np.uint64) -> np.uint64:
+    """The reference that the block's quotients (from index 1, with the given minimum and
+    total) are stored relative to.
 
     The rounded mean suits quotients spread around a center (clock jitter); the minimum
     suits skewed ones (gaps, events, deadband logging), which the mean would shift away
@@ -92,12 +153,6 @@ def _reference_quotient(quotients: np.ndarray) -> np.uint64:
     """
     num_quotients = quotients.shape[0] - 1
     first = np.float64(quotients[1])
-    minimum = quotients[1]
-    total = np.uint64(0)
-    for sample_idx in range(1, quotients.shape[0]):
-        minimum = min(minimum, quotients[sample_idx])
-        # The quotients sum to (last time - first time) / step, below 2^64: no overflow
-        total += quotients[sample_idx]
     # Float sums in four fixed-order lanes: float addition doesn't reassociate, so one running
     # sum is a serial chain, while fastmath would make the result (and so the unit bytes)
     # depend on the machine's vector width
@@ -189,28 +244,19 @@ def encode_times(
             continue
         quotients = out_time_residuals[block_idx]
         quotients[0] = 0
-        for sample_idx in range(1, block_len):
-            quotients[sample_idx] = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
-        # GCD of the deltas: most are multiples of the GCD so far, which skips the Euclid steps
-        step_gcd = np.uint64(0)
-        for sample_idx in range(1, block_len):
-            delta = quotients[sample_idx]
-            if step_gcd != 0 and delta % step_gcd == 0:
-                continue
-            step_gcd = _gcd(step_gcd, delta)
-            if step_gcd == 1:
-                break
-        if step_gcd > int64_max:
-            # Only when one delta spans more than half the int64 range: store raw deltas
-            step_gcd = np.uint64(1)
-        elif step_gcd > 1:
-            # Exact division without a 64-bit divide (3x faster): shift out the power of two,
-            # then multiply by the odd part's inverse mod 2^64, which is exact for its multiples
-            shift = np.uint64(_trailing_zeros(step_gcd))
-            inverse = _odd_inverse(step_gcd >> shift)
-            for sample_idx in range(1, block_len):
-                quotients[sample_idx] = (quotients[sample_idx] >> shift) * inverse
-        reference = _reference_quotient(quotients)
+        # The GCD of the first few deltas is almost always the block's: try it, dividing every
+        # delta in the same pass, and only compute the exact GCD if it doesn't divide them all
+        step_gcd = _deltas_gcd(times, min(8, block_len - 1))
+        divisible = False
+        if 0 < step_gcd <= int64_max:
+            divisible, minimum, total = _divide_deltas(times, step_gcd, quotients)
+        if not divisible:
+            step_gcd = _deltas_gcd(times, block_len - 1)
+            if step_gcd > int64_max:
+                # Only when one delta spans more than half the int64 range: store raw deltas
+                step_gcd = np.uint64(1)
+            _, minimum, total = _divide_deltas(times, step_gcd, quotients)
+        reference = _reference_quotient(quotients, minimum, total)
         # Zigzagged residuals, in place: wrapping mod 2^64 keeps them exact for any quotient
         for sample_idx in range(1, block_len):
             residual = np.int64(quotients[sample_idx] - reference)

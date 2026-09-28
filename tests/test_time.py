@@ -97,6 +97,18 @@ def test_irregular_block_step_is_gcd():
     assert (unit_rows(unit).time_rows.steps % 250 == 0).all()
 
 
+@pytest.mark.parametrize("late_delta,step", [(1000, 1000), (1500, 500), (7, 1)])
+def test_gcd_of_the_whole_block_when_the_first_deltas_share_a_larger_one(late_delta, step):
+    """The encoder tries the GCD of a block's first deltas; a later delta can lower it."""
+    deltas = np.full(999, 4000)
+    deltas[1::2] = 2000
+    deltas[500] = late_delta
+    ticks = np.r_[0, np.cumsum(deltas)]
+    unit, decoded = round_trip(np.zeros(1000), ticks, Params(), time_unit="ns")
+    np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
+    assert unit_rows(unit).time_rows.steps[0] == step
+
+
 def test_reference_is_rounded_mean_for_jitter_and_minimum_for_skewed_deltas():
     rng = np.random.default_rng(4)
     index = np.arange(3000)

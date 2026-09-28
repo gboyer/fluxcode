@@ -22,7 +22,7 @@ nav ul{columns:2;list-style:none;padding-left:0}nav li{margin:2px 0;break-inside
 axis: what the timestamps add to a one-minute unit (60 blocks of 1,000 samples, nominally 1 kHz, int64 ns ticks).
 Every number here is the unit with times minus the same unit without them. For scale, that unit's values alone take
 20,951 bytes (a 4.12 Hz sine at the default settings), 177 µs to encode and
-119 µs to decode.
+105 µs to decode.
 <b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_time_report.py</code>.</p>
 <h2 id="how">How timestamps are stored</h2>
 <ul>
@@ -49,13 +49,13 @@ cost more than the values (here about two and a half times as much).</p>
 <table><tr><th class='l'>shape</th><th class='l'>what it is</th><th>bytes (example)</th><th>bits/sample</th>
 <th>irregular blocks</th><th>vs values</th><th>bytes over 64 units: median</th><th>max</th>
 <th>encode time added</th><th>decode time added</th></tr>
-<tr><td>Perfect grid</td><td class='l'>Every interval exactly 1 ms: hardware-clocked acquisition, resampled or synthesized series.</td><td>43</td><td>0.006</td><td>0/60</td><td>0.2%</td><td>43</td><td>46</td><td>+15 µs (+9%)</td><td>+6 µs (+5%)</td></tr>
-<tr><td>Grid with a few gaps</td><td class='l'>A perfect grid that sometimes skips: dropped packets, reconnects, a paused logger (Poisson, mean 2 gaps per minute, each 5 ms to 3 s).</td><td>220</td><td>0.029</td><td>2/60</td><td>1.1%</td><td>219</td><td>813</td><td>+25 µs (+14%)</td><td>+13 µs (+11%)</td></tr>
-<tr><td>Noisy clock</td><td class='l'>Host timestamps on arrival: 1 ms nominal, σ = 20 µs jitter, µs resolution.</td><td>53,596</td><td>7.146</td><td>60/60</td><td>255.8%</td><td>53,595</td><td>53,751</td><td>+265 µs (+150%)</td><td>+166 µs (+139%)</td></tr>
+<tr><td>Perfect grid</td><td class='l'>Every interval exactly 1 ms: hardware-clocked acquisition, resampled or synthesized series.</td><td>43</td><td>0.006</td><td>0/60</td><td>0.2%</td><td>43</td><td>46</td><td>+18 µs (+10%)</td><td>+13 µs (+12%)</td></tr>
+<tr><td>Grid with a few gaps</td><td class='l'>A perfect grid that sometimes skips: dropped packets, reconnects, a paused logger (Poisson, mean 2 gaps per minute, each 5 ms to 3 s).</td><td>220</td><td>0.029</td><td>2/60</td><td>1.1%</td><td>219</td><td>813</td><td>+25 µs (+14%)</td><td>+27 µs (+26%)</td></tr>
+<tr><td>Noisy clock</td><td class='l'>Host timestamps on arrival: 1 ms nominal, σ = 20 µs jitter, µs resolution.</td><td>53,596</td><td>7.146</td><td>60/60</td><td>255.8%</td><td>53,595</td><td>53,751</td><td>+237 µs (+134%)</td><td>+161 µs (+154%)</td></tr>
 </table>
 <p class='muted'>The example is the median-size unit of 64 seeds per shape. Times are single thread, best of
 30, Apple M3 on AC power; each added time's percentage is of the same unit's values-only encode
-(177 µs) or decode (119 µs). <i>vs values</i> is the timestamps' bytes as a share
+(177 µs) or decode (105 µs). <i>vs values</i> is the timestamps' bytes as a share
 of the values' 20,951.</p>
 <ul>
 <li><b>Perfect grid:</b> 43 bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
@@ -84,15 +84,15 @@ cases with random intervals cost more than the values. Percentages are of the va
 above.</p>
 <table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>
 <th>encode time added</th><th>decode time added</th></tr>
-<tr><td>1 kHz, 20 gaps</td><td>678</td><td>0.090</td><td>19/60</td><td>+84 µs (+48%)</td><td>+50 µs (+42%)</td></tr>
-<tr><td>1 kHz, 1% dropped</td><td>1,474</td><td>0.197</td><td>60/60</td><td>+213 µs (+120%)</td><td>+143 µs (+120%)</td></tr>
-<tr><td>drifting clock (0.99998 ms)</td><td>285</td><td>0.038</td><td>60/60</td><td>+168 µs (+95%)</td><td>+100 µs (+84%)</td></tr>
-<tr><td>jitter σ=10 µs, ns resolution</td><td>120,968</td><td>16.129</td><td>60/60</td><td>+296 µs (+167%)</td><td>+195 µs (+164%)</td></tr>
-<tr><td>jitter σ=10 µs, µs resolution</td><td>46,085</td><td>6.145</td><td>60/60</td><td>+265 µs (+150%)</td><td>+154 µs (+130%)</td></tr>
-<tr><td>Poisson events, mean 1 ms, µs</td><td>87,761</td><td>11.701</td><td>60/60</td><td>+317 µs (+179%)</td><td>+192 µs (+162%)</td></tr>
-<tr><td>Poisson events, mean 1 ms, ns</td><td>162,785</td><td>21.705</td><td>60/60</td><td>+334 µs (+189%)</td><td>+205 µs (+173%)</td></tr>
-<tr><td>deadband logging, ms grid</td><td>55,487</td><td>7.398</td><td>60/60</td><td>+428 µs (+242%)</td><td>+245 µs (+206%)</td></tr>
-<tr><td>bursts 10 kHz / idle</td><td>114</td><td>0.015</td><td>60/60</td><td>+202 µs (+114%)</td><td>+109 µs (+92%)</td></tr>
+<tr><td>1 kHz, 20 gaps</td><td>678</td><td>0.090</td><td>19/60</td><td>+77 µs (+43%)</td><td>+63 µs (+60%)</td></tr>
+<tr><td>1 kHz, 1% dropped</td><td>1,474</td><td>0.197</td><td>60/60</td><td>+185 µs (+104%)</td><td>+116 µs (+111%)</td></tr>
+<tr><td>drifting clock (0.99998 ms)</td><td>285</td><td>0.038</td><td>60/60</td><td>+163 µs (+92%)</td><td>+106 µs (+101%)</td></tr>
+<tr><td>jitter σ=10 µs, ns resolution</td><td>120,968</td><td>16.129</td><td>60/60</td><td>+289 µs (+163%)</td><td>+192 µs (+183%)</td></tr>
+<tr><td>jitter σ=10 µs, µs resolution</td><td>46,085</td><td>6.145</td><td>60/60</td><td>+238 µs (+134%)</td><td>+133 µs (+127%)</td></tr>
+<tr><td>Poisson events, mean 1 ms, µs</td><td>87,761</td><td>11.701</td><td>60/60</td><td>+286 µs (+161%)</td><td>+192 µs (+183%)</td></tr>
+<tr><td>Poisson events, mean 1 ms, ns</td><td>162,785</td><td>21.705</td><td>60/60</td><td>+328 µs (+185%)</td><td>+204 µs (+195%)</td></tr>
+<tr><td>deadband logging, ms grid</td><td>55,487</td><td>7.398</td><td>60/60</td><td>+398 µs (+224%)</td><td>+267 µs (+255%)</td></tr>
+<tr><td>bursts 10 kHz / idle</td><td>114</td><td>0.015</td><td>60/60</td><td>+175 µs (+98%)</td><td>+113 µs (+108%)</td></tr>
 </table>
 <p class='muted'>1% dropped and a drifting clock stay cheap: their intervals take two or three values. Jitter,
 Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
