@@ -157,8 +157,12 @@ def test_single_sample_blocks_must_be_canonical():
     assert times_of(ok).tolist() == [5, 9]
     for irregular, steps, refs in [([False, True], [0, 0], [0, 0]), ([False, False], [0, 3], [0, 0]),
                                    ([False, False], [0, 0], [0, 1])]:
+        corrupt = corrupt_unit(irregular, [5, 9], steps, refs, np.zeros(2), sizes=[1, 1])
         with pytest.raises(ValueError, match="block 1: a single sample"):
-            fluxcode.decode_unit(corrupt_unit(irregular, [5, 9], steps, refs, np.zeros(2), sizes=[1, 1]))
+            fluxcode.decode_unit(corrupt)
+        # Every parse checks it, including an update that carries the block without expanding it
+        with pytest.raises(ValueError, match="block 1: a single sample"):
+            fluxcode.update(corrupt, {2: [1.0]}, times={2: [20]})
 
 
 def test_noise_floor_needs_256_samples():
@@ -424,3 +428,25 @@ def test_update_time_blocks_errors():
     # Integer ticks are in the unit's time unit
     by_ticks = update_hour(unit, x_new, t_new.view(np.int64), minutes(30, 31))
     assert by_ticks.unit == update_hour(unit, x_new, t_new, minutes(30, 31)).unit
+    # Samples with no non-empty range to hold them
+    for empty in ([], [minutes(30, 30)], np.zeros((0, 2), np.int64)):
+        with pytest.raises(ValueError, match="within update_ranges"):
+            update_hour(unit, x_new, t_new, empty)
+    # 0-d arrays aren't pairs, as the ranges or as one of their items
+    with pytest.raises(ValueError, match=r"\(start, end\) pairs"):
+        update_hour(unit, x_new, t_new, np.array(5))
+    with pytest.raises(ValueError, match=r"\(start, end\) pairs"):
+        update_hour(unit, x_new, t_new, [np.array(5), np.array(6)])
+    with pytest.raises(ValueError, match=r"\(start, end\) pairs"):
+        update_hour(unit, x_new, t_new, [(START, START + MINUTE), np.array(6)])
+
+
+def test_update_time_blocks_ranges_past_int64_blocks():
+    """With a duration of one tick, a range near int64 maximum is ~2^64 blocks past the start:
+    far past the unit's blocks, so discarding it changes nothing."""
+    int64 = np.iinfo(np.int64)
+    unit = fluxcode.encode_time_blocks(np.arange(3.0), np.arange(3) + int64.min + 1, start_time=int64.min + 1,
+                                       block_duration=1, time_unit="ns").unit
+    result = fluxcode.update_time_blocks(unit, [], np.zeros(0, np.int64), start_time=int64.min + 1, block_duration=1,
+                                         update_ranges=[(int64.max - 10, int64.max)])
+    assert result.unit == unit and result.indices.shape == (0,)

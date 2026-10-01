@@ -1094,6 +1094,10 @@ TIME_ROWS_BAD_LONG: int = 2
 TIME_ROWS_BAD_EMPTY: int = 3
 """read_time_rows status: an empty block's time_start, time_step or time_ref isn't 0."""
 
+TIME_ROWS_BAD_SINGLE: int = 4
+"""read_time_rows status: a block of one sample has a nonzero time step or reference, or
+irregular times (the encoder's only form is regular with step and reference 0)."""
+
 
 @njit(nogil=True, cache=True)
 def read_time_rows(
@@ -1123,8 +1127,9 @@ def read_time_rows(
     Returns:
         A tuple of (status, block_idx): TIME_ROWS_OK, or TIME_ROWS_BAD_START and the
         first block whose start is int64 minimum or overflows int64, TIME_ROWS_BAD_LONG
-        and the first long block whose planes 32-63 are all zero, or TIME_ROWS_BAD_EMPTY and
-        the first empty block with a nonzero time column.
+        and the first long block whose planes 32-63 are all zero, TIME_ROWS_BAD_EMPTY and
+        the first empty block with a nonzero time column, or TIME_ROWS_BAD_SINGLE and the
+        first one-sample block that isn't regular with step and reference 0.
     """
     num_blocks = out_time_starts.shape[0]
     short_planes, long_planes = time_planes_views(
@@ -1156,6 +1161,10 @@ def read_time_rows(
             out_time_starts[block_idx] = np.int64(np.uint64(previous_start) + np.uint64(stored_start))
         previous_start = out_time_starts[block_idx]
         seen_samples = True
+        if sample_offsets[block_idx + 1] - sample_offsets[block_idx] == 1 and (
+            out_time_steps[block_idx] != 0 or out_time_refs[block_idx] != 0 or raw_unit[block_idx] & HEAD_IRREGULAR_TIME
+        ):
+            return TIME_ROWS_BAD_SINGLE, block_idx
         if raw_unit[block_idx] & HEAD_IRREGULAR_TIME:
             is_long = raw_unit[block_idx] & HEAD_LONG_TIME
             num_active_bytes = unshuffle_time_residuals(
@@ -1460,3 +1469,7 @@ def check_time_rows_status(status: int, block_idx: int) -> None:
         raise ValueError(f"block {block_idx}: long time residuals fit in 32 bits (corrupt unit)")
     if status == TIME_ROWS_BAD_EMPTY:
         raise ValueError(f"block {block_idx}: empty block with nonzero time columns (corrupt unit)")
+    if status == TIME_ROWS_BAD_SINGLE:
+        raise ValueError(
+            f"block {block_idx}: a single sample with a nonzero time step or reference, or irregular (corrupt unit)"
+        )

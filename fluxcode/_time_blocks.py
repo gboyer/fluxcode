@@ -109,6 +109,8 @@ def to_ranges(update_ranges: object, time_unit: int) -> np.ndarray:
     Raises:
         ValueError: If the ranges aren't pairs of times, or a range ends before it starts.
     """
+    if isinstance(update_ranges, np.ndarray) and update_ranges.ndim == 0:
+        raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}")
     if isinstance(update_ranges, np.ndarray):
         items = list(update_ranges.reshape(1, 2) if update_ranges.shape == (2,) else update_ranges)
     elif isinstance(update_ranges, Iterable):
@@ -123,7 +125,7 @@ def to_ranges(update_ranges: object, time_unit: int) -> np.ndarray:
         raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}")  # noqa: TRY004
     pairs = []
     for item in items:
-        pair = list(item) if isinstance(item, (tuple, list, np.ndarray)) else None
+        pair = list(item) if isinstance(item, (tuple, list)) or (isinstance(item, np.ndarray) and item.ndim) else None
         if pair is None or len(pair) != 2:
             raise ValueError(f"update_ranges must be (start, end) pairs, got {item!r}")
         pairs.append([to_ticks(_scalar(point), time_unit, "update_ranges") for point in pair])
@@ -191,6 +193,8 @@ def encode_time_blocks(
 
 def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
     """Whether each tick is in one of the sorted, disjoint [start, end) ranges."""
+    if not ranges.shape[0]:
+        return np.zeros(ticks.shape[0], np.bool_)
     range_idx = np.searchsorted(ranges[:, 0], ticks, "right") - 1
     return (range_idx >= 0) & (ticks < ranges[np.maximum(range_idx, 0), 1])
 
@@ -227,9 +231,11 @@ def update_time_blocks(
     if new_ids.shape[0] and (np.diff(ticks) < 0).any():
         raise _unit.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
-    # The existing blocks whose time span meets a range (block bounds as Python ints: past int64 if need be)
+    # The existing blocks whose time span meets a range (block bounds as Python ints: past int64
+    # if need be, so both ends are clamped to the old blocks before numpy sees them)
     spans = [
-        np.arange(max(range_start - start, 0) // duration, min(-(-(range_end - start) // duration), num_old_blocks))
+        np.arange(min(max(range_start - start, 0) // duration, num_old_blocks),
+                  min(-(-(range_end - start) // duration), num_old_blocks))
         for range_start, range_end in ranges.tolist()
         if range_end > start
     ]

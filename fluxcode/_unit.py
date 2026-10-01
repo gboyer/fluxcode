@@ -389,7 +389,8 @@ def read_time_rows(parsed: ParsedUnit) -> _format.TimeRows:
 
     Raises:
         ValueError: If a block start time is int64 minimum or overflows int64, a long
-            block's residuals fit in 32 bits, or an empty block has nonzero time columns.
+            block's residuals fit in 32 bits, an empty block has nonzero time columns, or a
+            one-sample block isn't regular with step and reference 0.
     """
     time_rows = _format.allocate_time_rows(parsed.header.num_blocks, parsed.header.num_samples)
     _format.check_time_rows_status(*_format.read_time_rows(parsed.raw_body, *parsed.layout, *time_rows))
@@ -416,10 +417,6 @@ def expand_times(
         raise ValueError(f"block {block_idx}: first time residual is not 0 (corrupt unit)")
     if status == _time.OVERFLOW:
         raise ValueError(f"block {block_idx}: times overflow int64 (corrupt unit)")
-    if status == _time.BAD_SINGLE:
-        raise ValueError(
-            f"block {block_idx}: a single sample with a nonzero time step or reference, or irregular (corrupt unit)"
-        )
 
 
 def decode_blocks(

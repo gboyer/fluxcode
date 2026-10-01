@@ -34,7 +34,8 @@ type:
   sigma multiplier that you want to preserve, and the quantization grid is reduced
   accordingly. This helps compression for noisy data, but
   preserves clean periodic data (unless the frequency approaches the sample rate).
-  By default, 0.25 sigmas.
+  By default, 0.25 sigmas. It only applies to blocks of at least 256 samples, so a fixed
+  `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Byte planes**: `try_byte_planes=True` sees if organizing high/low bytes
@@ -207,7 +208,9 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
   changes the range.
 - **Noise floor:** a robust (clipped [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation))
   estimate of the noise in the second differences, plus their lag-1 autocorrelation (−2/3 for
-  white noise). Blocks that look like white noise get a step of at most 0.25σ.
+  white noise). Blocks that look like white noise get a step of at most 0.25σ. Blocks under 256
+  samples keep their finest step: the autocorrelation estimate is too noisy there to tell white
+  noise from a random walk.
 - **Fixed polynomial predictors** of order 0–3, picked per block by residual variance, as in
   [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and
   [FLAC's fixed predictors](https://www.rfc-editor.org/rfc/rfc9639#name-fixed-predictor-subframe).
