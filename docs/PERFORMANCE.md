@@ -246,4 +246,5 @@ walk). At most ~3% of encode, with a regression on noisy data. Not worth the cod
     uv run python bench/stress.py --scale 0.25 --sprinkle 0.01  # an adversarial variant
     uv run python bench/stress.py --times clock-mix             # with exact timestamps, ~3 minutes
     uv run python bench/time_axis.py                            # timestamp cost per clock shape, one unit
+    uv run python bench/update.py                               # update / update_time_blocks vs encode
     uv run python bench/stress.py --list                        # signal kinds and presets
