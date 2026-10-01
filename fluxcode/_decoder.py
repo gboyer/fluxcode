@@ -30,6 +30,7 @@ from ._format import (
     count_flagged,
     get_int64,
     grid_params_start,
+    plane_groups,
     planes_view,
     unshuffle_block,
     unzigzag16,
@@ -239,8 +240,9 @@ def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool,
     for block_idx in range(num_blocks):
         anchor_bits[block_idx] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
     anchor_floats = anchor_bits.view(np.float64)
-    scratch_low_bytes = np.empty(block_len, np.uint8)
-    scratch_high_bytes = np.empty(block_len, np.uint8)
+    padded_len = 8 * plane_groups(block_len)
+    scratch_low_bytes = np.empty(padded_len, np.uint8)
+    scratch_high_bytes = np.empty(padded_len, np.uint8)
     block_residuals = np.empty(block_len, np.int32)
     # Obtain views into residual and code bit planes
     bit_planes = planes_view(raw_unit, num_blocks, block_len, has_time)
@@ -252,7 +254,7 @@ def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool,
         param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
         if byte_planes:
             # Byte planes: the block's low and high zigzag bytes are contiguous
-            sample_start = block_idx * block_len
+            sample_start = block_idx * padded_len
             unzigzag(
                 byte_planes_2d[0, sample_start:sample_start + block_len],
                 byte_planes_2d[1, sample_start:sample_start + block_len],

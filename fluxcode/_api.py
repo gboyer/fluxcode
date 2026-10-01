@@ -112,8 +112,7 @@ class Params:
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.
-        block_len: Number of samples per block (must be a multiple of 8, at most
-            65536).
+        block_len: Number of samples per block (4 to 65536).
         blocks_per_unit: Maximum number of blocks in a single compressed unit row
             (must be >= 1).
         try_byte_planes: Also compress each unit with byte planes instead of bit
@@ -163,10 +162,10 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
-        # Block length must be a multiple of 8 within allowable format limits
-        if not (_is_int(self.block_len) and 0 < self.block_len <= _format.MAX_BLOCK_LEN and self.block_len % 8 == 0):
+        # Block length must be within allowable format limits
+        if not (_is_int(self.block_len) and _format.MIN_BLOCK_LEN <= self.block_len <= _format.MAX_BLOCK_LEN):
             raise ValueError(
-                f"block_len must be a multiple of 8 from 8 to {_format.MAX_BLOCK_LEN}, got {self.block_len!r}"
+                f"block_len must be from {_format.MIN_BLOCK_LEN} to {_format.MAX_BLOCK_LEN}, got {self.block_len!r}"
             )
         # Blocks per unit must be at least 1
         if not (_is_int(self.blocks_per_unit) and self.blocks_per_unit >= 1):

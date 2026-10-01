@@ -111,7 +111,7 @@ which set the step to 0.25σ.
   `DecodedUnit` per unit.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `block_len=1000` (a multiple of 8, at most 65,536),
+  (≥ 6 when set), `decimal_detection=True`, `block_len=1000` (4 to 65,536),
   `blocks_per_unit=60` (at most 2^26 = 67,108,864 samples per unit, the bound decoders accept),
   `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 

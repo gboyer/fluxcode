@@ -14,7 +14,14 @@ import numpy as np
 from numba import njit
 
 from . import _extreme_magnitudes as xm
-from ._format import CODE_FINITE, CODE_NAN, CODE_NEG_INF, CODE_POS_INF, get_code
+from ._format import (
+    CODE_FINITE,
+    CODE_NAN,
+    CODE_NEG_INF,
+    CODE_POS_INF,
+    get_code,
+    plane_groups,
+)
 from ._noise import CLIP_PASSES, CLIP_SIGMAS, MAD_TO_SD, SIGMA_GAIN
 
 
@@ -210,6 +217,27 @@ def noise_finite(
     return math.ldexp(robust_std, scale_exp) / SIGMA_GAIN, autocorr
 
 
+@njit(inline="always")
+def _restore_group(
+    code_planes: np.ndarray, plane_byte_offset: int, group_idx: int, num_valid: int, in_out_samples: np.ndarray
+) -> None:
+    """Restores the non-finite samples among 8 * group_idx + (0..num_valid - 1)."""
+    plane0_byte = code_planes[0, plane_byte_offset + group_idx]
+    plane1_byte = code_planes[1, plane_byte_offset + group_idx]
+    # Fast path: skip 8-sample group if both plane bytes are zero (all finite)
+    if plane0_byte | plane1_byte:
+        for bit_idx in range(num_valid):
+            code = get_code(plane0_byte, plane1_byte, bit_idx)
+            # Overwrite sample with canonical quiet NaN or signed infinity
+            sample_offset = 8 * group_idx + bit_idx
+            if code == 1:
+                in_out_samples[sample_offset] = np.nan
+            elif code == 2:
+                in_out_samples[sample_offset] = np.inf
+            elif code == 3:
+                in_out_samples[sample_offset] = -np.inf
+
+
 @njit(nogil=True, cache=True)
 def restore_nonfinite(code_planes: np.ndarray, flagged_block_idx: int, in_out_samples: np.ndarray) -> None:
     """Overwrites imputed samples with exact non-finite values from code planes.
@@ -218,24 +246,15 @@ def restore_nonfinite(code_planes: np.ndarray, flagged_block_idx: int, in_out_sa
     Skips 8-sample groups where all samples are finite.
 
     Args:
-        code_planes: 2D uint8 array of shape (2, F * (n // 8)) holding code planes.
+        code_planes: 2D uint8 array of shape (2, F * plane_groups(n)) holding code planes.
         flagged_block_idx: Rank of the flagged block among all flagged blocks (0 <= f < F).
         in_out_samples: In-out 1D float64 array of dequantized samples modified in-place.
     """
-    num_8byte_groups = in_out_samples.shape[0] // 8
-    plane_byte_offset = flagged_block_idx * num_8byte_groups
-    for group_idx in range(num_8byte_groups):
-        plane0_byte = code_planes[0, plane_byte_offset + group_idx]
-        plane1_byte = code_planes[1, plane_byte_offset + group_idx]
-        # Fast path: skip 8-sample group if both plane bytes are zero (all finite)
-        if plane0_byte | plane1_byte:
-            for bit_idx in range(8):
-                code = get_code(plane0_byte, plane1_byte, bit_idx)
-                # Overwrite sample with canonical quiet NaN or signed infinity
-                sample_offset = 8 * group_idx + bit_idx
-                if code == 1:
-                    in_out_samples[sample_offset] = np.nan
-                elif code == 2:
-                    in_out_samples[sample_offset] = np.inf
-                elif code == 3:
-                    in_out_samples[sample_offset] = -np.inf
+    num_samples = in_out_samples.shape[0]
+    num_full_groups = num_samples // 8
+    plane_byte_offset = flagged_block_idx * plane_groups(num_samples)
+    # Full groups with a constant bit count, then a partial last group
+    for group_idx in range(num_full_groups):
+        _restore_group(code_planes, plane_byte_offset, group_idx, 8, in_out_samples)
+    if num_samples % 8:
+        _restore_group(code_planes, plane_byte_offset, num_full_groups, num_samples % 8, in_out_samples)

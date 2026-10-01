@@ -114,8 +114,10 @@ def test_residual_and_integrate(order):
     np.testing.assert_array_equal(w, q)
 
 
-def test_shuffle_round_trip_and_layout():
-    N, n = 3, 64
+@pytest.mark.parametrize("n", [64, 61, 5])
+def test_shuffle_round_trip_and_layout(n):
+    N = 3
+    groups = -(-n // 8)
     resid = RNG.integers(-2 ** 15, 2 ** 15, (N, n)).astype(np.int16)
     head = np.array([1, 2, 3], np.uint8)
     param = np.array([-5, 17, -(2 ** 40)], np.int64)
@@ -127,9 +129,10 @@ def test_shuffle_round_trip_and_layout():
     np.testing.assert_array_equal(raw[9 * N:17 * N].reshape(8, N).T.copy().view(np.int64).ravel(), anchor)
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[17 * N:].reshape(16, N, n // 8)
-    bits = np.unpackbits(planes, axis=2, bitorder="little")  # (16, N, n): bit j of u[b, i]
-    np.testing.assert_array_equal(bits, ((u[None] >> np.arange(16)[:, None, None]) & 1).astype(np.uint8))
+    planes = raw[17 * N:].reshape(16, N, groups)
+    bits = np.unpackbits(planes, axis=2, bitorder="little")  # (16, N, 8 * groups): bit j of u[b, i]
+    np.testing.assert_array_equal(bits[..., :n], ((u[None] >> np.arange(16)[:, None, None]) & 1).astype(np.uint8))
+    assert not bits[..., n:].any()  # each block's last group is padded with zero bits
     h2, p2, a2, r2, _, _ = _format.read_unit(raw, N, n)
     np.testing.assert_array_equal(h2, head)
     np.testing.assert_array_equal(p2, param)

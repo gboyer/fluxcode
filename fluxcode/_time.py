@@ -237,7 +237,7 @@ def encode_times(
                 if times[sample_idx] < times[sample_idx - 1]:
                     return DECREASING, block_idx * block_len + sample_idx
         if differing_bits == 0:
-            # Every quotient is 1 (0 when all times are equal). block_len - 1 >= 7 equal
+            # Every quotient is 1 (0 when all times are equal). block_len - 1 >= 3 equal
             # deltas span less than 2^64, so the step fits int64.
             out_time_steps[block_idx] = np.int64(first_delta)
             out_time_refs[block_idx] = np.uint64(first_delta != 0)

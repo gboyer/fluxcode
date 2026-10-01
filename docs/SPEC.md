@@ -35,8 +35,9 @@ finally the target (if set and the unit is over budget) coarsens blocks further,
 e_coarse. With both the noise floor and the target on, each block takes the coarser step.
 
 Fixed by this spec: zstd level 3, blocks interleaved by field.
-The block length `block_len` is fixed per deployment and must be a multiple of 8 (1000 in everything
-measured); `num_blocks` ≤ `blocks_per_unit` (60) blocks per unit.
+The block length `block_len` is fixed per deployment, 4 to 65,536 (1000 in everything measured);
+`num_blocks` ≤ `blocks_per_unit` (60) blocks per unit. Bit planes store each block in whole bytes,
+so a `block_len` that isn't a multiple of 8 pads every block's last byte with zero bits (§5).
 
 Residuals are bit-shuffled by default: smaller overall than byte planes, and the best bound on
 the cost of noisy, wide signals. A unit may use byte planes instead (header flag, §5), which
@@ -408,13 +409,16 @@ decompressing:
 | 0 | version | uint8 | 1 (a decoder rejects others) |
 | 1 | flags | uint8 | bit 0: `residual_planes` are byte planes instead of bit planes; bits 1–3: `time_unit`, 0 for no time axis, 1 s, 2 ms, 3 µs, 4 ns (5–7 rejected); bits 4–7: 0 (rejected otherwise) |
 | 2–3 | reserved | uint16 | 0 (a decoder rejects others) |
-| 4–7 | `block_len` | uint32 | block length: a multiple of 8, 8 to 65,536 |
+| 4–7 | `block_len` | uint32 | block length, 4 to 65,536 |
 | 8–12 | `num_samples` | uint40 | sample count, 1 to 2^26 (§2). The unit holds `num_blocks` = ceil(`num_samples` / `block_len`) blocks |
 | 13–15 | reserved | 3 bytes | 0 (a decoder rejects others): the top 3 bytes of a uint64 whose low 40 bits are `num_samples` |
 
 Counts used below: `num_nonfinite_blocks` blocks have block flag bit 3 set,
-`num_irregular_blocks` have bit 4 set and `num_long_blocks` have bit 5 set. The body is these fields, in this order; the four time
-fields are present only when `time_unit` ≠ 0:
+`num_irregular_blocks` have bit 4 set and `num_long_blocks` have bit 5 set. Each block takes
+`num_groups` = ceil(`block_len` / 8) bytes of every bit plane: when `block_len` isn't a multiple of
+8, bits `block_len` mod 8 to 7 of its last byte are padding, and byte planes likewise pad each
+block to 8 × `num_groups` bytes. Writers zero the padding; decoders ignore it. The body is these
+fields, in this order; the four time fields are present only when `time_unit` ≠ 0:
 
 | field | size in bytes | contents |
 |---|---|---|
@@ -424,13 +428,13 @@ fields are present only when `time_unit` ≠ 0:
 | `time_start` | 8 × `num_blocks` | block 0: its start time as int64; block b > 0: its start minus block b − 1's start, as uint64. Byte-planed |
 | `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the GCD of its deltas (≥ 0; ≥ 1 in an irregular block) |
 | `time_ref` | 8 × `num_blocks` | the block's reference quotient as uint64, byte-planed: 1 in a regular block (0 if its times are all equal); in an irregular block, the value the residuals are taken from (§2a) |
-| `residual_planes` | 2 × `num_blocks` × `block_len` | flags bit 0 clear: bit plane j = 0..15, then block, then byte i = 0..`block_len`/8 − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block, then sample |
-| `nonfinite_code_planes` | 2 × `num_nonfinite_blocks` × `block_len` / 8 | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
-| `time_residual_planes` | 32 × (`num_irregular_blocks` + `num_long_blocks`) × `block_len` / 8 | per sample of an irregular block, the uint64 residual: `zigzag(quotient − time_ref)` mod 2^64, with the quotient `(time[i] − time[i−1]) / time_step`; 0 for sample 0. First bit plane j = 0..31, then the irregular blocks in block order, then byte i; then bit plane j = 32..63, then the long blocks in block order, then byte i. Bit k of byte i is bit j of the residual of sample 8i + k; a short block's residuals are below 2^32 |
+| `residual_planes` | 16 × `num_blocks` × `num_groups` | flags bit 0 clear: bit plane j = 0..15, then block, then byte i = 0..`num_groups` − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block, then sample 0..8 × `num_groups` − 1 |
+| `nonfinite_code_planes` | 2 × `num_nonfinite_blocks` × `num_groups` | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
+| `time_residual_planes` | 32 × (`num_irregular_blocks` + `num_long_blocks`) × `num_groups` | per sample of an irregular block, the uint64 residual: `zigzag(quotient − time_ref)` mod 2^64, with the quotient `(time[i] − time[i−1]) / time_step`; 0 for sample 0. First bit plane j = 0..31, then the irregular blocks in block order, then byte i; then bit plane j = 32..63, then the long blocks in block order, then byte i. Bit k of byte i is bit j of the residual of sample 8i + k; a short block's residuals are below 2^32 |
 
 ```
-body_size = 17 × num_blocks + 2 × num_blocks × block_len + num_nonfinite_blocks × block_len / 4
-          + (time_unit ≠ 0) × (24 × num_blocks + 4 × (num_irregular_blocks + num_long_blocks) × block_len)
+body_size = 17 × num_blocks + 16 × num_blocks × num_groups + 2 × num_nonfinite_blocks × num_groups
+          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (num_irregular_blocks + num_long_blocks) × num_groups)
 ```
 
 A decoder checks the frame's recorded content size against the header before decompressing (it

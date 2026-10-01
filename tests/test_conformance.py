@@ -4,6 +4,7 @@
 
 import numpy as np
 import pytest
+import zstandard
 from _series import decode_series, encode_series, gated, heads_params, unit_rows
 from _signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
 
@@ -285,7 +286,7 @@ def test_negative_zero_decodes_as_positive_zero():
     assert (y == x).all() and not np.signbit(y).any()
 
 
-@pytest.mark.parametrize("block_len", [8, 64, 1000, 4096])
+@pytest.mark.parametrize("block_len", [5, 8, 13, 64, 1000, 1001, 4096])
 @pytest.mark.parametrize("n_blocks", [1, 7, 60])
 @pytest.mark.parametrize("flagged", [0, 1, "all"])
 def test_units_are_self_describing(block_len, n_blocks, flagged):
@@ -300,6 +301,64 @@ def test_units_are_self_describing(block_len, n_blocks, flagged):
     y = fluxcode.decode_unit(unit).values
     assert y.shape == x.shape
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
+
+
+@pytest.mark.parametrize("block_len", [4, 5, 13, 1001])
+def test_block_lengths_not_a_multiple_of_8(block_len):
+    """Every plane field pads each block to whole bytes with zero bits (byte planes with zero
+    bytes); values, non-finite codes and short and long irregular times round-trip exactly."""
+    num_blocks = 7
+    n = num_blocks * block_len - 2
+    rng = np.random.default_rng(block_len)
+    x = rng.integers(-1000, 1000, n).astype(float)  # integers: decimal grid, lossless
+    x[[1, n // 2, n - 1]] = [np.nan, np.inf, -np.inf]
+    ticks = np.cumsum(rng.integers(1, 5, n))
+    ticks[2 * block_len + 2:] += 2 ** 40  # inside block 2, which then needs long time residuals
+    params = Params(block_len=block_len, blocks_per_unit=num_blocks, noise_floor_sigma=None)
+    unit = fluxcode.encode_unit(x, params, times=ticks, time_unit="ns").unit
+    rows = unit_rows(unit)
+    assert np.count_nonzero(rows.block_flags & _format.HEAD_NONFINITE) == 3
+    assert np.count_nonzero(rows.block_flags & _format.HEAD_LONG_TIME) == 1
+    groups = -(-block_len // 8)
+    body = fluxcode._api._decompress(unit)[0]
+    flagged = _format.count_flagged(body, num_blocks)
+    planes = [_format.planes_view(body, num_blocks, block_len, True),
+              _format.code_planes_view(body, num_blocks, block_len, flagged, True),
+              *_format.time_planes_views(body, num_blocks, block_len, flagged)]
+    for field in planes:
+        bits = np.unpackbits(field.reshape(field.shape[0], -1, groups), axis=2, bitorder="little")
+        assert bits.shape[1] and not bits[..., block_len:].any()
+    # Decoders ignore the padding: setting every padding bit changes nothing
+    if block_len % 8:
+        dirty_body = body.copy()
+        for field in [_format.planes_view(dirty_body, num_blocks, block_len, True),
+                      _format.code_planes_view(dirty_body, num_blocks, block_len, flagged, True),
+                      *_format.time_planes_views(dirty_body, num_blocks, block_len, flagged)]:
+            field.reshape(field.shape[0], -1, groups)[..., -1] |= np.uint8(0xFF << (block_len % 8) & 0xFF)
+        assert (dirty_body != body).any()
+        dirty_unit = unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor().compress(dirty_body.tobytes())
+        assert unit_rows(dirty_unit).block_flags.tolist() == rows.block_flags.tolist()
+        decoded = fluxcode.decode_unit(dirty_unit)
+        np.testing.assert_array_equal(decoded.values, x)
+        np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
+    # The same rows as byte planes: each block's bytes padded with zero bytes
+    byte_body = _format.write_unit(*rows[:5], byte_planes=True, time_rows=rows.time_rows)
+    byte_planes = _format.byte_planes_view(byte_body, num_blocks, block_len, True).reshape(2, num_blocks, 8 * groups)
+    assert not byte_planes[..., block_len:].any()
+    byte_unit = (_format.pack_header(block_len, n, True, int(_format.TimeUnit.NANOSECONDS))
+                 + zstandard.ZstdCompressor().compress(byte_body.tobytes()))
+    for encoded in (unit, byte_unit):
+        decoded = fluxcode.decode_unit(encoded)
+        np.testing.assert_array_equal(decoded.values, x)
+        np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
+    # update: fill the partial last block, then append a block; equals encoding the whole series
+    full = np.concatenate([x, rng.integers(-1000, 1000, block_len + 2).astype(float)])
+    full_ticks = np.concatenate([ticks, ticks[-1] + np.arange(1, block_len + 3)])
+    params = Params(block_len=block_len, blocks_per_unit=num_blocks + 1, noise_floor_sigma=None)
+    blocks = full[(num_blocks - 1) * block_len:].reshape(2, block_len)
+    block_ticks = full_ticks[(num_blocks - 1) * block_len:].reshape(2, block_len)
+    updated = fluxcode.update(unit, [num_blocks - 1, num_blocks], blocks, params, times=block_ticks).unit
+    assert updated == fluxcode.encode_unit(full, params, times=full_ticks, time_unit="ns").unit
 
 
 def _with_header(unit, **fields):
@@ -319,7 +378,8 @@ def _with_header(unit, **fields):
     ({"reserved": 1}, "reserved"),
     ({"num_samples": 2500 | (1 << 40)}, "reserved"),  # the top 3 bytes of the sample count
     ({"num_samples": 2500 | (1 << 63)}, "reserved"),
-    ({"block_len": 1001}, "block length"),
+    ({"block_len": 3}, "block length"),
+        ({"block_len": 1001}, "doesn't fit"),  # valid length, but the body holds blocks of 1000
     ({"block_len": 0}, "block length"),
     ({"num_samples": 0}, "sample count"),
     ({"num_samples": _format.MAX_UNIT_SAMPLES + 1}, "sample count"),
