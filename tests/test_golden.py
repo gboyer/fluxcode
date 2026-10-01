@@ -42,36 +42,65 @@ def _scaled(x, s):
     return x / np.abs(x).max() * s
 
 
+VARIABLE_SIZES = [1000, 0, 3, 8, 9, 500, 1001, 0, 0, 2048, 1, 2, 777]
+
+
+def _encode_fixed(block_len=1000):
+    """encode_unit in blocks of block_len."""
+    return lambda x, params: fluxcode.encode_unit(x, params, block_len=block_len)
+
+
+def _encode_variable(x, params):
+    """Blocks of every kind of size: empty, short (no analysis), odd, and over 1000."""
+    return fluxcode.encode_blocks(x[:sum(VARIABLE_SIZES)], VARIABLE_SIZES, params)
+
+
+def _encode_time_blocks(x, params):
+    """One-second blocks of jittered 1 kHz times (µs) with a missing stretch and a gap mid-block."""
+    rng = np.random.default_rng(7)
+    ticks = 1_790_000_000_000_000 + np.arange(x.size) * 1000 + rng.integers(-20, 21, x.size)
+    keep = (np.arange(x.size) < 12_000) | (np.arange(x.size) >= 19_500)
+    keep &= (np.arange(x.size) < 40_200) | (np.arange(x.size) >= 40_350)
+    return fluxcode.encode_time_blocks(x[keep], ticks[keep].view("datetime64[us]"), params,
+                                       start_time=np.datetime64(1_789_999_999_999_000, "us"),
+                                       block_duration=np.timedelta64(1, "s"))
+
+
 CASES = {
-    "linear default": (lambda: minute("linear", 1), Params()),
-    "quadratic default": (lambda: minute("quadratic", 1), Params()),
-    "sin-50.3hz default": (lambda: minute("sin-50.3hz", 1), Params()),
-    "chirp default": (lambda: minute("chirp", 1), Params()),
-    "noisy-sine default": (lambda: minute("noisy-sine", 1), Params()),
-    "gauss-spikes default": (lambda: minute("gauss-spikes", 1), Params()),
-    "random-walk default": (lambda: minute("random-walk", 1), Params()),
-    "noisy-sine noise off": (lambda: minute("noisy-sine", 2), Params(noise_floor_sigma=None)),
-    "chirp target 6": (lambda: minute("chirp", 2), Params(target_bits_per_sample=6.0)),
-    "random-walk target 8": (lambda: minute("random-walk", 2), Params(target_bits_per_sample=8.0)),
-    "square orders {2}": (lambda: minute("square-2.24hz", 1), Params(diff_orders={2})),
-    "sin-9.87hz 9 bits": (lambda: minute("sin-9.87hz", 1), Params(min_quantize_bits=4, max_quantize_bits=9)),
-    "random-walk q0.01": (lambda: discrete_minute("random-walk q0.01", 1), Params()),
-    "sensor-0.1": (lambda: discrete_minute("sensor-0.1", 1), Params()),
-    "0.01-grid walk via float32": (lambda: _decimal_walk_f32(), Params()),
-    "noisy-sine adc12 decimal off": (lambda: discrete_minute("noisy-sine adc12", 1), Params(decimal_detection=False)),
-    "noisy-sine with gaps": (lambda: _gaps(minute("noisy-sine", 3)), Params()),
-    "random-walk with gaps target 6": (lambda: _gaps(minute("random-walk", 3)), Params(target_bits_per_sample=6.0)),
-    "white noise at 1e-310": (lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1e-310), Params()),
+    "linear default": (lambda: minute("linear", 1), Params(), _encode_fixed()),
+    "quadratic default": (lambda: minute("quadratic", 1), Params(), _encode_fixed()),
+    "sin-50.3hz default": (lambda: minute("sin-50.3hz", 1), Params(), _encode_fixed()),
+    "chirp default": (lambda: minute("chirp", 1), Params(), _encode_fixed()),
+    "noisy-sine default": (lambda: minute("noisy-sine", 1), Params(), _encode_fixed()),
+    "gauss-spikes default": (lambda: minute("gauss-spikes", 1), Params(), _encode_fixed()),
+    "random-walk default": (lambda: minute("random-walk", 1), Params(), _encode_fixed()),
+    "noisy-sine noise off": (lambda: minute("noisy-sine", 2), Params(noise_floor_sigma=None), _encode_fixed()),
+    "chirp target 6": (lambda: minute("chirp", 2), Params(target_bits_per_sample=6.0), _encode_fixed()),
+    "random-walk target 8": (lambda: minute("random-walk", 2), Params(target_bits_per_sample=8.0), _encode_fixed()),
+    "square orders {2}": (lambda: minute("square-2.24hz", 1), Params(diff_orders={2}), _encode_fixed()),
+    "sin-9.87hz 9 bits": (lambda: minute("sin-9.87hz", 1), Params(min_quantize_bits=4, max_quantize_bits=9), _encode_fixed()),
+    "random-walk q0.01": (lambda: discrete_minute("random-walk q0.01", 1), Params(), _encode_fixed()),
+    "sensor-0.1": (lambda: discrete_minute("sensor-0.1", 1), Params(), _encode_fixed()),
+    "0.01-grid walk via float32": (lambda: _decimal_walk_f32(), Params(), _encode_fixed()),
+    "noisy-sine adc12 decimal off": (lambda: discrete_minute("noisy-sine adc12", 1), Params(decimal_detection=False), _encode_fixed()),
+    "noisy-sine with gaps": (lambda: _gaps(minute("noisy-sine", 3)), Params(), _encode_fixed()),
+    "random-walk with gaps target 6": (lambda: _gaps(minute("random-walk", 3)), Params(target_bits_per_sample=6.0), _encode_fixed()),
+    "white noise at 1e-310": (lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1e-310), Params(), _encode_fixed()),
     "white noise across +-DBL_MAX": (lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1.7e308),
-                                     Params()),
-    "short last block": (lambda: minute("sin-4.12hz", 4)[:59_321], Params()),
-    "block_len 64, 7 blocks": (lambda: minute("random-walk", 5)[:7 * 64], Params(block_len=64)),
+                                     Params(), _encode_fixed()),
+    "short last block": (lambda: minute("sin-4.12hz", 4)[:59_321], Params(), _encode_fixed()),
+    "block_len 64, 7 blocks": (lambda: minute("random-walk", 5)[:7 * 64], Params(), _encode_fixed(64)),
+    "block_len 1001": (lambda: minute("noisy-sine", 5), Params(), _encode_fixed(1001)),
+    "variable blocks": (lambda: minute("random-walk", 6), Params(), _encode_variable),
+    "variable blocks target 6": (lambda: minute("chirp", 6), Params(target_bits_per_sample=6.0), _encode_variable),
+    "time blocks": (lambda: discrete_minute("sensor-0.1", 7), Params(),
+                    _encode_time_blocks),
 }
 
 
 def digest(name):
-    make, params = CASES[name]
-    unit, lo, hi, mean = fluxcode.encode_unit(make(), params)
+    make, params, encoder = CASES[name]
+    unit, lo, hi, mean = encoder(make(), params)
     h = hashlib.sha256(unit)
     for col in (lo, hi, mean):
         h.update(np.ascontiguousarray(col, np.float64).tobytes())

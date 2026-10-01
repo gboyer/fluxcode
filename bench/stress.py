@@ -54,7 +54,7 @@ from _signals import (
 )
 
 import fluxcode
-from fluxcode import Params, _api, _decoder, _format
+from fluxcode import Params, _decoder, _format, _unit
 
 BLOCK, BLOCKS = 1000, 60
 DAY_UNITS = 1440
@@ -355,13 +355,15 @@ def breakdown(wl, reps=200):
     rows = []
     for k, xs in zip(wl.kinds, wl.pool):
         x = xs[1]
-        X = x.reshape(BLOCKS, BLOCK)
-        cz, dz = _api._zstd()
-        head, param, anchor, resid, codes, _, _, _ = _api._encode_blocks(X, p)
-        raw = _format.write_unit(head, param, anchor, resid, codes).data  # as _api._compress passes it
+        sizes = np.full(BLOCKS, BLOCK)
+        cz, dz = _unit.zstd()
+        unit_rows, _ = _unit.encode_rows(x, sizes, p)
+        raw = _format.write_unit(*unit_rows[:6]).data  # as _unit.compress passes it
         frame = cz.compress(raw)
-        unit = _format.pack_header(BLOCK, x.size) + frame
-        out = np.empty((BLOCKS, BLOCK))
+        unit = _format.pack_header(BLOCKS, x.size) + frame
+        out = np.empty(x.size)
+        offsets = _format.layout(unit_rows.block_flags, sizes)
+        block_ids = np.arange(BLOCKS)
 
         def t(f, *args):
             best = np.inf
@@ -373,9 +375,11 @@ def breakdown(wl, reps=200):
             return 1e6 * best
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(unit) * 8 / x.size,
-                     t(_api._encode_blocks, X, p), t(_format.write_unit, head, param, anchor, resid, codes),
+                     t(_unit.encode_rows, x, sizes, p), t(_format.write_unit, *unit_rows[:6]),
                      t(cz.compress, raw), t(fluxcode.encode_unit, x, p),
-                     t(dz.decompress, frame), t(_decoder.decode_unit, rawd, out, False, False),
+                     t(dz.decompress, frame),
+                     t(_decoder.decode_unit, rawd, offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,
+                       block_ids, out, False, False),
                      t(fluxcode.decode_unit, unit)))
     return rows
 

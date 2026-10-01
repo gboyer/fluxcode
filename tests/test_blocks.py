@@ -1,0 +1,368 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Garry Boyer
+"""Blocks of any size: encode_blocks, empty and short blocks, and time-divided blocks
+(encode_time_blocks and update_time_blocks)."""
+
+import datetime
+
+import numpy as np
+import pytest
+from _series import unit_rows
+from _signals import minute
+
+import fluxcode
+from fluxcode import Params, _encoder, _format, _unit
+from fluxcode._format import HEAD_NONFINITE, HEAD_ORDER, SHORT_BLOCK_LEN
+
+SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
+
+
+def times_of(unit):
+    """The decoded ticks of a unit with a time axis."""
+    times = fluxcode.decode_unit(unit).times
+    assert times is not None
+    return times.view(np.int64)
+
+
+def offsets(sizes):
+    return np.concatenate([[0], np.cumsum(sizes)]).astype(int)
+
+
+def test_encode_blocks_round_trip():
+    x = minute("random-walk", 1)[:sum(SIZES)]
+    unit, lo, hi, mean = fluxcode.encode_blocks(x, SIZES)
+    values, times, sizes = fluxcode.decode_unit(unit)
+    assert times is None and sizes.tolist() == SIZES
+    off = offsets(SIZES)
+    for b, size in enumerate(SIZES):
+        block = x[off[b]:off[b + 1]]
+        if not size:
+            assert np.isnan([lo[b], hi[b], mean[b]]).all()
+            continue
+        assert (lo[b], hi[b]) == (block.min(), block.max())
+        assert mean[b] == pytest.approx(block.mean())
+        assert np.abs(values[off[b]:off[b + 1]] - block).max() <= (block.max() - block.min()) / (2 ** 6 - 0.5)
+    # Each block is encoded on its own: the same block encodes the same in any company
+    rows = unit_rows(unit)
+    alone = unit_rows(fluxcode.encode_blocks(x[off[9]:off[10]], [4096]).unit)
+    np.testing.assert_array_equal(rows.residuals[off[9]:off[10]], alone.residuals)
+    assert rows.grid_params[9] == alone.grid_params[0]
+
+
+def test_empty_blocks_store_nothing():
+    unit = fluxcode.encode_blocks(np.arange(5.0), [0, 5, 0])
+    rows = unit_rows(unit.unit)
+    assert rows.block_flags.tolist()[::2] == [0, 0] and rows.grid_params.tolist()[::2] == [0, 0]
+    assert rows.value_anchors.tolist()[::2] == [0, 0]
+
+
+@pytest.mark.parametrize("sizes", [[], [0], [0, 0, 0]])
+def test_units_without_samples(sizes):
+    for times in (None, np.zeros(0, "datetime64[ms]")):
+        unit, lo, _, _ = fluxcode.encode_blocks(np.zeros(0), sizes, times=times)
+        assert lo.shape == (len(sizes),) and np.isnan(lo).all()
+        values, decoded_times, decoded_sizes = fluxcode.decode_unit(unit)
+        assert values.shape == (0,) and decoded_sizes.tolist() == sizes
+        assert (decoded_times is None) == (times is None)
+        if times is not None:
+            assert decoded_times is not None
+            assert decoded_times.dtype == times.dtype and decoded_times.shape == (0,)
+
+
+@pytest.mark.parametrize("size", range(1, SHORT_BLOCK_LEN + 1))
+def test_short_blocks_skip_the_analysis(size):
+    """Blocks of up to 8 samples: the finest power-of-two step and order 0, whatever params say."""
+    x = np.round(np.random.default_rng(size).normal(size=size) * 100, 2)  # decimal data
+    x[size // 2] = np.nan
+    params = Params(diff_orders={2}, max_quantize_bits=12, noise_floor_sigma=1.0, target_bits_per_sample=6.0)
+    unit, lo, _, _ = fluxcode.encode_blocks(x, [size], params)
+    rows = unit_rows(unit)
+    assert rows.block_flags[0] & HEAD_ORDER == 0 and not rows.block_flags[0] & _format.HEAD_DECIMAL
+    assert bool(rows.block_flags[0] & HEAD_NONFINITE)
+    finite = x[np.isfinite(x)]
+    rng = finite.max() - finite.min() if finite.size else 0.0
+    assert rows.grid_params[0] == (_encoder.range_exponent(finite.min(), finite.max(), 12) if finite.size else 0)
+    y = fluxcode.decode_unit(unit).values
+    np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
+    assert np.nanmax(np.abs(y - x), initial=0) <= rng / (2 ** 12 - 0.5)
+    # Order 0: the residuals are the quantized values themselves
+    q = np.round((np.where(np.isnan(x), finite.min() if finite.size else 0, x) - lo[0]) / 2.0 ** rows.grid_params[0])
+    np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64) & 0xFFFF,
+                                  q[np.isfinite(x)].astype(np.int64) & 0xFFFF)
+
+
+def test_target_weights_blocks_by_size():
+    """The target budget covers the analyzed samples: short and empty blocks don't count."""
+    x = minute("chirp", 2)
+    base = fluxcode.encode_unit(x, Params(noise_floor_sigma=None, target_bits_per_sample=6.0)).unit
+    sizes = [1000] * 60
+    padded = np.concatenate([x, np.zeros(5)])
+    mixed = fluxcode.encode_blocks(padded, sizes + [5, 0], Params(noise_floor_sigma=None, target_bits_per_sample=6.0))
+    np.testing.assert_array_equal(unit_rows(mixed.unit).residuals[:60_000], unit_rows(base).residuals)
+
+
+@pytest.mark.parametrize("x,sizes,msg", [
+    (np.zeros(10), [5, 4], "add up to 9"),
+    (np.zeros(10), [5, 5.0], "integer"),
+    (np.zeros(10), [[5, 5]], "1-D"),
+    (np.zeros(10), [15, -5], "from 0 to 65535"),
+    (np.zeros(70_000), [70_000], "from 0 to 65535"),
+    (np.zeros(0), [0] * 65_536, "65535 blocks"),
+])
+def test_bad_block_sizes(x, sizes, msg):
+    with pytest.raises(ValueError, match=msg):
+        fluxcode.encode_blocks(x, sizes)
+
+
+def test_times_in_tiny_and_empty_blocks():
+    """Blocks of 0, 1 and 2 samples; leading empty blocks before negative ticks; a 2-sample block
+    whose one delta exceeds int64 maximum."""
+    sizes = [0, 0, 1, 2, 0, 3, 1, 2]
+    ticks = np.array([-50, -40, -40, -10, 0, 7, 9, 10**18, 2**62 + 10**18], np.int64)
+    unit = fluxcode.encode_blocks(np.arange(9.0), sizes, times=ticks, time_unit="s").unit
+    np.testing.assert_array_equal(times_of(unit), ticks)
+    rows = unit_rows(unit).time_rows
+    assert rows.steps.tolist() == [0, 0, 0, 0, 0, 1, 0, 2**62]
+    huge = np.array([np.iinfo(np.int64).min + 1, np.iinfo(np.int64).max])
+    unit = fluxcode.encode_blocks(np.zeros(2), [2], times=huge, time_unit="ns").unit
+    np.testing.assert_array_equal(times_of(unit), huge)
+    assert unit_rows(unit).time_rows.steps[0] == 1 and unit_rows(unit).time_rows.refs[0] == 2**64 - 2
+
+
+def test_empty_block_time_columns_must_be_zero():
+    """Writers store 0 in an empty block's time_start, time_step and time_ref; decoders check."""
+    unit = fluxcode.encode_blocks(np.zeros(16), [8, 0, 8], times=np.r_[np.arange(8), 100 + np.arange(8)],
+                                  time_unit="ns").unit
+    body = _unit.decompress(unit).raw_body
+    num_blocks = 3
+    for field_start in (_format.time_start_start(num_blocks), _format.time_step_start(num_blocks),
+                        _format.time_ref_start(num_blocks)):
+        bad = body.copy()
+        bad[field_start + 1] = 1  # byte 0 of block 1's value
+        bad_unit = unit[:_format.HEADER_BYTES] + _unit.zstd()[0].compress(bad.tobytes())
+        with pytest.raises(ValueError, match="block 1: empty block with nonzero time columns"):
+            fluxcode.decode_unit(bad_unit)
+
+
+# Time-divided blocks
+
+START = np.datetime64("2026-03-01T12:00", "ms")
+MINUTE = np.timedelta64(1, "m")
+
+
+def encode_hour(x, t, params=Params()):
+    """encode_time_blocks of an hour from START in one-minute blocks."""
+    return fluxcode.encode_time_blocks(x, t, params, start_time=START, block_duration=MINUTE)
+
+
+def update_hour(unit, x, t, ranges, time_unit=None):
+    """update_time_blocks of a unit made by encode_hour."""
+    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=MINUTE, update_ranges=ranges,
+                                       time_unit=time_unit)
+
+
+def hour_of_data(seed=0, gaps=((5, 20),)):
+    """About 1 Hz of jittered ms times over an hour, minus the given minute ranges."""
+    rng = np.random.default_rng(seed)
+    t = START + np.sort(rng.integers(0, 3_600_000, 3600)).astype("timedelta64[ms]")
+    for first, last in gaps:
+        t = t[(t < START + first * MINUTE) | (t >= START + last * MINUTE)]
+    x = np.round(100 * np.sin(np.arange(t.size) / 40), 2)  # decimals: lossless
+    return x, t
+
+
+def test_encode_time_blocks_divides_by_time():
+    x, t = hour_of_data()
+    unit, lo, _, _ = encode_hour(x, t)
+    values, times, sizes = fluxcode.decode_unit(unit)
+    np.testing.assert_array_equal(values, x)
+    np.testing.assert_array_equal(times, t)
+    assert sizes.tolist() == np.bincount((t - START) // MINUTE).tolist()
+    assert (sizes[5:20] == 0).all() and np.isnan(lo[5:20]).all()
+    # The unit ends at the last block with a sample: no trailing empty blocks
+    assert sizes[-1] > 0 and len(sizes) == int((t[-1] - START) // MINUTE) + 1
+
+
+@pytest.mark.parametrize("start,duration,kwargs", [
+    (START, MINUTE, {}),
+    (datetime.datetime(2026, 3, 1, 12), datetime.timedelta(minutes=1), {}),  # noqa: DTZ001
+    (START.astype("datetime64[s]"), np.timedelta64(60_000_000, "us"), {}),
+    (START.astype("datetime64[m]"), np.timedelta64(1, "m"), {}),
+    (int(START.astype(np.int64)), 60_000, {"time_unit": "ms", "int_times": True}),
+    (START, MINUTE, {"time_unit": "ms", "int_times": True}),
+])
+def test_time_arguments_convert_exactly(start, duration, kwargs):
+    x, t = hour_of_data()
+    ref = encode_hour(x, t).unit
+    times = t.view(np.int64) if kwargs.pop("int_times", False) else t
+    assert fluxcode.encode_time_blocks(x, times, start_time=start, block_duration=duration, **kwargs).unit == ref
+
+
+@pytest.mark.parametrize("start,duration,msg", [
+    (START + 10 * MINUTE, MINUTE, "at or after start_time"),
+    (START.astype("datetime64[us]") + np.timedelta64(1, "us"), MINUTE, "whole number of ms"),
+    (START, np.timedelta64(1500, "us"), "whole number of ms"),
+    (START, np.timedelta64(0, "ms"), "positive"),
+    (START, -MINUTE, "positive"),
+    (START, np.timedelta64(1, "ms"), "past the last block"),
+    (np.datetime64("NaT", "ms"), MINUTE, "NaT"),
+    (np.datetime64("2026-03", "M"), MINUTE, "fixed length"),
+    (datetime.datetime(2026, 3, 1, 12, tzinfo=datetime.timezone.utc), MINUTE, "time zone"),
+    (START, 1.5, "timedelta"),
+    ("2026-03-01", MINUTE, "datetime"),
+    (MINUTE, MINUTE, "datetime"),
+])
+def test_bad_time_arguments(start, duration, msg):
+    x, t = hour_of_data()
+    with pytest.raises(ValueError, match=msg):
+        fluxcode.encode_time_blocks(x, t, start_time=start, block_duration=duration)
+
+
+def test_encode_time_blocks_rejects_decreasing_times():
+    x, t = hour_of_data()
+    t = t.copy()
+    t[100], t[101] = t[101], t[100] + np.timedelta64(1, "ms")
+    t[2000] = t[10]  # a block id that goes back
+    with pytest.raises(ValueError, match="non-decreasing"):
+        encode_hour(x, t)
+
+
+def test_block_too_large():
+    t = START + np.zeros(65_536, "timedelta64[ms]")
+    with pytest.raises(ValueError, match="65535 samples"):
+        encode_hour(np.zeros(65_536), t)
+
+
+def expected_after(x, t, x_new, t_new, ranges):
+    """The series an update should leave: the old samples outside the ranges, plus the new ones."""
+    inside = np.zeros(t.size, bool)
+    for first, last in ranges:
+        inside |= (t >= first) & (t < last)
+    tt = np.concatenate([t[~inside], t_new])
+    order = np.argsort(tt, kind="stable")
+    return np.concatenate([x[~inside], x_new])[order], tt[order]
+
+
+def minutes(first, last):
+    return START + first * MINUTE, START + last * MINUTE
+
+
+def new_data(ranges, step_ms=700, seed=1):
+    t = np.concatenate([np.arange(a, b, np.timedelta64(step_ms, "ms")) for a, b in ranges])
+    # A smooth signal on a 0.01 grid: decimal blocks, lossless however they are merged
+    return np.round(50 * np.cos(np.arange(t.size) / 30 + seed), 2), t
+
+
+@pytest.mark.parametrize("ranges", [
+    [minutes(5, 20)],  # fills the gap exactly: whole empty blocks
+    [minutes(30, 31)],  # one whole block
+    [(START + np.timedelta64(30 * 60_000 + 15_000, "ms"), START + np.timedelta64(31 * 60_000 + 45_000, "ms"))],
+    [minutes(2, 3), minutes(40, 45), (START + np.timedelta64(50 * 60_000 + 1, "ms"), START + 51 * MINUTE)],
+    [minutes(58, 63)],  # past the end: appends
+    [minutes(70, 71)],  # appends past a gap of empty blocks
+])
+def test_update_time_blocks_matches_from_scratch(ranges):
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    x_new, t_new = new_data(ranges)
+    unit2, indices, lo, _, _ = update_hour(unit, x_new, t_new, ranges)
+    xx, tt = expected_after(x, t, x_new, t_new, ranges)
+    values, times, _ = fluxcode.decode_unit(unit2)
+    np.testing.assert_array_equal(times, tt)
+    np.testing.assert_array_equal(values, xx)  # decimals: straddling blocks re-encode losslessly
+    ref = encode_hour(xx, tt)
+    assert unit2 == ref.unit
+    np.testing.assert_array_equal(lo, ref.block_min[indices])
+    # Exactly the blocks that meet a range and changed are re-encoded
+    blocks = set()
+    for first, last in ranges:
+        blocks |= set(range(int((first - START) // MINUTE), -int(-(last - START) // MINUTE)))
+    old_sizes = fluxcode.decode_unit(unit).block_sizes
+    changed = {b for b in blocks if b >= len(old_sizes) or old_sizes[b] or ((t_new - START) // MINUTE == b).any()}
+    num_new_blocks = len(ref.block_min)
+    changed |= set(range(len(old_sizes), num_new_blocks))
+    assert indices.tolist() == sorted(b for b in changed if b < num_new_blocks)
+
+
+def test_update_time_blocks_carries_other_blocks_untouched(monkeypatch):
+    """Blocks outside the ranges keep their rows; only straddling blocks are decoded."""
+    x, t = hour_of_data()
+    x = np.cumsum(np.random.default_rng(3).normal(size=x.size))  # lossy: re-encoding would show
+    unit = encode_hour(x, t).unit
+    ranges = [(START + np.timedelta64(30 * 60_000 + 15_000, "ms"), START + 33 * MINUTE)]  # straddles block 30
+    decoded = []
+    original = _unit.decode_blocks
+    monkeypatch.setattr(_unit, "decode_blocks", lambda parsed, ids: decoded.append(ids.tolist()) or original(parsed, ids))
+    x_new, t_new = new_data(ranges)
+    unit2, indices, _, _, _ = update_hour(unit, x_new, t_new, ranges)
+    assert decoded == [[30]] and indices.tolist() == [30, 31, 32]
+    before, after = unit_rows(unit), unit_rows(unit2)
+    off_before, off_after = offsets(before.block_sizes), offsets(after.block_sizes)
+    for b in set(range(len(before.block_sizes))) - {30, 31, 32}:
+        assert before.block_flags[b] == after.block_flags[b]
+        assert before.grid_params[b] == after.grid_params[b] and before.value_anchors[b] == after.value_anchors[b]
+        np.testing.assert_array_equal(before.residuals[off_before[b]:off_before[b + 1]],
+                                      after.residuals[off_after[b]:off_after[b + 1]])
+        assert before.time_rows.starts[b] == after.time_rows.starts[b]
+    # The straddling block keeps its samples before the range, re-encoded on its own grid
+    old_times, new_times = fluxcode.decode_unit(unit).times, fluxcode.decode_unit(unit2).times
+    assert old_times is not None and new_times is not None
+    kept = (old_times >= START + 30 * MINUTE) & (old_times < ranges[0][0])
+    np.testing.assert_array_equal(new_times[np.isin(new_times, old_times[kept])], old_times[kept])
+
+
+def test_update_time_blocks_discards_only():
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    ranges = [minutes(30, 32), minutes(31, 35)]  # overlapping
+    unit2, indices, lo, _, _ = update_hour(unit, [], np.zeros(0, "datetime64[ms]"), ranges)
+    assert indices.tolist() == [30, 31, 32, 33, 34] and np.isnan(lo).all()
+    _, tt = expected_after(x, t, np.zeros(0), t[:0], ranges)
+    np.testing.assert_array_equal(fluxcode.decode_unit(unit2).times, tt)
+    # Ranges over empty or missing blocks change nothing
+    nothing = update_hour(unit2, [], np.zeros(0, np.int64), minutes(6, 9))
+    assert nothing.unit == unit2 and nothing.indices.shape == (0,)
+    nothing = update_hour(unit2, [], np.zeros(0, np.int64), minutes(90, 99))
+    assert nothing.unit == unit2
+
+
+@pytest.mark.parametrize("ranges", [
+    minutes(30, 31),
+    [minutes(30, 31)],
+    (minutes(30, 31),),
+    np.array([minutes(30, 31)]),
+    np.array([minutes(30, 31)]).astype(np.int64),
+    [(datetime.datetime(2026, 3, 1, 12, 30), datetime.datetime(2026, 3, 1, 12, 31))],  # noqa: DTZ001
+    [(datetime.datetime(2026, 3, 1, 12, 30), START + 31 * MINUTE)],  # noqa: DTZ001
+])
+def test_update_range_forms(ranges):
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    x_new, t_new = new_data([minutes(30, 31)])
+    ref = update_hour(unit, x_new, t_new, [minutes(30, 31)])
+    assert update_hour(unit, x_new, t_new, ranges).unit == ref.unit
+
+
+def test_update_time_blocks_errors():
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    x_new, t_new = new_data([minutes(30, 31)])
+    with pytest.raises(ValueError, match="within update_ranges"):
+        update_hour(unit, x_new, t_new, minutes(29, 30))
+    with pytest.raises(ValueError, match="ends before it starts"):
+        update_hour(unit, x_new, t_new, minutes(31, 30))
+    with pytest.raises(ValueError, match=r"\(start, end\) pairs"):
+        update_hour(unit, x_new, t_new, [(START, START, START)])
+    with pytest.raises(ValueError, match="no time axis"):
+        update_hour(fluxcode.encode_unit(x).unit, x_new, t_new, minutes(30, 31))
+    with pytest.raises(ValueError, match="are in us but the unit stores ms"):
+        update_hour(unit, x_new, t_new.astype("datetime64[us]"), minutes(30, 31))
+    with pytest.raises(ValueError, match="unit stores ms"):
+        update_hour(unit, x_new, t_new, minutes(30, 31), time_unit="us")
+    with pytest.raises(ValueError, match="non-decreasing"):
+        update_hour(unit, x_new, t_new[::-1], minutes(30, 31))
+    with pytest.raises(ValueError, match="one entry per sample"):
+        update_hour(unit, x_new[1:], t_new, minutes(30, 31))
+    # Integer ticks are in the unit's time unit
+    by_ticks = update_hour(unit, x_new, t_new.view(np.int64), minutes(30, 31))
+    assert by_ticks.unit == update_hour(unit, x_new, t_new, minutes(30, 31)).unit

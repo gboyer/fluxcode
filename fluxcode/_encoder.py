@@ -23,6 +23,7 @@ from ._format import (
     HEAD_NONFINITE,
     P_MAX,
     P_MIN,
+    SHORT_BLOCK_LEN,
 )
 from ._noise import noise
 from ._nonfinite import fill_nonfinite, noise_finite
@@ -137,33 +138,6 @@ def block_stats(samples: np.ndarray) -> tuple[float, float, float, int]:
         return min_val, max_val, xm.mean_by_division(samples, num_samples), -1
     min_val, max_val = _min_max(samples)
     return min_val, max_val, total_sum / num_samples, -1
-
-
-@njit(nogil=True, cache=True)
-def finite_mean(samples: np.ndarray) -> float:
-    """Calculates the arithmetic mean over finite samples of an array.
-
-    Used for padded terminal blocks where the mean must cover only real samples.
-
-    Args:
-        samples: 1D float64 array.
-
-    Returns:
-        Arithmetic mean of finite samples, or nan if no finite samples exist.
-    """
-    accum_sum = 0.0
-    finite_count = 0
-    for sample_idx in range(samples.shape[0]):
-        if math.isfinite(samples[sample_idx]):
-            accum_sum += samples[sample_idx]
-            finite_count += 1
-    if finite_count == 0:
-        return math.nan
-    mean_val = accum_sum / finite_count
-    # Fall back to division before sum if accumulated sum overflowed
-    if not math.isfinite(mean_val):
-        mean_val = xm.mean_by_division(samples, finite_count)
-    return mean_val
 
 
 @njit(nogil=True, cache=True)
@@ -611,6 +585,7 @@ def allocate_target(
     estimated_bits: np.ndarray,
     current_exponents: np.ndarray,
     coarsest_exponents: np.ndarray,
+    block_weights: np.ndarray,
     target_bits: float,
     out_bit_reductions: np.ndarray,
 ) -> bool:
@@ -620,7 +595,9 @@ def allocate_target(
         estimated_bits: 1D float64 array of per-block estimated bits per sample.
         current_exponents: 1D int64 array of current per-block quantization exponents.
         coarsest_exponents: 1D int64 array of coarsest allowable exponents per block.
-        target_bits: Target bits per sample across the unit.
+        block_weights: 1D int64 array of each block's sample count in the budget (0 for a
+            block outside it, which is never coarsened).
+        target_bits: Target bits per sample across the budgeted samples.
         out_bit_reductions: Output 1D int64 array receiving bit coarsening increments.
 
     Returns:
@@ -628,13 +605,16 @@ def allocate_target(
     """
     num_blocks = estimated_bits.shape[0]
     total_bits = 0.0
+    total_weight = 0
     for block_idx in range(num_blocks):
+        weight = block_weights[block_idx]
         # Maximum bits block b can give up without exceeding coarsest_exponents
         headroom = coarsest_exponents[block_idx] - current_exponents[block_idx]
         max_give = math.floor(max(estimated_bits[block_idx] - 1.0, 0.0) + 0.5)
-        out_bit_reductions[block_idx] = min(max_give, headroom)
-        total_bits += estimated_bits[block_idx]
-    excess_bits = total_bits - target_bits * num_blocks
+        out_bit_reductions[block_idx] = min(max_give, headroom) if weight > 0 else 0
+        total_bits += estimated_bits[block_idx] * weight
+        total_weight += weight
+    excess_bits = total_bits - target_bits * total_weight
     # Return immediately if already within target budget
     if excess_bits <= 0:
         return False
@@ -643,7 +623,7 @@ def allocate_target(
     while uniform_cap < 16:
         saved_bits = 0
         for block_idx in range(num_blocks):
-            saved_bits += min(uniform_cap, out_bit_reductions[block_idx])
+            saved_bits += min(uniform_cap, out_bit_reductions[block_idx]) * block_weights[block_idx]
         if saved_bits >= excess_bits:
             break
         uniform_cap += 1
@@ -656,7 +636,8 @@ def allocate_target(
 
 @njit(nogil=True, cache=True)
 def _apply_target_reallocation(
-    block_matrix: np.ndarray,
+    samples: np.ndarray,
+    sample_offsets: np.ndarray,
     bit_reductions: np.ndarray,
     block_exponents: np.ndarray,
     base_lower_bounds: np.ndarray,
@@ -664,9 +645,10 @@ def _apply_target_reallocation(
     estimated_bits_per_block: np.ndarray,
     decimal: bool,
     orders_mask: int,
-    actual_pick_len: int,
+    pick_len: int,
     scratch_quantized: np.ndarray,
     scratch_held: np.ndarray,
+    scratch_residuals: np.ndarray,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
     out_value_anchors: np.ndarray,
@@ -674,20 +656,23 @@ def _apply_target_reallocation(
     out_codes: np.ndarray,
 ) -> None:
     """Re-encodes blocks selected by target allocation and rolls back if bits do not drop."""
-    num_blocks, block_len = block_matrix.shape
-    backup_residuals = np.empty(block_len, np.int16)
+    num_blocks = sample_offsets.shape[0] - 1
     anchor_floats = out_value_anchors.view(np.float64)
     for block_idx in range(num_blocks):
         if bit_reductions[block_idx] > 0:
+            first_sample = sample_offsets[block_idx]
+            block_len = sample_offsets[block_idx + 1] - first_sample
+            block_residuals = out_residuals[first_sample:first_sample + block_len]
             prev_header = out_block_flags[block_idx]
             prev_param = out_grid_params[block_idx]
             prev_anchor = out_value_anchors[block_idx]
-            backup_residuals[:] = out_residuals[block_idx]
-            block_samples = block_matrix[block_idx]
+            backup_residuals = scratch_residuals[:block_len]
+            backup_residuals[:] = block_residuals
+            block_samples = samples[first_sample:first_sample + block_len]
             has_nonfinite = prev_header & HEAD_NONFINITE
             if has_nonfinite:
-                fill_nonfinite(block_samples, scratch_held, out_codes[block_idx])
-                block_samples = scratch_held
+                fill_nonfinite(block_samples, scratch_held[:block_len], out_codes[first_sample:first_sample + block_len])
+                block_samples = scratch_held[:block_len]
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
             out_block_flags[block_idx], out_grid_params[block_idx], decimal_base = encode_block(
                 block_samples,
@@ -696,9 +681,9 @@ def _apply_target_reallocation(
                 target_exp,
                 decimal,
                 orders_mask,
-                actual_pick_len,
-                scratch_quantized,
-                out_residuals[block_idx],
+                min(pick_len, block_len),
+                scratch_quantized[:block_len],
+                block_residuals,
             )
             _store_anchor(
                 out_value_anchors,
@@ -711,17 +696,17 @@ def _apply_target_reallocation(
             if has_nonfinite:
                 out_block_flags[block_idx] |= HEAD_NONFINITE
             # Roll back if re-quantization failed to reduce estimated bits
-            if estimate_bits(out_residuals[block_idx]) >= estimated_bits_per_block[block_idx]:
+            if estimate_bits(block_residuals) >= estimated_bits_per_block[block_idx]:
                 out_block_flags[block_idx] = prev_header
                 out_grid_params[block_idx] = prev_param
                 out_value_anchors[block_idx] = prev_anchor
-                out_residuals[block_idx, :] = backup_residuals
+                block_residuals[:] = backup_residuals
 
 
 @njit(nogil=True, cache=True)
 def encode_unit(
-    block_matrix: np.ndarray,
-    num_real_samples_last_block: int,
+    samples: np.ndarray,
+    sample_offsets: np.ndarray,
     min_bits: int,
     max_bits: int,
     orders_mask: int,
@@ -740,9 +725,13 @@ def encode_unit(
 ) -> None:
     """Encodes all blocks of a unit and computes index column metadata.
 
+    Blocks of at most SHORT_BLOCK_LEN samples skip the analysis: they take the finest step
+    on the power-of-two grid and order 0, and stay outside the target. An empty block gets
+    zero flags, grid parameter and anchor, and NaN statistics.
+
     Args:
-        block_matrix: 2D float64 array of shape (N, n) holding unit samples.
-        num_real_samples_last_block: Real sample count in terminal block (<= n; remainder is padding).
+        samples: 1D float64 array of every sample of the unit.
+        sample_offsets: 1D int64 array of the blocks' sample offsets (N + 1).
         min_bits: Hard lower bound on quantization bits.
         max_bits: Hard upper bound on quantization bits.
         orders_mask: Bitmask of allowable predictor difference orders.
@@ -754,39 +743,52 @@ def encode_unit(
         out_grid_params: Output 1D int64 array of length N receiving parameters.
         out_value_anchors: Output 1D int64 array of length N receiving anchors (float64 bits of
             the block minimum, or its decimal grid index).
-        out_residuals: Output 2D int16 array of shape (N, n) receiving residuals.
-        out_codes: Output 2D uint8 array of shape (N, n) receiving sample codes.
+        out_residuals: Output 1D int16 array of every sample receiving residuals.
+        out_codes: Output 1D uint8 array of every sample receiving sample codes (only
+            flagged blocks' are written).
         out_block_minima: Output 1D float64 array of length N receiving block minima.
         out_block_maxima: Output 1D float64 array of length N receiving block maxima.
         out_block_means: Output 1D float64 array of length N receiving block means.
     """
-    num_blocks, block_len = block_matrix.shape
-    scratch_quantized = np.empty(block_len, np.int32)
-    scratch_held = np.empty(block_len)
-    scratch_noise_diffs = np.empty(block_len)
-    scratch_noise_weights = np.empty(block_len)
-    actual_pick_len = min(pick_len, block_len)
+    num_blocks = sample_offsets.shape[0] - 1
+    max_len = 0
+    for block_idx in range(num_blocks):
+        max_len = max(max_len, sample_offsets[block_idx + 1] - sample_offsets[block_idx])
+    scratch_quantized = np.empty(max_len, np.int32)
+    scratch_held = np.empty(max_len)
+    scratch_noise_diffs = np.empty(max_len)
+    scratch_noise_weights = np.empty(max_len)
     use_target = target_bits > 0
     block_exponents = np.empty(num_blocks, np.int64)
     coarsest_exponents = np.empty(num_blocks, np.int64)
+    block_weights = np.zeros(num_blocks, np.int64)
     base_lower_bounds = np.empty(num_blocks)
     base_upper_bounds = np.empty(num_blocks)
     estimated_bits_per_block = np.zeros(num_blocks)
     anchor_floats = out_value_anchors.view(np.float64)
     for block_idx in range(num_blocks):
-        block_samples = block_matrix[block_idx]
+        first_sample = sample_offsets[block_idx]
+        block_len = sample_offsets[block_idx + 1] - first_sample
+        block_exponents[block_idx] = coarsest_exponents[block_idx] = 0
+        if block_len == 0:
+            out_block_flags[block_idx] = 0
+            out_grid_params[block_idx] = 0
+            out_value_anchors[block_idx] = 0
+            out_block_minima[block_idx] = out_block_maxima[block_idx] = out_block_means[block_idx] = math.nan
+            continue
+        block_samples = samples[first_sample:first_sample + block_len]
+        block_codes = out_codes[first_sample:first_sample + block_len]
+        block_residuals = out_residuals[first_sample:first_sample + block_len]
+        block_quantized = scratch_quantized[:block_len]
         block_min, block_max, block_mean, bad_sample_idx = block_stats(block_samples)
         has_nonfinite = bad_sample_idx >= 0
         finite_count = block_len
         if has_nonfinite:
             # Impute non-finite values with sample-and-held finite values
             block_min, block_max, block_mean, finite_count = fill_nonfinite(
-                block_samples, scratch_held, out_codes[block_idx]
+                block_samples, scratch_held[:block_len], block_codes
             )
-            block_samples = scratch_held
-        # Compute mean strictly over real samples for partial terminal block
-        if block_idx == num_blocks - 1 and num_real_samples_last_block < block_len:
-            block_mean = finite_mean(block_matrix[block_idx, :num_real_samples_last_block])
+            block_samples = scratch_held[:block_len]
         # Normalize -0.0 to +0.0 to match decoder behavior
         block_min = block_min + 0.0
         block_max = block_max + 0.0
@@ -797,6 +799,14 @@ def encode_unit(
         # All non-finite block defaults to zero range
         if has_nonfinite and finite_count == 0:
             block_min = block_max = 0.0
+        if block_len <= SHORT_BLOCK_LEN:
+            # Too short to analyze: the finest power-of-two step, stored without differences
+            quantize(block_samples, block_min, range_exponent(block_min, block_max, max_bits), block_quantized)
+            residual(block_quantized, 0, block_residuals)
+            out_block_flags[block_idx] = HEAD_NONFINITE if has_nonfinite else 0
+            out_grid_params[block_idx] = range_exponent(block_min, block_max, max_bits)
+            anchor_floats[block_idx] = block_min
+            continue
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max
         noise_sigma = noise_rho = 0.0
@@ -806,8 +816,8 @@ def encode_unit(
             else:
                 # Estimate noise floor using only finite sample triplets
                 noise_sigma, noise_rho = noise_finite(
-                    scratch_held,
-                    out_codes[block_idx],
+                    block_samples,
+                    block_codes,
                     range_scale(block_min, block_max),
                     block_len // 2,
                     scratch_noise_diffs,
@@ -825,9 +835,9 @@ def encode_unit(
             planned_exp,
             decimal,
             orders_mask,
-            actual_pick_len,
-            scratch_quantized,
-            out_residuals[block_idx],
+            min(pick_len, block_len),
+            block_quantized,
+            block_residuals,
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], block_min, decimal_base)
         if has_nonfinite:
@@ -839,7 +849,8 @@ def encode_unit(
             coarsest_exponents[block_idx] = max(
                 range_exponent(block_min, block_max, min_bits), block_exponents[block_idx]
             )
-            estimated_bits_per_block[block_idx] = estimate_bits(out_residuals[block_idx])
+            estimated_bits_per_block[block_idx] = estimate_bits(block_residuals)
+            block_weights[block_idx] = block_len
     # Apply soft per-unit bit target if enabled
     if use_target:
         bit_reductions = np.zeros(num_blocks, np.int64)
@@ -847,11 +858,13 @@ def encode_unit(
             estimated_bits_per_block,
             block_exponents,
             coarsest_exponents,
+            block_weights,
             target_bits,
             bit_reductions,
         ):
             _apply_target_reallocation(
-                block_matrix,
+                samples,
+                sample_offsets,
                 bit_reductions,
                 block_exponents,
                 base_lower_bounds,
@@ -859,13 +872,13 @@ def encode_unit(
                 estimated_bits_per_block,
                 decimal,
                 orders_mask,
-                actual_pick_len,
+                pick_len,
                 scratch_quantized,
                 scratch_held,
+                np.empty(max_len, np.int16),
                 out_block_flags,
                 out_grid_params,
                 out_value_anchors,
                 out_residuals,
                 out_codes,
             )
-

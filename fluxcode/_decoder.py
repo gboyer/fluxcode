@@ -27,10 +27,8 @@ from ._format import (
     P_MIN,
     byte_planes_view,
     code_planes_view,
-    count_flagged,
     get_int64,
     grid_params_start,
-    plane_groups,
     planes_view,
     unshuffle_block,
     unzigzag16,
@@ -176,18 +174,19 @@ def dequantize_decimal(
 
 
 @njit(nogil=True, cache=True)
-def check_unit(raw_unit: np.ndarray, num_blocks: int, has_time: bool) -> tuple[int, int]:
+def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
     """Validates block flags, grid parameters and value anchors across all blocks in a unit.
 
     Inspects each block to verify that reserved block flag bits (6-7) are zero, that the
     irregular time bit (4) is set only in units with a time axis and the long time bit (5)
     only with bit 4, that grid parameters
     fall within permissible format limits, and that value anchors are finite floats
-    (power-of-two blocks) or grid indices below 2^52 (decimal).
+    (power-of-two blocks) or grid indices below 2^52 (decimal). An empty block's flags,
+    grid parameter and anchor must be 0.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit bytes.
-        num_blocks: Number of blocks in the unit.
+        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         has_time: Whether the unit has a time axis.
 
     Returns:
@@ -195,12 +194,22 @@ def check_unit(raw_unit: np.ndarray, num_blocks: int, has_time: bool) -> tuple[i
             status: Validation outcome (OK, BAD_HEAD, BAD_PARAM, or BAD_ANCHOR).
             b: Zero-based index of the first failing block (0 if OK).
     """
+    num_blocks = sample_offsets.shape[0] - 1
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
     for block_idx in range(num_blocks):
         header_byte = raw_unit[block_idx]
         param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
         anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
+        if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
+            # An empty block stores nothing: its columns are 0
+            if header_byte:
+                return BAD_HEAD, block_idx
+            if param_val:
+                return BAD_PARAM, block_idx
+            if anchor_bits[0]:
+                return BAD_ANCHOR, block_idx
+            continue
         # Reserved bits 6-7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
         irregular_time = header_byte & HEAD_IRREGULAR_TIME
         if header_byte & HEAD_RESERVED or (irregular_time and not has_time):
@@ -222,39 +231,58 @@ def check_unit(raw_unit: np.ndarray, num_blocks: int, has_time: bool) -> tuple[i
 
 
 @njit(nogil=True, cache=True)
-def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool, has_time: bool) -> None:
-    """Decodes all blocks of an uncompressed body into output array.
+def decode_unit(
+    raw_unit: np.ndarray,
+    sample_offsets: np.ndarray,
+    group_offsets: np.ndarray,
+    code_offsets: np.ndarray,
+    block_ids: np.ndarray,
+    out_samples: np.ndarray,
+    byte_planes: bool,
+    has_time: bool,
+) -> None:
+    """Decodes the given blocks of an uncompressed body into the output array.
 
     Fuses unshuffling, unzigzagging, integration, dequantization, and
     non-finite sample restoration.
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes (must pass check_unit).
-        out_blocks: Output 2D float64 array of shape (N, n) receiving decoded samples.
+        sample_offsets, group_offsets, code_offsets: The unit's Layout offsets.
+        block_ids: 1D int64 array of the blocks to decode.
+        out_samples: Output 1D float64 array of every sample of the unit: each decoded
+            block's samples are written at its sample offsets (others are left unmodified).
         byte_planes: Whether the residuals are stored as byte planes (unit flags bit 0).
         has_time: Whether the unit has a time axis (time columns before the residuals).
     """
-    num_blocks, block_len = out_blocks.shape
-    # Anchors: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
-    anchor_bits = np.empty(num_blocks, np.int64)
-    for block_idx in range(num_blocks):
-        anchor_bits[block_idx] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
-    anchor_floats = anchor_bits.view(np.float64)
-    padded_len = 8 * plane_groups(block_len)
-    scratch_low_bytes = np.empty(padded_len, np.uint8)
-    scratch_high_bytes = np.empty(padded_len, np.uint8)
-    block_residuals = np.empty(block_len, np.int32)
+    num_blocks = sample_offsets.shape[0] - 1
+    num_groups = int(group_offsets[num_blocks])
+    max_groups = 0
+    for block_idx in block_ids:
+        max_groups = max(max_groups, group_offsets[block_idx + 1] - group_offsets[block_idx])
+    scratch_low_bytes = np.empty(8 * max_groups, np.uint8)
+    scratch_high_bytes = np.empty(8 * max_groups, np.uint8)
+    scratch_residuals = np.empty(8 * max_groups, np.int32)
+    anchor_bits = np.empty(1, np.int64)
+    anchor_float = anchor_bits.view(np.float64)
     # Obtain views into residual and code bit planes
-    bit_planes = planes_view(raw_unit, num_blocks, block_len, has_time)
-    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, block_len, has_time)
-    code_planes = code_planes_view(raw_unit, num_blocks, block_len, count_flagged(raw_unit, num_blocks), has_time)
-    flagged_block_counter = 0
-    for block_idx in range(num_blocks):
+    bit_planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
+    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, num_groups, has_time)
+    code_planes = code_planes_view(raw_unit, num_blocks, num_groups, int(code_offsets[num_blocks]), has_time)
+    for block_idx in block_ids:
+        first_sample = sample_offsets[block_idx]
+        block_len = sample_offsets[block_idx + 1] - first_sample
+        if block_len == 0:
+            continue
         header_byte = raw_unit[block_idx]
         param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
+        # Anchor: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
+        anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
+        block_residuals = scratch_residuals[:block_len]
+        block_out = out_samples[first_sample:first_sample + block_len]
         if byte_planes:
             # Byte planes: the block's low and high zigzag bytes are contiguous
-            sample_start = block_idx * padded_len
+            sample_start = 8 * group_offsets[block_idx]
             unzigzag(
                 byte_planes_2d[0, sample_start:sample_start + block_len],
                 byte_planes_2d[1, sample_start:sample_start + block_len],
@@ -262,17 +290,19 @@ def decode_unit(raw_unit: np.ndarray, out_blocks: np.ndarray, byte_planes: bool,
             )
         else:
             # Gather bit planes into low and high zigzag bytes
-            unshuffle_block(bit_planes, block_idx, scratch_low_bytes, scratch_high_bytes)
+            unshuffle_block(
+                bit_planes, group_offsets[block_idx], group_offsets[block_idx + 1] - group_offsets[block_idx],
+                scratch_low_bytes, scratch_high_bytes,
+            )
             # Unzigzag into signed differences
             unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
         # Integrate mod 2^16 by predictor order (bits 0-1)
         integrate(block_residuals, header_byte & HEAD_ORDER)
         # Dequantize according to grid type (decimal or power-of-two)
         if header_byte & HEAD_DECIMAL:
-            dequantize_decimal(block_residuals, anchor_bits[block_idx], param_val, out_blocks[block_idx])
+            dequantize_decimal(block_residuals, anchor_bits[0], param_val, block_out)
         else:
-            dequantize_pow2(block_residuals, anchor_floats[block_idx], param_val, out_blocks[block_idx])
+            dequantize_pow2(block_residuals, anchor_float[0], param_val, block_out)
         # Restore non-finite samples (NaN, +/-inf) from code planes
         if header_byte & HEAD_NONFINITE:
-            restore_nonfinite(code_planes, flagged_block_counter, out_blocks[block_idx])
-            flagged_block_counter += 1
+            restore_nonfinite(code_planes, code_offsets[block_idx], block_out)

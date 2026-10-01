@@ -192,7 +192,8 @@ def _reference_quotient(quotients: np.ndarray, minimum: np.uint64, total: np.uin
 
 @njit(nogil=True, cache=True)
 def encode_times(
-    block_times: np.ndarray,
+    ticks: np.ndarray,
+    sample_offsets: np.ndarray,
     out_block_flags: np.ndarray,
     out_time_starts: np.ndarray,
     out_time_steps: np.ndarray,
@@ -202,27 +203,44 @@ def encode_times(
     """Analyzes each block's times into a start, a step, a reference and (if irregular) residuals.
 
     Sets HEAD_IRREGULAR_TIME in out_block_flags for irregular blocks, and HEAD_LONG_TIME for
-    those with a residual of 2^32 or more; other bits are kept.
-    Only checks order within blocks: callers check the order across blocks.
+    those with a residual of 2^32 or more; other bits are kept. An empty block gets 0 for its
+    start, step and reference; a block of one sample a step and reference of 0.
+    Checks that the times never decrease, within blocks and from each non-empty block to the
+    next.
 
     Args:
-        block_times: 2D int64 array of shape (num_blocks, block_len) of ticks, padded.
+        ticks: 1D int64 array of every sample's tick.
+        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         out_block_flags: In-out 1D uint8 array of block flags.
         out_time_starts: Output 1D int64 array receiving block start times.
         out_time_steps: Output 1D int64 array receiving block time steps.
         out_time_refs: Output 1D uint64 array receiving block reference quotients.
-        out_time_residuals: Output 2D uint64 array of shape (num_blocks, block_len)
-            receiving the zigzagged residuals of irregular blocks (rows of regular blocks
-            are not written).
+        out_time_residuals: Output 1D uint64 array of every sample receiving the zigzagged
+            residuals of irregular blocks (regular blocks' samples are not written).
 
     Returns:
-        A tuple of (status, sample_idx): OK, or DECREASING and the flat index
-        (block_idx * block_len + i) of the first time below its predecessor.
+        A tuple of (status, sample_idx): OK, or DECREASING and the flat index of the first
+        time below its predecessor.
     """
-    num_blocks, block_len = block_times.shape
+    num_blocks = sample_offsets.shape[0] - 1
     int64_max = np.uint64(INT64_MAX)
+    previous_last = -1
     for block_idx in range(num_blocks):
-        times = block_times[block_idx]
+        first_sample = sample_offsets[block_idx]
+        block_len = sample_offsets[block_idx + 1] - first_sample
+        out_block_flags[block_idx] &= ~(HEAD_IRREGULAR_TIME | HEAD_LONG_TIME)
+        if block_len:
+            # Across blocks: each non-empty block starts at or after the previous one's last time
+            if previous_last >= 0 and ticks[first_sample] < ticks[previous_last]:
+                return DECREASING, first_sample
+            previous_last = first_sample + block_len - 1
+        if block_len < 2:
+            # No deltas: a step and reference of 0 (and nothing at all for an empty block)
+            out_time_starts[block_idx] = ticks[first_sample] if block_len else 0
+            out_time_steps[block_idx] = 0
+            out_time_refs[block_idx] = 0
+            continue
+        times = ticks[first_sample:first_sample + block_len]
         out_time_starts[block_idx] = times[0]
         # Read-only regularity and order check, branch-free so that it vectorizes: a decrease
         # is located afterwards. Deltas as uint64: a non-decreasing pair's difference fits.
@@ -235,15 +253,19 @@ def encode_times(
         if decreased:
             for sample_idx in range(1, block_len):
                 if times[sample_idx] < times[sample_idx - 1]:
-                    return DECREASING, block_idx * block_len + sample_idx
+                    return DECREASING, first_sample + sample_idx
         if differing_bits == 0:
-            # Every quotient is 1 (0 when all times are equal). block_len - 1 >= 3 equal
-            # deltas span less than 2^64, so the step fits int64.
-            out_time_steps[block_idx] = np.int64(first_delta)
-            out_time_refs[block_idx] = np.uint64(first_delta != 0)
-            out_block_flags[block_idx] &= ~(HEAD_IRREGULAR_TIME | HEAD_LONG_TIME)
+            # Every quotient is 1 (0 when all times are equal). Two or more equal deltas span
+            # less than 2^64, so the step fits int64; a single delta beyond int64 maximum is
+            # stored as the reference over a step of 1.
+            if first_delta > int64_max:
+                out_time_steps[block_idx] = 1
+                out_time_refs[block_idx] = first_delta
+            else:
+                out_time_steps[block_idx] = np.int64(first_delta)
+                out_time_refs[block_idx] = np.uint64(first_delta != 0)
             continue
-        quotients = out_time_residuals[block_idx]
+        quotients = out_time_residuals[first_sample:first_sample + block_len]
         quotients[0] = 0
         # The GCD of the first few deltas is almost always the block's: try it, dividing every
         # delta in the same pass, and only compute the exact GCD if it doesn't divide them all
@@ -270,46 +292,52 @@ def encode_times(
         # Long: a residual needs more than the 32 planes every irregular block stores
         if all_bits >> np.uint64(32):
             out_block_flags[block_idx] |= HEAD_LONG_TIME
-        else:
-            out_block_flags[block_idx] &= ~HEAD_LONG_TIME
     return OK, 0
 
 
 @njit(nogil=True, cache=True)
 def expand_times(
     block_flags: np.ndarray,
+    sample_offsets: np.ndarray,
     time_starts: np.ndarray,
     time_steps: np.ndarray,
     time_refs: np.ndarray,
     time_residuals: np.ndarray,
+    block_ids: np.ndarray,
     out_times: np.ndarray,
 ) -> tuple[int, int]:
-    """Reconstructs every block's ticks from its start, step, reference and residuals.
+    """Reconstructs the given blocks' ticks from their start, step, reference and residuals.
 
     Args:
         block_flags: 1D uint8 array of block flags (HEAD_IRREGULAR_TIME selects the residuals).
+        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         time_starts: 1D int64 array of block start times.
         time_steps: 1D int64 array of block time steps.
         time_refs: 1D uint64 array of block reference quotients.
-        time_residuals: 2D uint64 array of shape (num_blocks, block_len) of zigzagged
-            residuals (only rows of irregular blocks are read).
-        out_times: Output 2D int64 array of shape (num_blocks, block_len) receiving ticks.
+        time_residuals: 1D uint64 array of every sample's zigzagged residual (only irregular
+            blocks' are read).
+        block_ids: 1D int64 array of the blocks to expand.
+        out_times: Output 1D int64 array of every sample: each expanded block's ticks are
+            written at its sample offsets.
 
     Returns:
         A tuple of (status, block_idx): OK, or BAD_STEP, BAD_FIRST_RESIDUAL or OVERFLOW and
         the first failing block.
     """
-    num_blocks, block_len = out_times.shape
     int64_max = np.uint64(INT64_MAX)
-    for block_idx in range(num_blocks):
+    for block_idx in block_ids:
+        first_sample = sample_offsets[block_idx]
+        block_len = sample_offsets[block_idx + 1] - first_sample
+        if block_len == 0:
+            continue
         start = np.uint64(time_starts[block_idx])
         step = time_steps[block_idx]
         reference = time_refs[block_idx]
         irregular = block_flags[block_idx] & HEAD_IRREGULAR_TIME
         if step < 0 or (irregular and step == 0):
             return BAD_STEP, block_idx
-        times = out_times[block_idx]
-        if step == 0:
+        times = out_times[first_sample:first_sample + block_len]
+        if step == 0 or block_len == 1:
             times[:] = time_starts[block_idx]
             continue
         step_unsigned = np.uint64(step)
@@ -325,7 +353,7 @@ def expand_times(
             for sample_idx in range(1, block_len):
                 times[sample_idx] = np.int64(start + np.uint64(sample_idx) * increment)
             continue
-        residuals = time_residuals[block_idx]
+        residuals = time_residuals[first_sample:first_sample + block_len]
         if residuals[0] != 0:
             return BAD_FIRST_RESIDUAL, block_idx
         quotient_sum = np.uint64(0)

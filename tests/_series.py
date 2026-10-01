@@ -6,13 +6,12 @@ encode() with its per-unit index lists joined into flat per-block arrays, and ba
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _encoder, _format
+from fluxcode import Params, _api, _encoder, _unit
 
-PER_UNIT = Params().blocks_per_unit  # the helpers assume the default unit size
+PER_UNIT = _api.DEFAULT_BLOCKS_PER_UNIT  # the helpers assume the default unit size
 
 
 def encode_series(x, params=Params()):
-    assert params.blocks_per_unit == PER_UNIT
     units, mins, maxs, means = fluxcode.encode(x, params)
     return units, np.concatenate(mins), np.concatenate(maxs), np.concatenate(means)
 
@@ -23,13 +22,12 @@ def decode_series(units):
 
 
 def unit_rows(unit):
-    """UnitRows (block_flags, grid_params, value_anchors, residuals, codes, time_rows) of a unit."""
-    raw_body, header = _api._decompress(unit)
-    return _format.read_unit(raw_body, header.num_blocks, header.block_len, header.byte_planes, header.time_unit != 0)
+    """UnitRows (block_flags, block_sizes, grid_params, value_anchors, residuals, codes, time_rows) of a unit."""
+    return _unit.read_rows(_unit.decompress(unit))
 
 
 def heads_params(units):
-    hp = [tuple(unit_rows(u)[:2]) for u in units]
+    hp = [(unit_rows(u).block_flags, unit_rows(u).grid_params) for u in units]
     return np.concatenate([h for h, _ in hp]), np.concatenate([p for _, p in hp])
 
 
@@ -51,4 +49,5 @@ def unchecked_params(**kw):
 
 def encode_unchecked(x, **kw):
     """encode_unit's bytes for one unit under unchecked_params(**kw)."""
-    return _api._encode_rows(np.asarray(x, np.float64), unchecked_params(**kw))[0]
+    x = np.asarray(x, np.float64)
+    return _unit.encode(x, _api._fixed_sizes(x.shape[0], _api.DEFAULT_BLOCK_LEN), unchecked_params(**kw)).unit

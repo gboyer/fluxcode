@@ -20,7 +20,6 @@ from ._format import (
     CODE_NEG_INF,
     CODE_POS_INF,
     get_code,
-    plane_groups,
 )
 from ._noise import CLIP_PASSES, CLIP_SIGMAS, MAD_TO_SD, SIGMA_GAIN
 
@@ -239,20 +238,19 @@ def _restore_group(
 
 
 @njit(nogil=True, cache=True)
-def restore_nonfinite(code_planes: np.ndarray, flagged_block_idx: int, in_out_samples: np.ndarray) -> None:
+def restore_nonfinite(code_planes: np.ndarray, plane_byte_offset: int, in_out_samples: np.ndarray) -> None:
     """Overwrites imputed samples with exact non-finite values from code planes.
 
-    Reconstructs canonical quiet NaNs and signed infinities for flagged block f.
+    Reconstructs canonical quiet NaNs and signed infinities for a flagged block.
     Skips 8-sample groups where all samples are finite.
 
     Args:
-        code_planes: 2D uint8 array of shape (2, F * plane_groups(n)) holding code planes.
-        flagged_block_idx: Rank of the flagged block among all flagged blocks (0 <= f < F).
+        code_planes: 2D uint8 array of shape (2, code groups) holding code planes.
+        plane_byte_offset: The block's first byte in each code plane.
         in_out_samples: In-out 1D float64 array of dequantized samples modified in-place.
     """
     num_samples = in_out_samples.shape[0]
     num_full_groups = num_samples // 8
-    plane_byte_offset = flagged_block_idx * plane_groups(num_samples)
     # Full groups with a constant bit count, then a partial last group
     for group_idx in range(num_full_groups):
         _restore_group(code_planes, plane_byte_offset, group_idx, 8, in_out_samples)

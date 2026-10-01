@@ -114,53 +114,62 @@ def test_residual_and_integrate(order):
     np.testing.assert_array_equal(w, q)
 
 
-@pytest.mark.parametrize("n", [64, 61, 5])
-def test_shuffle_round_trip_and_layout(n):
-    N = 3
-    groups = -(-n // 8)
-    resid = RNG.integers(-2 ** 15, 2 ** 15, (N, n)).astype(np.int16)
-    head = np.array([1, 2, 3], np.uint8)
-    param = np.array([-5, 17, -(2 ** 40)], np.int64)
-    anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
-    raw = _format.write_unit(head, param, anchor, resid)
-    assert raw.shape[0] == _format.unit_size(N, n)
-    np.testing.assert_array_equal(raw[:N], head)
-    np.testing.assert_array_equal(raw[N:9 * N].reshape(8, N).T.copy().view(np.int64).ravel(), param)
-    np.testing.assert_array_equal(raw[9 * N:17 * N].reshape(8, N).T.copy().view(np.int64).ravel(), anchor)
+def _columns(raw, N):
+    """The block_flags, block_sizes, grid_params and value_anchor columns of a body."""
+    sizes = raw[N:2 * N].astype(np.int64) | (raw[2 * N:3 * N].astype(np.int64) << 8)
+    param = raw[3 * N:11 * N].reshape(8, N).T.copy().view(np.int64).ravel()
+    anchor = raw[11 * N:19 * N].reshape(8, N).T.copy().view(np.int64).ravel()
+    return raw[:N], sizes, param, anchor
+
+
+@pytest.mark.parametrize("sizes", [[64] * 3, [61] * 3, [5] * 3, [64, 0, 5], [1, 300, 17]])
+def test_shuffle_round_trip_and_layout(sizes):
+    N = len(sizes)
+    sizes = np.array(sizes)
+    resid = RNG.integers(-2 ** 15, 2 ** 15, sizes.sum()).astype(np.int16)
+    head = np.array([1, 0 if not sizes[1] else 2, 3], np.uint8)
+    param = np.array([-5, 0 if not sizes[1] else 17, -(2 ** 40)], np.int64)
+    anchor = np.array([-1.5, 0.0 if not sizes[1] else 1e300, 0.0]).view(np.int64)
+    raw = _format.write_unit(head, sizes, param, anchor, resid)
+    lay = _format.layout(head, sizes)
+    assert raw.shape[0] == _format.unit_size(N, lay)
+    for got, want in zip(_columns(raw, N), (head, sizes, param, anchor)):
+        np.testing.assert_array_equal(got, want)
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[17 * N:].reshape(16, N, groups)
-    bits = np.unpackbits(planes, axis=2, bitorder="little")  # (16, N, 8 * groups): bit j of u[b, i]
-    np.testing.assert_array_equal(bits[..., :n], ((u[None] >> np.arange(16)[:, None, None]) & 1).astype(np.uint8))
-    assert not bits[..., n:].any()  # each block's last group is padded with zero bits
-    h2, p2, a2, r2, _, _ = _format.read_unit(raw, N, n)
-    np.testing.assert_array_equal(h2, head)
-    np.testing.assert_array_equal(p2, param)
-    np.testing.assert_array_equal(a2, anchor)
-    np.testing.assert_array_equal(r2, resid)
+    planes = raw[19 * N:].reshape(16, -1)
+    offsets = np.concatenate([[0], np.cumsum(sizes)])
+    for b in range(N):
+        block_planes = planes[:, lay.group_offsets[b]:lay.group_offsets[b + 1]]
+        bits = np.unpackbits(block_planes, axis=1, bitorder="little")  # (16, 8 * groups): bit j of u[i]
+        block_u = u[offsets[b]:offsets[b + 1]]
+        np.testing.assert_array_equal(bits[:, :sizes[b]], ((block_u[None] >> np.arange(16)[:, None]) & 1).astype(np.uint8))
+        assert not bits[:, sizes[b]:].any()  # each block's last group is padded with zero bits
+    rows = _format.read_unit(raw, N)
+    for got, want in zip(rows[:5], (head, sizes, param, anchor, resid)):
+        np.testing.assert_array_equal(got, want)
     with pytest.raises(ValueError, match="doesn't hold"):
-        _format.read_unit(raw[:-1], N, n)
+        _format.read_unit(raw[:-1], N)
 
 
 def test_byte_planes_round_trip_and_layout():
     N, n = 3, 64
-    resid = RNG.integers(-2 ** 15, 2 ** 15, (N, n)).astype(np.int16)
+    sizes = np.full(N, n)
+    resid = RNG.integers(-2 ** 15, 2 ** 15, N * n).astype(np.int16)
     head = np.array([1, 2, 3], np.uint8)
     param = np.array([-5, 17, -(2 ** 40)], np.int64)
     anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
-    raw = _format.write_unit(head, param, anchor, resid, byte_planes=True)
-    assert raw.shape[0] == _format.unit_size(N, n)
-    np.testing.assert_array_equal(raw[:17 * N], _format.write_unit(head, param, anchor, resid)[:17 * N])
+    raw = _format.write_unit(head, sizes, param, anchor, resid, byte_planes=True)
+    assert raw.shape[0] == _format.unit_size(N, _format.layout(head, sizes))
+    np.testing.assert_array_equal(raw[:19 * N], _format.write_unit(head, sizes, param, anchor, resid)[:19 * N])
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[17 * N:].reshape(2, N, n)  # every low byte, then every high byte
+    planes = raw[19 * N:].reshape(2, N * n)  # every low byte, then every high byte
     np.testing.assert_array_equal(planes[0], u & 0xFF)
     np.testing.assert_array_equal(planes[1], u >> 8)
-    h2, p2, a2, r2, _, _ = _format.read_unit(raw, N, n, byte_planes=True)
-    np.testing.assert_array_equal(h2, head)
-    np.testing.assert_array_equal(p2, param)
-    np.testing.assert_array_equal(a2, anchor)
-    np.testing.assert_array_equal(r2, resid)
+    rows = _format.read_unit(raw, N, byte_planes=True)
+    for got, want in zip(rows[:5], (head, sizes, param, anchor, resid)):
+        np.testing.assert_array_equal(got, want)
 
 
 def test_dequantize():
@@ -191,16 +200,23 @@ def test_allocate_target():
     h = np.array([10.0, 10.0, 0.5, 6.0, 1.2])
     e = np.zeros(5, np.int64)
     ec = np.full(5, 8, np.int64)
+    w = np.ones(5, np.int64)
     k = np.zeros(5, np.int64)
     # budget 5 * 5 = 25 of 27.7; blocks can give 8 (clamped from 9), 8, 0, 5, 0 bits
-    assert _encoder.allocate_target(h, e, ec, 5.0, k)
+    assert _encoder.allocate_target(h, e, ec, w, 5.0, k)
     np.testing.assert_array_equal(k, [1, 1, 0, 1, 0])  # k = 1 saves 3 >= 2.7
-    assert _encoder.allocate_target(h, e, ec, 3.0, k)  # excess 12.7: k = 5 saves 13, k = 4 saves 12
+    assert _encoder.allocate_target(h, e, ec, w, 3.0, k)  # excess 12.7: k = 5 saves 13, k = 4 saves 12
     np.testing.assert_array_equal(k, [5, 5, 0, 5, 0])
-    assert not _encoder.allocate_target(h, e, ec, 6.0, k)  # under budget
+    assert not _encoder.allocate_target(h, e, ec, w, 6.0, k)  # under budget
     ec = np.array([1, 8, 8, 8, 8])
-    _encoder.allocate_target(h, e, ec, 3.0, k)  # block 0 gives only 1 bit: k = 6 saves 12, k = 7 saves 13
+    _encoder.allocate_target(h, e, ec, w, 3.0, k)  # block 0 gives only 1 bit: k = 6 saves 12, k = 7 saves 13
     np.testing.assert_array_equal(k, [1, 7, 0, 5, 0])
+    # Weighted by block size: block 1 is 3 blocks' worth, block 3 outside the budget (weight 0)
+    w = np.array([1, 3, 1, 0, 1])
+    ec = np.full(5, 8, np.int64)
+    # bits 10 + 30 + 0.5 + 1.2 = 41.7 over 6 samples, budget 30: k = 3 saves 3 + 9 = 12 >= 11.7
+    assert _encoder.allocate_target(h, e, ec, w, 5.0, k)
+    np.testing.assert_array_equal(k, [3, 3, 0, 0, 0])
 
 
 # Extreme ranges, against exact rational arithmetic (fractions.Fraction holds any double exactly)

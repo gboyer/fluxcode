@@ -21,32 +21,37 @@ def encoded(kind="random-walk", seed=41, n=60_000, params=Params()):
 
 
 def rebuilt(unit, edit):
-    """unit with its body rows changed by edit(head, param, anchor, resid, codes, time_rows), same header."""
+    """unit with its body rows changed by edit(flags, sizes, param, anchor, resid, codes, time_rows), same header."""
     rows = unit_rows(unit)
     edit(*rows)
-    body = _format.write_unit(*rows[:5], time_rows=rows.time_rows)
+    body = _format.write_unit(*rows[:6], time_rows=rows.time_rows)
     return unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
+
+
+def by_index(indices, blocks):
+    return dict(zip(indices, blocks))
 
 
 @pytest.mark.parametrize("indices", [[0], [59], [3, 17, 42], list(range(60)), [10, 5]])
 def test_replace_matches_reencode(indices):
     x, unit, _, _, _ = encoded()
     blocks = minute("chirp", 42).reshape(60, L)[: len(indices)]
-    unit2, lo2, hi2, mean2 = fluxcode.update(unit, indices, blocks)
+    unit2, updated, lo2, hi2, mean2 = fluxcode.update(unit, by_index(indices, blocks))
+    assert updated.tolist() == sorted(indices)
     x2 = x.copy().reshape(60, L)
     x2[indices] = blocks
     ref_units, ref_lo, ref_hi, ref_mean = encode_series(x2.ravel())
     assert unit2 == ref_units[0]
-    np.testing.assert_array_equal(lo2, ref_lo[indices])
-    np.testing.assert_array_equal(hi2, ref_hi[indices])
-    np.testing.assert_array_equal(mean2, ref_mean[indices])
+    np.testing.assert_array_equal(lo2, ref_lo[updated])
+    np.testing.assert_array_equal(hi2, ref_hi[updated])
+    np.testing.assert_array_equal(mean2, ref_mean[updated])
 
 
 def test_untouched_blocks_identical():
     _, unit, _, _, _ = encoded("noisy-sine")
     before = fluxcode.decode_unit(unit).values.reshape(-1, L)
     idx = [7, 30]
-    unit2, _, _, _ = fluxcode.update(unit, idx, np.zeros((2, L)) + [[1.5], [-2.0]])
+    unit2 = fluxcode.update(unit, {7: np.full(L, 1.5), 30: np.full(L, -2.0)}).unit
     after = fluxcode.decode_unit(unit2).values.reshape(-1, L)
     keep = np.setdiff1d(np.arange(60), idx)
     np.testing.assert_array_equal(after[keep], before[keep])
@@ -58,14 +63,14 @@ def test_untouched_blocks_identical_with_target():
     p = Params(noise_floor_sigma=None, target_bits_per_sample=6.0)
     _, unit, _, _, _ = encoded("noisy-sine", params=p)
     before = fluxcode.decode_unit(unit).values.reshape(-1, L)
-    unit2, _, _, _ = fluxcode.update(unit, [0], minute("chirp", 1)[:L][None], p)
+    unit2 = fluxcode.update(unit, {0: minute("chirp", 1)[:L]}, p).unit
     np.testing.assert_array_equal(fluxcode.decode_unit(unit2).values.reshape(-1, L)[1:], before[1:])
 
 
 def test_append():
     x, unit, lo, _, _ = encoded(n=20_000)
     new = minute("sin-4.12hz", 43)[:3 * L].reshape(3, L)
-    unit2, lo2, hi2, _ = fluxcode.update(unit, [20, 21, 22], new)
+    unit2, _, lo2, hi2, _ = fluxcode.update(unit, by_index([20, 21, 22], new))
     assert lo2.shape == hi2.shape == (3,)
     ref_units, ref_lo, _, _ = encode_series(np.concatenate([x, new.ravel()]))
     assert unit2 == ref_units[0]
@@ -76,49 +81,52 @@ def test_append():
 def test_replace_and_append_together():
     x, unit, _, _, _ = encoded(n=10_000)
     new = minute("chirp", 44)[:2 * L].reshape(2, L)
-    unit2, _, _, _ = fluxcode.update(unit, [10, 4], new)
+    unit2 = fluxcode.update(unit, {10: new[0], 4: new[1]}).unit
     x2 = np.concatenate([x, new[0]]).reshape(11, L)
     x2[4] = new[1]
     assert unit2 == encode_series(x2.ravel())[0][0]
 
 
-def test_partial_last_block():
-    """The sample count follows the blocks: a partial last block stays partial until it's replaced."""
-    x, unit, _, _, _ = encoded(n=10_500)
-    new = np.ones((1, L))
-    unit2, _, _, _ = fluxcode.update(unit, [3], new)  # an earlier block: still 10,500 samples
-    assert fluxcode.decode_unit(unit2).values.shape == (10_500,)
-    with pytest.raises(ValueError, match="partial"):
-        fluxcode.update(unit, [11], new)  # appending after the partial block 10
-    unit3, _, _, _ = fluxcode.update(unit, [10, 11], np.ones((2, L)))  # replace it, then append
-    y = fluxcode.decode_unit(unit3).values
-    assert y.shape == (12 * L,)
-    np.testing.assert_array_equal(y[10 * L:], 1.0)
-    ref = x.copy()
-    ref = np.concatenate([ref[:10 * L], np.ones(2 * L)])
-    assert unit3 == encode_series(ref)[0][0]
+def test_blocks_change_size():
+    """A block can be replaced by one of any size, emptied, or appended past a gap (filled with
+    empty blocks); the result equals encoding the new blocks from scratch."""
+    x, unit, _, _, _ = encoded(n=10_500)  # a short last block of 500
+    sizes = [L] * 10 + [500]
+    new = {3: np.arange(7.0), 5: np.zeros(0), 10: minute("chirp", 3)[:2 * L], 13: np.ones(9)}
+    unit2, updated, lo, _, mean = fluxcode.update(unit, new)
+    assert updated.tolist() == [3, 5, 10, 11, 12, 13]
+    blocks = [x[b * L:(b + 1) * L] for b in range(11)]
+    blocks += [np.zeros(0), np.zeros(0), np.zeros(0)]
+    for idx, block in new.items():
+        blocks[idx] = block
+    ref = fluxcode.encode_blocks(np.concatenate(blocks), [len(b) for b in blocks])
+    assert unit2 == ref.unit
+    np.testing.assert_array_equal(lo, ref.block_min[updated])
+    assert np.isnan(mean[[1, 3, 4]]).all()  # empty blocks: NaN statistics
+    decoded = fluxcode.decode_unit(unit2)
+    assert decoded.block_sizes.tolist() == [L, L, L, 7, L, 0, L, L, L, L, 2 * L, 0, 0, 9]
+    assert sizes  # (the original sizes, for reference)
 
 
-@pytest.mark.parametrize("indices,msg", [([61], "without gaps"), ([60, 60], "distinct"), ([-1], ">= 0"),
-                                         ([], "non-empty"), ([1.0], "integer")])
-def test_bad_indices(indices, msg):
+def test_empty_update_returns_the_unit():
+    _, unit, _, _, _ = encoded(n=3 * L)
+    updated = fluxcode.update(unit, {})
+    assert updated.unit == unit and updated.indices.shape == (0,)
+
+
+@pytest.mark.parametrize("blocks,msg", [({-1: np.zeros(L)}, ">= 0"), ({1.0: np.zeros(L)}, "integers"),
+                                        ([np.zeros(L)], "map block indices"), ({1: np.zeros((2, L))}, "1-D"),
+                                        ({1: np.zeros(65_536)}, "0 to 65535")])
+def test_bad_blocks(blocks, msg):
     _, unit, _, _, _ = encoded()
     with pytest.raises(ValueError, match=msg):
-        fluxcode.update(unit, np.array(indices), np.zeros((len(indices), L)))
+        fluxcode.update(unit, blocks)
 
 
-def test_append_past_blocks_per_unit():
-    _, unit, _, _, _ = encoded()
-    with pytest.raises(ValueError, match="blocks_per_unit"):
-        fluxcode.update(unit, [60], np.zeros((1, L)))
-
-
-def test_wrong_shapes():
-    _, unit, _, _, _ = encoded()
-    with pytest.raises(ValueError, match="shape"):
-        fluxcode.update(unit, [1, 2], np.zeros((2, 999)))
-    with pytest.raises(ValueError, match="block_len"):
-        fluxcode.update(unit, [1], np.zeros((1, 500)), Params(block_len=500))
+def test_append_past_block_limit():
+    _, unit, _, _, _ = encoded(n=3 * L)
+    with pytest.raises(ValueError, match="65535 blocks"):
+        fluxcode.update(unit, {65_535: np.zeros(1)})
 
 
 def test_update_with_non_finite_blocks():
@@ -126,10 +134,10 @@ def test_update_with_non_finite_blocks():
     _, unit, _, _, _ = encoded(n=20_000)
     b = np.zeros((2, L))
     b[1, 5], b[1, 6] = np.nan, -np.inf
-    unit2, _, _, _ = fluxcode.update(unit, [0, 1], b)
+    unit2 = fluxcode.update(unit, by_index([0, 1], b)).unit
     y = fluxcode.decode_unit(unit2).values.reshape(-1, L)
     np.testing.assert_array_equal(y[:2], b)
-    unit3, _, _, _ = fluxcode.update(unit2, [10, 20], np.ones((2, L)))  # replace one, append one
+    unit3 = fluxcode.update(unit2, {10: np.ones(L), 20: np.ones(L)}).unit  # replace one, append one
     y3 = fluxcode.decode_unit(unit3).values.reshape(-1, L)
     np.testing.assert_array_equal(y3[:2], b)
     np.testing.assert_array_equal(y3[2:10], y[2:10])
@@ -141,11 +149,11 @@ def test_update_refuses_units_it_cannot_read(head_bits):
     """A unit with reserved head bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""
     _, unit, _, _, _ = encoded()
-    raw_body = _format.write_unit(*unit_rows(unit)[:5])
+    raw_body = _format.write_unit(*unit_rows(unit)[:6])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
     bad = unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: head byte"):
-        fluxcode.update(bad, [0], np.zeros((1, L)))
+        fluxcode.update(bad, {0: np.zeros(L)})
     with pytest.raises(ValueError, match="block 5: head byte"):
         fluxcode.decode_unit(bad)
 
@@ -153,18 +161,18 @@ def test_update_refuses_units_it_cannot_read(head_bits):
 def test_update_refuses_out_of_range_parameters():
     _, unit, _, _, _ = encoded()
 
-    def bad_param(head, param, *_):
+    def bad_param(head, sizes, param, *_):
         param[2] = 5000
 
     with pytest.raises(ValueError, match="block 2: parameter"):
-        fluxcode.update(rebuilt(unit, bad_param), [0], np.zeros((1, L)))
+        fluxcode.update(rebuilt(unit, bad_param), {0: np.zeros(L)})
 
 
 @pytest.mark.parametrize("anchor", [np.inf, -np.inf, np.nan])
 def test_non_finite_float_anchors_are_rejected(anchor):
     _, unit, _, _, _ = encoded()
 
-    def bad_anchor(head, param, anchors, *_):
+    def bad_anchor(head, sizes, param, anchors, *_):
         anchors.view(np.float64)[4] = anchor
 
     with pytest.raises(ValueError, match="block 4: anchor"):
@@ -174,9 +182,9 @@ def test_non_finite_float_anchors_are_rejected(anchor):
 def test_out_of_range_decimal_anchors_are_rejected():
     x = np.round(np.cumsum(np.random.default_rng(3).normal(size=3 * L)), 2)
     unit, _, _, _ = fluxcode.encode_unit(x, Params(noise_floor_sigma=None))
-    assert (unit_rows(unit)[0] & _format.HEAD_DECIMAL).all()
+    assert (unit_rows(unit).block_flags & _format.HEAD_DECIMAL).all()
 
-    def bad_anchor(head, param, anchors, *_):
+    def bad_anchor(head, sizes, param, anchors, *_):
         anchors[1] = 1 << 52
 
     with pytest.raises(ValueError, match="block 1: anchor"):

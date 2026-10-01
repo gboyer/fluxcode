@@ -31,11 +31,12 @@ def decoded_times(unit):
     return times
 
 
-def round_trip(values, times, params=Params(), **kwargs):
+def round_trip(values, times, params=Params(), block_len=BLOCK_LEN, **kwargs):
     """Encodes and decodes with times; the values must decode as they do without times."""
-    unit = fluxcode.encode_unit(values, params, times=times, **kwargs).unit
+    unit = fluxcode.encode_unit(values, params, block_len=block_len, times=times, **kwargs).unit
     decoded = fluxcode.decode_unit(unit)
-    np.testing.assert_array_equal(decoded.values, fluxcode.decode_unit(fluxcode.encode_unit(values, params).unit).values)
+    plain = fluxcode.encode_unit(values, params, block_len=block_len).unit
+    np.testing.assert_array_equal(decoded.values, fluxcode.decode_unit(plain).values)
     return unit, decoded
 
 
@@ -166,7 +167,7 @@ def test_extreme_ticks():
     # One delta of 2^64 - 2: the GCD exceeds int64, so the block stores raw deltas with step 1
     huge_span = np.full(16, INT64_MAX, np.int64)
     huge_span[0] = INT64_MIN + 1
-    unit, decoded = round_trip(np.zeros(16), huge_span, Params(block_len=8), time_unit="s")
+    unit, decoded = round_trip(np.zeros(16), huge_span, block_len=8, time_unit="s")
     np.testing.assert_array_equal(decoded.times.view(np.int64), huge_span)
     assert unit_rows(unit).time_rows.steps[0] == 1
 
@@ -182,11 +183,10 @@ def test_bulk_encode_splits_times():
 
 
 def test_bulk_encode_rejects_decrease_at_unit_boundary():
-    params = Params(block_len=8, blocks_per_unit=2)
     ticks = np.arange(40, dtype=np.int64)
     ticks[16:] -= 100
     with pytest.raises(ValueError, match="sample 16 is -84, below sample 15"):
-        fluxcode.encode(np.zeros(40), params, times=ticks, time_unit="ns")
+        fluxcode.encode(np.zeros(40), block_len=8, blocks_per_unit=2, times=ticks, time_unit="ns")
 
 
 def test_byte_planes_and_nonfinite_with_times():
@@ -204,35 +204,37 @@ def test_byte_planes_and_nonfinite_with_times():
 
 
 def test_worked_example_layout():
-    """docs/SPEC.md §5's worked example: 3 blocks of 8, 20 samples, block 1 irregular."""
+    """docs/SPEC.md §5's worked example: blocks of 8, 8 and 4 samples, block 1 irregular."""
     ticks = np.array([1000, 1010, 1020, 1030, 1040, 1050, 1060, 1070,
                       1080, 1090, 1100, 1130, 1140, 1150, 1160, 1170,
                       1180, 1190, 1200, 1210], np.int64)
     values = np.repeat([2.5, 2.25, 3.0], 8)[:20]
-    unit = fluxcode.encode_unit(values, Params(block_len=8), times=ticks, time_unit="ns").unit
+    unit = fluxcode.encode_unit(values, block_len=8, times=ticks, time_unit="ns").unit
     header = unit[:_format.HEADER_BYTES]
-    assert header == bytes([1, 0x08, 0, 0, 8, 0, 0, 0, 20, 0, 0, 0, 0, 0, 0, 0])
+    assert header == bytes([1, 0x08, 3, 0, 20, 0, 0, 0])
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)
     num_blocks = 3
-    assert body.shape[0] == 203 == _format.unit_size(num_blocks, 8, 0, True, 1)
-    np.testing.assert_array_equal(body[:3] & 0x10, [0, 0x10, 0])
-    value_anchor_planes = body[27:51].reshape(8, num_blocks)
+    flags, sizes = body[:3], np.array([8, 8, 4])
+    assert body.shape[0] == 209 == _format.unit_size(num_blocks, _format.layout(flags, sizes), True)
+    np.testing.assert_array_equal(flags & 0x10, [0, 0x10, 0])
+    np.testing.assert_array_equal(body[3:9], [8, 8, 4, 0, 0, 0])
+    value_anchor_planes = body[33:57].reshape(8, num_blocks)
     np.testing.assert_array_equal(value_anchor_planes[6], [0x04, 0x02, 0x08])
     np.testing.assert_array_equal(value_anchor_planes[7], [0x40, 0x40, 0x40])
     assert not value_anchor_planes[:6].any()
-    time_start_planes = body[51:75].reshape(8, num_blocks)
+    time_start_planes = body[57:81].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_start_planes[0], [0xE8, 0x50, 0x64])
     np.testing.assert_array_equal(time_start_planes[1], [0x03, 0x00, 0x00])
     assert not time_start_planes[2:].any()
-    time_step_planes = body[75:99].reshape(8, num_blocks)
+    time_step_planes = body[81:105].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_step_planes[0], [0x0A, 0x0A, 0x0A])
     assert not time_step_planes[1:].any()
-    time_ref_planes = body[99:123].reshape(8, num_blocks)
+    time_ref_planes = body[105:129].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_ref_planes[0], [0x01, 0x01, 0x01])
     assert not time_ref_planes[1:].any()
     # Block 1's quotients [1, 1, 3, 1, 1, 1, 1] from sample 1: reference 1, zigzagged residuals
     # [0, 0, 0, 4, 0, 0, 0, 0], so only bit 2 of sample 3 is set
-    time_residual_planes = body[171:203]
+    time_residual_planes = body[177:209]
     assert time_residual_planes[2] == 0x08
     assert not np.delete(time_residual_planes, 2).any()
     np.testing.assert_array_equal(decoded_times(unit).view(np.int64), ticks)
@@ -272,22 +274,23 @@ def zigzag(residuals):
     return ((residuals << 1) ^ (residuals >> 63)).view(np.uint64)
 
 
-def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_len=8, long=None):
+def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_len=8, long=None, sizes=None):
     """A unit with the given time rows (bypassing the encoder's checks) and zero values;
-    long optionally flags blocks as long."""
+    long optionally flags blocks as long. Blocks hold block_len samples each, or sizes."""
     num_blocks = len(starts)
+    sizes = np.full(num_blocks, block_len) if sizes is None else np.asarray(sizes)
     block_flags = np.where(block_flags_irregular, HEAD_IRREGULAR_TIME, 0).astype(np.uint8)
     if long is not None:
         block_flags |= np.where(long, HEAD_LONG_TIME, 0).astype(np.uint8)
     time_rows = _format.TimeRows(
         np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(refs, np.uint64),
-        zigzag(residuals).reshape(num_blocks, block_len),
+        zigzag(residuals),
     )
     body = _format.write_unit(
-        block_flags, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
-        np.zeros((num_blocks, block_len), np.int16), time_rows=time_rows,
+        block_flags, sizes, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
+        np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
     )
-    header = _format.pack_header(block_len, num_blocks * block_len, False, int(_format.TimeUnit.NANOSECONDS))
+    header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnit.NANOSECONDS))
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -356,11 +359,10 @@ def test_update_with_times_matches_reencode(indices):
         # Jitter within the block's original span: stays in order with its neighbours
         block_times = times[block_idx * BLOCK_LEN:(block_idx + 1) * BLOCK_LEN] + (np.arange(BLOCK_LEN) % 2) * np.timedelta64(1, "ns")
         new_times.append(block_times)
-    new_times = np.array(new_times)
     for position, block_idx in enumerate(indices):
         edited_values[block_idx * BLOCK_LEN:(block_idx + 1) * BLOCK_LEN] = new_blocks[position]
         edited_times[block_idx * BLOCK_LEN:(block_idx + 1) * BLOCK_LEN] = new_times[position]
-    updated = fluxcode.update(unit, indices, new_blocks, times=new_times).unit
+    updated = fluxcode.update(unit, dict(zip(indices, new_blocks)), times=dict(zip(indices, new_times))).unit
     assert updated == fluxcode.encode_unit(edited_values, times=edited_times).unit
     np.testing.assert_array_equal(fluxcode.decode_unit(updated).times, edited_times)
 
@@ -371,11 +373,13 @@ def test_update_appends_with_times():
     unit = fluxcode.encode_unit(values, times=times).unit
     new_times = (times[-1] + np.arange(1, 2 * BLOCK_LEN + 1) * np.timedelta64(1, "ms")).reshape(2, BLOCK_LEN)
     new_blocks = np.ones((2, BLOCK_LEN))
-    updated = fluxcode.update(unit, [30, 31], new_blocks, times=new_times).unit
+    updated = fluxcode.update(unit, {30: new_blocks[0], 31: new_blocks[1]}, times={30: new_times[0], 31: new_times[1]}).unit
     decoded = fluxcode.decode_unit(updated)
     np.testing.assert_array_equal(decoded.times, np.r_[times, new_times.reshape(-1)])
     # Integer ticks are read in the unit's time unit
-    updated_from_ticks = fluxcode.update(unit, [30, 31], new_blocks, times=new_times.view(np.int64)).unit
+    tick_blocks = new_times.view(np.int64)
+    updated_from_ticks = fluxcode.update(unit, {30: new_blocks[0], 31: new_blocks[1]},
+                                         times={30: tick_blocks[0], 31: tick_blocks[1]}).unit
     assert updated_from_ticks == updated
 
 
@@ -384,13 +388,21 @@ def test_update_time_errors():
     block = np.zeros(BLOCK_LEN)
     block_times = times[:BLOCK_LEN]
     with pytest.raises(ValueError, match="times are required"):
-        fluxcode.update(unit, [0], block)
+        fluxcode.update(unit, {0: block})
     with pytest.raises(ValueError, match="no time axis"):
-        fluxcode.update(fluxcode.encode_unit(values).unit, [0], block, times=block_times)
+        fluxcode.update(fluxcode.encode_unit(values).unit, {0: block}, times={0: block_times})
     with pytest.raises(ValueError, match="are in us but the unit stores ns"):
-        fluxcode.update(unit, [0], block, times=block_times.astype("datetime64[us]"))
-    with pytest.raises(ValueError, match="shape of blocks"):
-        fluxcode.update(unit, [0], block, times=block_times[:-1])
+        fluxcode.update(unit, {0: block}, times={0: block_times.astype("datetime64[us]")})
+    with pytest.raises(ValueError, match="shape of its samples"):
+        fluxcode.update(unit, {0: block}, times={0: block_times[:-1]})
+    with pytest.raises(ValueError, match="same block indices"):
+        fluxcode.update(unit, {0: block}, times={1: block_times})
     # Block 1's new times start before block 0 ends
-    with pytest.raises(ValueError, match="non-decreasing: sample 1000"):
-        fluxcode.update(unit, [1], block, times=block_times)
+    with pytest.raises(ValueError, match="non-decreasing: block 1 starts"):
+        fluxcode.update(unit, {1: block}, times={1: block_times})
+    # Block 0's new times end after block 1 starts
+    with pytest.raises(ValueError, match="non-decreasing: block 1 starts"):
+        fluxcode.update(unit, {0: block}, times={0: times[BLOCK_LEN:2 * BLOCK_LEN] + np.timedelta64(1, "ns")})
+    # Within a new block
+    with pytest.raises(ValueError, match="non-decreasing: sample 1 "):
+        fluxcode.update(unit, {0: block}, times={0: block_times[::-1]})

@@ -15,16 +15,14 @@ from fluxcode import Params, _encoder
                                 {"diff_orders": frozenset()}, {"diff_orders": {4}}, {"diff_orders": "0"},
                                 {"noise_floor_sigma": -1}, {"noise_floor_sigma": float("nan")},
                                 {"target_bits_per_sample": 0}, {"target_bits_per_sample": 5.99},
-                                {"target_bits_per_sample": True}, {"try_byte_planes": 1},
-                                {"block_len": 3}, {"block_len": 0}, {"blocks_per_unit": 0},
-                                {"block_len": 65_536, "blocks_per_unit": 1025}])  # over MAX_UNIT_SAMPLES
+                                {"target_bits_per_sample": True}, {"try_byte_planes": 1}])
 def test_invalid(kw):
     with pytest.raises(ValueError):
         Params(**kw)
 
 
 def test_valid_and_normalized():
-    p = Params(diff_orders=[1, 2], noise_floor_sigma=0, min_quantize_bits=16, block_len=8, blocks_per_unit=1)
+    p = Params(diff_orders=[1, 2], noise_floor_sigma=0, min_quantize_bits=16)
     assert p.diff_orders == frozenset({1, 2})
     hash(p)
 
@@ -44,7 +42,8 @@ def test_accepts_lists_and_float32():
 
 def exponents(x, params):
     units, lo, hi, _ = encode_series(x, params)
-    head, param, _, _, _, _ = unit_rows(units[0])
+    rows = unit_rows(units[0])
+    head, param = rows.block_flags, rows.grid_params
     return head, param, hi - lo
 
 

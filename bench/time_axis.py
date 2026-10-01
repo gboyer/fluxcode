@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from _signals import MINUTE, clock_minute, minute
 
 import fluxcode
-from fluxcode import _api, _format
+from fluxcode import _format, _unit
 
 START_NS = 1_790_000_000_000_000_000  # 2026-09-21, in ns since 1970
 MS = 1_000_000
@@ -76,8 +76,8 @@ def main():
         assert decoded.times is not None and np.array_equal(decoded.times, times)
         # The values mustn't depend on the time axis (fails on a stale numba cache: see README)
         assert np.array_equal(decoded.values, fluxcode.decode_unit(plain_unit).values)
-        raw_body, header = _api._decompress(unit)
-        num_irregular = _format.count_irregular(raw_body, header.num_blocks)
+        parsed = _unit.decompress(unit)
+        num_irregular = int(np.count_nonzero(parsed.block_flags & _format.HEAD_IRREGULAR_TIME))
         extra_bytes = len(unit) - len(plain_unit)
         encode_time = best(lambda times=times: fluxcode.encode_unit(values, times=times), args.reps) - plain_encode
         decode_time = best(lambda unit=unit: fluxcode.decode_unit(unit), args.reps) - plain_decode

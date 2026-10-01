@@ -31,7 +31,7 @@ sys.path[:0] = [str(REPO / "tests"), str(REPO / "bench")]
 
 import fluxcode  # noqa: E402
 from _signals import CLOCKS, MINUTE, clock_minute, minute  # noqa: E402
-from fluxcode import _api, _format  # noqa: E402
+from fluxcode import _format, _unit  # noqa: E402
 from time_axis import patterns  # noqa: E402
 
 from tslab.report.page import clean_outputs, save_fig, shell  # noqa: E402
@@ -69,8 +69,7 @@ def measure(values, ticks, plain_unit, reps, plain_times):
     unit = fluxcode.encode_unit(values, times=times).unit
     decoded = fluxcode.decode_unit(unit)
     assert decoded.times is not None and np.array_equal(decoded.times, times)
-    raw_body, header = _api._decompress(unit)
-    irregular = (raw_body[:header.num_blocks] & _format.HEAD_IRREGULAR_TIME) != 0
+    irregular = (_unit.decompress(unit).block_flags & _format.HEAD_IRREGULAR_TIME) != 0
     row = {"bytes": len(unit) - len(plain_unit), "irregular": irregular}
     if reps:
         row["encode_us"] = best_us(lambda: fluxcode.encode_unit(values, times=times), reps) - plain_times[0]

@@ -90,8 +90,9 @@ def test_finite_blocks_unchanged():
     y = x.copy()
     y[30_500] = np.nan  # block 30
     unit, _, _, _ = fluxcode.encode_unit(y)
-    ha, pa, _, ra, _, _ = unit_rows(ref)
-    hb, pb, _, rb, codes, _ = unit_rows(unit)
+    ha, _, pa, _, ra, _, _ = unit_rows(ref)
+    hb, _, pb, _, rb, codes, _ = unit_rows(unit)
+    ra, rb, codes = ra.reshape(60, L), rb.reshape(60, L), codes.reshape(60, L)
     keep = np.arange(60) != 30
     np.testing.assert_array_equal(ha[keep], hb[keep])
     np.testing.assert_array_equal(pa[keep], pb[keep])
@@ -228,7 +229,8 @@ def test_whole_blocks_between_finite_ones(pname):
     x = np.concatenate(blocks)
     check_round_trip(x, PARAMS[pname])
     unit, _, _, _ = fluxcode.encode_unit(x, PARAMS[pname])
-    head, _, _, _, codes, _ = unit_rows(unit)
+    head, _, _, _, _, codes, _ = unit_rows(unit)
+    codes = codes.reshape(-1, L)
     assert [bool(h & HEAD_NONFINITE) for h in head] == [False, True, False, True, False, True, True, False, True]
     assert (codes[1] == 1).all() and (codes[3] == 2).all() and (codes[5] == 3).all()
 
@@ -237,13 +239,13 @@ def test_update_whole_non_finite_blocks():
     """Replace a finite block with all -inf, append an all-NaN block, then replace that with data."""
     x = minute("random-walk", 9)[:5 * L]
     unit, _, _, _ = fluxcode.encode_unit(x)
-    unit, mins, maxs, means = fluxcode.update(unit, [2, 5], np.stack([np.full(L, -np.inf), np.full(L, np.nan)]))
+    unit, _, mins, maxs, means = fluxcode.update(unit, {2: np.full(L, -np.inf), 5: np.full(L, np.nan)})
     assert np.isnan(mins).all() and np.isnan(maxs).all() and np.isnan(means).all()
     y = fluxcode.decode_unit(unit).values.reshape(-1, L)
     assert (y[2] == -np.inf).all() and np.isnan(y[5]).all()
     np.testing.assert_array_equal(y[[0, 1, 3, 4]], fluxcode.decode_unit(fluxcode.encode_unit(x)[0]).values.reshape(-1, L)[[0, 1, 3, 4]])
     new = minute("sin-4.12hz", 9)[:L]
-    unit, _, _, _ = fluxcode.update(unit, [5], new[None])
+    unit = fluxcode.update(unit, {5: new}).unit
     y2 = fluxcode.decode_unit(unit).values.reshape(-1, L)
     np.testing.assert_array_equal(y2[:5], y[:5])
     assert np.abs(y2[5] - new).max() <= (new.max() - new.min()) / (2 ** 16 - 0.5)
@@ -269,6 +271,6 @@ def test_negative_zero_index_normalized():
 
 
 def test_block_len_limit():
-    fluxcode.decode_unit(fluxcode.encode_unit(np.arange(70_000.0), Params(block_len=65_536, blocks_per_unit=2))[0])
-    with pytest.raises(ValueError, match="65536"):
-        Params(block_len=65_544)
+    fluxcode.decode_unit(fluxcode.encode_unit(np.arange(70_000.0), block_len=65_535)[0])
+    with pytest.raises(ValueError, match="65535"):
+        fluxcode.encode_unit(np.arange(10.0), block_len=65_536)
