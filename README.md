@@ -8,8 +8,9 @@ to 4 significant figures, or more when the range is narrow.
 High level properties:
 
 * **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 2 GiB/s.
-* **Blocks**: Uses fixed-sized blocks of regularly sampled data, usually
-  1000 samples/block.
+* **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
+  data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
+  for data that arrives late or with gaps.
 * **Min-Max Quantization**: Each block is quantized up to 2^16 steps between its min and
   max value. Blocks with tight range preserve accuracy better than wide ranges.
 * **Decimals**: If the block's samples fall close to a decimal grid, it is stored as exact
@@ -17,8 +18,8 @@ High level properties:
 * **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
   difference, whichever has the lowest variance.
 * **Unit-Compressed zstd**: Blocks are assembled into units; for example, a minute might
-  be a single unit with 60 blocks, each with 1000 samples (the defaults; both are
-  parameters, and the unit records them). Their bit planes are
+  be a single unit with 60 blocks, each with 1000 samples (the defaults of `encode`; the
+  unit records every block's size). Their bit planes are
   interleaved and compressed with zstd to separate high and low entropy signals.
 * **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
   subnormal ranges, +/- Infinity, and NaN.
@@ -64,9 +65,9 @@ rng = np.random.default_rng(0)
 t = np.arange(30_000) / 1000                                # 30 s at 1 kHz: 30 blocks of 1000
 x = 100 * np.sin(2 * np.pi * 3.3 * t) + rng.normal(0, 1, t.size)
 
-# One unit = one storage row (up to blocks_per_unit blocks, 60 by default). Units are self-describing.
+# One unit = one storage row, here 30 blocks of 1000 samples. Units are self-describing.
 unit, block_min, block_max, block_mean = fluxcode.encode_unit(x)
-y, _ = fluxcode.decode_unit(unit)                           # (values, times); times is None here
+y, _, sizes = fluxcode.decode_unit(unit)                    # (values, times, block_sizes); no times here
 print(f"{8 * len(unit) / x.size:.2f} bits/sample, max error {np.abs(y - x).max():.3f}")
 
 # Decimal data (here a price rounded to cents) decodes to the identical float64.
@@ -76,13 +77,23 @@ assert np.array_equal(fluxcode.decode_unit(fluxcode.encode_unit(price).unit).val
 # Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly.
 stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(1, "ms")
 stamps[12_345:] += np.timedelta64(2, "s")                  # a gap: only its block pays for it
-values, times = fluxcode.decode_unit(fluxcode.encode_unit(x, times=stamps).unit)
+values, times, _ = fluxcode.decode_unit(fluxcode.encode_unit(x, times=stamps).unit)
 assert np.array_equal(times, stamps)
 
-# Replace block 3 and append block 30 as more of the stream arrives.
+# Replace block 3 and append block 30 as more of the stream arrives: blocks by index, any size.
 new_blocks = 100 * np.sin(2 * np.pi * 3.3 * (np.arange(2000).reshape(2, 1000) / 1000 + 30))
-unit, mins, maxs, means = fluxcode.update(unit, indices=[3, 30], blocks=new_blocks)
-assert fluxcode.decode_unit(unit).values.size == 31_000
+unit, indices, mins, maxs, means = fluxcode.update(unit, {3: new_blocks[0], 30: new_blocks[1][:700]})
+assert fluxcode.decode_unit(unit).values.size == 30_700
+
+# Blocks of a fixed duration (here one second): blocks with no data are empty, and the unit
+# grows as data arrives. update_time_blocks replaces what the unit holds in time ranges.
+ms = np.datetime64("2026-09-27T00:00", "ms") + np.arange(x.size)
+hour = {"start_time": ms[0], "block_duration": np.timedelta64(1, "s")}
+first, late = slice(0, 10_000), slice(10_000, 20_000)      # 20 s of 30; seconds 10-19 come later
+unit, *_ = fluxcode.encode_time_blocks(x[first], ms[first], **hour)
+gap = (ms[10_000], ms[20_000])                              # [start, end)
+unit, *_ = fluxcode.update_time_blocks(unit, x[late], ms[late], update_ranges=gap, **hour)
+assert fluxcode.decode_unit(unit).block_sizes.tolist() == [1000] * 20
 
 # Long series: encode() splits into units; decode() returns one (values, times) per unit.
 units, mins, maxs, means = fluxcode.encode(np.tile(x, 5))
@@ -92,28 +103,44 @@ assert sum(len(decoded.values) for decoded in fluxcode.decode(units)) == 5 * x.s
 This prints `5.81 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
 which set the step to 0.25σ.
 
-- `encode_unit(x, params, *, times=None, time_unit=None)`: one unit (a 16-byte header and a zstd
-  frame) of up to `blocks_per_unit` blocks of `block_len` samples. It also returns per-block min,
-  max and mean (over finite samples) as summary statistics: they come free with encoding, and
-  decoding doesn't need them. A short last block is padded, and trimmed again on decode.
-  `times` optionally stores one timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or
-  integer ticks with `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and
-  non-decreasing; equal timestamps are fine. A regular grid costs about 45 bytes per unit.
-- `decode_unit(unit)`: returns `DecodedUnit(values, times)`. `times` is `datetime64` in the
-  encoded unit, or `None` for a unit encoded without times. The unit records everything needed.
-- `update(unit, indices, blocks, params, *, times=None)`: replace or append whole blocks;
-  untouched blocks decode to identical values. `times` (shaped like `blocks`) is required exactly
-  when the unit has a time axis. Returns the new unit and min/max/mean of the updated blocks, in
-  `indices` order. A partial last block must be replaced by a full one before appending after it.
-- `encode(x, params, *, times=None, time_unit=None)` / `decode(units)`: bulk versions. `encode`
-  splits a long series (and its times, non-decreasing across unit boundaries too) into full units and returns
+- `encode_unit(x, params, *, block_len=1000, times=None, time_unit=None)`: one unit (an 8-byte
+  header and a zstd frame) of blocks of `block_len` samples (1 to 65,535; the last block holds the
+  rest). It also returns per-block min, max and mean (over finite samples) as summary statistics:
+  they come free with encoding, and decoding doesn't need them. `times` optionally stores one
+  timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or integer ticks with
+  `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and non-decreasing; equal
+  timestamps are fine. A regular grid costs about 45 bytes per unit.
+- `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one unit of blocks of the
+  given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list arrays.
+  An empty block stores nothing (NaN statistics). Blocks of at most 8 samples skip the analysis:
+  they are stored at the finest step, without differences.
+- `encode_time_blocks(x, times, params, *, start_time, block_duration, time_unit=None)`: one unit
+  in which block b holds the samples timed in `[start_time + b·block_duration, start_time +
+  (b+1)·block_duration)`; blocks without samples are empty. `start_time` (`datetime64`, naive
+  `datetime` or ticks) and `block_duration` (`timedelta64`, `timedelta` or ticks) aren't stored:
+  keep them with the unit, e.g. the start in its storage key.
+- `update_time_blocks(unit, x, times, params, *, start_time, block_duration, update_ranges)`:
+  discards the unit's samples in `update_ranges` (`[start, end)` pairs: one pair, a list, or a
+  `(k, 2)` array) and puts the new samples, all timed within them, in their place. Blocks the
+  ranges don't meet are carried over without being decoded; blocks that straddle a range edge are
+  decoded, merged and re-encoded.
+- `decode_unit(unit)`: returns `DecodedUnit(values, times, block_sizes)`. `times` is `datetime64`
+  in the encoded unit, or `None` for a unit encoded without times. The unit records everything
+  needed.
+- `update(unit, blocks, params, *, times=None)`: replace or append whole blocks, given as a dict
+  `{index: samples}` of any sizes (skipped indices past the end are appended empty); untouched
+  blocks decode to identical values. `times` (a dict with the same keys) is required exactly when
+  the unit has a time axis. The update functions return `UpdatedUnit(unit, indices, block_min,
+  block_max, block_mean)`: the new unit and the statistics of the blocks they re-encoded.
+- `encode(x, params, *, block_len=1000, blocks_per_unit=60, times=None, time_unit=None)` /
+  `decode(units)`: bulk versions. `encode` splits a long series (and its times, non-decreasing
+  across unit boundaries too) into units of `blocks_per_unit` blocks and returns
   `(units, block_mins, block_maxs, block_means)`, one entry per unit; `decode` returns one
-  `DecodedUnit` per unit.
+  `DecodedUnit` per unit. A unit holds at most 65,535 blocks and 2^26 = 67,108,864 samples (the
+  bound decoders accept).
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `block_len=1000` (4 to 65,536),
-  `blocks_per_unit=60` (at most 2^26 = 67,108,864 samples per unit, the bound decoders accept),
-  `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `decimal_detection=True`, `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 

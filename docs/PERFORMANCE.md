@@ -5,6 +5,11 @@ Timings are from a quiet rerun on 2026-09-25 (AC power, idle, fastest of 5 runs)
 day-scale stress test), where the time goes, and which inputs slow it down. Raw output: [bench/STRESS_RESULTS.md](../bench/STRESS_RESULTS.md);
 harness: [bench/stress.py](../bench/stress.py).
 
+2026-10-01: variable block sizes (a per-block `block_sizes` column, an 8-byte header, flat
+per-block offsets in every kernel) measured against the previous format, one thread, best of 300,
+one-minute units: encode +1–3% (+2–6 µs, a little more with times), decode +2–4% (+2–5 µs),
+units 1–7 bytes smaller. The tables below predate it.
+
 ## Summary
 
 The target workload is 1000 tags at 1 kHz, stored as 1-minute units of 60 one-second blocks,
