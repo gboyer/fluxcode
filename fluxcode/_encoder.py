@@ -170,25 +170,84 @@ def exponent(range_span: float, bits: int) -> int:
 
 
 @njit(nogil=True, cache=True)
-def range_exponent(lower_bound: float, upper_bound: float, bits: int) -> int:
-    """Computes quantization exponent for any finite bounds lo <= hi.
-
-    Clamps the result to [E_MIN, E_MAX] and avoids overflow for wide ranges.
-
-    Args:
-        lower_bound: Lower bound.
-        upper_bound: Upper bound.
-        bits: Maximum bit width across the range.
-
-    Returns:
-        Clamped quantization exponent in [E_MIN, E_MAX].
-    """
+def _unsnapped_exponent(lower_bound: float, upper_bound: float, bits: int) -> int:
+    """The finest exponent e with round((hi - lo) * 2^-e) < 2^bits, clamped to [E_MIN, E_MAX]
+    (the grid anchored at lo); range_exponent starts from it."""
     range_span = upper_bound - lower_bound
     # Direct range calculation for ordinary ranges
     if range_span < xm.WIDE_RANGE:
         return max(exponent(range_span, bits), E_MIN)
     # Use exact half-range calculation when hi - lo could overflow float64
     return min(exponent(xm.half_range(lower_bound, upper_bound), bits) + 1, E_MAX)
+
+
+@njit(inline="always")
+def grid_index(value: float, quant_exp: int) -> float:
+    """rint(value * 2^-e): the index of the nearest point of the absolute grid of step 2^e,
+    ties to even, as a float holding an integer.
+
+    value * 2^-e is exact (a power-of-two scale) wherever it matters: it can't overflow for a
+    sample of a block whose step is 2^e (the step is at least about 2^-69 of its magnitude),
+    and when it underflows, the index is 0 either way.
+    """
+    if quant_exp >= xm.E_TINY:
+        return np.rint(value * math.ldexp(1.0, -quant_exp))
+    # 2^-e overflows float64: scale in two exact steps
+    return np.rint(value * math.ldexp(1.0, -xm.E_TINY) * math.ldexp(1.0, xm.E_TINY - quant_exp))
+
+
+@njit(nogil=True, cache=True)
+def range_exponent(lower_bound: float, upper_bound: float, bits: int) -> int:
+    """The finest exponent e whose snapped grid fits: rint(hi * 2^-e) - rint(lo * 2^-e) <= L,
+    with L = 2^bits for bits < 16 and 65,535 for 16 (q is stored mod 2^16).
+
+    The grid points nearest lo and hi can sit up to half a step outside [lo, hi], so the
+    snapped grid can need one more level than the range alone: the rule accounts for it. It
+    is within one level of _unsnapped_exponent and never coarser, except at bits = 16 when
+    the snap would reach q = 65,536 (one level coarser then).
+
+    Args:
+        lower_bound: Lower bound.
+        upper_bound: Upper bound.
+        bits: The bit budget B.
+
+    Returns:
+        Quantization exponent in [E_MIN, E_MAX] (0 for an empty range).
+    """
+    if not upper_bound > lower_bound:
+        return 0
+    max_index = (1 << bits) if bits < 16 else (1 << 16) - 1
+    # One level coarser than the unsnapped rule always fits: halving the range in steps
+    # leaves room for the snap. Finer levels fit at most one level below it (only for bits < 16).
+    quant_exp = min(_unsnapped_exponent(lower_bound, upper_bound, bits) + 1, E_MAX)
+    while quant_exp > E_MIN and (
+        grid_index(upper_bound, quant_exp - 1) - grid_index(lower_bound, quant_exp - 1) <= max_index
+    ):
+        quant_exp -= 1
+    return quant_exp
+
+
+@njit(nogil=True, cache=True)
+def snap_anchor(lower_bound: float, upper_bound: float, quant_exp: int) -> tuple[float, float]:
+    """The anchor of a power-of-two block: the grid point nearest its minimum.
+
+    Args:
+        lower_bound: Block minimum lo.
+        upper_bound: Block maximum hi.
+        quant_exp: Quantization exponent e.
+
+    Returns:
+        A tuple of (anchor, K): anchor = K * 2^e with K = rint(lo * 2^-e). The exceptions are
+        a constant block (e is only a placeholder there) and a snapped anchor that isn't
+        finite (near +-DBL_MAX): (lo, NaN), quantized relative to lo instead.
+    """
+    if not upper_bound > lower_bound:
+        return lower_bound, math.nan
+    base_index = grid_index(lower_bound, quant_exp)
+    anchor = math.ldexp(base_index, quant_exp)
+    if not math.isfinite(anchor):
+        return lower_bound, math.nan
+    return anchor + 0.0, base_index
 
 
 @njit(nogil=True, cache=True)
@@ -309,7 +368,9 @@ def detect_decimal(
 def quantize(
     samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
 ) -> None:
-    """Quantizes samples onto power-of-two grid: floor((x - lo) * 2^-e + 0.5).
+    """Quantizes samples onto the power-of-two grid anchored at lo: floor((x - lo) * 2^-e + 0.5).
+
+    Used only for the blocks snap_anchor exempts; others use quantize_grid.
 
     Args:
         samples: 1D float64 array of samples.
@@ -317,11 +378,9 @@ def quantize(
         quant_exp: Quantization exponent.
         out_quantized: Output 1D int32 array receiving quantized integers.
     """
-    # Subnormal exponent: split scale into two factors to prevent 2^-e overflow
-    if quant_exp < xm.E_TINY:
-        xm.quantize_tiny(samples, lower_bound, quant_exp, out_quantized)
-    # Huge exponent: quantize at half-scale to prevent (x - lo) overflow
-    elif quant_exp >= xm.E_HUGE:
+    # Huge exponent: quantize at half-scale to prevent (x - lo) overflow. (The exempt blocks are
+    # constant, with e = 0, or near +-DBL_MAX: never a subnormal step.)
+    if quant_exp >= xm.E_HUGE:
         xm.quantize_huge(samples, lower_bound, quant_exp, out_quantized)
     else:
         # Standard power-of-two step inverse: 2^-e
@@ -330,6 +389,45 @@ def quantize(
             # Round to nearest integer with ties rounding toward +infinity
             diff = samples[sample_idx] - lower_bound
             out_quantized[sample_idx] = np.int32(math.floor(diff * step_inv + 0.5))
+
+
+@njit(nogil=True, cache=True)
+def quantize_grid(samples: np.ndarray, quant_exp: int, base_index: float, out_quantized: np.ndarray) -> None:
+    """Quantizes samples onto the absolute power-of-two grid: rint(x * 2^-e) - K.
+
+    K = rint(lo * 2^-e) with the same rounding, so the minimum maps to 0 and every q >= 0.
+    The difference of two nearby integers held in floats is exact.
+
+    Args:
+        samples: 1D float64 array of samples.
+        quant_exp: Quantization exponent e.
+        base_index: K, the anchor's grid index (snap_anchor).
+        out_quantized: Output 1D int32 array receiving quantized integers.
+    """
+    if quant_exp >= xm.E_TINY:
+        step_inv = math.ldexp(1.0, -quant_exp)
+        for sample_idx in range(samples.shape[0]):
+            out_quantized[sample_idx] = np.int32(np.rint(samples[sample_idx] * step_inv) - base_index)
+    else:
+        for sample_idx in range(samples.shape[0]):
+            out_quantized[sample_idx] = np.int32(grid_index(samples[sample_idx], quant_exp) - base_index)
+
+
+@njit(nogil=True, cache=True)
+def quantize_block(
+    samples: np.ndarray, lower_bound: float, upper_bound: float, quant_exp: int, out_quantized: np.ndarray
+) -> float:
+    """Quantizes a block on its power-of-two grid and returns the block's anchor.
+
+    The grid is snapped (snap_anchor) unless the block is an exception, which is quantized
+    relative to its minimum.
+    """
+    anchor, base_index = snap_anchor(lower_bound, upper_bound, quant_exp)
+    if math.isnan(base_index):
+        quantize(samples, lower_bound, quant_exp, out_quantized)
+    else:
+        quantize_grid(samples, quant_exp, base_index, out_quantized)
+    return anchor
 
 
 @njit(nogil=True, cache=True)
@@ -517,7 +615,7 @@ def encode_block(
     pick_len: int,
     scratch_quantized: np.ndarray,
     out_residuals: np.ndarray,
-) -> tuple[int, int, np.int64]:
+) -> tuple[int, int, np.int64, float]:
     """Encodes one block: quantizes, picks predictor order, and computes residuals.
 
     Args:
@@ -532,10 +630,12 @@ def encode_block(
         out_residuals: Output 1D int16 array receiving residuals.
 
     Returns:
-        A tuple of (head_byte, param, decimal_base): decimal_base is the grid index K0 of
-        lower_bound on a detected decimal grid (the block's anchor), 0 on the power-of-two grid.
+        A tuple of (head_byte, param, decimal_base, anchor): decimal_base is the grid index K0
+        of lower_bound on a detected decimal grid (the block's anchor), 0 on the power-of-two
+        grid; anchor is the power-of-two grid's anchor (unused on a decimal grid).
     """
     head_byte = 0
+    anchor = lower_bound
     param_val = quant_exp
     decimal_base = np.int64(0)
     decimal_detected = False
@@ -551,12 +651,12 @@ def encode_block(
             head_byte |= HEAD_DECIMAL
     # Fall back to power-of-two quantization if decimal grid not detected
     if not decimal_detected:
-        quantize(samples, lower_bound, quant_exp, scratch_quantized)
+        anchor = quantize_block(samples, lower_bound, upper_bound, quant_exp, scratch_quantized)
     # Select difference order minimizing residual variance
     selected_order = pick_order(scratch_quantized, pick_len, orders_mask)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
-    return head_byte | selected_order, param_val, decimal_base
+    return head_byte | selected_order, param_val, decimal_base, anchor
 
 
 @njit(inline="always")
@@ -565,10 +665,11 @@ def _store_anchor(
     anchor_floats: np.ndarray,
     block_idx: int,
     head_byte: int,
-    lower_bound: float,
+    anchor: float,
     decimal_base: np.int64,
 ) -> None:
-    """Writes block b's anchor: the decimal grid index K0, or the float64 bits of lower_bound.
+    """Writes block b's anchor: the decimal grid index K0, or the float64 bits of the
+    power-of-two anchor.
 
     Args:
         out_value_anchors: Output 1D int64 array of length N receiving anchors.
@@ -576,13 +677,13 @@ def _store_anchor(
             than per block.
         block_idx: Zero-based block index.
         head_byte: Block header byte; HEAD_DECIMAL selects the decimal anchor.
-        lower_bound: Block minimum lo, stored as float64 bits on the power-of-two grid.
+        anchor: The power-of-two grid's anchor, stored as float64 bits.
         decimal_base: Grid index K0 of lo on a detected decimal grid.
     """
     if head_byte & HEAD_DECIMAL:
         out_value_anchors[block_idx] = decimal_base
     else:
-        anchor_floats[block_idx] = lower_bound
+        anchor_floats[block_idx] = anchor
 
 
 @njit(nogil=True, cache=True)
@@ -679,7 +780,7 @@ def _apply_target_reallocation(
                 fill_nonfinite(block_samples, scratch_held[:block_len], out_codes[first_sample:first_sample + block_len])
                 block_samples = scratch_held[:block_len]
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
-            out_block_flags[block_idx], out_grid_params[block_idx], decimal_base = encode_block(
+            out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor = encode_block(
                 block_samples,
                 base_lower_bounds[block_idx],
                 base_upper_bounds[block_idx],
@@ -695,7 +796,7 @@ def _apply_target_reallocation(
                 anchor_floats,
                 block_idx,
                 out_block_flags[block_idx],
-                base_lower_bounds[block_idx],
+                anchor,
                 decimal_base,
             )
             if has_nonfinite:
@@ -748,7 +849,8 @@ def encode_unit(
         out_block_flags: Output 1D uint8 array of length N receiving header bytes.
         out_grid_params: Output 1D int64 array of length N receiving parameters.
         out_value_anchors: Output 1D int64 array of length N receiving anchors (float64 bits of
-            the block minimum, or its decimal grid index).
+            the power-of-two anchor, the grid point nearest the block minimum, or the decimal
+            grid index of the minimum).
         out_residuals: Output 1D int16 array of every sample receiving residuals.
         out_codes: Output 1D uint8 array of every sample receiving sample codes (only
             flagged blocks' are written).
@@ -819,10 +921,9 @@ def encode_unit(
                 out_grid_params[block_idx] = decimal_exp
                 out_value_anchors[block_idx] = decimal_base
             else:
-                quantize(block_samples, block_min, fine_exp, block_quantized)
                 out_block_flags[block_idx] = 0
                 out_grid_params[block_idx] = fine_exp
-                anchor_floats[block_idx] = block_min
+                anchor_floats[block_idx] = quantize_block(block_samples, block_min, block_max, fine_exp, block_quantized)
             residual(block_quantized, 0, block_residuals)
             if has_nonfinite:
                 out_block_flags[block_idx] |= HEAD_NONFINITE
@@ -848,7 +949,7 @@ def encode_unit(
             block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits
         )
         block_exponents[block_idx] = planned_exp
-        out_block_flags[block_idx], out_grid_params[block_idx], decimal_base = encode_block(
+        out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor = encode_block(
             block_samples,
             block_min,
             block_max,
@@ -859,7 +960,7 @@ def encode_unit(
             block_quantized,
             block_residuals,
         )
-        _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], block_min, decimal_base)
+        _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
         if has_nonfinite:
             out_block_flags[block_idx] |= HEAD_NONFINITE
         if use_target:

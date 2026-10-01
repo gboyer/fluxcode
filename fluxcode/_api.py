@@ -94,7 +94,8 @@ def encode_unit(
             block_mean: 1D float64 array of finite means per block.
             Blocks containing only non-finite samples receive NaN for min, max,
             and mean. These summary statistics come free with encoding; decoding
-            doesn't use them.
+            doesn't use them. They are of the given samples: decoded values can be up
+            to half a step away, the minimum included.
 
     Raises:
         ValueError: If x is empty or needs more than 65,535 blocks or 2^26 samples, or the
@@ -275,10 +276,11 @@ def update_time_blocks(
     Blocks whose time span doesn't meet a range are carried over untouched, without being
     decoded or re-encoded. Blocks wholly inside the ranges are encoded from the new samples
     alone. Blocks that straddle a range boundary are decoded, their samples outside the
-    ranges kept and merged with the new ones, and re-encoded: those kept samples move to
-    the merged block's grid. That adds up to half its step to their error each time, so
-    repeated updates of the same block can compound (decimal data on a decimal grid stays
-    exact). Blocks are appended (empty ones to
+    ranges kept and merged with the new ones, and re-encoded. The kept samples are points of
+    the absolute power-of-two grid, so on the same or a finer step they come back bit for
+    bit; only a coarser step rounds them again (once, without bias). However often a block is
+    updated, their error stays under one step of the coarsest grid it has used (decimal data
+    on a decimal grid stays exact). Blocks are appended (empty ones to
     fill a gap) when new samples are timed past the unit's end; blocks never are removed.
 
     Args:

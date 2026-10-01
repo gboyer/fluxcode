@@ -21,7 +21,7 @@ the unit. Timestamps are data, not parameters (§2a), and so is the division int
 
 | parameter | values | default | effect |
 |---|---|---|---|
-| `max_quantize_bits` | min–16 | 16 | hard: the finest step. The power-of-two grid has at most 2^max steps across the block's range (`B` in the formulas below) |
+| `max_quantize_bits` | min–16 | 16 | hard: the finest step. The block's snapped power-of-two grid spans at most 2^max steps (65,535 at 16, §3.1; `B` in the formulas below) |
 | `min_quantize_bits` | 1–max | 6 | hard: the coarsest step. Neither the noise floor nor the target coarsens a block past 2^min steps across its range |
 | `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders the encoder may choose from (§3.4) |
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
@@ -207,19 +207,36 @@ on 4 threads, where memory bandwidth is shared, that costs 12–18% (docs/PERFOR
 ### 3.1 Power-of-two exponent
 
 ```
-rng = hi - lo
-if rng > 0:
-    k  = frexp(rng).exponent            # rng in [2^(k-1), 2^k)
-    e  = k - B
-    if floor(ldexp(rng, -e) + 0.5) >= 2^B:  e += 1     # max would round up to 2^B
-else:
-    e  = 0                               # constant block
-e  = min(max(e, −1074), 1023)            # 2^e is a double: the smallest subnormal .. 2^1023
+L  = 2^B if B < 16 else 65535            # q is stored mod 2^16: it must stay below 2^16
+e  = the finest exponent in [−1074, 1023] with  rint(hi · 2^-e) − rint(lo · 2^-e) <= L
+     (0 for a constant block, rng = 0)
 ps = 2^e                                 # the power-of-two step
 ```
 
-- **Wide blocks** (rng ≥ 2^1023, possibly inf): compute e from `rh = hi/2 − lo/2` (halving is
-  exact) as e(rh) + 1. That is the same e the exact range gives.
+rint rounds half to even. The grid is absolute (§3.3): the points nearest lo and hi can sit up
+to half a step outside [lo, hi], so the snapped grid can need one more level than the range alone,
+and the rule counts the levels it actually uses. To compute it, start from the unsnapped rule
+
+```
+k  = frexp(rng).exponent                 # rng = hi − lo in [2^(k-1), 2^k)
+e0 = k − B;  if floor(ldexp(rng, −e0) + 0.5) >= 2^B:  e0 += 1
+```
+
+and adjust by at most one level: e0 − 1 fits only when the snapped grid needs exactly 2^B levels
+(so only for B < 16); if e0 itself doesn't fit (65,536 levels at B = 16), use e0 + 1. Coarser
+exponents always fit.
+
+- **Never coarser than the unsnapped rule, except at the storage edge.** When the unsnapped rule
+  accepts e (round(rng/2^e) ≤ 2^B − 1), the snapped grid needs at most 2^B levels. So the rule
+  differs only by one level finer for B < 16, which fixes the fencepost case (a range of exactly
+  a power of two, like [1, 2], gets all 2^B steps instead of half), and one level coarser for
+  about 1 block in 65,000 at B = 16, whose range is within half a step of 65,535 steps.
+- **It depends on where the block sits on the grid,** not just its range: two blocks with the
+  same range at different offsets can get different steps. It is still a function of lo and hi.
+
+- **Wide blocks** (rng ≥ 2^1023, possibly inf): compute e0 from `rh = hi/2 − lo/2` (halving is
+  exact) as e0(rh) + 1. That is the same e0 the exact range gives. The snapped count never
+  overflows: lo · 2^−e and hi · 2^−e are each finite.
 - **The clamps.** At e = −1074 every double is on the grid, so a block whose finest step would be
   finer encodes losslessly. At e = 1023 (only reachable with few bits on a range near 2^1024),
   q stays below 3.
@@ -300,27 +317,52 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
 ### 3.3 Quantize
 
 ```
-power of two:  q[i] = floor((x[i] - lo) · 2^-e + 0.5)
+power of two:  K    = rint(lo · 2^-e)              anchor = K · 2^e
+               q[i] = rint(x[i] · 2^-e) - K        (rint: round half to even)
 decimal:       K0   = floor(lo · 10^-p + 0.5)
                q[i] = floor(x[i] · 10^-p + 0.5) - K0
 ```
 
-The power-of-two formula, evaluated so no intermediate overflows (one choice per block; each form
-gives the same q wherever the plain one is finite):
-- **−1023 ≤ e < 1008:** as written.
-- **e < −1023** (2^−e overflows): multiply by 2^1023, then by 2^(−e−1023). Both are exact.
-- **e ≥ 1008** (x − lo may overflow): `floor((x/2 − lo/2) · 2^(1−e) + 0.5)`. Halving is exact, so
-  x/2 − lo/2 rounds exactly as (x − lo)/2.
+**The power-of-two grid is absolute:** its points are the multiples of 2^e, and the anchor is the
+one nearest the block's minimum. Every power-of-two grid is then a subset of the finer ones, so
+re-encoding decoded values on the same or a finer step returns them bit for bit, wherever the
+block sits and however its minimum moved. That bounds the error of repeated updates (§6).
 
-Decimal detection is skipped for wide blocks: no 10^p grid with p ≤ 22 spans 2^1023.
+- **One rounding for K and q.** The minimum maps to exactly K, and rounding is monotonic, so q = 0
+  at the minimum and q ≥ 0 everywhere. With different roundings for the two, a minimum exactly
+  halfway between grid points would get q = −1, which wraps to 65,535 and decodes as the maximum.
+- **Ties to even.** Raw data almost never has exact ties, but decoded data re-encoded one level
+  coarser does: half its values sit halfway between the coarser grid's points. Rounding them all
+  up would shift the block up by a quarter of the finer step on average.
+- **Exact.** x · 2^−e is a power-of-two scale: it can't overflow for a sample of a block whose
+  step is 2^e, and where it underflows the index is 0 either way. For e < −1023, where 2^−e
+  overflows, scale by 2^1023 and then by 2^(−e−1023), both exact. If |x · 2^−e| ≥ 2^52, x is
+  already a multiple of 2^e and rint leaves it alone. The difference of two nearby integers held
+  in floats is exact.
+- **Exceptions: anchor = lo,** q[i] = floor((x[i] − lo) · 2^−e + 0.5):
+  - a constant block (rng = 0): e = 0 is only a placeholder there, and snapping would round the
+    value to a whole number;
+  - a snapped anchor that isn't finite (K · 2^e beyond ±DBL_MAX). There e ≥ 1008, and x − lo may
+    overflow, so it is evaluated at half scale, `floor((x/2 − lo/2) · 2^(1−e) + 0.5)` (halving is
+    exact, so x/2 − lo/2 rounds exactly as (x − lo)/2).
 
-In both modes 0 ≤ q[i] < 2^max_quantize_bits ≤ 2^16, and q = 0 at the minimum.
+Decimal detection is skipped for wide blocks: no 10^p grid with p ≤ 22 spans 2^1023. Decimal
+grids already share one rounding between K0 and q, and can't have ties: detection only accepts
+samples within a quarter step of the grid.
+
+In both modes 0 ≤ q[i] ≤ L ≤ 65,535 (§3.1), and q = 0 at the minimum.
 When decimal detection succeeds, its candidate pass has already computed these q; they are reused.
 
-**The block's anchor** is what a decoder adds q to: the float64 `lo` on the power-of-two grid, or
-the integer `K0` on a decimal grid (|K0| < 2^52, since decimal detection requires
-max(|lo|, |hi|)·10^−p < 2^52). Both define the block's values exactly (lo + q·2^e is a binary
+**The block's anchor** is what a decoder adds q to: a finite float64 on the power-of-two grid
+(the reference encoder snaps it to the grid point nearest the minimum; decoders accept any finite
+anchor), or the integer `K0` on a decimal grid (|K0| < 2^52, since decimal detection requires
+max(|lo|, |hi|)·10^−p < 2^52). Both define the block's values exactly (anchor + q·2^e is a binary
 fraction, (K0 + q)·10^p a decimal); float64 enters only at the final rounding.
+
+**Snapping is encoder behaviour, not a format rule.** The decoder doesn't check that an anchor is
+snapped, as it doesn't check the exponent or the difference order: an anchor carries meaning, and
+any finite one decodes correctly. An unsnapped anchor from another writer costs at most half a
+step on the first straddling update, and the bound of §6 holds from then on.
 
 ### 3.4 Order
 
@@ -395,7 +437,7 @@ blocks with k_b > 0: redo §3.2–3.5 at e_b + k_b; keep the result only if its 
 v = (u >> 1) XOR −(u & 1)                   # un-zigzag
 repeat `order` times:  prefix-sum v, each partial sum mod 2^16     # q
 order 0: q = v mod 2^16
-power of two: y[i] = lo + q[i] · 2^e, rounded once, clamped to the largest finite double   (lo: the anchor)
+power of two: y[i] = a + q[i] · 2^e, rounded once, clamped to the largest finite double   (a: the anchor)
 decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integer divided by an exact power of ten)
               p >= 0: y[i] = float64(K0 + q[i]) · 10^p
 ```
@@ -405,10 +447,10 @@ parsing the decimal text (e.g. "12.345") produces.
 
 **The clamp** only matters for e ≥ 971. There, a sample near the largest double can reconstruct
 up to half a step above it, which would round to inf; clamping it moves it closer to the original.
-Below 971, `lo + q·2^e` can't overflow (the excess is under half an ulp of the largest double),
+Below 971, `a + q·2^e` can't overflow (the excess is under half an ulp of the largest double),
 and decoders compute it directly. From 971 up, `q·2^e` itself can overflow while the sum doesn't,
-so evaluate at half scale: `y = min(2·(lo/2 + q·2^(e−1)), DBL_MAX)`, with `y = lo` where q = 0
-(lo/2 rounds if lo is subnormal). That is bit-identical to `lo + q·2^e` wherever the latter is finite.
+so evaluate at half scale: `y = min(2·(a/2 + q·2^(e−1)), DBL_MAX)`, with `y = a` where q = 0
+(a/2 rounds if a is subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
 
 **Time axis** (header time unit ≠ 0): block starts are the running sum of the `time_start` field
 (§5). Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64 (residuals
@@ -447,7 +489,7 @@ in this order; the four time fields are present only when `time_unit` ≠ 0:
 | `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bit 4: irregular times, with time residual planes (§2a; rejected when `time_unit` = 0); bit 5: long time residuals, 64 planes instead of 32 (rejected without bit 4); bits 6–7: 0 (rejected otherwise). 0 for an empty block |
 | `block_sizes` | 2 × `num_blocks` | each block's sample count as uint16, byte-planed: every low byte, then every high byte |
 | `grid_params` | 8 × `num_blocks` | the block's grid parameter as int64: the power-of-two exponent (−1074 to 1023) or, in decimal mode, the decimal power (−22 to 22); 0 for an empty block. Byte-planed: byte 0 of every block, then byte 1 of every block, … byte 7. Eight bytes leave room for other grid parameters; the unused byte planes compress to almost nothing |
-| `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed like `grid_params`: the bits of the float64 block minimum (finite; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52); 0 for an empty block |
+| `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed like `grid_params`: a finite float64 anchor (the reference encoder snaps the block minimum to the grid, §3.3; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52); 0 for an empty block |
 | `time_start` | 8 × `num_blocks` | the first non-empty block: its start time as int64; each later non-empty block: its start minus the previous non-empty block's start, as uint64; an empty block: 0. Byte-planed |
 | `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the GCD of its deltas (≥ 0; ≥ 1 in an irregular block; 0 in an empty block or one of a single sample) |
 | `time_ref` | 8 × `num_blocks` | the block's reference quotient as uint64, byte-planed: 1 in a regular block (0 if its times are all equal or it has one sample or none); in an irregular block, the value the residuals are taken from (§2a) |
@@ -528,10 +570,13 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 - **One zero and one NaN.** −0.0 decodes as +0.0 (equal as floats, sign bit lost), and every NaN
   decodes as the canonical quiet NaN (payload and sign lost). These are the exceptions to
   bit-exactness for data on the grid. ±inf round-trip exactly.
-- **min is exact in power-of-two mode.** In decimal mode, min decodes onto the decimal grid. That's
-  exact for decimal data, but a min carrying float noise (e.g. 1000.0000000000291 on an
-  integer grid) decodes to the grid value (1000.0): an error within `tol`, as for every
-  sample. max decodes within half a step.
+- **min and max decode within half a step.** On the power-of-two grid the minimum decodes to the
+  grid point nearest it (exactly when it is on the grid, as decoded data always is). In decimal
+  mode, min decodes onto the decimal grid. That's exact for decimal data, but a min carrying float
+  noise (e.g. 1000.0000000000291 on an integer grid) decodes to the grid value (1000.0): an error
+  within `tol`, as for every sample. The block_min and block_max that encode returns are the
+  samples' own; callers using them as hard bounds on decoded values (for pruning) should allow
+  half a step either way.
 - **Decimal data is bit-exact:** values that are decimals of p places (as parsed from text)
   decode to the identical float64. That holds when the block's range spans fewer than 2^B
   decimal steps; wider blocks use the power-of-two grid.
@@ -541,9 +586,10 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   identical from the second encode on.
 - **Timestamps are exact.** Given times decode to the identical int64 ticks, in the same unit.
   Decoded times are non-decreasing within every block, and block starts never decrease (§2a).
-- **Edits are stable.** Changing a sample moves the grid only when the range crosses a power of
-  two. (With the grid scaled to the range, a new max re-rounds every sample: in testing, 95% of
-  untouched samples changed, against 3% here.)
+- **Edits are stable.** Changing a sample leaves every other sample's q unchanged unless the step
+  changes, which happens only when the range crosses a power of two: the grid is absolute, so a
+  new minimum doesn't move it. (With the grid scaled to the range, a new max re-rounds every
+  sample: in testing, 95% of untouched samples changed.)
 - **`update` leaves other blocks untouched.** Replacing or appending whole blocks of a unit, of
   any size, carries the other blocks' flags, grid parameter, value anchor, residuals, codes and
   time rows over unchanged: they are neither dequantized nor re-encoded, and decode to identical
@@ -557,10 +603,11 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   whose time span the ranges don't meet is carried over as `update` carries it, without being
   decoded. A block wholly inside the ranges is encoded from the new samples alone. A block
   straddling a range edge is decoded, keeps its samples outside the ranges and is re-encoded with
-  the new ones: the kept samples move to the merged block's grid, which adds up to half its step
-  to their error. Repeated updates of a straddling block compound that, up to half a step each
-  time the grid changes (re-encoding on an unchanged grid adds nothing, §6 fixed point); decimal
-  data on a decimal grid stays exact. New samples past the unit's end append blocks (empty ones to
+  the new ones. The kept samples are already points of the absolute grid (§3.3), so on the same
+  or a finer step they come back bit for bit, however the merged block's min and max moved. Only a
+  coarser step rounds them again, once, without bias (ties to even); repeated coarsening adds a
+  geometric series, so their error stays under one step of the coarsest grid the block has used.
+  Decimal data on a decimal grid stays exact. New samples past the unit's end append blocks (empty ones to
   fill a gap); blocks are never removed, so a block emptied by an update stays, empty. The
   result is byte-identical to `encode_time_blocks` of the resulting series when no block is
   left empty at the end.
@@ -568,15 +615,19 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 ## 7. Conformance tests
 
 1. **Round trip:** decode(encode(x)) has max error ≤ 2^(e−1) for every block (≤ f·σ/2 on
-   noise-floor blocks) and ≤ range / (2^min_quantize_bits − ½) always; min is exact in power-of-two mode.
+   noise-floor blocks) and ≤ range / (2^min_quantize_bits − ½) always; the decoded min is within
+   half a step of the minimum.
 2. **Decimal:** values generated as `K / 10^d` with a range under 2^B steps decode
    bit-identical.
 3. **Fixed point:** y = decode(encode(x)) satisfies decode(encode(y)) = y,
    and encode(y) is byte-identical from the second encode on (§6).
 4. **Bit order:** the test vector in §5.
 5. **Order independence:** a unit written with any `diff_orders` setting decodes with the same decoder.
-6. **Edge cases:** constant block (all q = 0, decodes to lo exactly); range just below a power
-   of two (exponent bump); a block whose range exceeds 2^B decimal steps (falls back to the
+6. **Edge cases:** constant block (all q = 0, decodes to lo exactly, including non-integers and
+   extreme magnitudes); range just below a power of two (exponent bump); a minimum exactly halfway
+   between grid points (q = 0, not −1); [1, 2] at B = 12 (4,096 steps, grid-aligned data exact)
+   and B = 16 (32,768 steps); the storage edge at B = 16 (a snap that would need q = 65,536 goes one
+   level coarser); a block whose range exceeds 2^B decimal steps (falls back to the
    power-of-two grid); fewer than 60 blocks; a short last block; units of different block counts
    and block sizes; blocks of every size from 0 to 9 and over 1000 in one unit; units with no
    blocks or only empty ones; blocks of up to 8 samples at the finest step and order 0, whatever
@@ -599,8 +650,8 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    non-finite values byte-identical to units without the field; `update` keeps existing codes.
 9. **Limits:** min/max_quantize_bits are never violated, with or without the noise floor and target;
    the noise gate fires on white noise at 1e±300 and across ±DBL_MAX as at 1; ranges from a few
-   subnormals to past 2^1023 round-trip within the bounds, with no inf, min exact, and exponents
-   matching exact rational arithmetic.
+   subnormals to past 2^1023 round-trip within the bounds, with no inf, and exponents, anchors and
+   q matching exact rational arithmetic.
 10. **Noise gate:** it fires on white Gaussian noise (with or without a slow signal under it)
    and never on a random walk, a clean sine at any frequency, a chirp, a ramp or a square wave.
    It may fire on the float rounding noise of a smooth polynomial (the quadratic), with no
@@ -618,6 +669,13 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    mismatches; the decoder rejects each corrupt time field listed in §5, and the long flag without the irregular one. `update` with times is
    byte-identical to encoding the edited series, and rejects missing, unexpected, mis-shaped,
    wrong-unit or out-of-order times.
+12. **Snapped grid** (`tests/test_grid.py`): the exponent rule picks at most one level finer than
+   the unsnapped rule (only below 16 bits) and one coarser (only at 16), and its grid fits L;
+   decoded values are fixed points block by block wherever the re-encode picks the same step,
+   noisy, smooth, stepped, short and at extreme magnitudes; re-encoding decoded values one level
+   coarser keeps their mean (ties to even); 200 straddling updates that move the block's min and
+   max keep the kept samples' error under one step of the coarsest grid used, unchanged while the
+   step is.
 
 ## References
 

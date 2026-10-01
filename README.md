@@ -101,7 +101,7 @@ units, mins, maxs, means = fluxcode.encode(np.tile(x, 5))
 assert sum(len(decoded.values) for decoded in fluxcode.decode(units)) == 5 * x.size
 ```
 
-This prints `5.81 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
+This prints `5.77 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
 which set the step to 0.25σ.
 
 - `encode_unit(x, params, *, block_len=1000, times=None, time_unit=None)`: one unit (an 8-byte
@@ -187,7 +187,13 @@ From [docs/SPEC.md §6](docs/SPEC.md#6-guarantees), which states them exactly:
   range / (2^`min_quantize_bits` − ½) (1.6% of the block's range at the default of 6), whatever
   the noise floor or the size target do. Blocks at full precision are within about
   2^−`max_quantize_bits` of their range (0.0015% at 16); noise-floor blocks within f·σ/2.
-- **Min is exact** on the power-of-two grid; max is within half a step.
+- **Min and max decode within half a step.** The power-of-two grid is absolute (multiples of the
+  step), so the decoded minimum is the grid point nearest the minimum. The `block_min` and
+  `block_max` that encode returns are the samples' own: allow half a step either way if you use
+  them as hard bounds on decoded values.
+- **Updates don't drift.** Decoded values are grid points, so re-encoding them on the same or a
+  finer step returns them bit for bit. Samples a straddling `update_time_blocks` keeps stay within
+  one step of the coarsest grid their block has used, however many times it runs.
 - **Decimal data is lossless.** Values that are decimals of p places (as parsed from text) decode
   to the identical float64, as long as the block spans fewer than 2^16 decimal steps. Decimals
   stored as float32 upstream decode as the decimal itself.

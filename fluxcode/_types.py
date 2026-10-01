@@ -26,6 +26,9 @@ class EncodedUnit(NamedTuple):
         block_min: 1D float64 array of minimum finite values per block.
         block_max: 1D float64 array of maximum finite values per block.
         block_mean: 1D float64 array of finite sample means per block.
+
+    The statistics are of the samples given, not of the decoded values: those can be up to half
+    a step away (min included), so allow that much if using them as hard bounds.
     """
 
     unit: bytes

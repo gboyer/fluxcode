@@ -18,7 +18,8 @@ WIDE_RANGE: float = 2.0 ** 1023
 """Range at or above which hi - lo may overflow float64 (measured as hi/2 - lo/2 instead)."""
 
 E_TINY: int = -1023
-"""Exponent below which the inverse quantization step 2^-e overflows float64."""
+"""Exponent below which the inverse quantization step 2^-e overflows float64 (the encoder
+scales in two steps there)."""
 
 E_HUGE: int = 1008
 """Exponent at or above which sample differences x - lo can overflow float64."""
@@ -112,30 +113,6 @@ def prescale(samples: np.ndarray, scale_exp: int) -> tuple[np.ndarray, float]:
     # Apply first scale factor outside fastmath
     scaled_samples = _scaled(samples, math.ldexp(1.0, first_exponent))
     return scaled_samples, second_factor
-
-
-@njit(nogil=True, cache=True)
-def quantize_tiny(
-    samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
-) -> None:
-    """Quantizes samples for subnormal exponents where 2^-e overflows float64.
-
-    Applies the scale factor 2^-e as two successive exact power-of-two
-    multiplications: s1 = 2^1023 and s2 = 2^(-e - 1023).
-
-    Args:
-        samples: 1D float64 array of samples to quantize.
-        lower_bound: Minimum sample value in the block.
-        quant_exp: Quantization exponent strictly less than E_TINY (-1023).
-        out_quantized: Output 1D int32 array receiving quantized values.
-    """
-    # Split 2^-e into two exact normal power-of-two factors
-    scale_factor_1 = math.ldexp(1.0, -E_TINY)
-    scale_factor_2 = math.ldexp(1.0, E_TINY - quant_exp)
-    for sample_idx in range(samples.shape[0]):
-        # Multiply successively to avoid intermediate overflow
-        diff = samples[sample_idx] - lower_bound
-        out_quantized[sample_idx] = np.int32(math.floor(diff * scale_factor_1 * scale_factor_2 + 0.5))
 
 
 @njit(nogil=True, cache=True)

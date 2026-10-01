@@ -97,7 +97,7 @@ def test_short_blocks_skip_the_analysis(size, decimal):
         fine = _encoder.range_exponent(finite.min(), finite.max(), 16) if finite.size else 0
         assert rows.grid_params[0] == fine
         assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2 ** 16 - 0.5)
-        q = np.round((finite - lo[0]) / 2.0 ** fine).astype(np.int64)
+        q = (np.rint(finite / 2.0 ** fine) - np.rint(lo[0] / 2.0 ** fine)).astype(np.int64)
     # Order 0: the residuals are the quantized values themselves
     np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64) & 0xFFFF, q & 0xFFFF)
 

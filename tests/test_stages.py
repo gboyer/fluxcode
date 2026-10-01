@@ -170,17 +170,22 @@ TINY = 5e-324
 
 
 def ref_exponent(lo, hi, bits):
-    """Smallest e with round((hi - lo) / 2^e) < 2^bits, clamped to [-1074, 1023], exactly."""
-    r = Fraction(hi) - Fraction(lo)
+    """Smallest e with rint(hi / 2^e) - rint(lo / 2^e) <= L(bits), clamped to [-1074, 1023],
+    exactly (round() of a Fraction rounds half to even, like rint)."""
+    limit = 2 ** bits if bits < 16 else 2 ** 16 - 1
     e = -1074
-    while e < 1023 and math.floor(r / Fraction(2) ** e + Fraction(1, 2)) >= 2 ** bits:
+    while e < 1023 and round(Fraction(hi) / Fraction(2) ** e) - round(Fraction(lo) / Fraction(2) ** e) > limit:
         e += 1
     return e
 
 
 def ref_quantize(x, lo, e):
-    s = Fraction(2) ** -e
-    return [math.floor((Fraction(v) - Fraction(lo)) * s + Fraction(1, 2)) for v in x]
+    """(anchor, q) exactly: the snapped grid, or (lo, relative q) when the snapped anchor overflows."""
+    step = Fraction(2) ** e
+    base = round(Fraction(lo) / step)
+    if abs(base * step) <= Fraction(DBL_MAX):
+        return float(base * step), [round(Fraction(v) / step) - base for v in x]
+    return lo, [math.floor((Fraction(v) - Fraction(lo)) / step + Fraction(1, 2)) for v in x]
 
 
 EXTREME = [(0.0, TINY), (0.0, 7 * TINY), (-3 * TINY, 1000 * TINY), (0.0, 2.0 ** -1010), (1e-300, 1e-300 + 2e-310),
@@ -197,20 +202,20 @@ def test_range_exponent_extremes(lo, hi, bits):
 @pytest.mark.parametrize("bits", [1, 6, 16])
 @pytest.mark.parametrize("lo,hi", EXTREME)
 def test_quantize_and_dequantize_extremes(lo, hi, bits):
-    """q matches exact arithmetic on every path (tiny, normal, huge), q fits in 16 bits, and the
-    decoder gets within half a step without overflowing."""
+    """q and the anchor match exact arithmetic on every path (tiny, normal, huge), q fits in 16
+    bits and is 0 at the minimum, and the decoder gets within half a step without overflowing."""
     rng = np.random.default_rng(bits)
     t = rng.uniform(0, 1, 200)
     x = np.clip(lo + t * hi - t * lo, lo, hi)  # lo + t (hi - lo) without overflowing hi - lo
     x[:2] = lo, hi
     e = _encoder.range_exponent(lo, hi, bits)
     q = np.empty(200, np.int32)
-    _encoder.quantize(x, lo, e, q)
-    assert q.tolist() == ref_quantize(x, lo, e)
-    assert ((0 <= q) & (q < 2 ** 16)).all()
+    anchor = _encoder.quantize_block(x, lo, hi, e, q)
+    assert (anchor, q.tolist()) == ref_quantize(x, lo, e)
+    assert ((0 <= q) & (q < 2 ** 16)).all() and q[0] == 0
     y = np.empty(200)
-    _decoder.dequantize_pow2(q, lo, e, y)
-    assert np.isfinite(y).all() and y[0] == lo
+    _decoder.dequantize_pow2(q, anchor, e, y)
+    assert np.isfinite(y).all()
     half = Fraction(2) ** (e - 1)
     for xi, yi in zip(x, y):
         assert abs(Fraction(yi) - Fraction(xi)) <= half
