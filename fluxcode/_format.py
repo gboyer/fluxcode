@@ -100,7 +100,7 @@ MAX_BLOCKS: int = 0xFFFF
 
 SHORT_BLOCK_LEN: int = 8
 """Blocks of at most this many samples skip the analysis: they take the finest step
-(max_quantize_bits) on the power-of-two grid and order 0."""
+(max_quantize_bits), on a decimal grid if one is detected, and order 0."""
 
 
 class NonFiniteCode(enum.IntEnum):

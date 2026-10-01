@@ -113,7 +113,7 @@ which set the step to 0.25σ.
 - `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one unit of blocks of the
   given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list arrays.
   An empty block stores nothing (NaN statistics). Blocks of at most 8 samples skip the analysis:
-  they are stored at the finest step, without differences.
+  they are stored at the finest step, without differences (decimal data still stays exact).
 - `encode_time_blocks(x, times, params, *, start_time, block_duration, time_unit=None)`: one unit
   in which block b holds the samples timed in `[start_time + b·block_duration, start_time +
   (b+1)·block_duration)`; blocks without samples are empty. `start_time` (`datetime64`, naive

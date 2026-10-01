@@ -726,7 +726,8 @@ def encode_unit(
     """Encodes all blocks of a unit and computes index column metadata.
 
     Blocks of at most SHORT_BLOCK_LEN samples skip the analysis: they take the finest step
-    on the power-of-two grid and order 0, and stay outside the target. An empty block gets
+    (a decimal grid if one is detected, else the power-of-two grid) and order 0, and stay
+    outside the target. An empty block gets
     zero flags, grid parameter and anchor, and NaN statistics.
 
     Args:
@@ -800,12 +801,26 @@ def encode_unit(
         if has_nonfinite and finite_count == 0:
             block_min = block_max = 0.0
         if block_len <= SHORT_BLOCK_LEN:
-            # Too short to analyze: the finest power-of-two step, stored without differences
-            quantize(block_samples, block_min, range_exponent(block_min, block_max, max_bits), block_quantized)
+            # Too short to analyze: the finest step, stored without differences. Decimal
+            # detection needs no analysis, so decimal data stays exact
+            fine_exp = range_exponent(block_min, block_max, max_bits)
+            decimal_exp, decimal_base = NO_DECIMAL, np.int64(0)
+            if decimal and block_max > block_min and block_max - block_min < xm.WIDE_RANGE:
+                decimal_exp, decimal_base = detect_decimal(
+                    block_samples, block_min, block_max, math.ldexp(1.0, fine_exp), block_quantized
+                )
+            if decimal_exp != NO_DECIMAL:
+                out_block_flags[block_idx] = HEAD_DECIMAL
+                out_grid_params[block_idx] = decimal_exp
+                out_value_anchors[block_idx] = decimal_base
+            else:
+                quantize(block_samples, block_min, fine_exp, block_quantized)
+                out_block_flags[block_idx] = 0
+                out_grid_params[block_idx] = fine_exp
+                anchor_floats[block_idx] = block_min
             residual(block_quantized, 0, block_residuals)
-            out_block_flags[block_idx] = HEAD_NONFINITE if has_nonfinite else 0
-            out_grid_params[block_idx] = range_exponent(block_min, block_max, max_bits)
-            anchor_floats[block_idx] = block_min
+            if has_nonfinite:
+                out_block_flags[block_idx] |= HEAD_NONFINITE
             continue
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max

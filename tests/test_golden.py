@@ -92,6 +92,7 @@ CASES = {
     "block_len 64, 7 blocks": (lambda: minute("random-walk", 5)[:7 * 64], Params(), _encode_fixed(64)),
     "block_len 1001": (lambda: minute("noisy-sine", 5), Params(), _encode_fixed(1001)),
     "variable blocks": (lambda: minute("random-walk", 6), Params(), _encode_variable),
+    "variable blocks q0.01": (lambda: discrete_minute("random-walk q0.01", 6), Params(), _encode_variable),
     "variable blocks target 6": (lambda: minute("chirp", 6), Params(target_bits_per_sample=6.0), _encode_variable),
     "time blocks": (lambda: discrete_minute("sensor-0.1", 7), Params(),
                     _encode_time_blocks),

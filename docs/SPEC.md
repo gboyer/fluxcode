@@ -65,9 +65,10 @@ be kept beside it. Nothing is padded: a block holds exactly its samples.
 
 **Empty and short blocks.** An empty block stores no samples: its flags, grid parameter and anchor
 (and time columns) are 0, and its summary statistics NaN. A block of at most 8 samples isn't
-analyzed: it takes the finest power-of-two step (e_fine, §3.1), order 0 (the quantized values
-themselves), no noise floor, no decimal grid and no part in the target (§3.6). Non-finite values
-in it are still coded exactly.
+analyzed: it takes the finest step (e_fine, §3.1), order 0 (the quantized values themselves), no
+noise floor and no part in the target (§3.6). Decimal detection (§3.2) still runs, against the
+finest step: it needs no analysis, so short blocks of decimal data stay bit-exact. Non-finite
+values in them are still coded exactly.
 
 Per block the encoder also returns `lo = min(x)`, `hi = max(x)` and the mean (over the finite
 samples) as **summary statistics**. They come free with encoding (min and max size the
@@ -572,7 +573,7 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    power-of-two grid); fewer than 60 blocks; a short last block; units of different block counts
    and block sizes; blocks of every size from 0 to 9 and over 1000 in one unit; units with no
    blocks or only empty ones; blocks of up to 8 samples at the finest step and order 0, whatever
-   the parameters.
+   the parameters, on a decimal grid (bit-exact) when one fits and decimal detection is on.
    **Self-describing units:** decode_unit needs only the unit and returns exactly `num_samples`
    samples and each block's size; headers with another version, reserved flag bits, a time unit
    of 5–7, a sample count over 2^26 or than its blocks can hold, or a body size that doesn't fit

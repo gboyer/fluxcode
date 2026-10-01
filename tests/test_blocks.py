@@ -70,25 +70,44 @@ def test_units_without_samples(sizes):
 
 
 @pytest.mark.parametrize("size", range(1, SHORT_BLOCK_LEN + 1))
-def test_short_blocks_skip_the_analysis(size):
-    """Blocks of up to 8 samples: the finest power-of-two step and order 0, whatever params say."""
-    x = np.round(np.random.default_rng(size).normal(size=size) * 100, 2)  # decimal data
+@pytest.mark.parametrize("decimal", [True, False])
+def test_short_blocks_skip_the_analysis(size, decimal):
+    """Blocks of up to 8 samples: order 0 at the finest step, whatever params say. Decimal
+    detection still runs: decimal data that fits max_quantize_bits decodes bit-exact, and data
+    that doesn't takes the power-of-two grid."""
+    rng = np.random.default_rng(size)
+    x = np.round(rng.normal(size=size) * 100, 2) if decimal else rng.normal(size=size) * 100
     x[size // 2] = np.nan
-    params = Params(diff_orders={2}, max_quantize_bits=12, noise_floor_sigma=1.0, target_bits_per_sample=6.0)
+    params = Params(diff_orders={2}, noise_floor_sigma=1.0, target_bits_per_sample=6.0)
     unit, lo, _, _ = fluxcode.encode_blocks(x, [size], params)
     rows = unit_rows(unit)
-    assert rows.block_flags[0] & HEAD_ORDER == 0 and not rows.block_flags[0] & _format.HEAD_DECIMAL
-    assert bool(rows.block_flags[0] & HEAD_NONFINITE)
+    flags = int(rows.block_flags[0])
+    assert flags & HEAD_ORDER == 0 and flags & HEAD_NONFINITE
     finite = x[np.isfinite(x)]
-    rng = finite.max() - finite.min() if finite.size else 0.0
-    assert rows.grid_params[0] == (_encoder.range_exponent(finite.min(), finite.max(), 12) if finite.size else 0)
     y = fluxcode.decode_unit(unit).values
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
-    assert np.nanmax(np.abs(y - x), initial=0) <= rng / (2 ** 12 - 0.5)
+    on_grid = decimal and finite.size > 1 and finite.max() > finite.min()
+    assert bool(flags & _format.HEAD_DECIMAL) == on_grid
+    if on_grid:
+        assert rows.grid_params[0] == -2
+        np.testing.assert_array_equal(y[np.isfinite(x)], finite)  # bit-exact
+        q = np.round(finite * 100).astype(np.int64) - rows.value_anchors[0]
+    else:
+        rng_x = finite.max() - finite.min() if finite.size else 0.0
+        fine = _encoder.range_exponent(finite.min(), finite.max(), 16) if finite.size else 0
+        assert rows.grid_params[0] == fine
+        assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2 ** 16 - 0.5)
+        q = np.round((finite - lo[0]) / 2.0 ** fine).astype(np.int64)
     # Order 0: the residuals are the quantized values themselves
-    q = np.round((np.where(np.isnan(x), finite.min() if finite.size else 0, x) - lo[0]) / 2.0 ** rows.grid_params[0])
-    np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64) & 0xFFFF,
-                                  q[np.isfinite(x)].astype(np.int64) & 0xFFFF)
+    np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64) & 0xFFFF, q & 0xFFFF)
+
+
+def test_short_blocks_honour_decimal_detection_off():
+    x = np.array([1.25, 3.5, 2.75])
+    rows = unit_rows(fluxcode.encode_blocks(x, [3], Params(decimal_detection=False)).unit)
+    assert not rows.block_flags[0] & _format.HEAD_DECIMAL
+    rows = unit_rows(fluxcode.encode_blocks(x, [3]).unit)
+    assert rows.block_flags[0] & _format.HEAD_DECIMAL and rows.grid_params[0] == -2
 
 
 def test_target_weights_blocks_by_size():

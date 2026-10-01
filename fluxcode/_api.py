@@ -185,7 +185,8 @@ def encode_blocks(
 
     Each block can hold 0 to 65,535 samples. An empty block stores nothing and gets NaN
     statistics. A block of at most 8 samples skips the analysis: it is stored at the finest
-    step (max_quantize_bits) on the power-of-two grid, without differences.
+    step (max_quantize_bits), without differences, on a decimal grid if its samples sit on one
+    (so decimal data stays exact) and otherwise on the power-of-two grid.
 
     Args:
         x: 1D array-like of float64 samples, block after block.
