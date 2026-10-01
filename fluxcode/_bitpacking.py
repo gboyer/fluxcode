@@ -1283,17 +1283,19 @@ def _copy_planes(
             block_len = block_sizes[block_idx]
             block_groups = group_offsets[block_idx + 1] - group_offsets[block_idx]
             old_start, start = 8 * old_group_offsets[block_idx], 8 * group_offsets[block_idx]
+            # The copies go through _copy_bytes: numba's slice assignment costs several times more
             if byte_planes:
                 # Bit planes to byte planes: the zigzag bytes, then zero padding
                 unshuffle_block(old_planes, old_group_offsets[block_idx], block_groups, scratch_low_bytes,
                                 scratch_high_bytes)
-                bplanes[0, start:start + block_len] = scratch_low_bytes[:block_len]
-                bplanes[1, start:start + block_len] = scratch_high_bytes[:block_len]
-                bplanes[:, start + block_len:start + 8 * block_groups] = 0
+                scratch_low_bytes[block_len:8 * block_groups] = 0
+                scratch_high_bytes[block_len:8 * block_groups] = 0
+                _copy_bytes(bplanes[0], start, scratch_low_bytes, 0, 8 * block_groups)
+                _copy_bytes(bplanes[1], start, scratch_high_bytes, 0, 8 * block_groups)
             else:
                 # Byte planes to bit planes
-                scratch_low_bytes[:block_len] = old_bplanes[0, old_start:old_start + block_len]
-                scratch_high_bytes[:block_len] = old_bplanes[1, old_start:old_start + block_len]
+                _copy_bytes(scratch_low_bytes, 0, old_bplanes[0], old_start, block_len)
+                _copy_bytes(scratch_high_bytes, 0, old_bplanes[1], old_start, block_len)
                 scratch_low_bytes[block_len:8 * block_groups] = 0
                 scratch_high_bytes[block_len:8 * block_groups] = 0
                 shuffle_bytes(scratch_low_bytes, scratch_high_bytes, planes, group_offsets[block_idx], block_groups)
