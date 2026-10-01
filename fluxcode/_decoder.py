@@ -14,6 +14,13 @@ import numpy as np
 from numba import njit
 
 from . import _extreme_magnitudes as xm
+from ._bitpacking import (
+    byte_planes_view,
+    code_planes_view,
+    planes_view,
+    unshuffle_block,
+    unzigzag16,
+)
 from ._format import (
     E_MAX,
     E_MIN,
@@ -25,13 +32,8 @@ from ._format import (
     HEAD_RESERVED,
     P_MAX,
     P_MIN,
-    byte_planes_view,
-    code_planes_view,
     get_int64,
     grid_params_start,
-    planes_view,
-    unshuffle_block,
-    unzigzag16,
     value_anchor_start,
 )
 from ._nonfinite import restore_nonfinite

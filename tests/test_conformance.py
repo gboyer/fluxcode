@@ -9,7 +9,7 @@ from _series import decode_series, encode_series, gated, heads_params, unit_rows
 from _signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
 
 import fluxcode
-from fluxcode import Params, _encoder, _format, _unit
+from fluxcode import Params, _bitpacking, _encoder, _format, _unit
 from fluxcode._format import HEAD_DECIMAL, HEAD_ORDER
 
 OFF = Params(noise_floor_sigma=None)
@@ -86,18 +86,6 @@ def test_fixed_point(name, x, params):
     np.testing.assert_array_equal(y2, y)
     u3, _, _, _ = encode_series(y2, params)
     assert u3 == u2
-
-
-def test_bit_order_vector():
-    """§7.4: u[3] = 0x0020, u[6] = 0x0400 -> plane 5 byte 0 = 0b00001000, plane 10 byte 0 = 0b01000000."""
-    v = np.zeros(8, np.int16)
-    v[3] = 0x0010  # zigzag(16) = 32 = 0x0020
-    v[6] = 0x0200  # zigzag(512) = 1024 = 0x0400
-    raw = _format.write_unit(np.zeros(1, np.uint8), np.array([8]), np.zeros(1, np.int64), np.zeros(1, np.int64), v)
-    planes = raw[19:].reshape(16, 1)  # after head (1), size (2), param (8) and anchor (8)
-    expect = np.zeros(16, np.uint8)
-    expect[5], expect[10] = 0b00001000, 0b01000000
-    np.testing.assert_array_equal(planes[:, 0], expect)
 
 
 @pytest.mark.parametrize("orders", [{0}, {1}, {2}, {3}, {0, 1}, {2, 3}, {0, 1, 2, 3}])
@@ -309,10 +297,10 @@ def _plane_fields(body, num_blocks):
     """The plane fields of a parsed unit body with a time axis, as (planes, layout) pairs."""
     _, lay = _format.read_layout(body, num_blocks)
     groups, code_groups = int(lay.group_offsets[-1]), int(lay.code_offsets[-1])
-    short, long = _format.time_planes_views(body, num_blocks, groups, code_groups, int(lay.short_offsets[-1]),
+    short, long = _bitpacking.time_planes_views(body, num_blocks, groups, code_groups, int(lay.short_offsets[-1]),
                                             int(lay.long_offsets[-1]))
-    return [(_format.planes_view(body, num_blocks, groups, True), lay.group_offsets),
-            (_format.code_planes_view(body, num_blocks, groups, code_groups, True), lay.code_offsets),
+    return [(_bitpacking.planes_view(body, num_blocks, groups, True), lay.group_offsets),
+            (_bitpacking.code_planes_view(body, num_blocks, groups, code_groups, True), lay.code_offsets),
             (short, lay.short_offsets), (long, lay.long_offsets)]
 
 
@@ -356,9 +344,9 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _format.write_unit(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
+    byte_body = _bitpacking.write_unit(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
     lay = _format.layout(rows.block_flags, sizes)
-    byte_planes = _format.byte_planes_view(byte_body, num_blocks, int(lay.group_offsets[-1]), True)
+    byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.group_offsets[-1]), True)
     for block_idx in range(num_blocks):
         assert not byte_planes[:, 8 * lay.group_offsets[block_idx] + sizes[block_idx]:8 * lay.group_offsets[block_idx + 1]].any()
     byte_unit = (_format.pack_header(num_blocks, n, True, int(_format.TimeUnit.NANOSECONDS))

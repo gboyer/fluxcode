@@ -14,12 +14,12 @@ import numpy as np
 from numba import njit
 
 from . import _extreme_magnitudes as xm
+from ._bitpacking import get_code
 from ._format import (
     CODE_FINITE,
     CODE_NAN,
     CODE_NEG_INF,
     CODE_POS_INF,
-    get_code,
 )
 from ._noise import CLIP_PASSES, CLIP_SIGMAS, MAD_TO_SD, SIGMA_GAIN
 

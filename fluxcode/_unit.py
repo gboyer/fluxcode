@@ -14,7 +14,7 @@ import numpy as np
 import numpy.typing as npt
 import zstandard
 
-from . import _decoder, _encoder, _format, _time
+from . import _bitpacking, _decoder, _encoder, _format, _time
 from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit
 
 ZSTD_LEVEL: int = 3
@@ -275,10 +275,10 @@ def compress(rows: _format.UnitRows, num_samples: int, try_byte_planes: bool, ti
     # Separate from the encode kernel (update shares it); fusing measured no gain (PERFORMANCE.md).
     num_blocks = rows.block_flags.shape[0]
     fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)
-    body = _format.write_unit(*fields, time_rows=rows.time_rows)
+    body = _bitpacking.write_unit(*fields, time_rows=rows.time_rows)
     unit = _format.pack_header(num_blocks, num_samples, False, time_unit) + zstd()[0].compress(body.data)
     if try_byte_planes:
-        body = _format.write_unit(*fields, byte_planes=True, time_rows=rows.time_rows)
+        body = _bitpacking.write_unit(*fields, byte_planes=True, time_rows=rows.time_rows)
         byte_unit = _format.pack_header(num_blocks, num_samples, True, time_unit) + zstd()[0].compress(body.data)
         # Ties keep bit planes, so the choice is deterministic
         if len(byte_unit) < len(unit):
@@ -393,7 +393,7 @@ def read_time_rows(parsed: ParsedUnit) -> _format.TimeRows:
             one-sample block isn't regular with step and reference 0.
     """
     time_rows = _format.allocate_time_rows(parsed.header.num_blocks, parsed.header.num_samples)
-    _format.check_time_rows_status(*_format.read_time_rows(parsed.raw_body, *parsed.layout, *time_rows))
+    _bitpacking.check_time_rows_status(*_bitpacking.read_time_rows(parsed.raw_body, *parsed.layout, *time_rows))
     return time_rows
 
 
@@ -476,7 +476,7 @@ def read_rows(parsed: ParsedUnit, time_rows: _format.TimeRows | None = None) -> 
         np.zeros(num_samples, np.uint8),
         (time_rows if time_rows is not None else read_time_rows(parsed)) if parsed.has_time else None,
     )
-    _format.read_rows(
+    _bitpacking.read_rows(
         parsed.raw_body, parsed.header.byte_planes, parsed.has_time, offsets.sample_offsets, offsets.group_offsets,
         offsets.code_offsets, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
     )

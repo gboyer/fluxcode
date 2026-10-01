@@ -54,7 +54,7 @@ from _signals import (
 )
 
 import fluxcode
-from fluxcode import Params, _decoder, _format, _unit
+from fluxcode import Params, _bitpacking, _decoder, _format, _unit
 
 BLOCK, BLOCKS = 1000, 60
 DAY_UNITS = 1440
@@ -358,7 +358,7 @@ def breakdown(wl, reps=200):
         sizes = np.full(BLOCKS, BLOCK)
         cz, dz = _unit.zstd()
         unit_rows, _ = _unit.encode_rows(x, sizes, p)
-        raw = _format.write_unit(*unit_rows[:6]).data  # as _unit.compress passes it
+        raw = _bitpacking.write_unit(*unit_rows[:6]).data  # as _unit.compress passes it
         frame = cz.compress(raw)
         unit = _format.pack_header(BLOCKS, x.size) + frame
         out = np.empty(x.size)
@@ -375,7 +375,7 @@ def breakdown(wl, reps=200):
             return 1e6 * best
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(unit) * 8 / x.size,
-                     t(_unit.encode_rows, x, sizes, p), t(_format.write_unit, *unit_rows[:6]),
+                     t(_unit.encode_rows, x, sizes, p), t(_bitpacking.write_unit, *unit_rows[:6]),
                      t(cz.compress, raw), t(fluxcode.encode_unit, x, p),
                      t(dz.decompress, frame),
                      t(_decoder.decode_unit, rawd, offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,

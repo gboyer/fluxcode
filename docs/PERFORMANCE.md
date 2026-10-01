@@ -159,7 +159,7 @@ None of these change the format.
 
 **Structure**
 - **Compiled calls per unit, never per block.** The encoder stages for all blocks of a unit run
-  in one `@njit` call (`_encoder.encode_unit`), and the serializer (`_format.write_unit`) in a
+  in one `@njit` call (`_encoder.encode_unit`), and the serializer (`_bitpacking.write_unit`) in a
   second one, writing every field straight into one output buffer. Allocations are per unit and
   small (the 120 KB unit buffer costs 0.2 µs). zstd contexts are reused, one per thread.
 - **Rare inputs stay off the common path.** Blocks holding NaN or ±inf are handled in

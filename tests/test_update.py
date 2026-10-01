@@ -9,7 +9,7 @@ from _series import encode_series, unit_rows
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _format
+from fluxcode import Params, _bitpacking, _format
 
 L = 1000
 
@@ -24,7 +24,7 @@ def rebuilt(unit, edit):
     """unit with its body rows changed by edit(flags, sizes, param, anchor, resid, codes, time_rows), same header."""
     rows = unit_rows(unit)
     edit(*rows)
-    body = _format.write_unit(*rows[:6], time_rows=rows.time_rows)
+    body = _bitpacking.write_unit(*rows[:6], time_rows=rows.time_rows)
     return unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -151,7 +151,7 @@ def test_update_refuses_units_it_cannot_read(head_bits):
     """A unit with reserved head bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""
     _, unit, _, _, _ = encoded()
-    raw_body = _format.write_unit(*unit_rows(unit)[:6])
+    raw_body = _bitpacking.write_unit(*unit_rows(unit)[:6])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
     bad = unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: head byte"):

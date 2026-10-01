@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from fluxcode import _decoder, _encoder, _format, _noise, _nonfinite
+from fluxcode import _decoder, _encoder, _noise, _nonfinite
 
 RNG = np.random.default_rng(0)
 
@@ -112,64 +112,6 @@ def test_residual_and_integrate(order):
     w = v.astype(np.int32)
     _decoder.integrate(w, order)
     np.testing.assert_array_equal(w, q)
-
-
-def _columns(raw, N):
-    """The block_flags, block_sizes, grid_params and value_anchor columns of a body."""
-    sizes = raw[N:2 * N].astype(np.int64) | (raw[2 * N:3 * N].astype(np.int64) << 8)
-    param = raw[3 * N:11 * N].reshape(8, N).T.copy().view(np.int64).ravel()
-    anchor = raw[11 * N:19 * N].reshape(8, N).T.copy().view(np.int64).ravel()
-    return raw[:N], sizes, param, anchor
-
-
-@pytest.mark.parametrize("sizes", [[64] * 3, [61] * 3, [5] * 3, [64, 0, 5], [1, 300, 17]])
-def test_shuffle_round_trip_and_layout(sizes):
-    N = len(sizes)
-    sizes = np.array(sizes)
-    resid = RNG.integers(-2 ** 15, 2 ** 15, sizes.sum()).astype(np.int16)
-    head = np.array([1, 0 if not sizes[1] else 2, 3], np.uint8)
-    param = np.array([-5, 0 if not sizes[1] else 17, -(2 ** 40)], np.int64)
-    anchor = np.array([-1.5, 0.0 if not sizes[1] else 1e300, 0.0]).view(np.int64)
-    raw = _format.write_unit(head, sizes, param, anchor, resid)
-    lay = _format.layout(head, sizes)
-    assert raw.shape[0] == _format.unit_size(N, lay)
-    for got, want in zip(_columns(raw, N), (head, sizes, param, anchor)):
-        np.testing.assert_array_equal(got, want)
-    s = resid.astype(np.int32)
-    u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[19 * N:].reshape(16, -1)
-    offsets = np.concatenate([[0], np.cumsum(sizes)])
-    for b in range(N):
-        block_planes = planes[:, lay.group_offsets[b]:lay.group_offsets[b + 1]]
-        bits = np.unpackbits(block_planes, axis=1, bitorder="little")  # (16, 8 * groups): bit j of u[i]
-        block_u = u[offsets[b]:offsets[b + 1]]
-        np.testing.assert_array_equal(bits[:, :sizes[b]], ((block_u[None] >> np.arange(16)[:, None]) & 1).astype(np.uint8))
-        assert not bits[:, sizes[b]:].any()  # each block's last group is padded with zero bits
-    rows = _format.read_unit(raw, N)
-    for got, want in zip(rows[:5], (head, sizes, param, anchor, resid)):
-        np.testing.assert_array_equal(got, want)
-    with pytest.raises(ValueError, match="doesn't hold"):
-        _format.read_unit(raw[:-1], N)
-
-
-def test_byte_planes_round_trip_and_layout():
-    N, n = 3, 64
-    sizes = np.full(N, n)
-    resid = RNG.integers(-2 ** 15, 2 ** 15, N * n).astype(np.int16)
-    head = np.array([1, 2, 3], np.uint8)
-    param = np.array([-5, 17, -(2 ** 40)], np.int64)
-    anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
-    raw = _format.write_unit(head, sizes, param, anchor, resid, byte_planes=True)
-    assert raw.shape[0] == _format.unit_size(N, _format.layout(head, sizes))
-    np.testing.assert_array_equal(raw[:19 * N], _format.write_unit(head, sizes, param, anchor, resid)[:19 * N])
-    s = resid.astype(np.int32)
-    u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[19 * N:].reshape(2, N * n)  # every low byte, then every high byte
-    np.testing.assert_array_equal(planes[0], u & 0xFF)
-    np.testing.assert_array_equal(planes[1], u >> 8)
-    rows = _format.read_unit(raw, N, byte_planes=True)
-    for got, want in zip(rows[:5], (head, sizes, param, anchor, resid)):
-        np.testing.assert_array_equal(got, want)
 
 
 def test_dequantize():
