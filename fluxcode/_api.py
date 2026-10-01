@@ -280,7 +280,9 @@ def update_time_blocks(
     the absolute power-of-two grid, so on the same or a finer step they come back bit for
     bit; only a coarser step rounds them again (once, without bias). However often a block is
     updated, their error stays under one step of the coarsest grid it has used (decimal data
-    on a decimal grid stays exact). Blocks are appended (empty ones to
+    on a decimal grid stays exact). The noise floor is computed again from the merged block,
+    as when encoding from scratch; its step can move one level when f * sigma sits at a power
+    of two, and finer is exact. Blocks are appended (empty ones to
     fill a gap) when new samples are timed past the unit's end; blocks never are removed.
 
     Args:

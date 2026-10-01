@@ -276,9 +276,24 @@ average, because of the power-of-two floor) on top of noise σ.
   7.8 bits, on the noisy sine at f = 0.25), so a minimum above that would override the noise floor.
   Six bits costs ≤ 1% on the noisy test signals.
 - **Blocks of at least 256 samples.** The ρ test separates white noise (−2/3) from a random walk
-  (−1/2) only on enough differences: pure random walks pass the gate 21% of the time at 9
-  samples, 9.4% at 64, 4.3% at 128, 0.8% at 256 and never at 1000, while white noise passes 96%
-  of the time at 256. Smaller blocks keep the B-bit step.
+  (−1/2) only on enough differences. On m differences, the estimate of ρ has a standard error of
+  about √((1 − 3ρ² + 4ρ⁴)/m) (Bartlett's formula for a lag-1 autocorrelation): 0.044 for a random
+  walk and 0.042 for white noise at m = 254. The threshold −0.6 is then 2.25 standard errors from
+  −1/2 (random walks pass about 1% of the time) and 1.6 from −2/3 (white noise is missed about 6%
+  of the time). At 64 samples random walks would pass about 13% of the time. Measured: pure
+  random walks pass 21% of the time at 9 samples, 9.4% at 64, 4.3% at 128, 0.8% at 256 and never
+  at 1000, while white noise passes 96% of the time at 256. So 256 is a chosen trade-off (about
+  1% false positives, 5% missed white noise), not a hard limit. Smaller blocks keep the B-bit step.
+- **Re-encoding decoded data** (a straddling `update_time_blocks`) computes the noise floor again
+  from the merged block: kept samples, now decoded, plus the new ones. Nothing is reused, as when
+  encoding from scratch. Quantizing adds white noise of variance s²/12 with s ≤ f·σ = σ/4, so σ
+  can rise by at most √(1 + 1/192) − 1 ≈ 0.26%; the estimate also moves by a little either way.
+  The step 2^floor(log2(f·σ)) only changes when f·σ sits within that much of a power of two, and
+  then by one level, once. Measured over 5 decode/re-encode rounds of 300 noisy 1000-sample
+  blocks (all gated): σ of the decoded data averaged 1.0002× the original (at most 1.008×); 8
+  blocks went one level finer on the first round and none changed after. Finer is exact on the
+  snapped grid (§3.3), and coarser is one bounded rounding. A merged block can also cross 256
+  samples, which switches the noise floor on or off between updates, with the same two cases.
 - **The gate is per block and all-or-nothing.** Per-sample variants (full precision kept at
   spikes) cost 20–35% more for an error already below the noise on the spike ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design)).
 
