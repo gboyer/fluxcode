@@ -251,7 +251,8 @@ def update_time_blocks(
         if range_idx >= 0 and range_ends[range_idx] >= block_start + duration:
             covered.add(block_idx)
     straddling = np.array(sorted(touched - covered), np.int64)
-    time_rows = _unit.read_time_rows(parsed)
+    # The time columns, and the residuals of the blocks to decode only
+    time_rows = _unit.read_time_rows(parsed, straddling)
     old_values: np.ndarray = np.zeros(0)
     old_ticks: np.ndarray | None = np.zeros(0, np.int64)
     if straddling.shape[0]:

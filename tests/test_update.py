@@ -9,7 +9,7 @@ from _series import encode_series, unit_rows
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _format
+from fluxcode import Params, _bitpacking, _format, _unit
 
 L = 1000
 
@@ -56,6 +56,24 @@ def test_untouched_blocks_identical():
     keep = np.setdiff1d(np.arange(60), idx)
     np.testing.assert_array_equal(after[keep], before[keep])
     np.testing.assert_array_equal(after[idx], [np.full(L, 1.5), np.full(L, -2.0)])
+
+
+def test_update_copies_carried_blocks_without_unpacking(monkeypatch):
+    """Carried blocks' bytes are copied: update never unpacks every block's residuals, codes or
+    time residuals."""
+    t = np.datetime64("2026-01-01", "ms") + np.arange(60 * L) * np.timedelta64(100, "ms")
+    t[5] += np.timedelta64(1, "ms")  # block 0 irregular: it has time residual planes
+    x, _, _, _, _ = encoded()
+    unit = fluxcode.encode_unit(x, times=t).unit
+    expected = fluxcode.update(unit, {1: x[L:2 * L] + 1}, times={1: t[L:2 * L]}).unit
+
+    def unpack_everything(*args, **kwargs):
+        raise AssertionError("unpacked every block")
+
+    monkeypatch.setattr(_bitpacking, "read_rows", unpack_everything)
+    monkeypatch.setattr(_bitpacking, "unshuffle_block", unpack_everything)
+    monkeypatch.setattr(_unit, "read_rows", unpack_everything)
+    assert fluxcode.update(unit, {1: x[L:2 * L] + 1}, times={1: t[L:2 * L]}).unit == expected
 
 
 def test_untouched_blocks_identical_with_target():
