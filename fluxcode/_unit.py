@@ -16,7 +16,7 @@ import numpy.typing as npt
 import zstandard
 
 from . import _bitpacking, _decoder, _encoder, _format, _time
-from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit
+from ._types import DecodedUnit, EncodedUnit, Params, PlaneMode, UpdatedUnit
 
 ZSTD_LEVEL: int = 3
 """Zstandard compression level used for encoding units."""
@@ -261,13 +261,13 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     return time_rows
 
 
-def compress(rows: _format.UnitRows, num_samples: int, try_byte_planes: bool, time_unit: int = 0) -> bytes:
+def compress(rows: _format.UnitRows, num_samples: int, planes: PlaneMode, time_unit: int = 0) -> bytes:
     """Serializes unit rows and builds the unit: header plus zstd frame of the body.
 
     Args:
         rows: The unit's rows (time_rows None for a unit without a time axis).
         num_samples: Sample count recorded in the header (the sum of the block sizes).
-        try_byte_planes: Also build the unit with byte planes and return the smaller.
+        planes: Params.planes: bit planes, byte planes, or both and the smaller.
         time_unit: Time unit code recorded in the header (0 without a time axis).
 
     Returns:
@@ -277,23 +277,25 @@ def compress(rows: _format.UnitRows, num_samples: int, try_byte_planes: bool, ti
     fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)
     return _pack(
         lambda byte_planes: _bitpacking.write_unit(*fields, byte_planes=byte_planes, time_rows=rows.time_rows),
-        rows.block_flags.shape[0], num_samples, try_byte_planes, time_unit,
+        rows.block_flags.shape[0], num_samples, planes, time_unit,
     )
 
 
 def _pack(
-    write_body: Callable[[bool], np.ndarray], num_blocks: int, num_samples: int, try_byte_planes: bool, time_unit: int
+    write_body: Callable[[bool], np.ndarray], num_blocks: int, num_samples: int, planes: PlaneMode, time_unit: int
 ) -> bytes:
-    """The unit of the body write_body(byte_planes) builds: with bit planes, or (try_byte_planes)
-    whichever plane mode compresses smaller."""
-    unit = _format.pack_header(num_blocks, num_samples, False, time_unit) + zstd()[0].compress(write_body(False).data)
-    if try_byte_planes:
-        body = write_body(True)
-        byte_unit = _format.pack_header(num_blocks, num_samples, True, time_unit) + zstd()[0].compress(body.data)
-        # Ties keep bit planes, so the choice is deterministic
-        if len(byte_unit) < len(unit):
-            return byte_unit
-    return unit
+    """The unit of the body write_body(byte_planes) builds, in the plane mode planes selects
+    ("best": both, and the smaller)."""
+
+    def build(byte_planes: bool) -> bytes:
+        header = _format.pack_header(num_blocks, num_samples, byte_planes, time_unit)
+        return header + zstd()[0].compress(write_body(byte_planes).data)
+
+    if planes != "best":
+        return build(planes == "byte")
+    bit_unit, byte_unit = build(False), build(True)
+    # Ties keep bit planes, so the choice is deterministic
+    return byte_unit if len(byte_unit) < len(bit_unit) else bit_unit
 
 
 def encode(
@@ -319,7 +321,7 @@ def encode(
     rows, stats = encode_rows(samples, block_sizes, params)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
-    return EncodedUnit(compress(rows, samples.shape[0], params.try_byte_planes, time_unit), *stats)
+    return EncodedUnit(compress(rows, samples.shape[0], params.planes, time_unit), *stats)
 
 
 class ParsedUnit(NamedTuple):
@@ -625,6 +627,6 @@ def splice(
         lambda byte_planes: _bitpacking.splice_body(
             parsed.raw_body, parsed.layout, parsed.header.byte_planes, old_starts, indices, new_rows, byte_planes
         ),
-        num_blocks, num_samples, params.try_byte_planes, parsed.header.time_unit,
+        num_blocks, num_samples, params.planes, parsed.header.time_unit,
     )
     return UpdatedUnit(unit, indices, *stats)

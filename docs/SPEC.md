@@ -27,7 +27,7 @@ the unit. Timestamps are data, not parameters (§2a), and so is the division int
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
 | `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§3.1a; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§3.6): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
-| `try_byte_planes` | on / off | off | also compress the unit with byte planes instead of bit planes (§5) and keep the smaller; ties keep bit planes. Doubles the zstd work of encoding. Worth it on clean periodic signals whose cycles repeat across a unit (TUNING.md) |
+| `planes` | `"best"`, `"bit"`, `"byte"` | `"best"` | the residual layout (§5): 16 bit planes, 2 byte planes, or both compressed and the smaller kept (ties keep bit planes). `"best"` doubles the zstd work of encoding; byte planes win on periodic signals and noisy sines, bit planes on small or aperiodic residuals (TUNING.md) |
 
 **Precedence.** e_fine is the §3.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
@@ -40,9 +40,9 @@ Fixed by this spec: zstd level 3, blocks interleaved by field. Every block recor
 store each block in whole bytes, so a block whose size isn't a multiple of 8 pads its last byte
 with zero bits (§5).
 
-Residuals are bit-shuffled by default: smaller overall than byte planes, and the best bound on
-the cost of noisy, wide signals. A unit may use byte planes instead (header flag, §5), which
-`try_byte_planes` picks when they come out smaller (measurements in TUNING.md).
+Residuals are bit-shuffled or split into byte planes (header flag, §5). By default (`planes =
+"best"`) the encoder compresses each unit both ways and keeps the smaller: neither layout wins on
+most data, and the winner depends on the signal (measurements in TUNING.md).
 
 ## 2. Units and summary statistics
 

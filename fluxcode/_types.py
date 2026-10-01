@@ -14,6 +14,12 @@ from . import _encoder
 MIN_TARGET_BITS: float = 6.0
 """Minimum allowed per-unit bit target per sample."""
 
+PlaneMode = Literal["best", "bit", "byte"]
+"""Residual layout before zstd: bit planes, byte planes, or whichever compresses smaller."""
+
+PLANE_MODES: tuple[PlaneMode, ...] = ("best", "bit", "byte")
+"""The accepted values of Params.planes."""
+
 TimeUnit = Literal["s", "ms", "us", "ns"]
 """Resolution of integer timestamps: seconds, milliseconds, microseconds or nanoseconds."""
 
@@ -110,9 +116,11 @@ class Params:
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.
-        try_byte_planes: Also compress each unit with byte planes instead of bit
-            planes and keep the smaller. Doubles the zstd work of encoding; pays
-            off on clean periodic signals whose cycles repeat across a unit.
+        planes: How the residuals are laid out before zstd: "bit" (16 bit planes), "byte"
+            (2 byte planes), or "best" (the default): compress the unit both ways and keep
+            the smaller, ties going to bit planes. "best" doubles the zstd work of encoding;
+            byte planes win on periodic signals and noisy sines (4-18% smaller), bit planes on
+            small or aperiodic residuals (random walks, chirps), and the choice is per unit.
     """
 
     min_quantize_bits: int = 6
@@ -122,7 +130,7 @@ class Params:
     noise_floor_sigma: float | None = 0.25
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
-    try_byte_planes: bool = False
+    planes: PlaneMode = "best"
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -155,8 +163,8 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
-        if not isinstance(self.try_byte_planes, (bool, np.bool_)):
-            raise ValueError(f"try_byte_planes must be a bool, got {self.try_byte_planes!r}")  # noqa: TRY004
+        if self.planes not in PLANE_MODES:
+            raise ValueError(f"planes must be one of {', '.join(map(repr, PLANE_MODES))}, got {self.planes!r}")
 
     def _kernel_args(self) -> tuple[int, int, int, float, float, bool, int]:
         """Packs encoder configuration into kernel arguments.

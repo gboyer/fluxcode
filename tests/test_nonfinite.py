@@ -123,7 +123,9 @@ def test_occasional_dropouts_keep_the_noise_floor(kind):
     x = minute(kind, 5)
     y = x.copy()
     y[500::1000] = np.nan
-    size = lambda v: sum(map(len, fluxcode.encode(v)[0]))
+    # Bit planes isolate the noise floor: byte planes gain 5% on clean impulses, which the
+    # held dropouts break up (the best of both is then still below bit planes on clean data)
+    size = lambda v: sum(map(len, fluxcode.encode(v, Params(planes="bit"))[0]))
     assert size(y) < 1.05 * size(x)
     assert (gated(y) != gated(x)).sum() <= 2  # the same blocks gate, bar ones near the threshold
 

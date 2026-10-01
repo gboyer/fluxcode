@@ -15,7 +15,8 @@ from fluxcode import Params, _encoder
                                 {"diff_orders": frozenset()}, {"diff_orders": {4}}, {"diff_orders": "0"},
                                 {"noise_floor_sigma": -1}, {"noise_floor_sigma": float("nan")},
                                 {"target_bits_per_sample": 0}, {"target_bits_per_sample": 5.99},
-                                {"target_bits_per_sample": True}, {"try_byte_planes": 1}])
+                                {"target_bits_per_sample": True}, {"planes": "bits"}, {"planes": True},
+                                {"planes": None}])
 def test_invalid(kw):
     with pytest.raises(ValueError):
         Params(**kw)

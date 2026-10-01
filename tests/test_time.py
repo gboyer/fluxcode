@@ -195,7 +195,7 @@ def test_byte_planes_and_nonfinite_with_times():
     values[[10, 3456, 12_000]] = [np.nan, np.inf, -np.inf]
     rng = np.random.default_rng(6)
     times = np.cumsum(rng.integers(1, 5, values.size)).view("datetime64[us]")
-    params = Params(max_quantize_bits=10, try_byte_planes=True)
+    params = Params(max_quantize_bits=10, planes="byte")
     unit, decoded = round_trip(values, times, params)
     assert _format.unpack_header(unit).byte_planes
     np.testing.assert_array_equal(decoded.times, times)

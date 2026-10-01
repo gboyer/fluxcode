@@ -33,6 +33,16 @@ START = np.datetime64("2026-01-01T00:00", "ms")
 SECOND = np.timedelta64(1, "s")
 
 
+def encode_seconds(x, t):
+    """encode_time_blocks in one-second blocks from START."""
+    return fluxcode.encode_time_blocks(x, t, start_time=START, block_duration=SECOND).unit
+
+
+def update_seconds(unit, x, t, update_range):
+    """update_time_blocks of a unit made by encode_seconds."""
+    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=SECOND, update_ranges=update_range)
+
+
 def median_us(call, reps):
     call()
     times = []
@@ -58,23 +68,21 @@ def rows(name, x, reps):
     one = median_us(lambda: fluxcode.update(unit, {17: block}), reps)
     one_t = median_us(lambda: fluxcode.update(timed, {17: block}, times={17: t[17_000:18_000]}), reps)
     append_t = median_us(lambda: fluxcode.update(timed, {60: block}, times={60: t[-1] + 1 + np.arange(1000)}), reps)
-    blocks = {"start_time": START, "block_duration": SECOND}
-    tb = fluxcode.encode_time_blocks(x, t, **blocks).unit
+    tb = encode_seconds(x, t)
     lo, hi = START + np.timedelta64(30_500, "ms"), START + np.timedelta64(32_500, "ms")
     inside = (t >= lo) & (t < hi)
-    encode_tb = median_us(lambda: fluxcode.encode_time_blocks(x, t, **blocks), reps)
+    encode_tb = median_us(lambda: encode_seconds(x, t), reps)
     straddle = median_us(
-        lambda: fluxcode.update_time_blocks(tb, x[inside][::-1], t[inside], update_ranges=(lo, hi), **blocks), reps)
+        lambda: update_seconds(tb, x[inside][::-1], t[inside], (lo, hi)), reps)
     # An hour at 10 Hz in one-second blocks: 3,600 blocks of 10 samples
     th = START + np.arange(36_000) * np.timedelta64(100, "ms")
     xh = np.resize(x, 36_000)
-    hour = fluxcode.encode_time_blocks(xh, th, **blocks).unit
+    hour = encode_seconds(xh, th)
     lo_h, hi_h = START + np.timedelta64(1_800_500, "ms"), START + np.timedelta64(1_802_500, "ms")
     inside_h = (th >= lo_h) & (th < hi_h)
-    encode_h = median_us(lambda: fluxcode.encode_time_blocks(xh, th, **blocks), max(reps // 3, 10))
+    encode_h = median_us(lambda: encode_seconds(xh, th), max(reps // 3, 10))
     straddle_h = median_us(
-        lambda: fluxcode.update_time_blocks(hour, xh[inside_h][::-1], th[inside_h], update_ranges=(lo_h, hi_h),
-                                            **blocks), max(reps // 3, 10))
+        lambda: update_seconds(hour, xh[inside_h][::-1], th[inside_h], (lo_h, hi_h)), max(reps // 3, 10))
     return [
         f"| {name} | `update`, 1 of 60 blocks | {encode:.0f} µs | {relative(one, encode)} |",
         f"| {name} | `update` with times, 1 of 60 | {encode_t:.0f} µs | {relative(one_t, encode_t)} |",

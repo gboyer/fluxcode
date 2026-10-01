@@ -38,9 +38,10 @@ type:
   `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
-* **Byte planes**: `try_byte_planes=True` sees if organizing high/low bytes
-  works better than individual bit planes. Helpful for noise-free periodic
-  signals, but off by default for performance.
+* **Bit or byte planes**: by default (`planes="best"`) each unit is compressed with the
+  residuals as 16 bit planes and as 2 byte planes, and the smaller is kept. Byte planes win
+  on periodic signals and noisy sines (4–18% smaller), bit planes on random walks and chirps.
+  `planes="bit"` or `"byte"` skips the second compression.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
 [docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
@@ -142,7 +143,7 @@ which set the step to 0.25σ.
   bound decoders accept).
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `try_byte_planes=False`. [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `decimal_detection=True`, `planes="best"` (or `"bit"`, `"byte"`). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 

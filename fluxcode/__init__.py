@@ -49,6 +49,7 @@ from ._types import (
     EncodedSeries,
     EncodedUnit,
     Params,
+    PlaneMode,
     TimeUnit,
     UpdatedUnit,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "EncodedSeries",
     "EncodedUnit",
     "Params",
+    "PlaneMode",
     "TimeUnit",
     "UpdatedUnit",
     "decode",

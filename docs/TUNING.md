@@ -16,13 +16,50 @@ from the mostly-zero ones. Nibble planes (four 4-bit planes) fall between the
 two layouts at B ≥ 13 and never beat bit-shuffle overall ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design) in
 `experimental/`).
 
-**`try_byte_planes`** compresses each unit both ways and keeps the smaller (the header records
-which). On clean periodic signals whose cycles repeat across the unit, zstd finds long matches in
-the byte planes that the 8-sample bit groups break up: in the prototype on synthetic minute units,
-sines at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99). Elsewhere the gain
-is small (about 1% overall at B = 16) and encoding does twice the zstd work, so it's off by
-default: turn it on for clean periodic tags, or at B ≤ 11. A cheap size heuristic instead of
-encoding twice was tried and misjudged decimal sensor data by 20%.
+**`planes`** chooses the layout: `"bit"`, `"byte"`, or `"best"` (the default), which compresses
+each unit both ways and keeps the smaller (the header records which). On clean periodic signals
+whose cycles repeat across the unit, zstd finds long matches in the byte planes that the 8-sample
+bit groups break up: in the prototype on synthetic minute units, sines at B = 10 went from 2.39 to
+1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
+
+Measured on 2026-10-01 (default params, B = 16, zstd level 3, 8 one-minute units per signal), the
+winner is consistent per signal kind: it wins on all 8 units, by a similar margin.
+
+| byte planes smaller | vs bit planes | bit planes smaller | byte planes vs bit |
+|---|---|---|---|
+| square-2.24hz | −18% | quadratic | +358% |
+| sin-4.12hz rounded to 0.01 | −17% | sin-50.3hz | +20% |
+| sin-4.12hz | −12% | sensor-0.1 | +20% |
+| sin-9.87hz, impulses | −6% | random-walk on a 2^−4 grid | +19% |
+| linear, random-walk q0.1 | −5% | chirp | +14% |
+| noisy sines (4 variants) | −4% | random-walk, q0.001 | +9% |
+| | | gauss-spikes | +7% |
+
+Byte planes win on 11 of these 20 signals and bit planes on 9; over the whole set (dominated by
+the large random-walk units) byte planes alone are 5.3% bigger and the best of both 2.3% smaller.
+Bit planes win where residuals are small, so the high planes are almost all zero, or where nothing
+repeats. That split is why `"best"` is the default: it costs a second zstd pass (about +45% on
+encode) and never loses. `"bit"` or `"byte"` skips the second pass when a tag's kind is known. A
+cheap size heuristic instead of encoding twice was tried and misjudged decimal sensor data by 20%.
+
+**zstd level** stays 3, measured on the same set (sizes against level 3 with bit planes;
+compression time against level 3):
+
+| level | bit planes | best of both | compress time | decompress time |
+|---|---|---|---|---|
+| −1 | +3.0% | +1.9% | 0.49× | 0.63× |
+| 1 | +0.3% | −1.7% | 0.89× | 1.14× |
+| 3 | 0 | −2.3% | 1× | 1× |
+| 6 | −1.1% | −2.7% | 3.2× | 1.14× |
+| 9 | −1.3% | −3.1% | 4.5× | 1.14× |
+| 12 | −1.8% | −3.7% | 13× | 1.11× |
+| 19 | −3.2% | −5.5% | 94× | 1.36× |
+
+Level 3 is the knee. Above it, compression time grows much faster than size falls, and the best
+of both planes at level 3 saves more than bit planes up to level 12. Level 1 saves only 10% of the
+zstd time and doubles the tiny linear and square units. The high levels pay off only on blocky or
+periodic signals (square −50%, sin-50.3hz −16% at 19); noisy and random-walk signals gain 1–3%
+even at 19.
 
 ## Noise floor: measured behaviour
 
