@@ -123,7 +123,8 @@ which set the step to 0.25σ.
   discards the unit's samples in `update_ranges` (`[start, end)` pairs: one pair, a list, or a
   `(k, 2)` array) and puts the new samples, all timed within them, in their place. Blocks the
   ranges don't meet are carried over without being decoded; blocks that straddle a range edge are
-  decoded, merged and re-encoded.
+  decoded, merged and re-encoded (their kept samples re-quantized, so error can add up over
+  repeated updates of the same block).
 - `decode_unit(unit)`: returns `DecodedUnit(values, times, block_sizes)`. `times` is `datetime64`
   in the encoded unit, or `None` for a unit encoded without times. The unit records everything
   needed.

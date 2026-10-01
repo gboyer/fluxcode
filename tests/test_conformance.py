@@ -502,6 +502,12 @@ def test_decode_many_independent_units():
         assert y.times is None
 
 
+def test_encode_blocks_per_unit_beyond_the_block_limit():
+    """blocks_per_unit is a maximum: a larger one than a unit can hold is fine for a shorter series."""
+    units = fluxcode.encode(np.arange(5000.0), blocks_per_unit=100_000).units
+    assert len(units) == 1 and fluxcode.decode_unit(units[0]).block_sizes.tolist() == [1000] * 5
+
+
 def test_encode_unit_limit():
     with pytest.raises(ValueError, match="65535 blocks"):
         fluxcode.encode_unit(np.zeros(65_536), block_len=1)

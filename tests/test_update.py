@@ -123,10 +123,12 @@ def test_bad_blocks(blocks, msg):
         fluxcode.update(unit, blocks)
 
 
-def test_append_past_block_limit():
+@pytest.mark.parametrize("index", [65_535, 10**10, 2**63, 2**80])
+def test_append_past_block_limit(index):
+    """Rejected before anything is sized by the index (10^10 used to exhaust memory)."""
     _, unit, _, _, _ = encoded(n=3 * L)
     with pytest.raises(ValueError, match="65535 blocks"):
-        fluxcode.update(unit, {65_535: np.zeros(1)})
+        fluxcode.update(unit, {index: np.zeros(1)})
 
 
 def test_update_with_non_finite_blocks():

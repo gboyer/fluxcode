@@ -22,8 +22,8 @@
  "short last block": "7a70ff2f50294410441453839a9e23e785a78740beaec0e0097bf34ba667aa78",
  "block_len 64, 7 blocks": "bf0616f6af356369a9d423c0cbe4cf396a7f07fa3e1c4f48603e536243ee2f9a",
  "block_len 1001": "dca4191eb3b8dedb00d34a3cd027f658fc51f1030bb83dc2edd828348e05d339",
- "variable blocks": "befce2c27a93777e4c2b4a60d9ae86c48ed1aa16b45f2eebabfe3dfab11a47f7",
- "variable blocks q0.01": "ae8667053dce62771db6a95d107443125ac9600a8a7f05bd019d2da9d077408b",
+ "variable blocks": "16186f5e618960b1947f3f4f6a844e9f8a856b59b17a52056dfcb52f52057cdb",
+ "variable blocks q0.01": "73a8cad15e283f5f1761c2bed40671687e422851f7216638feec52da2bdea742",
  "variable blocks target 6": "a3aa603464e228a497c5d39bdfc236eb728c6676a6c151d41e1e8c72fbf8d46a",
  "time blocks": "380f4d77c506956a19f65a9091e6673b50ca2f5e216c8ac4fbbcf709514e2348"
 }

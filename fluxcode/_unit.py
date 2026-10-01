@@ -416,14 +416,21 @@ def expand_times(
         raise ValueError(f"block {block_idx}: first time residual is not 0 (corrupt unit)")
     if status == _time.OVERFLOW:
         raise ValueError(f"block {block_idx}: times overflow int64 (corrupt unit)")
+    if status == _time.BAD_SINGLE:
+        raise ValueError(
+            f"block {block_idx}: a single sample with a nonzero time step or reference, or irregular (corrupt unit)"
+        )
 
 
-def decode_blocks(parsed: ParsedUnit, block_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+def decode_blocks(
+    parsed: ParsedUnit, block_ids: np.ndarray, time_rows: _format.TimeRows | None = None
+) -> tuple[np.ndarray, np.ndarray | None]:
     """Decodes the given blocks of a parsed unit.
 
     Args:
         parsed: The unit.
         block_ids: 1D int64 array of the blocks to decode.
+        time_rows: The unit's time rows if already read.
 
     Returns:
         A tuple of (values, ticks): 1D arrays of every sample of the unit (float64 values
@@ -439,7 +446,9 @@ def decode_blocks(parsed: ParsedUnit, block_ids: np.ndarray) -> tuple[np.ndarray
     ticks = None
     if parsed.has_time:
         ticks = np.empty(parsed.header.num_samples, np.int64)
-        expand_times(parsed.block_flags, offsets.sample_offsets, read_time_rows(parsed), block_ids, ticks)
+        if time_rows is None:
+            time_rows = read_time_rows(parsed)
+        expand_times(parsed.block_flags, offsets.sample_offsets, time_rows, block_ids, ticks)
     return values, ticks
 
 
@@ -456,8 +465,9 @@ def decode(unit: bytes) -> DecodedUnit:
     return DecodedUnit(values, times, parsed.block_sizes)
 
 
-def read_rows(parsed: ParsedUnit) -> _format.UnitRows:
-    """Reads every block's rows (residuals and codes, without dequantizing) and time rows."""
+def read_rows(parsed: ParsedUnit, time_rows: _format.TimeRows | None = None) -> _format.UnitRows:
+    """Reads every block's rows (residuals and codes, without dequantizing) and time rows
+    (unless already read: time_rows)."""
     num_blocks, num_samples = parsed.header.num_blocks, parsed.header.num_samples
     offsets = parsed.layout
     rows = _format.UnitRows(
@@ -467,7 +477,7 @@ def read_rows(parsed: ParsedUnit) -> _format.UnitRows:
         np.empty(num_blocks, np.int64),
         np.empty(num_samples, np.int16),
         np.zeros(num_samples, np.uint8),
-        read_time_rows(parsed) if parsed.has_time else None,
+        (time_rows if time_rows is not None else read_time_rows(parsed)) if parsed.has_time else None,
     )
     _format.read_rows(
         parsed.raw_body, parsed.header.byte_planes, parsed.has_time, offsets.sample_offsets, offsets.group_offsets,
@@ -477,11 +487,18 @@ def read_rows(parsed: ParsedUnit) -> _format.UnitRows:
 
 
 def _last_tick(rows: _format.UnitRows, offsets: np.ndarray, block_idx: int) -> int:
-    """The last tick of a non-empty block, from its time rows."""
+    """The last tick of a non-empty block, from its time rows (expanding that block only)."""
     assert rows.time_rows is not None
-    out_ticks = np.empty(offsets[-1], np.int64)
-    expand_times(rows.block_flags, offsets, rows.time_rows, np.array([block_idx], np.int64), out_ticks)
-    return int(out_ticks[offsets[block_idx + 1] - 1])
+    time_rows = rows.time_rows
+    first, end = int(offsets[block_idx]), int(offsets[block_idx + 1])
+    block_rows = _format.TimeRows(
+        time_rows.starts[block_idx:block_idx + 1], time_rows.steps[block_idx:block_idx + 1],
+        time_rows.refs[block_idx:block_idx + 1], time_rows.residuals[first:end],
+    )
+    out_ticks = np.empty(end - first, np.int64)
+    expand_times(rows.block_flags[block_idx:block_idx + 1], np.array([0, end - first], np.int64), block_rows,
+                 np.zeros(1, np.int64), out_ticks)
+    return int(out_ticks[-1])
 
 
 def _check_spliced_order(
@@ -500,9 +517,9 @@ def _check_spliced_order(
     """
     assert rows.time_rows is not None
     filled = np.flatnonzero(rows.block_sizes)
-    for previous_idx, block_idx in zip(filled[:-1].tolist(), filled[1:].tolist()):
-        if not (is_new[previous_idx] or is_new[block_idx]):
-            continue
+    # Only pairs of consecutive non-empty blocks where one is new: the others were in order
+    pairs = np.flatnonzero(is_new[filled[:-1]] | is_new[filled[1:]])
+    for previous_idx, block_idx in zip(filled[pairs].tolist(), filled[pairs + 1].tolist()):
         last = new_last_ticks[previous_idx] if is_new[previous_idx] else _last_tick(rows, offsets, previous_idx)
         first = int(rows.time_rows.starts[block_idx])
         if first < last:
@@ -519,6 +536,7 @@ def splice(
     block_sizes: np.ndarray,
     ticks: np.ndarray | None,
     params: Params,
+    old_time_rows: _format.TimeRows | None = None,
 ) -> UpdatedUnit:
     """Replaces or appends blocks of a unit, carrying every other block over untouched.
 
@@ -534,6 +552,7 @@ def splice(
         ticks: 1D int64 array of the new blocks' ticks (in the unit's time unit), required
             exactly when the unit has a time axis.
         params: Encoder parameters.
+        old_time_rows: The unit's time rows if already read.
 
     Returns:
         UpdatedUnit with the new unit and the statistics of every re-encoded block
@@ -544,36 +563,40 @@ def splice(
     """
     num_old_blocks = parsed.header.num_blocks
     num_blocks = max(num_old_blocks, int(indices[-1]) + 1) if indices.shape[0] else num_old_blocks
-    # Appended blocks that indices skip become empty blocks
+    check_unit_counts(num_blocks, 0)
+    # Appended blocks that indices skip become empty blocks; they hold no samples, so the
+    # samples (and ticks) keep their order
     gaps = np.setdiff1d(np.arange(num_old_blocks, num_blocks), indices)
     if gaps.shape[0]:
-        order = np.argsort(np.concatenate([indices, gaps]), kind="stable")
-        new_offsets = sample_offsets(block_sizes)
-        indices = np.concatenate([indices, gaps])[order]
-        block_sizes = np.concatenate([block_sizes, np.zeros(gaps.shape[0], np.int64)])[order]
-        # Gaps add no samples: each new block keeps its slice of samples (and ticks)
-        source_starts = np.concatenate([new_offsets[:-1], np.zeros(gaps.shape[0], np.int64)])[order]
-        take = np.concatenate([np.arange(start, start + size) for start, size in zip(source_starts, block_sizes)]) \
-            if samples.shape[0] else np.zeros(0, np.int64)
-        samples = samples[take]
-        ticks = None if ticks is None else ticks[take]
+        merged = np.union1d(indices, gaps)
+        merged_sizes = np.zeros(merged.shape[0], np.int64)
+        merged_sizes[np.searchsorted(merged, indices)] = block_sizes
+        indices, block_sizes = merged, merged_sizes
     new_rows, stats = encode_rows(samples, block_sizes, params)
-    old_rows = read_rows(parsed)
+    old_rows = read_rows(parsed, old_time_rows)
     if ticks is not None:
         new_rows = new_rows._replace(time_rows=encode_time_rows(ticks, block_sizes, new_rows.block_flags))
     # Each block's source: the new rows at its rank among indices, or the old rows
     is_new = np.zeros(num_blocks, bool)
     is_new[indices] = True
-    new_rank = np.cumsum(is_new) - 1
     sizes = np.zeros(num_blocks, np.int64)
     sizes[:num_old_blocks] = old_rows.block_sizes
     sizes[indices] = block_sizes
     old_offsets = parsed.layout.sample_offsets
     new_offsets = sample_offsets(block_sizes)
-    segments = [
-        (new_offsets[new_rank[b]], new_offsets[new_rank[b] + 1]) if is_new[b] else (old_offsets[b], old_offsets[b + 1])
-        for b in range(num_blocks)
-    ]
+    out_offsets = sample_offsets(sizes)
+    # The output's samples alternate between runs of old blocks (between the new blocks) and new
+    # blocks: one slice each, so the work is in the copies, not in Python per block
+    pieces: list[tuple[bool, int, int]] = []
+    next_old = 0
+    for rank, block_idx in enumerate(indices.tolist()):
+        run_end = min(block_idx, num_old_blocks)
+        if run_end > next_old:
+            pieces.append((False, int(old_offsets[next_old]), int(old_offsets[run_end])))
+        next_old = max(next_old, min(block_idx + 1, num_old_blocks))
+        pieces.append((True, int(new_offsets[rank]), int(new_offsets[rank + 1])))
+    if num_old_blocks > next_old:
+        pieces.append((False, int(old_offsets[next_old]), int(old_offsets[num_old_blocks])))
 
     def column(old: np.ndarray, new: np.ndarray) -> np.ndarray:
         merged = np.empty(num_blocks, old.dtype)
@@ -582,9 +605,12 @@ def splice(
         return merged
 
     def flat(old: np.ndarray, new: np.ndarray) -> np.ndarray:
-        if not segments:
-            return old[:0]
-        return np.concatenate([(new if is_new[b] else old)[start:end] for b, (start, end) in enumerate(segments)])
+        merged = np.empty(int(out_offsets[-1]), old.dtype)
+        position = 0
+        for from_new, start, end in pieces:
+            merged[position:position + end - start] = (new if from_new else old)[start:end]
+            position += end - start
+        return merged
 
     time_rows = None
     if new_rows.time_rows is not None and old_rows.time_rows is not None:
@@ -610,6 +636,6 @@ def splice(
         new_last_ticks = {
             int(b): int(ticks[new_offsets[rank + 1] - 1]) for rank, b in enumerate(indices) if block_sizes[rank]
         }
-        _check_spliced_order(rows, sample_offsets(sizes), is_new, new_last_ticks)
+        _check_spliced_order(rows, out_offsets, is_new, new_last_ticks)
     unit = compress(rows, num_samples, params.try_byte_planes, parsed.header.time_unit)
     return UpdatedUnit(unit, indices, *stats)

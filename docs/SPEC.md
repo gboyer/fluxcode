@@ -226,7 +226,7 @@ ps = 2^e                                 # the power-of-two step
 
 The encoder computes e_fine with B = `max_quantize_bits` and e_coarse with B = `min_quantize_bits`.
 
-### 3.1a Noise floor (if `noise_floor_sigma` = f is set and rng > 0)
+### 3.1a Noise floor (if `noise_floor_sigma` = f is set, rng > 0 and the block has at least 256 samples)
 
 ```
 d     = x[i+2] − 2·x[i+1] + x[i]  for i = 0..n−3,  minus its mean   # second differences
@@ -258,6 +258,10 @@ average, because of the power-of-two floor) on top of noise σ.
   `min_quantize_bits` clamp: a noisy block's noise-floor step spans range/(f·σ) steps (≈ 230, about
   7.8 bits, on the noisy sine at f = 0.25), so a minimum above that would override the noise floor.
   Six bits costs ≤ 1% on the noisy test signals.
+- **Blocks of at least 256 samples.** The ρ test separates white noise (−2/3) from a random walk
+  (−1/2) only on enough differences: pure random walks pass the gate 21% of the time at 9
+  samples, 9.4% at 64, 4.3% at 128, 0.8% at 256 and never at 1000, while white noise passes 96%
+  of the time at 256. Smaller blocks keep the B-bit step.
 - **The gate is per block and all-or-nothing.** Per-sample variants (full precision kept at
   spikes) cost 20–35% more for an error already below the noise on the spike ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design)).
 
@@ -466,7 +470,8 @@ checks that the block sizes add up to `num_samples`, the exact size once `block_
 `block_sizes` give the sums, each block's flags, grid parameter and value anchor ranges (all 0 in
 an empty block), and, for a time axis, rejects:
 - a first non-empty start of int64 minimum, or a running sum of `time_start` above int64 maximum;
-- an empty block with a nonzero `time_start`, `time_step` or `time_ref`;
+- an empty block with a nonzero `time_start`, `time_step` or `time_ref`, or a block of one sample
+  with a nonzero `time_step` or `time_ref` or block flag bit 4;
 - `time_step` < 0, or `time_step` = 0 on an irregular block;
 - an irregular block whose first residual isn't 0, or a long block whose planes 32–63 are all zero
   (its residuals fit in a short block);
@@ -552,8 +557,10 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   whose time span the ranges don't meet is carried over as `update` carries it, without being
   decoded. A block wholly inside the ranges is encoded from the new samples alone. A block
   straddling a range edge is decoded, keeps its samples outside the ranges and is re-encoded with
-  the new ones: the kept samples move to the merged block's grid, within its error bound (exact for
-  decimal data on a decimal grid). New samples past the unit's end append blocks (empty ones to
+  the new ones: the kept samples move to the merged block's grid, which adds up to half its step
+  to their error. Repeated updates of a straddling block compound that, up to half a step each
+  time the grid changes (re-encoding on an unchanged grid adds nothing, §6 fixed point); decimal
+  data on a decimal grid stays exact. New samples past the unit's end append blocks (empty ones to
   fill a gap); blocks are never removed, so a block emptied by an update stays, empty. The
   result is byte-identical to `encode_time_blocks` of the resulting series when no block is
   left empty at the end.

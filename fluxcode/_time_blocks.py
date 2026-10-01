@@ -8,7 +8,9 @@ of the unit's storage key) and passes the same ones to update_time_blocks. Times
 the duration and update ranges are all converted to int64 ticks in the times' unit.
 """
 
+import bisect
 import datetime
+from collections.abc import Iterable
 from fractions import Fraction
 
 import numpy as np
@@ -92,35 +94,51 @@ def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -
 
 
 def to_ranges(update_ranges: object, time_unit: int) -> np.ndarray:
-    """Converts update ranges into a 2D int64 array of [start, end) ticks.
+    """Converts update ranges into sorted, disjoint [start, end) ranges of ticks.
 
     Args:
         update_ranges: One (start, end) pair, or an iterable of them, or an array of shape
-            (k, 2), of times like start_time.
+            (k, 2), of times like start_time. Ranges may overlap or touch; empty ones are
+            ignored.
         time_unit: The ticks' TimeUnit code.
 
     Returns:
-        2D int64 array of shape (k, 2).
+        2D int64 array of shape (k, 2) of non-empty ranges in increasing order, each ending
+        before the next starts.
 
     Raises:
         ValueError: If the ranges aren't pairs of times, or a range ends before it starts.
     """
-    ranges = np.asarray(update_ranges, dtype=None if not isinstance(update_ranges, (list, tuple)) else object)
-    if ranges.ndim == 1 and ranges.shape[0] == 2 and not isinstance(ranges[0], (tuple, list, np.ndarray)):
-        ranges = ranges.reshape(1, 2)
-    elif ranges.ndim == 1:
-        # An iterable of pairs that numpy kept as objects
-        ranges = np.array([tuple(pair) for pair in ranges], dtype=object).reshape(-1, 2) if ranges.shape[0] else \
-            np.zeros((0, 2), object)
-    if ranges.ndim != 2 or ranges.shape[1] != 2:
-        raise ValueError(f"update_ranges must be (start, end) pairs, got shape {ranges.shape}")
-    ticks = np.array(
-        [[to_ticks(_scalar(point), time_unit, "update_ranges") for point in pair] for pair in ranges], np.int64
-    ).reshape(-1, 2)
+    if isinstance(update_ranges, np.ndarray):
+        items = list(update_ranges.reshape(1, 2) if update_ranges.shape == (2,) else update_ranges)
+    elif isinstance(update_ranges, Iterable):
+        try:
+            items = list(update_ranges)
+        except TypeError:
+            raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}") from None
+        # One pair of times rather than a sequence of pairs
+        if len(items) == 2 and not any(isinstance(item, (tuple, list, np.ndarray)) for item in items):
+            items = [items]
+    else:
+        raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}")  # noqa: TRY004
+    pairs = []
+    for item in items:
+        pair = list(item) if isinstance(item, (tuple, list, np.ndarray)) else None
+        if pair is None or len(pair) != 2:
+            raise ValueError(f"update_ranges must be (start, end) pairs, got {item!r}")
+        pairs.append([to_ticks(_scalar(point), time_unit, "update_ranges") for point in pair])
+    ticks = np.array(pairs, np.int64).reshape(-1, 2)
     backwards = np.flatnonzero(ticks[:, 1] < ticks[:, 0])
     if backwards.shape[0]:
         raise ValueError(f"update range {int(backwards[0])} ends before it starts")
-    return ticks
+    # Merge into disjoint ranges: sorted by start, each absorbing those that start inside it
+    merged: list[list[int]] = []
+    for range_start, range_end in sorted(ticks[ticks[:, 1] > ticks[:, 0]].tolist()):
+        if merged and range_start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], range_end)
+        else:
+            merged.append([range_start, range_end])
+    return np.array(merged, np.int64).reshape(-1, 2)
 
 
 def _scalar(value: object) -> object:
@@ -172,11 +190,9 @@ def encode_time_blocks(
 
 
 def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
-    """Whether each tick is in any of the [start, end) ranges."""
-    inside = np.zeros(ticks.shape[0], bool)
-    for range_start, range_end in ranges.tolist():
-        inside |= (ticks >= range_start) & (ticks < range_end)
-    return inside
+    """Whether each tick is in one of the sorted, disjoint [start, end) ranges."""
+    range_idx = np.searchsorted(ranges[:, 0], ticks, "right") - 1
+    return (range_idx >= 0) & (ticks < ranges[np.maximum(range_idx, 0), 1])
 
 
 def update_time_blocks(
@@ -203,30 +219,37 @@ def update_time_blocks(
     start = to_ticks(start_time, unit_code, "start_time")
     duration = to_ticks(block_duration, unit_code, "block_duration", duration=True)
     ranges = to_ranges(update_ranges, unit_code)
-    if not _in_ranges(ticks, ranges).all():
-        outside = int(np.flatnonzero(~_in_ranges(ticks, ranges))[0])
+    outside_ranges = np.flatnonzero(~_in_ranges(ticks, ranges))
+    if outside_ranges.shape[0]:
+        outside = int(outside_ranges[0])
         raise ValueError(f"times must be within update_ranges: sample {outside} at {int(ticks[outside])} isn't")
     new_ids = block_ids(ticks, start, duration)
     if new_ids.shape[0] and (np.diff(ticks) < 0).any():
         raise _unit.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
-    # The existing blocks whose time span meets a range: as Python ints, past int64 if need be
-    touched: set[int] = set()
-    covered: set[int] = set()
-    for range_start, range_end in ranges.tolist():
-        if range_end <= start or range_end == range_start:
-            continue
-        first = max(range_start - start, 0) // duration
-        last = min(-(-(range_end - start) // duration), num_old_blocks)
-        for block_idx in range(first, last):
-            touched.add(block_idx)
+    # The existing blocks whose time span meets a range (block bounds as Python ints: past int64 if need be)
+    spans = [
+        np.arange(max(range_start - start, 0) // duration, min(-(-(range_end - start) // duration), num_old_blocks))
+        for range_start, range_end in ranges.tolist()
+        if range_end > start
+    ]
+    touched_ids = np.unique(np.concatenate(spans)) if spans else np.zeros(0, np.int64)
+    # A block whose whole span is inside one (merged) range loses all its samples without being
+    # decoded; exact Python ints, as a span can end past int64
+    range_starts, range_ends = ranges[:, 0].tolist(), ranges[:, 1].tolist()
+    touched = set(touched_ids.tolist())
+    covered = set()
     for block_idx in touched:
-        # A block whose whole span is inside the ranges loses all its samples without being decoded
         block_start = start + block_idx * duration
-        if _covers(ranges, block_start, block_start + duration):
+        range_idx = bisect.bisect_right(range_starts, block_start) - 1
+        if range_idx >= 0 and range_ends[range_idx] >= block_start + duration:
             covered.add(block_idx)
     straddling = np.array(sorted(touched - covered), np.int64)
-    old_values, old_ticks = _unit.decode_blocks(parsed, straddling)
+    time_rows = _unit.read_time_rows(parsed)
+    old_values: np.ndarray = np.zeros(0)
+    old_ticks: np.ndarray | None = np.zeros(0, np.int64)
+    if straddling.shape[0]:
+        old_values, old_ticks = _unit.decode_blocks(parsed, straddling, time_rows)
     assert old_ticks is not None
     old_offsets = parsed.layout.sample_offsets
     new_offsets = _unit.sample_offsets(np.bincount(new_ids, minlength=max(num_old_blocks, int(new_ids[-1]) + 1)
@@ -264,16 +287,5 @@ def update_time_blocks(
         np.array(sizes, np.int64),
         np.concatenate(pieces_ticks).astype(np.int64, copy=False),
         params,
+        time_rows,
     )
-
-
-def _covers(ranges: np.ndarray, span_start: int, span_end: int) -> bool:
-    """Whether the union of the [start, end) ranges covers [span_start, span_end)."""
-    position = span_start
-    for range_start, range_end in sorted(ranges.tolist()):
-        if range_start > position:
-            break
-        position = max(position, range_end)
-        if position >= span_end:
-            return True
-    return position >= span_end

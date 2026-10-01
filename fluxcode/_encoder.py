@@ -37,6 +37,11 @@ NO_DECIMAL: int = 99
 NOISE_RHO: float = -0.6
 """Autocorrelation threshold for noise gating (white noise gives rho = -2/3)."""
 
+NOISE_MIN_LEN: int = 256
+"""Smallest block the noise floor applies to. Below it the rho test can't tell white noise (rho
+= -2/3) from a random walk (-1/2): random walks pass the gate 9% of the time at 64 samples, 0.8% at
+256 and none at 1000, while white noise still passes 96% of the time at 256."""
+
 PICK_LEN: int = 250
 """Number of initial samples evaluated to select the predictor difference order."""
 
@@ -825,7 +830,7 @@ def encode_unit(
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max
         noise_sigma = noise_rho = 0.0
-        if noise_factor > 0 and block_max > block_min:
+        if noise_factor > 0 and block_max > block_min and block_len >= NOISE_MIN_LEN:
             if not has_nonfinite:
                 noise_sigma, noise_rho = noise(block_samples, range_scale(block_min, block_max))
             else:

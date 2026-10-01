@@ -147,7 +147,8 @@ def encode(
     ticks, time_unit_code = _unit.series_ticks(times, time_unit, series_arr.shape[0])
     # Samples per full unit
     samples_per_unit = blocks_per_unit * block_len
-    _unit.check_unit_counts(blocks_per_unit, min(samples_per_unit, series_arr.shape[0]))
+    num_blocks = -(-min(samples_per_unit, series_arr.shape[0]) // block_len)
+    _unit.check_unit_counts(num_blocks, min(samples_per_unit, series_arr.shape[0]))
     if ticks is not None:
         # Each unit checks its own times: check the unit boundaries here
         unit_starts = np.arange(samples_per_unit, ticks.shape[0], samples_per_unit)
@@ -275,7 +276,9 @@ def update_time_blocks(
     decoded or re-encoded. Blocks wholly inside the ranges are encoded from the new samples
     alone. Blocks that straddle a range boundary are decoded, their samples outside the
     ranges kept and merged with the new ones, and re-encoded: those kept samples move to
-    the merged block's grid, within its error bound. Blocks are appended (empty ones to
+    the merged block's grid. That adds up to half its step to their error each time, so
+    repeated updates of the same block can compound (decimal data on a decimal grid stays
+    exact). Blocks are appended (empty ones to
     fill a gap) when new samples are timed past the unit's end; blocks never are removed.
 
     Args:
@@ -385,6 +388,9 @@ def update(
     if not all(is_int(idx) and idx >= 0 for idx in blocks):
         raise ValueError(f"block indices must be integers >= 0, got {sorted(map(repr, blocks))}")
     indices = sorted(int(idx) for idx in blocks)
+    # Before anything is sized by the indices
+    if indices and indices[-1] >= _format.MAX_BLOCKS:
+        raise ValueError(f"a unit holds at most {_format.MAX_BLOCKS} blocks, got block index {indices[-1]}")
     if parsed.has_time:
         if times is None:
             raise ValueError("the unit has a time axis: times are required")

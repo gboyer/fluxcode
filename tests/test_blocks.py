@@ -148,6 +148,30 @@ def test_times_in_tiny_and_empty_blocks():
     assert unit_rows(unit).time_rows.steps[0] == 1 and unit_rows(unit).time_rows.refs[0] == 2**64 - 2
 
 
+def test_single_sample_blocks_must_be_canonical():
+    """A block of one sample has no deltas: the decoder accepts only a step and reference of 0,
+    regular."""
+    from test_time import corrupt_unit
+
+    ok = corrupt_unit([False, False], [5, 9], [0, 0], [0, 0], np.zeros(2), sizes=[1, 1])
+    assert times_of(ok).tolist() == [5, 9]
+    for irregular, steps, refs in [([False, True], [0, 0], [0, 0]), ([False, False], [0, 3], [0, 0]),
+                                   ([False, False], [0, 0], [0, 1])]:
+        with pytest.raises(ValueError, match="block 1: a single sample"):
+            fluxcode.decode_unit(corrupt_unit(irregular, [5, 9], steps, refs, np.zeros(2), sizes=[1, 1]))
+
+
+def test_noise_floor_needs_256_samples():
+    """Below 256 samples the gate can't tell white noise from a random walk: blocks keep the
+    finest step. From 256 white noise gates as before."""
+    rng = np.random.default_rng(4)
+    noise = rng.normal(size=2 * 255 + 256)
+    unit = fluxcode.encode_blocks(noise, [255, 255, 256], Params(decimal_detection=False))
+    rows = unit_rows(unit.unit)
+    fine = [_encoder.range_exponent(lo, hi, 16) for lo, hi in zip(unit.block_min, unit.block_max)]
+    assert (rows.grid_params[:2] == fine[:2]).all() and rows.grid_params[2] > fine[2]
+
+
 def test_empty_block_time_columns_must_be_zero():
     """Writers store 0 in an empty block's time_start, time_step and time_ref; decoders check."""
     unit = fluxcode.encode_blocks(np.zeros(16), [8, 0, 8], times=np.r_[np.arange(8), 100 + np.arange(8)],
@@ -311,7 +335,8 @@ def test_update_time_blocks_carries_other_blocks_untouched(monkeypatch):
     ranges = [(START + np.timedelta64(30 * 60_000 + 15_000, "ms"), START + 33 * MINUTE)]  # straddles block 30
     decoded = []
     original = _unit.decode_blocks
-    monkeypatch.setattr(_unit, "decode_blocks", lambda parsed, ids: decoded.append(ids.tolist()) or original(parsed, ids))
+    monkeypatch.setattr(_unit, "decode_blocks",
+                        lambda parsed, ids, *rest: decoded.append(ids.tolist()) or original(parsed, ids, *rest))
     x_new, t_new = new_data(ranges)
     unit2, indices, _, _, _ = update_hour(unit, x_new, t_new, ranges)
     assert decoded == [[30]] and indices.tolist() == [30, 31, 32]
@@ -360,6 +385,20 @@ def test_update_range_forms(ranges):
     x_new, t_new = new_data([minutes(30, 31)])
     ref = update_hour(unit, x_new, t_new, [minutes(30, 31)])
     assert update_hour(unit, x_new, t_new, ranges).unit == ref.unit
+
+
+def test_update_ranges_from_any_iterable():
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    x_new, t_new = new_data([minutes(30, 31)])
+    ref = update_hour(unit, x_new, t_new, [minutes(30, 31)]).unit
+    assert update_hour(unit, x_new, t_new, (pair for pair in [minutes(30, 31)])).unit == ref
+    # Overlapping, touching, empty and unsorted ranges merge into the same union
+    pieces = [minutes(31, 31), (START + 30 * MINUTE + np.timedelta64(20, "s"), START + 31 * MINUTE),
+              minutes(30, 30) , (START + 30 * MINUTE, START + 30 * MINUTE + np.timedelta64(20, "s"))]
+    assert update_hour(unit, x_new, t_new, pieces).unit == ref
+    with pytest.raises(ValueError, match="pairs"):
+        update_hour(unit, x_new, t_new, 5)
 
 
 def test_update_time_blocks_errors():

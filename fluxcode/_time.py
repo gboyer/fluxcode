@@ -39,6 +39,7 @@ class TimeStatus(enum.IntEnum):
     BAD_STEP = 2
     BAD_FIRST_RESIDUAL = 3
     OVERFLOW = 4
+    BAD_SINGLE = 5
 
 
 OK: int = int(TimeStatus.OK)
@@ -55,6 +56,9 @@ BAD_FIRST_RESIDUAL: int = int(TimeStatus.BAD_FIRST_RESIDUAL)
 
 OVERFLOW: int = int(TimeStatus.OVERFLOW)
 """Decoding: a time exceeds int64 maximum."""
+
+BAD_SINGLE: int = int(TimeStatus.BAD_SINGLE)
+"""Decoding: a block of one sample has a nonzero time step or reference, or irregular times."""
 
 
 @njit(inline="always")
@@ -321,8 +325,8 @@ def expand_times(
             written at its sample offsets.
 
     Returns:
-        A tuple of (status, block_idx): OK, or BAD_STEP, BAD_FIRST_RESIDUAL or OVERFLOW and
-        the first failing block.
+        A tuple of (status, block_idx): OK, or BAD_STEP, BAD_FIRST_RESIDUAL, OVERFLOW or
+        BAD_SINGLE and the first failing block.
     """
     int64_max = np.uint64(INT64_MAX)
     for block_idx in block_ids:
@@ -334,10 +338,16 @@ def expand_times(
         step = time_steps[block_idx]
         reference = time_refs[block_idx]
         irregular = block_flags[block_idx] & HEAD_IRREGULAR_TIME
+        if block_len == 1:
+            # No deltas: the encoder's only form is a step and reference of 0, regular
+            if step != 0 or reference != 0 or irregular:
+                return BAD_SINGLE, block_idx
+            out_times[first_sample] = time_starts[block_idx]
+            continue
         if step < 0 or (irregular and step == 0):
             return BAD_STEP, block_idx
         times = out_times[first_sample:first_sample + block_len]
-        if step == 0 or block_len == 1:
+        if step == 0:
             times[:] = time_starts[block_idx]
             continue
         step_unsigned = np.uint64(step)
