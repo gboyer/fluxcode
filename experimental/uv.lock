@@ -378,10 +378,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fluxcode-rs", marker = "extra == 'rust'", directory = "../rust" },
     { name = "numba", specifier = ">=0.59" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "zstandard", specifier = ">=0.22" },
 ]
+provides-extras = ["rust"]
 
 [package.metadata.requires-dev]
 dev = [

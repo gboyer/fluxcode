@@ -28,6 +28,9 @@ classifiers = [
 [project.optional-dependencies]
 rust = ["fluxcode-rs>=0.1"]  # encoder accelerator that doesn't hold the GIL in a block flush (rust/)
 
+[tool.uv.sources]
+fluxcode-rs = { path = "rust" }  # until it is on PyPI: `uv sync --extra rust` builds it (needs a Rust toolchain)
+
 [project.urls]
 Homepage = "https://github.com/gboyer/fluxcode"
 Repository = "https://github.com/gboyer/fluxcode"

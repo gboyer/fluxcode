@@ -105,6 +105,11 @@ dependencies = [
     { name = "zstandard" },
 ]
 
+[package.optional-dependencies]
+rust = [
+    { name = "fluxcode-rs" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -115,10 +120,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fluxcode-rs", marker = "extra == 'rust'", directory = "rust" },
     { name = "numba", specifier = ">=0.59" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "zstandard", specifier = ">=0.22" },
 ]
+provides-extras = ["rust"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -127,6 +134,19 @@ dev = [
     { name = "ruff", specifier = ">=0.16.9" },
     { name = "ty", specifier = ">=0.0.84" },
 ]
+
+[[package]]
+name = "fluxcode-rs"
+version = "0.1.0"
+source = { directory = "rust" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=1.24" }]
 
 [[package]]
 name = "iniconfig"
