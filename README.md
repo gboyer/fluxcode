@@ -7,7 +7,8 @@ to 4 significant figures, or more when the range is narrow.
 
 High level properties:
 
-* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 2 GiB/s.
+* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s (2.2 GiB/s
+  with bit planes only).
 * **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
   data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
   for data that arrives late or with gaps.
@@ -111,7 +112,7 @@ which set the step to 0.25σ.
   they come free with encoding, and decoding doesn't need them. `times` optionally stores one
   timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or integer ticks with
   `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and non-decreasing; equal
-  timestamps are fine. A regular grid costs about 45 bytes per unit.
+  timestamps are fine. A regular grid costs about 65 bytes per unit.
 - `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one unit of blocks of the
   given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list arrays.
   An empty block stores nothing (NaN statistics). Blocks of at most 8 samples skip the analysis:
@@ -156,27 +157,27 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 | 0.0000% | 2.75 | 1.30 |
-| square wave | 0.04 | 0.0000% | 2.91 | 1.13 |
-| sine, 4.12 Hz | 2.40 | 0.0010% | 6.01 | 2.09 |
-| sine, 50.3 Hz | 6.74 | 0.0010% | 5.94 | 2.11 |
-| chirp | 7.81 | 0.0010% | 7.41 | 2.01 |
-| random walk | 12.62 | 0.0015% | 5.54 | 1.78 |
-| random walk rounded to 0.01 | 9.28 | 0% (exact) | 6.31 | 1.84 |
-| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 6.21 | 2.15 |
-| noisy sine (σ = 5) | 5.24 | 0.2334% | 4.20 | 1.56 |
-| Gaussian spikes on uniform noise | 6.63 | 1.4661% | 5.04 | 1.81 |
-| **all 15 signals** | **4.76** | | **5.08** | **1.73** |
+| linear ramp | 0.02 | 0.0000% | 2.74 | 1.67 |
+| square wave | 0.04 | 0.0000% | 2.92 | 1.18 |
+| sine, 4.12 Hz | 2.40 | 0.0010% | 6.18 | 2.15 |
+| sine, 50.3 Hz | 6.74 | 0.0010% | 5.94 | 2.16 |
+| chirp | 7.81 | 0.0010% | 7.51 | 2.04 |
+| random walk | 12.62 | 0.0015% | 5.59 | 1.86 |
+| random walk rounded to 0.01 | 9.28 | 0% (exact) | 6.36 | 1.92 |
+| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 6.33 | 2.23 |
+| noisy sine (σ = 5) | 5.24 | 0.2334% | 4.23 | 1.63 |
+| Gaussian spikes on uniform noise | 6.63 | 1.4661% | 5.07 | 1.89 |
+| **all 15 signals** | **4.76** | | **5.13** | **1.80** |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
 Encode compresses each unit twice, with bit and with byte planes (`planes="best"`). With
-`planes="bit"` the whole set is 4.86 bits/sample at 3.37 µs/block to encode (sines 4.12 Hz 2.73,
+`planes="bit"` the whole set is 4.86 bits/sample at 3.38 µs/block to encode (sines 4.12 Hz 2.73,
 9.87 Hz 3.64); byte planes gain much more at lower `max_quantize_bits` (see the
 [research report](experimental/report/index.html#scatter-kinds)).
 
-Decoding runs at about 4.6 GB/s per core, and the kernels release the GIL:
+Decoding runs at about 4.5 GB/s per core, and the kernels release the GIL:
 4 threads encode about 5 GB/s and decode about 15 GB/s (8 threads add little: 4 of the 8 cores
 are "efficiency cores").
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) has a sample industrial-scale run
@@ -237,8 +238,8 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
 
 - [docs/SPEC.md](docs/SPEC.md): the format, encoding algorithm, guarantees and conformance tests.
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md): speed, the day-scale stress run, implementation notes.
-- [docs/TUNING.md](docs/TUNING.md): measurements behind the parameter defaults and what to check on
-  your data.
+- [docs/TUNING.md](docs/TUNING.md): measurements behind the parameter defaults and the time axis
+  design, and what to check on your data.
 - [docs/design/api-plan.md](docs/design/api-plan.md): the original API design plan (history).
 - [bench/](bench/): `bench_gb.py` (size, error and speed per signal), `estimate.py` (the size
   target's estimate against actual size), `decimal_near_miss.py` (the encode cost of a

@@ -105,3 +105,57 @@ What to measure per tag before settling `noise_floor_sigma` (and `target_bits_pe
    should run with `noise_floor_sigma` off.
 6. **Decimal tags:** confirm which tags lose decimal exactness to the noise floor. That's
    expected where noise exceeds the decimal step, and should be acceptable.
+
+## Time axis
+
+The format is in [SPEC.md §4](SPEC.md#4-time-axis). Measured on one-minute units
+(`bench/time_axis.py`, Apple M3, AC power, single thread); the first three rows are the common
+shapes, and [experimental/report/time.html](../experimental/report/time.html) shows them in detail:
+
+| timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
+|---|---|---|---|---|---|
+| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +17 µs (+5%) | +14 µs (+12%) |
+| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +20 µs (+6%) | +17 µs (+14%) |
+| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53,422 | 7.12 | +328 µs (+99%) | +152 µs (+129%) |
+| 1 kHz, 20 gaps | 19/60 | 1,094 | 0.146 | +88 µs (+27%) | +55 µs (+47%) |
+| 1 kHz, 1% dropped | 60/60 | 1,461 | 0.195 | +229 µs (+69%) | +123 µs (+104%) |
+| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +194 µs (+59%) | +92 µs (+78%) |
+| jitter σ=10 µs, ns resolution | 60/60 | 120,712 | 16.1 | +452 µs (+137%) | +195 µs (+165%) |
+| jitter σ=10 µs, µs resolution | 60/60 | 45,903 | 6.12 | +317 µs (+96%) | +139 µs (+118%) |
+| Poisson events, mean 1 ms, µs | 60/60 | 87,889 | 11.7 | +452 µs (+137%) | +184 µs (+156%) |
+| Poisson events, mean 1 ms, ns | 60/60 | 164,661 | 22 | +524 µs (+158%) | +206 µs (+175%) |
+| deadband logging, ms grid | 60/60 | 55,498 | 7.4 | +684 µs (+207%) | +245 µs (+208%) |
+| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +199 µs (+60%) | +101 µs (+86%) |
+
+For scale, the same unit's values take 17,976 bytes, 331 µs to encode (default `planes="best"`,
+which compresses the time fields twice too) and 118 µs to decode; the percentages are of those
+times.
+Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
+grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:
+on 4 threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md](PERFORMANCE.md)).
+
+**Design notes** (measured while designing, on the timestamps above):
+- The GCD matters: without it, µs or ms data stored in ns ticks costs 1.4–2.6× more (zstd alone
+  doesn't find the grid). With it, the unit's resolution doesn't change the size.
+- Plain deltas beat delta-of-deltas and residuals from the nominal grid overall: the grid
+  residual saves about 1 bit/sample on jitter around a fixed grid but loses on gaps, drift and
+  events. Delta-of-deltas measured worse again with the reference below (for example 2,682 bytes
+  against 1,489 for 1% dropped samples).
+- The per-block reference: bit planes of raw quotients around a center like 1000 waste about a
+  bit per sample, because a spread of ±60 flips planes 3–10 together (and crossing 1024 flips
+  more), and each plane is coded on its own. Residuals from the reference cut jitter by 4–16%,
+  dropped samples by half and a drifting clock by 80%, and cost about 15 bytes per unit with gaps
+  (the `time_ref` column). The mean alone lost 4–17% on skewed deltas, and the median matched
+  the mean-or-minimum choice at the cost of a selection per block; the variance rule matched a
+  per-block best of both on every shape measured.
+- 32 planes, with 64 for long blocks only: zstd scans a run of zero bytes at about 9 GB/s, so
+  64 planes per block spent 50–70 µs per irregular unit compressing the dead planes 32–63. Fewer
+  planes lose size instead: this libzstd (1.5.7) compresses these bodies 1–3% better above 256 KB
+  (splitting blocks where the statistics change), and a unit-wide plane count or per-block widths
+  drop most bodies below it. At 32 planes a 60-block unit stays at about 360 KB and its size is
+  unchanged; at 24 it drops to 300 KB and some shapes grew 1.6–1.8%.
+- Bit planes and byte planes for the residuals are within a few percent either way; bit planes
+  match the value residuals.
+- Block starts are stored as unsigned increases (monotonic by requirement), which costs 45
+  bytes per regular unit against 280 raw. The value anchor is not transformed: XOR with the
+  previous anchor (+0.1% overall) and zigzagged integer deltas (−0.03%) were both noise.

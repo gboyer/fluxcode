@@ -154,55 +154,10 @@ which is `time_ref` plus the sample's residual:
 - **Empty blocks** have 0 in all three columns and take no part in the chain of start
   increases: each non-empty block's start is stored relative to the previous non-empty block's.
 
-A regular series costs only its per-block start, step and reference (about 45 bytes per 60-block unit). A
-gap costs only its own block. Measured on one-minute units (`bench/time_axis.py`, Apple M3, AC
-power, single thread); the first three rows are the common shapes, and
-[experimental/report/time.html](../experimental/report/time.html) shows them in detail:
-
-| timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
-|---|---|---|---|---|---|
-| perfect 1 kHz grid | 0/60 | 44 | 0.006 | +16 µs (+9%) | +12 µs (+11%) |
-| grid with 2 gaps | 2/60 | 657 | 0.088 | +27 µs (+15%) | +21 µs (+19%) |
-| noisy clock (σ = 20 µs, µs resolution) | 60/60 | 53,588 | 7.1 | +197 µs (+111%) | +128 µs (+114%) |
-| 1 kHz, 20 gaps | 19/60 | 769 | 0.10 | +62 µs (+35%) | +49 µs (+44%) |
-| 1 kHz, 1% dropped | 60/60 | 1,466 | 0.20 | +146 µs (+82%) | +105 µs (+94%) |
-| drifting clock (0.99998 ms) | 60/60 | 277 | 0.037 | +124 µs (+70%) | +89 µs (+79%) |
-| jitter σ = 10 µs, µs resolution | 60/60 | 46,077 | 6.1 | +199 µs (+112%) | +121 µs (+108%) |
-| jitter σ = 10 µs, ns resolution | 60/60 | 120,960 | 16.1 | +258 µs (+146%) | +149 µs (+133%) |
-| Poisson events (mean 1 ms), µs | 60/60 | 87,757 | 11.7 | +260 µs (+147%) | +170 µs (+152%) |
-| deadband logging on a ms grid | 60/60 | 55,479 | 7.4 | +363 µs (+205%) | +220 µs (+196%) |
-
-For scale, the same unit's values take 20,951 bytes, 177 µs to encode and 112 µs to decode; the
-percentages are of those times.
-Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
-grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:
-on 4 threads, where memory bandwidth is shared, that costs 12–18% (docs/PERFORMANCE.md).
-
-**Design notes** (measured while designing, on the timestamps above):
-- The GCD matters: without it, µs or ms data stored in ns ticks costs 1.4–2.6× more (zstd alone
-  doesn't find the grid). With it, the unit's resolution doesn't change the size.
-- Plain deltas beat delta-of-deltas and residuals from the nominal grid overall: the grid
-  residual saves about 1 bit/sample on jitter around a fixed grid but loses on gaps, drift and
-  events. Delta-of-deltas measured worse again with the reference below (for example 2,682 bytes
-  against 1,489 for 1% dropped samples).
-- The per-block reference: bit planes of raw quotients around a center like 1000 waste about a
-  bit per sample, because a spread of ±60 flips planes 3–10 together (and crossing 1024 flips
-  more), and each plane is coded on its own. Residuals from the reference cut jitter by 4–16%,
-  dropped samples by half and a drifting clock by 80%, and cost about 15 bytes per unit with gaps
-  (the `time_ref` column). The mean alone lost 4–17% on skewed deltas, and the median matched
-  the mean-or-minimum choice at the cost of a selection per block; the variance rule matched a
-  per-block best of both on every shape measured.
-- 32 planes, with 64 for long blocks only: zstd scans a run of zero bytes at about 9 GB/s, so
-  64 planes per block spent 50–70 µs per irregular unit compressing the dead planes 32–63. Fewer
-  planes lose size instead: this libzstd (1.5.7) compresses these bodies 1–3% better above 256 KB
-  (splitting blocks where the statistics change), and a unit-wide plane count or per-block widths
-  drop most bodies below it. At 32 planes a 60-block unit stays at about 360 KB and its size is
-  unchanged; at 24 it drops to 300 KB and some shapes grew 1.6–1.8%.
-- Bit planes and byte planes for the residuals are within a few percent either way; bit planes
-  match the value residuals.
-- Block starts are stored as unsigned increases (monotonic by requirement), which costs 45
-  bytes per regular unit against 280 raw. The value anchor is not transformed: XOR with the
-  previous anchor (+0.1% overall) and zigzagged integer deltas (−0.03%) were both noise.
+A regular series costs only its per-block start, step and reference (about 65 bytes per 60-block
+unit), and a gap costs only its own block. Measured costs per clock shape and the measurements
+behind these choices (the GCD, plain deltas, the reference, 32 planes) are in
+[TUNING.md](TUNING.md#time-axis).
 
 ## 5. Encoding one block
 
