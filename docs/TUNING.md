@@ -7,20 +7,20 @@ them. The format and algorithm are in [SPEC.md](SPEC.md).
 
 **`level`** (1–9, default 5) sets how hard the encoder works on compression: the residual layout,
 block flushes inside the zstd frame and the zstd level (the table is in SPEC.md §1). It never
-changes the decoded values. Measured 2026-10-01 through the public API, one thread, against the
-encoder before levels existed (both layouts compressed, smaller kept, one block run, zstd 3: 5.174
+changes the decoded values. Measured 2026-10-01 through the public API, one thread, on battery
+(times are comparable within the table, coarse in absolute terms), against the encoder before
+levels existed (both layouts compressed, smaller kept, one block run, zstd 3: 5.174
 and 4.009 bits/sample at 9.4 and 8.5 ns/sample). *Report*: the report's 20 signals, 4 minutes each
 (4.8 M samples); *random*: 400 one-minute units of 14 random signal families with random
 `max_quantize_bits` and noise floor (24 M samples; `experimental/plane_layout/`).
 
 | level | size, report | size, random | encode time, report / random | decode |
 |---|---|---|---|---|
-| 1 | +1.0% | +2.3% | −2.3 ns/sample (−24%) / −1.8 (−21%) | same |
-| 2 | 0.0% | +1.3% | −1.9 ns/sample (−20%) / −1.4 (−16%) | same |
-| 3–5 | −2.1% | −0.3% | 0.0 ns/sample (0%) / +0.4 (+5%) | same |
-| 6–7 | −2.1% | −2.1% | +2.7 ns/sample (+29%) / +2.2 (+26%) | same |
-| 8 | −2.3% | −2.3% | +24 ns/sample (+256%) / +23 (+267%) | up to +0.4 ns/sample (+13%) |
-| 9 | −2.6% | −2.8% | +36 ns/sample (+387%) / +33 (+389%) | up to +0.5 ns/sample (+16%) |
+| 1 | +1.0% | +2.3% | −2.8 ns/sample (−30%) / −2.2 (−26%) | same |
+| 2 | 0.0% | +1.3% | −2.4 ns/sample (−26%) / −1.7 (−20%) | same |
+| 3–5 | −2.1% | −0.3% | −0.6 ns/sample (−6%) / +0.1 (+1%) | same |
+| 6–8 | −2.1% | −2.1% | +2.8 ns/sample (+30%) / +2.2 (+26%) | same |
+| 9 | −2.9% | −3.3% | +43 ns/sample (+462%) / +40 (+465%) | same |
 
 Where the gains come from (`experimental/plane_layout/README.md` has the full study):
 
@@ -41,8 +41,10 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   save on 75% of units (up to +90%); compressing those again in one run and keeping the smaller
   makes flushing never worse than 3% on any unit. It moves the total by only 0.05%: it guards
   single units, not the aggregate.
-- **zstd 7 and 9** (levels 8–9): see the zstd level table below; only worth it with flushes and
-  both layouts already in place.
+- **zstd 9 as well as 3** (level 9). zstd 9 alone is larger than zstd 3 on 20–23% of units (up
+  to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against level 6
+  alone, −0.8% and −1.2% keeping the smaller per unit. zstd 7 alone gained only 0.1–0.25% and
+  was dropped.
 
 Tried and left out: nibble planes (4 × 4 bits, a format change; best of three layouts adds 0.6
 points over best of two for a third compression), separate zstd frames (worse than blocks),
@@ -95,7 +97,7 @@ compression time against level 3):
 | 12 | −1.8% | −3.7% | 13× | 1.11× |
 | 19 | −3.2% | −5.5% | 94× | 1.36× |
 
-Level 3 is the knee (level 1 is used only at level 1, levels 8 and 9 use zstd 7 and 9). Above it, compression time grows much faster than size falls, and the best
+Level 3 is the knee (zstd 1 is used only at level 1, zstd 9 only at level 9, alongside 3). Above it, compression time grows much faster than size falls, and the best
 of both planes at level 3 saves more than bit planes up to level 12. Level 1 saves only 10% of the
 zstd time and doubles the tiny linear and square units. The high levels pay off only on blocky or
 periodic signals (square −50%, sin-50.3hz −16% at 19); noisy and random-walk signals gain 1–3%

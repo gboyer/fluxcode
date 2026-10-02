@@ -26,21 +26,21 @@ class Effort(NamedTuple):
         layout: "heuristic" (byte planes when few residuals reach 256, else bit planes, one
             compression), "best" (both, the smaller kept), "bit" or "byte" (tests only).
         flush: Whether a zstd block ends after the columns and each dense residual plane.
-        zstd_level: The zstd compression level.
+        zstd_levels: The zstd compression levels tried, the smallest frame kept.
     """
 
     layout: str
     flush: bool
-    zstd_level: int
+    zstd_levels: tuple[int, ...]
 
 
 EFFORTS: dict[int, Effort] = {
-    1: Effort("heuristic", False, 1),
-    2: Effort("heuristic", False, 3),
-    **dict.fromkeys(range(3, 6), Effort("heuristic", True, 3)),
-    **dict.fromkeys(range(6, 8), Effort("best", True, 3)),
-    8: Effort("best", True, 7),
-    9: Effort("best", True, 9),
+    1: Effort("heuristic", False, (1,)),
+    2: Effort("heuristic", False, (3,)),
+    **dict.fromkeys(range(3, 6), Effort("heuristic", True, (3,))),
+    **dict.fromkeys(range(6, 9), Effort("best", True, (3,))),
+    # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
+    9: Effort("best", True, (3, 9)),
 }
 """Params.level to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
 
@@ -327,7 +327,7 @@ def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit
     fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)
     return _pack(
         lambda byte_planes: _bitpacking.write_unit(*fields, byte_planes=byte_planes, time_rows=rows.time_rows),
-        rows.block_flags.shape[0], num_samples, effort, time_unit,
+        rows.block_flags.shape[0], num_samples, effort, time_unit, first_byte_planes=True,
     )
 
 
@@ -361,46 +361,58 @@ def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int) -> bytes:
 
 
 def _frame(body: np.ndarray, num_blocks: int, byte_planes: bool, has_time: bool, effort: Effort) -> bytes:
-    """The zstd frame of a body: in one block run, or block-flushed at the columns and planes
-    and then also in one block run when the flushed frame comes out small (SMALL_FRAME_BYTES)."""
-    single = lambda: zstd(effort.zstd_level)[0].compress(body.data)
-    if not effort.flush:
-        return single()
-    _, offsets = _format.read_layout(body, num_blocks)
-    flushed = compress_body(body, _format.flush_points(body, num_blocks, offsets, has_time, byte_planes), effort.zstd_level)
-    if len(flushed) < SMALL_FRAME_BYTES:
-        one_run = single()
-        return one_run if len(one_run) < len(flushed) else flushed
-    return flushed
+    """The smallest zstd frame of a body over effort's zstd levels: in one block run, or
+    block-flushed at the columns and planes and then also in one block run when the flushed frame
+    comes out small (SMALL_FRAME_BYTES). Ties keep the earlier candidate."""
+    cuts = None
+    if effort.flush:
+        _, offsets = _format.read_layout(body, num_blocks)
+        cuts = _format.flush_points(body, num_blocks, offsets, has_time, byte_planes)
+    frames = []
+    for level in effort.zstd_levels:
+        flushed = None if cuts is None else compress_body(body, cuts, level)
+        if flushed is not None:
+            frames.append(flushed)
+        if flushed is None or len(flushed) < SMALL_FRAME_BYTES:
+            frames.append(zstd(level)[0].compress(body.data))
+    return min(frames, key=len)
 
 
 def _pack(
-    write_body: Callable[[bool], np.ndarray], num_blocks: int, num_samples: int, effort: Effort, time_unit: int
+    write_body: Callable[[bool], np.ndarray],
+    num_blocks: int,
+    num_samples: int,
+    effort: Effort,
+    time_unit: int,
+    first_byte_planes: bool,
 ) -> bytes:
-    """The unit of the body write_body(byte_planes) builds, compressed as effort says."""
+    """The unit of the body write_body(byte_planes) builds, compressed as effort says. The
+    heuristic layout reads its statistic from the body in layout first_byte_planes, the one
+    cheaper to write, and writes the other only if it needs it."""
     has_time = time_unit != 0
+    bodies: dict[bool, np.ndarray] = {}
 
-    def build(byte_planes: bool, body: np.ndarray | None = None) -> bytes:
+    def build(byte_planes: bool) -> bytes:
+        if byte_planes not in bodies:
+            bodies[byte_planes] = write_body(byte_planes)
         header = _format.pack_header(num_blocks, num_samples, byte_planes, time_unit)
-        body = write_body(byte_planes) if body is None else body
-        return header + _frame(body, num_blocks, byte_planes, has_time, effort)
+        return header + _frame(bodies[byte_planes], num_blocks, byte_planes, has_time, effort)
 
+    if effort.layout in ("bit", "byte"):
+        return build(effort.layout == "byte")
     if effort.layout == "heuristic":
-        bit_body = write_body(False)
-        _, offsets = _format.read_layout(bit_body, num_blocks)
-        share = _bitpacking.high_byte_share(bit_body, num_blocks, int(offsets.group_offsets[-1]), has_time)
-        byte_planes = share < BYTE_PLANES_MAX_HIGH_SHARE
-        unit = build(True) if byte_planes else build(False, bit_body)
+        first = bodies[first_byte_planes] = write_body(first_byte_planes)
+        _, offsets = _format.read_layout(first, num_blocks)
+        share = _bitpacking.high_byte_share(first, num_blocks, int(offsets.group_offsets[-1]), has_time, first_byte_planes)
+        picked = share < BYTE_PLANES_MAX_HIGH_SHARE
+        unit = build(picked)
         if len(unit) - _format.HEADER_BYTES >= SMALL_FRAME_BYTES:
             return unit
-        other = build(False, bit_body) if byte_planes else build(True)
-        bit_unit, byte_unit = (other, unit) if byte_planes else (unit, other)
-        return byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit
-    if effort.layout != "best":
-        return build(effort.layout == "byte")
-    bit_unit, byte_unit = build(False), build(True)
+        units = {picked: unit, not picked: build(not picked)}
+    else:
+        units = {False: build(False), True: build(True)}
     # Ties go to byte planes (they decode faster: no bit transpose), so the choice is deterministic
-    return byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit
+    return units[True] if len(units[True]) <= len(units[False]) else units[False]
 
 
 def encode(
@@ -733,6 +745,7 @@ def splice(
             parsed.raw_body, parsed.layout, parsed.header.byte_planes, old_starts, indices, new_rows, byte_planes
         ),
         num_blocks, num_samples, EFFORTS[params.level], parsed.header.time_unit,
+        first_byte_planes=parsed.header.byte_planes,
     )
     return UpdatedUnit(unit, indices, *stats)
 

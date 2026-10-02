@@ -88,22 +88,30 @@ def planes_view(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time
     return raw_unit[start_offset:end_offset].reshape(16, num_groups)
 
 
-@njit
-def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> float:
-    """The fraction of a unit's bit-plane bits (samples plus padding) whose residual reaches 256,
-    i.e. is set in any of bit planes 8 to 15.
+@njit(nogil=True, cache=True)
+def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, byte_planes: bool) -> float:
+    """The fraction of a unit's residual slots (samples plus padding, 8 per group) whose zigzagged
+    residual reaches 256: a non-zero high byte, or a bit in any of bit planes 8 to 15. Padding is
+    zero, so both layouts give the same share.
 
     Args:
-        raw_unit: 1D uint8 array of a body written with bit planes.
+        raw_unit: 1D uint8 array of a body.
         num_blocks: Total number of blocks.
-        num_groups: Bytes per plane: the groups of all blocks.
+        num_groups: Groups of all blocks.
         has_time: Whether the unit has a time axis.
+        byte_planes: Whether the body holds byte planes.
 
     Returns:
         The share, 0.0 for a unit without plane bytes.
     """
-    planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
+    if not num_groups:
+        return 0.0
     count = 0
+    if byte_planes:
+        for high_byte in byte_planes_view(raw_unit, num_blocks, num_groups, has_time)[1]:
+            count += high_byte != 0
+        return count / (8 * num_groups)
+    planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
     for group_idx in range(num_groups):
         bits = 0
         for plane_idx in range(8, 16):
@@ -111,7 +119,7 @@ def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_
         while bits:
             count += bits & 1
             bits >>= 1
-    return count / (8 * num_groups) if num_groups else 0.0
+    return count / (8 * num_groups)
 
 
 @njit(inline="always")

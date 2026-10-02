@@ -24,11 +24,11 @@ def decode_series(units):
 
 
 @contextmanager
-def planes(layout, flush=True, zstd_level=3):
+def planes(layout, flush=True, zstd_levels=(3,)):
     """Every Params.level compresses with layout ("bit", "byte", "heuristic" or "best") while
     inside: the level picks the layout, and some tests need a particular one."""
     saved = dict(_unit.EFFORTS)
-    _unit.EFFORTS.update(dict.fromkeys(saved, _unit.Effort(layout, flush, zstd_level)))
+    _unit.EFFORTS.update(dict.fromkeys(saved, _unit.Effort(layout, flush, zstd_levels)))
     try:
         yield
     finally:

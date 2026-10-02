@@ -12,7 +12,7 @@ from _series import planes
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _format, _unit
+from fluxcode import Params, _bitpacking, _format, _unit
 from fluxcode._types import MAX_LEVEL, MIN_LEVEL
 
 LEVELS = range(MIN_LEVEL, MAX_LEVEL + 1)
@@ -99,8 +99,31 @@ def test_heuristic_choice():
         assert _format.unpack_header(unit).byte_planes is byte, kind
 
 
+@pytest.mark.parametrize("kind", ["sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes", "quadratic"])
+def test_higher_levels_are_never_larger(kind):
+    """Levels 5, 6 and 9 each try a superset of the candidates of the one before, so no unit grows
+    (noisy-sine seed 1 was larger at zstd 9 alone)."""
+    for seed in (1, 6):
+        x = minute(kind, seed)
+        sizes = [len(fluxcode.encode(x, Params(level=level))[0][0]) for level in (9, 6, 5)]
+        assert sizes == sorted(sizes), seed
+
+
 def test_levels_trade_size():
     kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
     size = lambda level: sum(len(fluxcode.encode(minute(kind, 6), Params(level=level))[0][0]) for kind in kinds)
-    assert size(9) <= size(7) <= size(5) <= 1.03 * size(7)
+    assert size(5) <= 1.03 * size(6)
     assert size(5) <= size(2) <= size(1)
+
+
+@pytest.mark.parametrize("kind", ["sin-4.12hz", "random-walk", "noisy-sine"])
+def test_high_byte_share_is_the_same_in_both_layouts(kind):
+    x = minute(kind, 3)
+    shares = []
+    for layout in ("bit", "byte"):
+        with planes(layout):
+            (unit,), *_ = fluxcode.encode(x, Params(max_quantize_bits=12))
+        parsed = _unit.decompress(unit)
+        shares.append(_bitpacking.high_byte_share(parsed.raw_body, parsed.header.num_blocks,
+                                                  int(parsed.layout.group_offsets[-1]), parsed.has_time, layout == "byte"))
+    assert shares[0] == shares[1]

@@ -40,23 +40,24 @@ e_coarse. With both the noise floor and the target on, each block takes the coar
 **Levels.** Each level picks the residual layout (§7: 16 bit planes or 2 byte planes, the header
 records which), whether the zstd frame ends a block after the per-block columns and after each
 dense residual plane (more than 1/16 of its bytes non-zero; every zstd block has its own literal
-Huffman table, and the frame is an ordinary one either way), and the zstd level:
+Huffman table, and the frame is an ordinary one either way), and the zstd levels:
 
 | level | layout | blocks | zstd |
 |---|---|---|---|
 | 1 | heuristic | one run | 1 |
 | 2 | heuristic | one run | 3 |
 | 3–5 | heuristic | flushed | 3 |
-| 6–7 | best | flushed | 3 |
-| 8 | best | flushed | 7 |
-| 9 | best | flushed | 9 |
+| 6–8 | best | flushed | 3 |
+| 9 | best | flushed | 3 and 9 |
 
 *Heuristic*: byte planes if fewer than 5% of the unit's residuals reach 256 (zigzagged), else bit
 planes, one compression. *Best*: both layouts, the smaller kept, ties to byte planes (they decode
 faster). Two retries apply to a frame under 16 KB, which is cheap to compress again: a flushed
 frame is also compressed in one block run, and under the heuristic the unit is also compressed
-with the other layout, the smaller kept each time. Levels sharing settings leave room for later
-strategies. Measured size and speed per level are in TUNING.md.
+with the other layout, the smaller kept each time. Level 9 compresses at both zstd levels and
+keeps the smaller (zstd 9 alone is larger on about a fifth of units), so it, like level 6 over
+level 5, tries a superset of the level below: a unit never grows from level 5 to 6 to 9. Levels
+sharing settings leave room for later strategies; their output may change when they get one. Measured size and speed per level are in TUNING.md.
 
 Fixed by this spec: the body stored field by field, each field holding every
 block's bytes in block order (§7). Every block records its size, 0 to 65,535 samples (1000 in

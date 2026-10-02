@@ -42,8 +42,9 @@ type:
 * **Level**: `level=1` (fastest) to `9` (smallest), default 5, trades encode time for size
   without changing the decoded values: it picks bit or byte planes for the residuals (by a
   one-pass heuristic, or by compressing both), gives each dense plane its own zstd block, and
-  raises the zstd level at 8 and 9. Level 1 encodes about 25% faster than the default for
-  1–2% more bytes; level 9 is 1–3% smaller at about 4.5× the encode time.
+  also tries zstd 9 at level 9. Level 1 encodes about 25% faster than the default for about 3% more
+  bytes; level 9 is 1–3% smaller at about 5.5× the encode time. Going from level 5 to 6 to 9
+  never makes a unit larger.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
 [docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
@@ -233,8 +234,9 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
 - **[Bit-shuffle](https://github.com/kiyo-masui/bitshuffle)** ([paper](https://arxiv.org/abs/1503.00638))
   across the whole unit: bit plane j of every residual is stored together, so the high planes are
   long runs of zeros.
-- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** level 3 compresses the whole unit as one
-  frame.
+- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** compresses the whole unit as one frame
+  (zstd level 3, or 1 at `level=1` and also 9 at `level=9`), from level 3 with a zstd block, and
+  so its own Huffman table, per dense plane.
 
 ## Documentation
 
