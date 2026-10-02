@@ -43,3 +43,18 @@ dependency chain per symbol), but its 2-D `planes[j, i]` indexing wasn't audited
 **Verdict: faster than zstd, but larger.** Worth considering only as a fast mode where the size
 cost (about 20% here, unbounded on all-ones or repetitive planes) is acceptable; it would need a
 fix for all-ones planes (e.g. XOR with the previous plane or a 0xFF run type) to be safe.
+
+# How much of encode/decode is zstd (`bench/zstd_share.py`)
+
+2 minutes of each of 14 signals, single thread, zstd level 3 on the unit bodies (for `planes="best"`
+the encode charge includes the second layout's compress):
+
+| Params | zstd share of encode | zstd share of decode |
+|---|---|---|
+| `planes="bit"` | 28% | 23% |
+| default (`"best"`) | 48% | 28% |
+
+Per signal it ranges from 6-11% (linear, square wave: planes are almost entirely runs) to 60%
+(sin-9.87hz, chirp). Replacing zstd by zero runs (0.37x encode, 0.19x decode of zstd's time) would
+cut total encode by about 18% (bit) / 30% (default) and decode by about 19% / 22%: at most a
+1.2-1.4x speedup of the whole call, for ~20% larger units.
