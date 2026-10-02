@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Params.level: block flushing inside the unit's one zstd frame, the heuristic layout and the
+"""Params.effort: block flushing inside the unit's one zstd frame, the heuristic layout and the
 zstd level. The frame stays an ordinary one (content size recorded, one-shot decodable), the
 blocks end where the planes do, the heuristic picks a layout from the residuals' high byte, and
-no level changes the decoded values."""
+no effort changes the decoded values."""
 
 import numpy as np
 import pytest
@@ -13,29 +13,29 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _bitpacking, _format, _unit
-from fluxcode._types import MAX_LEVEL, MIN_LEVEL
+from fluxcode._types import MAX_EFFORT, MIN_EFFORT
 
-LEVELS = range(MIN_LEVEL, MAX_LEVEL + 1)
+EFFORTS = range(MIN_EFFORT, MAX_EFFORT + 1)
 
 
 def body_of(unit):
     return _unit.decompress(unit).raw_body
 
 
-def test_every_level_has_an_effort():
-    assert sorted(_unit.EFFORTS) == list(LEVELS)
-    for bad in (0, MAX_LEVEL + 1, 5.0, True, "5"):
-        with pytest.raises(ValueError, match="level"):
-            Params(level=bad)
+def test_every_effort_has_settings():
+    assert sorted(_unit.EFFORTS) == list(EFFORTS)
+    for bad in (0, MAX_EFFORT + 1, 5.0, True, "5"):
+        with pytest.raises(ValueError, match="effort"):
+            Params(effort=bad)
 
 
 @pytest.mark.parametrize("kind", ["random-walk", "sin-9.87hz", "linear", "noisy-sine"])
-def test_levels_decode_the_same(kind):
+def test_efforts_decode_the_same(kind):
     x = minute(kind, 1)
     x[123] = np.nan  # a flagged block too
     reference = None
-    for level in LEVELS:
-        (unit,), *_ = fluxcode.encode(x, Params(level=level))
+    for effort in EFFORTS:
+        (unit,), *_ = fluxcode.encode(x, Params(effort=effort))
         frame = unit[_format.HEADER_BYTES:]
         assert zstandard.frame_content_size(frame) == len(body_of(unit))
         assert zstandard.ZstdDecompressor().decompress(frame) == bytes(body_of(unit))  # one shot, no section lengths
@@ -100,18 +100,18 @@ def test_heuristic_choice():
 
 
 @pytest.mark.parametrize("kind", ["sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes", "quadratic"])
-def test_higher_levels_are_never_larger(kind):
-    """Levels 5, 6 and 9 each try a superset of the candidates of the one before, so no unit grows
+def test_higher_efforts_are_never_larger(kind):
+    """Efforts 5, 6 and 9 each try a superset of the candidates of the one before, so no unit grows
     (noisy-sine seed 1 was larger at zstd 9 alone)."""
     for seed in (1, 6):
         x = minute(kind, seed)
-        sizes = [len(fluxcode.encode(x, Params(level=level))[0][0]) for level in (9, 6, 5)]
+        sizes = [len(fluxcode.encode(x, Params(effort=effort))[0][0]) for effort in (9, 6, 5)]
         assert sizes == sorted(sizes), seed
 
 
-def test_levels_trade_size():
+def test_efforts_trade_size():
     kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
-    size = lambda level: sum(len(fluxcode.encode(minute(kind, 6), Params(level=level))[0][0]) for kind in kinds)
+    size = lambda effort: sum(len(fluxcode.encode(minute(kind, 6), Params(effort=effort))[0][0]) for kind in kinds)
     assert size(5) <= 1.03 * size(6)
     assert size(5) <= size(2) <= size(1)
 

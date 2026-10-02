@@ -35,7 +35,7 @@ from fluxcode import Params
 
 SIGNALS = KINDS + ["sensor-0.1", "random-walk q0.01", "noisy-sine q0.1", "noisy-sine q0.01 via float32"]
 CONFIGS = {"default": Params(), "noise floor off": Params(noise_floor_sigma=None),
-           "target 6": Params(target_bits_per_sample=6.0), "level 1": Params(level=1), "level 9": Params(level=9)}
+           "target 6": Params(target_bits_per_sample=6.0), "effort 1": Params(effort=1), "effort 9": Params(effort=9)}
 
 
 def series(sig, minutes):

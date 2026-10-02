@@ -12,9 +12,9 @@ import numpy as np
 MIN_TARGET_BITS: float = 6.0
 """Minimum allowed per-unit bit target per sample."""
 
-MIN_LEVEL: int = 1
-MAX_LEVEL: int = 9
-"""The range of Params.level."""
+MIN_EFFORT: int = 1
+MAX_EFFORT: int = 9
+"""The range of Params.effort."""
 
 TimeUnit = Literal["s", "ms", "us", "ns"]
 """Resolution of integer timestamps: seconds, milliseconds, microseconds or nanoseconds."""
@@ -112,9 +112,9 @@ class Params:
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.
-        level: Encoder effort, MIN_LEVEL (fastest) to MAX_LEVEL (smallest). It changes how
+        effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the unit is compressed (the residual layout, zstd block boundaries and level),
-            never the decoded values; the levels are listed in SPEC.md.
+            never the decoded values; SPEC.md lists what each effort does.
     """
 
     min_quantize_bits: int = 6
@@ -124,7 +124,7 @@ class Params:
     noise_floor_sigma: float | None = 0.25
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
-    level: int = 5
+    effort: int = 5
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -157,8 +157,8 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
-        if not (is_int(self.level) and MIN_LEVEL <= self.level <= MAX_LEVEL):
-            raise ValueError(f"level must be an integer from {MIN_LEVEL} to {MAX_LEVEL}, got {self.level!r}")
+        if not (is_int(self.effort) and MIN_EFFORT <= self.effort <= MAX_EFFORT):
+            raise ValueError(f"effort must be an integer from {MIN_EFFORT} to {MAX_EFFORT}, got {self.effort!r}")
 
 
 def is_int(val: object) -> bool:

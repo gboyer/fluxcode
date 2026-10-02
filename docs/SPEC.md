@@ -29,7 +29,7 @@ and so is the division into blocks (§2).
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
 | `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§5.7): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
-| `level` | 1–9 | 5 | encoder effort: how the body is compressed (below). It changes the size and the encode time, never the decoded values |
+| `effort` | 1–9 | 5 | encoder effort: how the body is compressed (below). It changes the size and the encode time, never the decoded values |
 
 **Precedence.** e_fine is the §5.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
@@ -37,12 +37,12 @@ clamped to e_coarse; decimal detection then looks for a decimal grid coarser tha
 finally the target (if set and the unit is over budget) coarsens blocks further, still never past
 e_coarse. With both the noise floor and the target on, each block takes the coarser step.
 
-**Levels.** Each level picks the residual layout (§7: 16 bit planes or 2 byte planes, the header
+**Effort.** Each effort picks the residual layout (§7: 16 bit planes or 2 byte planes, the header
 records which), whether the zstd frame ends a block after the per-block columns and after each
 dense residual plane (more than 1/16 of its bytes non-zero; every zstd block has its own literal
 Huffman table, and the frame is an ordinary one either way), and the zstd levels:
 
-| level | layout | blocks | zstd |
+| effort | layout | blocks | zstd |
 |---|---|---|---|
 | 1 | heuristic | one run | 1 |
 | 2 | heuristic | one run | 3 |
@@ -54,10 +54,12 @@ Huffman table, and the frame is an ordinary one either way), and the zstd levels
 planes, one compression. *Best*: both layouts, the smaller kept, ties to byte planes (they decode
 faster). Two retries apply to a frame under 16 KB, which is cheap to compress again: a flushed
 frame is also compressed in one block run, and under the heuristic the unit is also compressed
-with the other layout, the smaller kept each time. Level 9 compresses at both zstd levels and
-keeps the smaller (zstd 9 alone is larger on about a fifth of units), so it, like level 6 over
-level 5, tries a superset of the level below: a unit never grows from level 5 to 6 to 9. Levels
-sharing settings leave room for later strategies; their output may change when they get one. Measured size and speed per level are in TUNING.md.
+with the other layout, the smaller kept each time. Effort 9 compresses at both zstd levels and
+keeps the smaller (zstd 9 alone is larger on about a fifth of units), so it, like effort 6 over
+effort 5, tries a superset of the candidates below: a unit never grows from effort 5 to 6 to 9.
+Efforts 1 and 2 against 5 are ordered only on average (another zstd level, no flushes). Efforts
+sharing settings leave room for later strategies; their output may change when they get one.
+Measured size and speed per effort are in TUNING.md.
 
 Fixed by this spec: the body stored field by field, each field holding every
 block's bytes in block order (§7). Every block records its size, 0 to 65,535 samples (1000 in

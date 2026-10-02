@@ -20,7 +20,7 @@ from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit, is_int
 
 
 class Effort(NamedTuple):
-    """How a unit is compressed at one Params.level.
+    """How a unit is compressed at one Params.effort.
 
     Attributes:
         layout: "heuristic" (byte planes when few residuals reach 256, else bit planes, one
@@ -42,7 +42,7 @@ EFFORTS: dict[int, Effort] = {
     # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
     9: Effort("best", True, (3, 9)),
 }
-"""Params.level to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
+"""Params.effort to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
 
 BYTE_PLANES_MAX_HIGH_SHARE: float = 0.05
 """The heuristic layout picks byte planes when fewer than this share of the residuals reach 256:
@@ -317,7 +317,7 @@ def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit
     Args:
         rows: The unit's rows (time_rows None for a unit without a time axis).
         num_samples: Sample count recorded in the header (the sum of the block sizes).
-        effort: How to compress (Params.level).
+        effort: How to compress (Params.effort).
         time_unit: Time unit code recorded in the header (0 without a time axis).
 
     Returns:
@@ -438,7 +438,7 @@ def encode(
     rows, stats = encode_rows(samples, block_sizes, params)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
-    return EncodedUnit(compress(rows, samples.shape[0], EFFORTS[params.level], time_unit), *stats)
+    return EncodedUnit(compress(rows, samples.shape[0], EFFORTS[params.effort], time_unit), *stats)
 
 
 class ParsedUnit(NamedTuple):
@@ -744,7 +744,7 @@ def splice(
         lambda byte_planes: _bitpacking.splice_body(
             parsed.raw_body, parsed.layout, parsed.header.byte_planes, old_starts, indices, new_rows, byte_planes
         ),
-        num_blocks, num_samples, EFFORTS[params.level], parsed.header.time_unit,
+        num_blocks, num_samples, EFFORTS[params.effort], parsed.header.time_unit,
         first_byte_planes=parsed.header.byte_planes,
     )
     return UpdatedUnit(unit, indices, *stats)

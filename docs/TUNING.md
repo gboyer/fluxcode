@@ -3,18 +3,18 @@
 Measurements behind the parameter defaults, and what to check on your data before settling
 them. The format and algorithm are in [SPEC.md](SPEC.md).
 
-## Levels
+## Effort
 
-**`level`** (1–9, default 5) sets how hard the encoder works on compression: the residual layout,
+**`effort`** (1–9, default 5) sets how hard the encoder works on compression: the residual layout,
 block flushes inside the zstd frame and the zstd level (the table is in SPEC.md §1). It never
 changes the decoded values. Measured 2026-10-01 through the public API, one thread, on battery
 (times are comparable within the table, coarse in absolute terms), against the encoder before
-levels existed (both layouts compressed, smaller kept, one block run, zstd 3: 5.174
+efforts existed (both layouts compressed, smaller kept, one block run, zstd 3: 5.174
 and 4.009 bits/sample at 9.4 and 8.5 ns/sample). *Report*: the report's 20 signals, 4 minutes each
 (4.8 M samples); *random*: 400 one-minute units of 14 random signal families with random
 `max_quantize_bits` and noise floor (24 M samples; `experimental/plane_layout/`).
 
-| level | size, report | size, random | encode time, report / random | decode |
+| effort | size, report | size, random | encode time, report / random | decode |
 |---|---|---|---|---|
 | 1 | +1.0% | +2.3% | −2.8 ns/sample (−30%) / −2.2 (−26%) | same |
 | 2 | 0.0% | +1.3% | −2.4 ns/sample (−26%) / −1.7 (−20%) | same |
@@ -24,12 +24,12 @@ and 4.009 bits/sample at 9.4 and 8.5 ns/sample). *Report*: the report's 20 signa
 
 Where the gains come from (`experimental/plane_layout/README.md` has the full study):
 
-- **Block flushes** (levels 3–9). zstd codes the literals it doesn't match with one Huffman table
+- **Block flushes** (efforts 3–9). zstd codes the literals it doesn't match with one Huffman table
   per block, and one table for every plane fits none of them: the low byte is nearly uniform where
   the high one is peaked, and bit planes differ in density. Ending a block after each dense plane
   gives each its own table, 1–2% smaller, in the same frame (no format change). A plane with at
   most 1/16 of its bytes non-zero doesn't repay a block's header and table, so it shares one.
-- **The heuristic layout** (levels 1–5). Byte planes win when the residuals fit in the low byte
+- **The heuristic layout** (efforts 1–5). Byte planes win when the residuals fit in the low byte
   (the high byte is a constant) and on exactly repeating structure; bit planes win when the
   residuals are very narrow (mostly zero: 8 samples per byte escape Huffman's 1-bit floor) or wide
   (the two bytes' statistics pooled in one table fit neither). "Fewer than 5% of residuals reach
@@ -41,8 +41,8 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   save on 75% of units (up to +90%); compressing those again in one run and keeping the smaller
   makes flushing never worse than 3% on any unit. It moves the total by only 0.05%: it guards
   single units, not the aggregate.
-- **zstd 9 as well as 3** (level 9). zstd 9 alone is larger than zstd 3 on 20–23% of units (up
-  to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against level 6
+- **zstd 9 as well as 3** (effort 9). zstd 9 alone is larger than zstd 3 on 20–23% of units (up
+  to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against effort 6
   alone, −0.8% and −1.2% keeping the smaller per unit. zstd 7 alone gained only 0.1–0.25% and
   was dropped.
 
@@ -74,7 +74,7 @@ winner is consistent per signal kind: it wins on all 8 units, by a similar margi
 Byte planes win on 11 of these 20 signals and bit planes on 9; over the whole set (dominated by
 the large random-walk units) byte planes alone are 5.3% bigger and the best of both 2.3% smaller.
 Bit planes win where residuals are small, so the high planes are almost all zero, or where nothing
-repeats (more exactly: see Levels above). These measurements are from before block flushes,
+repeats (more exactly: see Effort above). These measurements are from before block flushes,
 which favour bit planes.
 
 With a single layout for everything, as the prototype compared them, bit planes were smaller over
@@ -84,7 +84,7 @@ fit in about a byte. Nibble planes (four 4-bit planes) fell between the two and 
 planes overall ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design)
 in `experimental/`).
 
-**zstd level** is 3 up to level 7, measured on the 2026-10-01 set above (sizes against level 3 with bit planes;
+**zstd level** is 3 (bar efforts 1 and 9, below), measured on the 2026-10-01 set above (sizes against level 3 with bit planes;
 compression time against level 3):
 
 | level | bit planes | best of both | compress time | decompress time |
@@ -97,7 +97,7 @@ compression time against level 3):
 | 12 | −1.8% | −3.7% | 13× | 1.11× |
 | 19 | −3.2% | −5.5% | 94× | 1.36× |
 
-Level 3 is the knee (zstd 1 is used only at level 1, zstd 9 only at level 9, alongside 3). Above it, compression time grows much faster than size falls, and the best
+Level 3 is the knee (zstd 1 is used only at effort 1, zstd 9 only at effort 9, alongside 3). Above it, compression time grows much faster than size falls, and the best
 of both planes at level 3 saves more than bit planes up to level 12. Level 1 saves only 10% of the
 zstd time and doubles the tiny linear and square units. The high levels pay off only on blocky or
 periodic signals (square −50%, sin-50.3hz −16% at 19); noisy and random-walk signals gain 1–3%
@@ -173,7 +173,7 @@ shapes, and [experimental/report/time.html](../experimental/report/time.html) sh
 | deadband logging, ms grid | 60/60 | 55,498 | 7.4 | +684 µs (+207%) | +245 µs (+208%) |
 | bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +199 µs (+60%) | +101 µs (+86%) |
 
-For scale, the same unit's values take 17,976 bytes, 331 µs to encode (before `level`, with both
+For scale, the same unit's values take 17,976 bytes, 331 µs to encode (before `effort`, with both
 layouts compressed, which compresses the time fields twice too) and 118 µs to decode; the percentages are of those
 times.
 Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect

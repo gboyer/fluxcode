@@ -1,6 +1,6 @@
 # fluxcode update benchmark (bench/update.py, 2026-10-01, AC power, single thread)
 
-At 8bfc6c6, default params (`planes="best"`, since replaced by `level`: encode and update both
+At 8bfc6c6, default params (`planes="best"`, since replaced by `effort`: encode and update both
 compress twice; not rerun since). Each
 update against encoding the same series from scratch. The append row's update builds a
 61-block unit and is compared with encoding the 60-block one.

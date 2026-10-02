@@ -8,7 +8,7 @@ to 4 significant figures, or more when the range is narrow.
 High level properties:
 
 * **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s at the
-  default level (faster at level 1–2).
+  default effort (faster at effort 1–2).
 * **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
   data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
   for data that arrives late or with gaps.
@@ -39,11 +39,11 @@ type:
   `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
-* **Level**: `level=1` (fastest) to `9` (smallest), default 5, trades encode time for size
+* **Effort**: `effort=1` (fastest) to `9` (smallest), default 5, trades encode time for size
   without changing the decoded values: it picks bit or byte planes for the residuals (by a
   one-pass heuristic, or by compressing both), gives each dense plane its own zstd block, and
-  also tries zstd 9 at level 9. Level 1 encodes about 25% faster than the default for about 3% more
-  bytes; level 9 is 1–3% smaller at about 5.5× the encode time. Going from level 5 to 6 to 9
+  also tries zstd 9 at effort 9. Effort 1 encodes about 25% faster than the default for about 3% more
+  bytes; effort 9 is 1–3% smaller at about 5.5× the encode time. Going from effort 5 to 6 to 9
   never makes a unit larger.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
@@ -147,7 +147,7 @@ which set the step to 0.25σ.
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `level=5` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `decimal_detection=True`, `effort=5` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -174,9 +174,9 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
-These numbers predate `level`: they compress each unit with bit and with byte planes, keep the
-smaller, and have no block flushes. The default level 5 encodes about as fast and is 0.3–2%
-smaller on the sets in [docs/TUNING.md](docs/TUNING.md#levels). With bit planes only, the
+These numbers predate `effort`: they compress each unit with bit and with byte planes, keep the
+smaller, and have no block flushes. The default effort 5 encodes about as fast and is 0.3–2%
+smaller on the sets in [docs/TUNING.md](docs/TUNING.md#effort). With bit planes only, the
 whole set was 4.86 bits/sample at 3.38 µs/block to encode; byte planes gain much more at lower
 `max_quantize_bits` (see the [research report](experimental/report/index.html#scatter-kinds)).
 
@@ -235,7 +235,7 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
   across the whole unit: bit plane j of every residual is stored together, so the high planes are
   long runs of zeros.
 - **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** compresses the whole unit as one frame
-  (zstd level 3, or 1 at `level=1` and also 9 at `level=9`), from level 3 with a zstd block, and
+  (zstd level 3, or 1 at `effort=1` and also 9 at `effort=9`), from effort 3 with a zstd block, and
   so its own Huffman table, per dense plane.
 
 ## Documentation
