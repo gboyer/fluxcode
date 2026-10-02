@@ -388,9 +388,9 @@ uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
 uv run python plane_layout/table.py       # per-unit table for the combinations (~3 min), then combine.py
 uv run python plane_layout/combine.py
-uv run python plane_layout/api_bench.py    # public-API size and speed of each effort (docs/TUNING.md)
-uv run python plane_layout/fleet.py        # layout rules and efforts on the stress test's sensor mix (~5 min)
-uv run python plane_layout/per_input.py    # bits/sample per input type at efforts 2, 4, 5 (~3 min)
+uv run python plane_layout/api_bench.py    # public-API size and speed of each effort (docs/TUNING.md; results/api_bench.txt)
+uv run python plane_layout/fleet.py        # layout rules and efforts on the stress test's sensor mix (~5 min; output in results/fleet.txt)
+uv run python plane_layout/per_input.py    # bits/sample per input type at efforts 2 and 5 against the default (~3 min; results/per_input.txt)
 uv run python plane_layout/small_frames.py # the first rule's misses: narrow-residual rules, other layout on small frames
 uv run python plane_layout/retry_rules.py  # rules to skip the one-run retry (needs table.py's output)
 uv run python plane_layout/zstd_levels.py  # zstd 7 / 9 alone vs alongside zstd 3, per unit (~3 min)

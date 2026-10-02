@@ -14,7 +14,18 @@ Measured 2026-10-02 through the public API, one thread, AC power
 report's 20 signals, 4 minutes each (4.8 M samples); *random*: 400 one-minute units of 14 random
 signal families with random `max_quantize_bits` and noise floor (24 M samples).
 
-EFFORT_TABLE
+Baseline (efforts 3–4): 5.174 and 4.009 bits/sample, encode 5.4 and 4.8 ns/sample, decode 1.7.
+
+| effort | size, report | size, random | encode, report | encode, random | decode |
+|---|---|---|---|---|---|
+| 1 | +1.4% | +2.5% | −1.9 ns/sample (−36%) | −1.7 ns/sample (−35%) | same |
+| 2 | +0.3% | +1.3% | −1.7 ns/sample (−31%) | −1.5 ns/sample (−31%) | same |
+| 3–4 (default 4) | 0 | 0 | 0 | 0 | same |
+| 5–8 | −2.1% | −2.0% | +1.0 ns/sample (+19%) | +0.8 ns/sample (+17%) | same |
+| 9 | −2.9% | −3.2% | +21.1 ns/sample (+391%) | +18.0 ns/sample (+374%) | same |
+
+"Same" decode is within +0.1 ns/sample (up to +6%) of the baseline, about the run-to-run spread.
+These are one thread; with several threads efforts 5 and up depend on the Rust extension (below).
 
 Where the gains come from (`experimental/plane_layout/README.md` has the full study):
 
@@ -29,7 +40,7 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   the same size), and the 8-thread gigabyte encode 32% slower; one thread is unaffected, and 4
   processes scale normally. Calling libzstd's streaming API directly through cffi still scaled
   only 1.8× on 4 threads, so the fix is a call that compresses a whole unit with its cuts without
-  the GIL: the optional Rust extension (`pip install fluxcode[rust]`, `rust/`) does, and gives the
+  the GIL: the optional Rust extension (`rust/`; `uv sync --extra rust` from a checkout, not on PyPI yet) does, and gives the
   same units. With it, effort 5 on the day-scale test (4 threads) encodes at 5.98 GB/s against
   3.62 without (the default, effort 4: 7.10 against 6.71); `splice`/`update` and units with a time
   axis don't use it yet. Without the extension, efforts 5 and up suit one thread per process, or
@@ -180,22 +191,22 @@ shapes, and [experimental/report/time.html](../experimental/report/time.html) sh
 
 | timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
 |---|---|---|---|---|---|
-| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +17 µs (+5%) | +14 µs (+12%) |
-| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +20 µs (+6%) | +17 µs (+14%) |
-| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53,422 | 7.12 | +328 µs (+99%) | +152 µs (+129%) |
-| 1 kHz, 20 gaps | 19/60 | 1,094 | 0.146 | +88 µs (+27%) | +55 µs (+47%) |
-| 1 kHz, 1% dropped | 60/60 | 1,461 | 0.195 | +229 µs (+69%) | +123 µs (+104%) |
-| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +194 µs (+59%) | +92 µs (+78%) |
-| jitter σ=10 µs, ns resolution | 60/60 | 120,712 | 16.1 | +452 µs (+137%) | +195 µs (+165%) |
-| jitter σ=10 µs, µs resolution | 60/60 | 45,903 | 6.12 | +317 µs (+96%) | +139 µs (+118%) |
-| Poisson events, mean 1 ms, µs | 60/60 | 87,889 | 11.7 | +452 µs (+137%) | +184 µs (+156%) |
-| Poisson events, mean 1 ms, ns | 60/60 | 164,661 | 22 | +524 µs (+158%) | +206 µs (+175%) |
-| deadband logging, ms grid | 60/60 | 55,498 | 7.4 | +684 µs (+207%) | +245 µs (+208%) |
-| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +199 µs (+60%) | +101 µs (+86%) |
+| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +20 µs (+6%) | +11 µs (+10%) |
+| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +40 µs (+13%) | +17 µs (+15%) |
+| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +308 µs (+100%) | +142 µs (+128%) |
+| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +112 µs (+36%) | +62 µs (+56%) |
+| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +209 µs (+68%) | +111 µs (+100%) |
+| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +181 µs (+59%) | +86 µs (+77%) |
+| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +427 µs (+138%) | +177 µs (+159%) |
+| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +297 µs (+96%) | +132 µs (+119%) |
+| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +417 µs (+135%) | +169 µs (+152%) |
+| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +545 µs (+176%) | +192 µs (+173%) |
+| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +644 µs (+208%) | +211 µs (+190%) |
+| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +198 µs (+64%) | +95 µs (+86%) |
 
-For scale, the same unit's values take 17,976 bytes, 331 µs to encode (before `effort`, with both
-layouts compressed, which compresses the time fields twice too) and 118 µs to decode; the percentages are of those
-times.
+For scale, the same unit's values take 17,976 bytes, 309 µs to encode (default effort, with both
+layouts compressed, which compresses the time fields twice too) and 111 µs to decode; the percentages are of
+those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-02).
 Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
 grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:
 on 4 threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md](PERFORMANCE.md)).

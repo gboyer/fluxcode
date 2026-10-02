@@ -8,7 +8,7 @@ to 4 significant figures, or more when the range is narrow.
 High level properties:
 
 * **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s at the
-  default effort (faster at effort 1–2).
+  default effort (about a third faster at effort 1).
 * **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
   data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
   for data that arrives late or with gaps.
@@ -39,12 +39,15 @@ type:
   `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
-* **Effort**: `effort=1` (fastest) to `9` (smallest), default 5, trades encode time for size
-  without changing the decoded values: it picks bit or byte planes for the residuals (by a
-  one-pass heuristic, or by compressing both), gives each dense plane its own zstd block, and
-  also tries zstd 9 at effort 9. Effort 1 encodes about 25% faster than the default for about 3% more
-  bytes; effort 9 is 1–3% smaller at about 5.5× the encode time. Going from effort 5 to 6 to 9
-  never makes a unit larger.
+* **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
+  without changing the decoded values. It picks bit or byte planes for the residuals (by a
+  one-pass heuristic at efforts 1–2, or by compressing both from 3), from effort 5 gives each dense
+  plane its own zstd block, and at effort 9 also tries zstd 9. Against the default, effort 1 encodes
+  about a third faster for 1.5–2.5% more bytes; effort 5 is about 2% smaller for about 18% more
+  time; effort 9 is about 3% smaller for about 5× the time ([docs/TUNING.md](docs/TUNING.md#effort)).
+  Efforts 5 and up scale poorly across threads with python-zstandard (it holds the GIL while ending
+  a block); the optional Rust extension ([rust/](rust/): `uv sync --extra rust` from a checkout; not on PyPI
+  yet) fixes that and gives the same units.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
 [docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
@@ -147,7 +150,7 @@ which set the step to 0.25σ.
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `effort=5` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -159,26 +162,25 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 | 0.0000% | 2.74 | 1.67 |
-| square wave | 0.04 | 0.0000% | 2.92 | 1.18 |
-| sine, 4.12 Hz | 2.40 | 0.0010% | 6.18 | 2.15 |
-| sine, 50.3 Hz | 6.74 | 0.0010% | 5.94 | 2.16 |
-| chirp | 7.81 | 0.0010% | 7.51 | 2.04 |
-| random walk | 12.62 | 0.0015% | 5.59 | 1.86 |
-| random walk rounded to 0.01 | 9.28 | 0% (exact) | 6.36 | 1.92 |
-| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 6.33 | 2.23 |
-| noisy sine (σ = 5) | 5.24 | 0.2334% | 4.23 | 1.63 |
-| Gaussian spikes on uniform noise | 6.63 | 1.4661% | 5.07 | 1.89 |
-| **all 15 signals** | **4.76** | | **5.13** | **1.80** |
+| linear ramp | 0.02 |0.0000%| 2.79 | 1.36 |
+| square wave | 0.04 |0.0000%| 2.93 | 1.18 |
+| sine, 4.12 Hz | 2.40 |0.0010%| 6.08 | 2.13 |
+| sine, 50.3 Hz | 6.74 |0.0010%| 6.01 | 2.14 |
+| chirp | 7.81 |0.0010%| 7.47 | 2.04 |
+| random walk | 12.62 |0.0015%| 5.59 | 1.83 |
+| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.38 | 1.92 |
+| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.27 | 2.26 |
+| noisy sine (σ = 5) | 5.24 |0.2334%| 4.26 | 1.61 |
+| Gaussian spikes on uniform noise | 6.63 |1.4661%| 5.07 | 1.88 |
+| **all 15 signals** | **4.76** | | **5.13** | **1.79** |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
-These numbers predate `effort`: they compress each unit with bit and with byte planes, keep the
-smaller, and have no block flushes. The default effort 5 encodes about as fast and is 0.3–2%
-smaller on the sets in [docs/TUNING.md](docs/TUNING.md#effort). With bit planes only, the
-whole set was 4.86 bits/sample at 3.38 µs/block to encode; byte planes gain much more at lower
-`max_quantize_bits` (see the [research report](experimental/report/index.html#scatter-kinds)).
+The default effort compresses each unit with bit and with byte planes and keeps the smaller. The
+whole set at effort 1 is 4.83 bits/sample at 3.47 µs/block to encode, and at effort 5 4.66 at 6.09
+([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits`
+(see the [research report](experimental/report/index.html#scatter-kinds)).
 
 Decoding runs at about 4.5 GB/s per core, and the kernels release the GIL:
 4 threads encode about 5 GB/s and decode about 15 GB/s (8 threads add little: 4 of the 8 cores
@@ -235,8 +237,8 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
   across the whole unit: bit plane j of every residual is stored together, so the high planes are
   long runs of zeros.
 - **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** compresses the whole unit as one frame
-  (zstd level 3, or 1 at `effort=1` and also 9 at `effort=9`), from effort 3 with a zstd block, and
-  so its own Huffman table, per dense plane.
+  (zstd level 3, or 1 at `effort=1`; at `effort=9` the smaller of levels 3 and 9), from effort 5 with a
+  zstd block, and so its own Huffman table, per dense plane.
 
 ## Documentation
 

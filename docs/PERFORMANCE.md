@@ -7,9 +7,10 @@ slow it down. Raw output: [bench/STRESS_RESULTS.md](../bench/STRESS_RESULTS.md);
 harness: [bench/stress.py](../bench/stress.py).
 
 **Since these tables, `Params.planes` became `Params.effort`** (TUNING.md, Effort). `planes="best"`
-below is the old default (both layouts, one block run), `planes="bit"` bit planes only. The new
-default effort 5 encodes about as fast as `"best"` and is 0.3–2% smaller on the synthetic sets;
-these tables have not been rerun.
+below is the old default, which is now effort 3–4 (the default, 4): the same units, byte for byte.
+`planes="bit"` is gone; effort 1 is the fast option (about a third faster, 1.5–2.5% larger). The
+tables below are from 2026-10-01; the 2026-10-02 reruns in `bench/` (gigabyte, day-scale, timestamps,
+updates, with the default effort) agree within 1–4%, with the same sizes.
 
 Most of the change from the previous tables is `planes="best"`: every unit is compressed twice,
 with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller and
