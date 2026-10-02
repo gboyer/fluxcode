@@ -18,7 +18,8 @@ choices are in [REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quanti
 All parameters are **encoder-only**. The unit is self-describing: its header records the block
 count, the sample count, the time unit and the residual layout, and each block records its own
 size, order, grid (power-of-two exponent or decimal step) and anchor, and its start time, time
-step and reference, so a decoder needs only the unit. Timestamps are data, not parameters (§4), and so is the division into blocks (§2).
+step and reference, so a decoder needs only the unit. Timestamps are data, not parameters (§4),
+and so is the division into blocks (§2).
 
 | parameter | values | default | effect |
 |---|---|---|---|
@@ -74,6 +75,7 @@ decoding never uses them.
 
 `num_samples` is at most 2^26: not a format limit (the header field holds up to 2^32 − 1), but the
 bound decoders use to reject implausible headers before decompressing.
+
 **Any finite block encodes**, from ranges of a few subnormals (2^−1074) to ranges past 2^1023,
 where `hi − lo` itself overflows (§5.1, §5.4, §6). Each extreme costs one decision per block;
 ordinary blocks take the plain formulas.
@@ -272,8 +274,8 @@ average, because of the power-of-two floor) on top of noise σ.
 - **f is effectively rounded down to a power of two** (relative to σ): the step is
   2^floor(log2(f·σ)), so f values within a factor of 2 can give the same step (0.3 behaves like
   0.25).
-- **On gated blocks max_quantize_bits stops mattering** whenever f·σ exceeds the finest step, which it does for
-  f ≥ 0.01 on the measured noisy signals at B = 16. f alone sets their size, down to the
+- **On gated blocks max_quantize_bits stops mattering** whenever f·σ exceeds the finest step,
+  which it does for f ≥ 0.01 on the measured noisy signals at B = 16. f alone sets their size, down to the
   `min_quantize_bits` clamp: a noisy block's noise-floor step spans range/(f·σ) steps (≈ 230, about
   7.8 bits, on the noisy sine at f = 0.25), so a minimum above that would override the noise floor.
   Six bits costs ≤ 1% on the noisy test signals.
@@ -301,9 +303,9 @@ average, because of the power-of-two floor) on top of noise σ.
 
 ### 5.3 Decimal detection
 
-If `decimal_detection` is on and rng > 0. Runs after the noise floor, with `ps` the (possibly coarsened) step. A decimal grid finer than
-`ps` is never used: when exact decimals would need more than B bits, or are finer than the
-noise, the block takes the power-of-two grid.
+If `decimal_detection` is on and rng > 0. Runs after the noise floor, with `ps` the (possibly
+coarsened) step. A decimal grid finer than `ps` is never used: when exact decimals would need
+more than B bits, or are finer than the noise, the block takes the power-of-two grid.
 
 Find the coarsest decimal step 10^p that is coarser than `ps` and that every sample sits on:
 
@@ -383,7 +385,8 @@ step on the first straddling update, and the bound of §8 holds from then on.
 
 ### 5.5 Order
 
-For each k in `diff_orders`, compute the variance of `diff(q[0..M−1], k)` over the first M = min(250, n) samples (M − k values, no padding):
+For each k in `diff_orders`, compute the variance of `diff(q[0..M−1], k)` over the first
+M = min(250, n) samples (M − k values, no padding):
 
 ```
 v_k = (m·Σd² − (Σd)²) / m²,   d = diff(q[:M], k),   m = M − k
@@ -413,8 +416,9 @@ prepended zeros make the first residuals the start values, so there's no separat
 
 ### 5.7 Per-unit target
 
-If `target_bits_per_sample` = t is set. After every block of the unit has been through §5.1–5.6, estimate each block's size from its
-residual, the **class entropy**: with L(u) the bit length of the zigzagged residual (0 for 0),
+If `target_bits_per_sample` = t is set. After every block of the unit has been through §5.1–5.6,
+estimate each block's size from its residual, the **class entropy**: with L(u) the bit length of
+the zigzagged residual (0 for 0),
 
 ```
 h_b = −Σ_L p_L·log2 p_L  +  Σ_L p_L·max(L − 1, 0)      # entropy of L, plus the bits below the leading 1
@@ -624,10 +628,10 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   or a finer step they come back bit for bit, however the merged block's min and max moved. Only a
   coarser step rounds them again, once, without bias (ties to even); repeated coarsening adds a
   geometric series, so their error stays under one step of the coarsest grid the block has used.
-  Decimal data on a decimal grid stays exact. New samples past the unit's end append blocks (empty ones to
-  fill a gap); blocks are never removed, so a block emptied by an update stays, empty. The
-  result is byte-identical to `encode_time_blocks` of the resulting series when no block is
-  left empty at the end.
+  Decimal data on a decimal grid stays exact. New samples past the unit's end append blocks
+  (empty ones to fill a gap); blocks are never removed, so a block emptied by an update stays,
+  empty. The result is byte-identical to `encode_time_blocks` of the resulting series when no
+  block is left empty at the end.
 
 ## 9. Conformance tests
 
@@ -678,14 +682,14 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    exactly and in their unit; units without times decode `times = None`; regular series store no
    planes; a gap makes only its block irregular, with the GCD as its step; jitter takes the rounded
    mean as its reference and skewed deltas the minimum; any reference decodes; only a block whose
-   residuals reach 2^32 is long; equal timestamps,
-   all-equal blocks, short last blocks, blocks of 0, 1 and 2 samples (a 2-sample block whose delta
-   exceeds int64 maximum), leading empty blocks before negative ticks, ticks at both ends of
-   int64 and a block spanning more than half of it round-trip; the worked example in §7 matches byte for byte. The encoder rejects
-   decreasing times (within and across blocks), NaT, unsupported dtypes and units, and length
-   mismatches; the decoder rejects each corrupt time field listed in §7, and the long flag without the irregular one. `update` with times is
-   byte-identical to encoding the edited series, and rejects missing, unexpected, mis-shaped,
-   wrong-unit or out-of-order times.
+   residuals reach 2^32 is long; equal timestamps, all-equal blocks, short last blocks, blocks of
+   0, 1 and 2 samples (a 2-sample block whose delta exceeds int64 maximum), leading empty blocks
+   before negative ticks, ticks at both ends of int64 and a block spanning more than half of it
+   round-trip; the worked example in §7 matches byte for byte. The encoder rejects decreasing
+   times (within and across blocks), NaT, unsupported dtypes and units, and length mismatches;
+   the decoder rejects each corrupt time field listed in §7, and the long flag without the
+   irregular one. `update` with times is byte-identical to encoding the edited series, and
+   rejects missing, unexpected, mis-shaped, wrong-unit or out-of-order times.
 12. **Snapped grid** (`tests/test_grid.py`): the exponent rule picks at most one level finer than
    the unsnapped rule (only below 16 bits) and one coarser (only at 16), and its grid fits L;
    decoded values are fixed points block by block wherever the re-encode picks the same step,
