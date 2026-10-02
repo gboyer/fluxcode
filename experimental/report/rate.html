@@ -47,24 +47,24 @@ one zstd (level 3) call per unit; lowers B if a block's estimated size would exc
 <li>All real coders are round-trip verified per unit.</li>
 </ul>
 <h2 id='summary'>Summary</h2><table><tr><th class='l'>coder</th><th class='l'>rate control</th><th>avg bits/sample</th><th>overall RMSE</th><th>median block RMSE</th><th>worst block RMSE</th><th>worst max |err|</th><th>capped blocks</th><th>encode µs/block</th></tr>
-<tr><td><code>delta0123-rice</code></td><td class='l'>window</td><td>4.000</td><td>0.0584%</td><td>0.0570%</td><td>0.214%</td><td>0.367%</td><td>1</td><td>124155</td></tr>
-<tr><td><code>delta0123-rice</code></td><td class='l'>fixed</td><td>3.706</td><td>0.2493%</td><td>0.0633%</td><td>3.554%</td><td>6.246%</td><td>—</td><td>56232</td></tr>
-<tr><td><code>delta0123-zstd</code></td><td class='l'>window</td><td>3.996</td><td>0.0238%</td><td>0.0185%</td><td>0.236%</td><td>0.403%</td><td>38</td><td>20825</td></tr>
-<tr><td><code>delta0123-zstd</code></td><td class='l'>fixed</td><td>3.035</td><td>0.2426%</td><td>0.0402%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>6466</td></tr>
-<tr><td><code>delta0123-deflate</code></td><td class='l'>window</td><td>3.999</td><td>0.0255%</td><td>0.0214%</td><td>0.230%</td><td>0.399%</td><td>30</td><td>35513</td></tr>
-<tr><td><code>delta0123-deflate</code></td><td class='l'>fixed</td><td>2.972</td><td>0.2850%</td><td>0.0422%</td><td>3.335%</td><td>5.729%</td><td>—</td><td>10299</td></tr>
-<tr><td><code>flac</code></td><td class='l'>window</td><td>3.942</td><td>0.0422%</td><td>0.0396%</td><td>0.208%</td><td>0.356%</td><td>1</td><td>3915</td></tr>
-<tr><td><code>flac</code></td><td class='l'>fixed</td><td>3.484</td><td>0.2654%</td><td>0.0187%</td><td>3.857%</td><td>6.790%</td><td>—</td><td>2153</td></tr>
-<tr><td><code>best: rice|zstd</code></td><td class='l'>window</td><td>3.999</td><td>0.0206%</td><td>0.0166%</td><td>0.217%</td><td>0.373%</td><td>29</td><td>212269</td></tr>
-<tr><td><code>best: rice|zstd</code></td><td class='l'>fixed</td><td>2.976</td><td>0.2059%</td><td>0.0274%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>65555</td></tr>
-<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>window</td><td>3.990</td><td class="best">0.0153%</td><td>0.0078%</td><td>0.205%</td><td>0.359%</td><td>74</td><td>293136</td></tr>
-<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>fixed</td><td>3.102</td><td>0.1994%</td><td>0.0012%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>70287</td></tr>
-<tr><td><code>0-order entropy</code></td><td class='l'>window</td><td>4.000</td><td>0.0172%</td><td>0.0162%</td><td>0.103%</td><td>0.183%</td><td>2</td><td>10578</td></tr>
-<tr><td><code>0-order entropy</code></td><td class='l'>fixed</td><td>3.007</td><td>0.1720%</td><td>0.0144%</td><td>1.987%</td><td>3.406%</td><td>—</td><td>4269</td></tr>
-<tr><td><code>delta0123-zstd-8</code></td><td class='l'>one-shot</td><td>2.826</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>11</td></tr>
-<tr><td><code>delta0123-zstd-10</code></td><td class='l'>one-shot</td><td>3.844</td><td>0.0313%</td><td>0.0282%</td><td>0.226%</td><td>0.393%</td><td>36</td><td>12</td></tr>
-<tr><td><code>delta0123-zstd-12</code></td><td class='l'>one-shot</td><td>4.413</td><td>0.0224%</td><td>0.0071%</td><td>0.226%</td><td>0.393%</td><td>124</td><td>12</td></tr>
-<tr><td><code>delta12-zstd-8</code></td><td class='l'>one-shot</td><td>2.927</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>10</td></tr>
+<tr><td><code>delta0123-rice</code></td><td class='l'>window</td><td>4.000</td><td>0.0584%</td><td>0.0570%</td><td>0.214%</td><td>0.367%</td><td>1</td><td>73346</td></tr>
+<tr><td><code>delta0123-rice</code></td><td class='l'>fixed</td><td>3.706</td><td>0.2493%</td><td>0.0633%</td><td>3.554%</td><td>6.246%</td><td>—</td><td>32795</td></tr>
+<tr><td><code>delta0123-zstd</code></td><td class='l'>window</td><td>3.996</td><td>0.0238%</td><td>0.0185%</td><td>0.236%</td><td>0.403%</td><td>38</td><td>12060</td></tr>
+<tr><td><code>delta0123-zstd</code></td><td class='l'>fixed</td><td>3.035</td><td>0.2426%</td><td>0.0402%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>3761</td></tr>
+<tr><td><code>delta0123-deflate</code></td><td class='l'>window</td><td>3.999</td><td>0.0255%</td><td>0.0214%</td><td>0.230%</td><td>0.399%</td><td>30</td><td>20850</td></tr>
+<tr><td><code>delta0123-deflate</code></td><td class='l'>fixed</td><td>2.972</td><td>0.2850%</td><td>0.0422%</td><td>3.335%</td><td>5.729%</td><td>—</td><td>6036</td></tr>
+<tr><td><code>flac</code></td><td class='l'>window</td><td>3.942</td><td>0.0422%</td><td>0.0396%</td><td>0.208%</td><td>0.356%</td><td>1</td><td>2293</td></tr>
+<tr><td><code>flac</code></td><td class='l'>fixed</td><td>3.484</td><td>0.2654%</td><td>0.0187%</td><td>3.857%</td><td>6.790%</td><td>—</td><td>1262</td></tr>
+<tr><td><code>best: rice|zstd</code></td><td class='l'>window</td><td>3.999</td><td>0.0206%</td><td>0.0166%</td><td>0.217%</td><td>0.373%</td><td>29</td><td>124118</td></tr>
+<tr><td><code>best: rice|zstd</code></td><td class='l'>fixed</td><td>2.976</td><td>0.2059%</td><td>0.0274%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>37996</td></tr>
+<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>window</td><td>3.990</td><td class="best">0.0153%</td><td>0.0078%</td><td>0.205%</td><td>0.359%</td><td>74</td><td>168820</td></tr>
+<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>fixed</td><td>3.102</td><td>0.1994%</td><td>0.0012%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>40624</td></tr>
+<tr><td><code>0-order entropy</code></td><td class='l'>window</td><td>4.000</td><td>0.0172%</td><td>0.0162%</td><td>0.103%</td><td>0.183%</td><td>2</td><td>6129</td></tr>
+<tr><td><code>0-order entropy</code></td><td class='l'>fixed</td><td>3.007</td><td>0.1720%</td><td>0.0144%</td><td>1.987%</td><td>3.406%</td><td>—</td><td>2460</td></tr>
+<tr><td><code>delta0123-zstd-8</code></td><td class='l'>one-shot</td><td>2.826</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>6</td></tr>
+<tr><td><code>delta0123-zstd-10</code></td><td class='l'>one-shot</td><td>3.844</td><td>0.0313%</td><td>0.0282%</td><td>0.226%</td><td>0.393%</td><td>36</td><td>6</td></tr>
+<tr><td><code>delta0123-zstd-12</code></td><td class='l'>one-shot</td><td>4.413</td><td>0.0224%</td><td>0.0071%</td><td>0.226%</td><td>0.393%</td><td>124</td><td>7</td></tr>
+<tr><td><code>delta12-zstd-8</code></td><td class='l'>one-shot</td><td>2.927</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>6</td></tr>
 <tr><td class='muted'><code>quant8-delta1-deflate</code> (earlier codec)</td><td class='l muted'>none</td><td>3.079</td><td>0.1080%</td><td>0.1127%</td><td>0.120%</td><td>0.196%</td><td>—</td><td>—</td></tr></table><p class='muted'>One-shot rows include each block's min and max, stored in the unit. Encode time is the full rate-control search for window/fixed rows (Python, single thread), per block; one-shot is a single pass. Every block spans [0, 1], so one-shot's per-block step and the shared window step mean the same thing.</p>
 <h2 id='per-kind-chart'>Bits and error per signal kind</h2><img src='rate-blocks.svg' alt='Per-kind bits and RMSE'>
 <h2 id='kind-delta0123-zstd-10-one-shot'>Per signal kind: delta0123-zstd-10 / one-shot</h2><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
