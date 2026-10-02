@@ -116,7 +116,7 @@ class Params:
             falling back to power-of-two grids.
         planes: How the residuals are laid out before zstd: "bit" (16 bit planes), "byte"
             (2 byte planes), or "best" (the default): compress the unit both ways and keep
-            the smaller, ties going to bit planes. "best" doubles the zstd work of encoding;
+            the smaller, ties going to byte planes. "best" doubles the zstd work of encoding;
             byte planes win on periodic signals and noisy sines (4-18% smaller), bit planes on
             small or aperiodic residuals (random walks, chirps), and the choice is per unit.
     """

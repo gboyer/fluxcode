@@ -29,7 +29,7 @@ and so is the division into blocks (§2).
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
 | `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§5.7): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
-| `planes` | `"best"`, `"bit"`, `"byte"` | `"best"` | the residual layout (§7): 16 bit planes, 2 byte planes, or both compressed and the smaller kept (ties keep bit planes). `"best"` doubles the zstd work of encoding; byte planes win on periodic signals and noisy sines, bit planes on small or aperiodic residuals (TUNING.md) |
+| `planes` | `"best"`, `"bit"`, `"byte"` | `"best"` | the residual layout (§7): 16 bit planes, 2 byte planes, or both compressed and the smaller kept (ties keep byte planes, which decode faster). `"best"` doubles the zstd work of encoding; byte planes win on periodic signals and noisy sines, bit planes on small or aperiodic residuals (TUNING.md) |
 
 **Precedence.** e_fine is the §5.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
@@ -502,7 +502,8 @@ regular blocks an empty `time_residual_planes` field.
 has byte 0 of plane 5 = `0b00001000` and byte 0 of plane 10 = `0b01000000`. All other plane bytes are 0.
 
 **Worked example with a time axis** (`tests/test_time.py::test_worked_example_layout`):
-20 samples in blocks of 8, so 3 blocks of 8, 8 and 4 samples; ns ticks (small, for readability).
+20 samples in blocks of 8, so 3 blocks of 8, 8 and 4 samples; ns ticks (small, for readability);
+`planes = "bit"` (with "best" the all-zero residuals tie and take byte planes, flags 0x09).
 
 ```
 times   block 0: 1000 1010 1020 1030 1040 1050 1060 1070   regular

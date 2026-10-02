@@ -442,7 +442,7 @@ def _periodic(n=60_000):
 
 @pytest.mark.parametrize("kind", [*KINDS, "periodic"])
 def test_best_planes_is_the_smaller_and_decodes_the_same(kind):
-    """planes="best" (the default) is the smaller of "bit" and "byte", ties to bit planes; all
+    """planes="best" (the default) is the smaller of "bit" and "byte", ties to byte planes; all
     three decode identically."""
     x = _periodic() if kind == "periodic" else minute(kind, 7)
     x[123] = np.nan  # a flagged block too
@@ -451,7 +451,7 @@ def test_best_planes_is_the_smaller_and_decodes_the_same(kind):
         byte_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits, planes="byte")).unit
         best_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits)).unit
         assert not _format.unpack_header(bit_unit).byte_planes and _format.unpack_header(byte_unit).byte_planes
-        assert best_unit == (byte_unit if len(byte_unit) < len(bit_unit) else bit_unit)
+        assert best_unit == (byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit)
         for unit in (bit_unit, byte_unit):
             np.testing.assert_array_equal(fluxcode.decode_unit(unit).values, fluxcode.decode_unit(best_unit).values)
 

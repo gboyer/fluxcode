@@ -8,6 +8,11 @@ unit grew from 151 to 158 bytes, a tie with bit planes, and ties keep bit planes
 slower. That is zstd's block boundaries moving with the shorter columns, not the decoder
 (decoding each layout takes the same time as before).
 
+Since then ties go to byte planes (2026-10-01, after this run): linear's default unit now
+decodes from byte planes again, about 25% faster than from bit planes in an A/B on battery.
+Only that unit changed among the golden cases; the tables below predate it and weren't rerun
+(the machine was on battery).
+
 Apple M3, Darwin 25.6.0, Python 3.11.13, numpy 2.4.6
 
 15 signal types x 149 minutes = 1.00 GiB of float64 (134,100 blocks); best of 3.

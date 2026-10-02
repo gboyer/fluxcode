@@ -313,8 +313,8 @@ def _pack(
     if planes != "best":
         return build(planes == "byte")
     bit_unit, byte_unit = build(False), build(True)
-    # Ties keep bit planes, so the choice is deterministic
-    return byte_unit if len(byte_unit) < len(bit_unit) else bit_unit
+    # Ties go to byte planes (they decode faster: no bit transpose), so the choice is deterministic
+    return byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit
 
 
 def encode(

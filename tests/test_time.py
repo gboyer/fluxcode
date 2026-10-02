@@ -209,7 +209,7 @@ def test_worked_example_layout():
                       1080, 1090, 1100, 1130, 1140, 1150, 1160, 1170,
                       1180, 1190, 1200, 1210], np.int64)
     values = np.repeat([2.5, 2.25, 3.0], 8)[:20]
-    unit = fluxcode.encode_unit(values, block_len=8, times=ticks, time_unit="ns").unit
+    unit = fluxcode.encode_unit(values, Params(planes="bit"), block_len=8, times=ticks, time_unit="ns").unit
     header = unit[:_format.HEADER_BYTES]
     assert header == bytes([1, 0x08, 3, 0, 20, 0, 0, 0])
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)
