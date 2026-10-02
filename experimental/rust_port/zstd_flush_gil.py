@@ -3,10 +3,15 @@
 """Thread scaling of python-zstandard compressobj.compress with and without flush(BLOCK) (same call count):
 flush holds the GIL (the compression of the buffered data happens inside it), compress alone releases it."""
 
-import sys, time, threading, numpy as np, zstandard
+import sys
 from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+import zstandard
+
 sys.path.insert(0,"tests"); sys.path.insert(0,"bench")
 from rust_decoder import best
+
 rng=np.random.default_rng(0)
 # 16 KB chunks of compressible data, many calls per task
 chunk=(rng.integers(0,8,16384,dtype=np.uint8)).tobytes()
