@@ -10,7 +10,7 @@ A token is a protobuf-style varint (high bit = more bytes follow) of `len << KB 
   variant 2 (KB = 1): PackBits-like. kind 0 raw: `len` bytes follow; kind 1: `len` copies of the one
             byte that follows. Runs of >= 4 of any byte are split out.
 
-    uv run python bench/rle_variants.py [--minutes 2] [--reps 10]
+    uv run python plane_coders/rle_variants.py [--minutes 2] [--reps 10]
 """
 
 import argparse
@@ -22,7 +22,7 @@ import zstandard
 from numba import njit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 
 import zero_runs
 from _signals import KINDS, discrete_minute, minute

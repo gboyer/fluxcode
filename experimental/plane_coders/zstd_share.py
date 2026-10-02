@@ -3,7 +3,7 @@
 """How much of encode() and decode() is zstd? Per signal and Params: wall time of the public call
 vs zstd level 3 on the same bodies (compress, and decompress), single thread, best of reps.
 
-    uv run python bench/zstd_share.py [--minutes 2] [--reps 5]
+    uv run python plane_coders/zstd_share.py [--minutes 2] [--reps 5]
 """
 
 import argparse
@@ -16,7 +16,7 @@ os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 import numpy as np
 import zstandard
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
 from _signals import KINDS, discrete_minute, minute
 from fluxcode import Params, _unit

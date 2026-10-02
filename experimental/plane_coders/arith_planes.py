@@ -10,7 +10,7 @@ byte: a 4-way interleaved 32-bit rANS (byte-wise renormalization, 16-bit probabi
 frequencies f_k (all symbols of popcount k share one), and a symbol's slot is
 cum_k + rank_in_class * f_k. No per-symbol tables, no search in the decoder beyond nine compares.
 
-    uv run python bench/arith_planes.py [--minutes 2] [--reps 20]
+    uv run python plane_coders/arith_planes.py [--minutes 2] [--reps 20]
 """
 
 import argparse
@@ -22,7 +22,7 @@ import numpy as np
 import zstandard
 from numba import njit
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 
 import fluxcode
 from _signals import KINDS, MINUTE, discrete_minute, minute

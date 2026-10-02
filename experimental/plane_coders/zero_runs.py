@@ -6,7 +6,7 @@ is raw, possibly of length 0), each introduced by its length as a protobuf-style
 16 residual bit planes (real units). A zero run is only split out of a raw run when it is at
 least MIN_ZERO bytes (shorter ones cost more than they save), or when it ends the data.
 
-    uv run python bench/zero_runs.py [--minutes 2] [--reps 10]
+    uv run python plane_coders/zero_runs.py [--minutes 2] [--reps 10]
 """
 
 import argparse
@@ -18,7 +18,7 @@ import zstandard
 from numba import njit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 
 from _signals import KINDS, discrete_minute, minute
 from arith_planes import best, bit_planes
