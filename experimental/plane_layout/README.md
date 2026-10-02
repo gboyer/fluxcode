@@ -80,6 +80,55 @@ planes don't (quadratic: byte planes are 4.6× larger).
 - Cheap features are cheap: `mean(u > 255)` is 28 µs per unit in numpy (about 10 µs in a numba
   loop over the residuals the encoder has already computed). A second zstd pass is about 85 µs.
 
+## Other layouts and other compressors (`layouts.py`)
+
+Plane bytes only, zstd 3, sizes against today's `"best"` (the best of bit and byte planes, one
+shared Huffman table), on the fit, held-out and report sets. A layout is a list of group widths:
+bit planes `[1]*16`, byte planes `[8, 8]`, nibble planes `[4]*4`, and mixes such as the low byte
+as a byte plane with the high byte as 8 bit planes. **pooled** = one zstd frame, as today;
+**split** = each group's stream in its own frame (own Huffman table); **halves** = one frame for
+the low byte's groups and one for the high byte's.
+
+| layout | fit | held out | report |
+|---|---|---|---|
+| bit, pooled (today's bit) | +4.7% | +3.8% | +2.4% |
+| byte, pooled (today's byte) | +5.6% | +5.5% | +7.5% |
+| byte, split (2 frames) | +2.9% | +2.7% | +3.6% |
+| **nibble, split (4 frames)** | **+1.0%** | **+0.7%** | +2.1% |
+| nibble-low + byte-high, split | +1.6% | +1.4% | +2.0% |
+| bit-low + byte-high, halves | n/a | n/a | +1.1% |
+| oracle(bit, byte), split | −0.9% | −1.0% | −1.1% |
+| oracle over all 20+ layouts tried | −3.2% | −3.0% | −3.5% |
+
+- **Sharing one Huffman table is a real cost.** Compressing the planes as separate frames helps
+  every layout: byte planes 2.5% smaller, and the best-of-two oracle 1–1.1% smaller (frame headers
+  and tables included).
+- **Nibble planes in separate frames are the best single fixed layout**: 0.7–1.0% above today's
+  best-of-two on the random sets, with no choice, no second pass and about the same time. That
+  beats the high-byte rule (+1.2–1.5%) on the fit and held-out sets and loses to it on the report
+  signals (+2.1% against +1.2%). Earlier work put nibbles halfway between bit and byte planes; that
+  was with one pooled frame, where nibbles are 8.3% worse than the oracle.
+- **No fixed mix beats the oracle of the pair**, but the headroom is real: choosing among all
+  layouts per unit would save a further 3–3.5%. That needs an oracle over about 20 layouts, so only
+  a predictor could capture it; none of this has been tried.
+- **Other compressors** (200 fit units, bits/sample, both layouts, ms per unit for both):
+
+| codec | bit | byte | byte/bit | oracle | ms |
+|---|---|---|---|---|---|
+| zstd 3 | 4.084 | 4.086 | 1.000 | 3.888 | 0.1 |
+| zstd 19 | 3.948 | 3.792 | 0.961 | 3.723 | 9.4 |
+| bzip2 9 | 4.112 | 3.779 | 0.919 | 3.767 | 16.5 |
+| xz 6 | 3.911 | 3.726 | 0.953 | 3.686 | 38.8 |
+| xz 6, lc=0 lp=0 pb=0 | 3.881 | 3.692 | 0.951 | 3.657 | 39.0 |
+| xz 6, lc=0 lp=3 pb=3 | 3.943 | 3.789 | 0.961 | 3.730 | 39.2 |
+
+  Every stronger compressor prefers byte planes, including LZMA, whose literal coder is bit-wise
+  with the previous bits of the byte as context. zstd 3 is where the two layouts tie.
+  Level 3's Huffman-only literal coding hurts byte planes most. xz is 300× slower for 9% less.
+- The order-0 entropy of the residuals averages 4.40 bits/sample on the fit set while the best of
+  bit and byte planes under zstd 3 averages 3.92: zstd's gain over a memoryless model comes from
+  matches and structure, though in 47% of units a memoryless model would already beat it.
+
 ## Takeaways for the format and the tuning notes
 
 - A one-pass `planes` choice from the share of residuals above 255 is a defensible fast option
@@ -88,9 +137,8 @@ planes don't (quadratic: byte planes are 4.6× larger).
 - The `docs/TUNING.md` statement "bit planes win where residuals are small or aperiodic" is only half
   right: the data say *narrow* and *wide* residuals favour bit planes (for different reasons) and
   byte planes win in between, and on repeating structure at any width.
-- Nibble planes (not tested here; earlier work put them halfway between the two) would sit between
-  these effects too: the narrow-residual Huffman penalty shrinks with a 4-bit alphabet, but pooling
-  and the loss of cross-nibble structure return.
+- Nibble planes in separate frames are the best fixed layout tested (see above), which is a better
+  baseline for the heuristic to beat than always-bit.
 
 ## Reproduce
 
@@ -100,6 +148,7 @@ uv run python plane_layout/corpus.py --n 2000 --seed 1 --out corpus.npz   # ~25 
 uv run python plane_layout/corpus.py --n 1000 --seed 2 --out test.npz
 uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
+uv run python plane_layout/layouts.py     # bit/byte/nibble/mixed layouts, pooled vs split (~3 min); --codecs for xz, bzip2, zstd 19
 ```
 
 The `.npz` files (about 110 MB) are not committed.
