@@ -97,3 +97,7 @@ Each answers one question from the report. Runtimes are on an Apple M3, one thre
 | `bench/fluxcode_sweep.py` | The same sweep on the fluxcode package (§11) | ~7 s |
 
 Run one with `uv run python -m bench.<name>` from this directory.
+
+[plane_coders/](plane_coders/README.md) is a separate experiment: would an RLE or arithmetic coder beat zstd on the
+residual bit planes (it is faster, and larger; not adopted)?
+[plane_layout/](plane_layout/README.md) asks whether bit planes vs byte planes can be predicted without compressing both.
