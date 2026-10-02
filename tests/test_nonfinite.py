@@ -5,7 +5,7 @@ without them."""
 
 import numpy as np
 import pytest
-from _series import decode_series, encode_series, gated, unit_rows
+from _series import decode_series, encode_series, gated, planes, unit_rows
 from _signals import KINDS, minute
 
 import fluxcode
@@ -125,8 +125,9 @@ def test_occasional_dropouts_keep_the_noise_floor(kind):
     y[500::1000] = np.nan
     # Bit planes isolate the noise floor: byte planes gain 5% on clean impulses, which the
     # held dropouts break up (the best of both is then still below bit planes on clean data)
-    size = lambda v: sum(map(len, fluxcode.encode(v, Params(planes="bit"))[0]))
-    assert size(y) < 1.05 * size(x)
+    size = lambda v: sum(map(len, fluxcode.encode(v)[0]))
+    with planes("bit"):
+        assert size(y) < 1.05 * size(x)
     assert (gated(y) != gated(x)).sum() <= 2  # the same blocks gate, bar ones near the threshold
 
 

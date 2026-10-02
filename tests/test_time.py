@@ -6,7 +6,7 @@ encoder's input checks, the decoder's corrupt-unit checks, and update with times
 import numpy as np
 import pytest
 import zstandard
-from _series import unit_rows
+from _series import planes, unit_rows
 from _signals import minute
 
 import fluxcode
@@ -195,8 +195,8 @@ def test_byte_planes_and_nonfinite_with_times():
     values[[10, 3456, 12_000]] = [np.nan, np.inf, -np.inf]
     rng = np.random.default_rng(6)
     times = np.cumsum(rng.integers(1, 5, values.size)).view("datetime64[us]")
-    params = Params(max_quantize_bits=10, planes="byte")
-    unit, decoded = round_trip(values, times, params)
+    with planes("byte"):
+        unit, decoded = round_trip(values, times, Params(max_quantize_bits=10))
     assert _format.unpack_header(unit).byte_planes
     np.testing.assert_array_equal(decoded.times, times)
     np.testing.assert_array_equal(np.isnan(decoded.values), np.isnan(values))
@@ -209,7 +209,8 @@ def test_worked_example_layout():
                       1080, 1090, 1100, 1130, 1140, 1150, 1160, 1170,
                       1180, 1190, 1200, 1210], np.int64)
     values = np.repeat([2.5, 2.25, 3.0], 8)[:20]
-    unit = fluxcode.encode_unit(values, Params(planes="bit"), block_len=8, times=ticks, time_unit="ns").unit
+    with planes("bit"):
+        unit = fluxcode.encode_unit(values, block_len=8, times=ticks, time_unit="ns").unit
     header = unit[:_format.HEADER_BYTES]
     assert header == bytes([1, 0x08, 3, 0, 20, 0, 0, 0])
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)

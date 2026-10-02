@@ -20,7 +20,7 @@ class FluxCodec:
     """fluxcode-<bits>[-f<f>]: a minute (blocks X[nb, n]) as one real fluxcode unit, nothing added.
     Quantize on a power-of-two step (a decimal 10^p grid if the data sits on one), delta order
     0/1/2/3 by variance, residuals mod 2^16 -> zigzag -> 16 bit planes or 2 byte planes (whichever
-    compresses smaller, Params.planes) -> zstd; with f, the step
+    Params.level decides) -> zstd; with f, the step
     is at most f * sigma on blocks that look like white noise. `params` overrides bits / noise_f."""
 
     def __init__(self, bits=16, noise_f=None, params=None):

@@ -6,6 +6,11 @@ from a sensor fleet (a synthetic day-scale stress test), where the time goes, an
 slow it down. Raw output: [bench/STRESS_RESULTS.md](../bench/STRESS_RESULTS.md);
 harness: [bench/stress.py](../bench/stress.py).
 
+**Since these tables, `Params.planes` became `Params.level`** (TUNING.md, Levels). `planes="best"`
+below is the old default (both layouts, one block run), `planes="bit"` bit planes only. The new
+default level 5 encodes about as fast as `"best"` and is 0.3–2% smaller on the synthetic sets;
+these tables have not been rerun.
+
 Most of the change from the previous tables is `planes="best"`: every unit is compressed twice,
 with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller and
 encode about 1.5x slower; `planes="bit"` skips the second pass. Variable block sizes alone (a

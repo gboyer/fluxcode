@@ -3,6 +3,8 @@
 """Helpers for tests and benchmarks that check per-block properties across a long series:
 encode() with its per-unit index lists joined into flat per-block arrays, and back."""
 
+from contextlib import contextmanager
+
 import numpy as np
 
 import fluxcode
@@ -19,6 +21,18 @@ def encode_series(x, params=Params()):
 def decode_series(units):
     """decode() of encode_series' units, joined back into one series."""
     return np.concatenate([decoded.values for decoded in fluxcode.decode(units)])
+
+
+@contextmanager
+def planes(layout, flush=True, zstd_level=3):
+    """Every Params.level compresses with layout ("bit", "byte", "heuristic" or "best") while
+    inside: the level picks the layout, and some tests need a particular one."""
+    saved = dict(_unit.EFFORTS)
+    _unit.EFFORTS.update(dict.fromkeys(saved, _unit.Effort(layout, flush, zstd_level)))
+    try:
+        yield
+    finally:
+        _unit.EFFORTS.update(saved)
 
 
 def unit_rows(unit):

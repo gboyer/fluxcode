@@ -29,7 +29,7 @@ and so is the division into blocks (§2).
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
 | `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§5.7): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
-| `planes` | `"best"`, `"bit"`, `"byte"` | `"best"` | the residual layout (§7): 16 bit planes, 2 byte planes, or both compressed and the smaller kept (ties keep byte planes, which decode faster). `"best"` doubles the zstd work of encoding; byte planes win on periodic signals and noisy sines, bit planes on small or aperiodic residuals (TUNING.md) |
+| `level` | 1–9 | 5 | encoder effort: how the body is compressed (below). It changes the size and the encode time, never the decoded values |
 
 **Precedence.** e_fine is the §5.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
@@ -37,7 +37,28 @@ clamped to e_coarse; decimal detection then looks for a decimal grid coarser tha
 finally the target (if set and the unit is over budget) coarsens blocks further, still never past
 e_coarse. With both the noise floor and the target on, each block takes the coarser step.
 
-Fixed by this spec: zstd level 3, and the body stored field by field, each field holding every
+**Levels.** Each level picks the residual layout (§7: 16 bit planes or 2 byte planes, the header
+records which), whether the zstd frame ends a block after the per-block columns and after each
+dense residual plane (more than 1/16 of its bytes non-zero; every zstd block has its own literal
+Huffman table, and the frame is an ordinary one either way), and the zstd level:
+
+| level | layout | blocks | zstd |
+|---|---|---|---|
+| 1 | heuristic | one run | 1 |
+| 2 | heuristic | one run | 3 |
+| 3–5 | heuristic | flushed | 3 |
+| 6–7 | best | flushed | 3 |
+| 8 | best | flushed | 7 |
+| 9 | best | flushed | 9 |
+
+*Heuristic*: byte planes if fewer than 5% of the unit's residuals reach 256 (zigzagged), else bit
+planes, one compression. *Best*: both layouts, the smaller kept, ties to byte planes (they decode
+faster). Two retries apply to a frame under 16 KB, which is cheap to compress again: a flushed
+frame is also compressed in one block run, and under the heuristic the unit is also compressed
+with the other layout, the smaller kept each time. Levels sharing settings leave room for later
+strategies. Measured size and speed per level are in TUNING.md.
+
+Fixed by this spec: the body stored field by field, each field holding every
 block's bytes in block order (§7). Every block records its size, 0 to 65,535 samples (1000 in
 most measurements), and a unit holds up to 65,535 blocks. Bit planes store each block in whole
 bytes, so a block whose size isn't a multiple of 8 pads its last byte with zero bits.
@@ -441,8 +462,8 @@ bytes are both 0 are skipped.
 
 ## 7. Unit format
 
-A unit is an 8-byte header followed by one zstd frame holding the body (level 3, content size
-recorded, no checksum). The header is uncompressed, so a decoder can validate it before
+A unit is an 8-byte header followed by one zstd frame holding the body (any zstd level and block
+boundaries, content size recorded, no checksum). The header is uncompressed, so a decoder can validate it before
 decompressing:
 
 | offset | header field | type (little-endian) | contents |

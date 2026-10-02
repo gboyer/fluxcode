@@ -7,8 +7,8 @@ to 4 significant figures, or more when the range is narrow.
 
 High level properties:
 
-* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s (2.2 GiB/s
-  with bit planes only).
+* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s at the
+  default level (faster at level 1–2).
 * **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
   data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
   for data that arrives late or with gaps.
@@ -39,10 +39,11 @@ type:
   `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
-* **Bit or byte planes**: by default (`planes="best"`) each unit is compressed with the
-  residuals as 16 bit planes and as 2 byte planes, and the smaller is kept. Byte planes win
-  on periodic signals and noisy sines (4–18% smaller), bit planes on random walks and chirps.
-  `planes="bit"` or `"byte"` skips the second compression.
+* **Level**: `level=1` (fastest) to `9` (smallest), default 5, trades encode time for size
+  without changing the decoded values: it picks bit or byte planes for the residuals (by a
+  one-pass heuristic, or by compressing both), gives each dense plane its own zstd block, and
+  raises the zstd level at 8 and 9. Level 1 encodes about 25% faster than the default for
+  1–2% more bytes; level 9 is 1–3% smaller at about 4.5× the encode time.
 
 **Status:** version 0.1, alpha. The unit format is version 1 and specified in
 [docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
@@ -145,7 +146,7 @@ which set the step to 0.25σ.
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `planes="best"` (or `"bit"`, `"byte"`). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `decimal_detection=True`, `level=5` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -172,10 +173,11 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
-Encode compresses each unit twice, with bit and with byte planes (`planes="best"`). With
-`planes="bit"` the whole set is 4.86 bits/sample at 3.38 µs/block to encode (sines 4.12 Hz 2.73,
-9.87 Hz 3.64); byte planes gain much more at lower `max_quantize_bits` (see the
-[research report](experimental/report/index.html#scatter-kinds)).
+These numbers predate `level`: they compress each unit with bit and with byte planes, keep the
+smaller, and have no block flushes. The default level 5 encodes about as fast and is 0.3–2%
+smaller on the sets in [docs/TUNING.md](docs/TUNING.md#levels). With bit planes only, the
+whole set was 4.86 bits/sample at 3.38 µs/block to encode; byte planes gain much more at lower
+`max_quantize_bits` (see the [research report](experimental/report/index.html#scatter-kinds)).
 
 Decoding runs at about 4.5 GB/s per core, and the kernels release the GIL:
 4 threads encode about 5 GB/s and decode about 15 GB/s (8 threads add little: 4 of the 8 cores

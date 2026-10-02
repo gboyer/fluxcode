@@ -5,7 +5,7 @@
 import numpy as np
 import pytest
 import zstandard
-from _series import decode_series, encode_series, flags_params, gated, unit_rows
+from _series import decode_series, encode_series, flags_params, gated, planes, unit_rows
 from _signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
 
 import fluxcode
@@ -285,7 +285,7 @@ def test_units_are_self_describing(block_len, n_blocks, flagged):
     elif flagged:
         x[0] = np.inf
     unit, _, _, _ = fluxcode.encode_unit(x, block_len=block_len)
-    header = _format.unpack_header(unit)  # byte_planes: planes="best" may pick either
+    header = _format.unpack_header(unit)  # byte_planes: the level picks either
     assert (header.num_blocks, header.num_samples, header.time_unit) == (n_blocks, len(x), 0)
     y, _, sizes = fluxcode.decode_unit(unit)
     assert y.shape == x.shape
@@ -442,24 +442,28 @@ def _periodic(n=60_000):
 
 @pytest.mark.parametrize("kind", [*KINDS, "periodic"])
 def test_best_planes_is_the_smaller_and_decodes_the_same(kind):
-    """planes="best" (the default) is the smaller of "bit" and "byte", ties to byte planes; all
+    """Level 7 ("best" layout) is the smaller of bit and byte planes, ties to byte planes; all
     three decode identically."""
     x = _periodic() if kind == "periodic" else minute(kind, 7)
     x[123] = np.nan  # a flagged block too
     for bits in (10, 16):
-        bit_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits, planes="bit")).unit
-        byte_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits, planes="byte")).unit
-        best_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits)).unit
+        with planes("bit"):
+            bit_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits)).unit
+        with planes("byte"):
+            byte_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits)).unit
+        best_unit = fluxcode.encode_unit(x, Params(max_quantize_bits=bits, level=7)).unit
         assert not _format.unpack_header(bit_unit).byte_planes and _format.unpack_header(byte_unit).byte_planes
         assert best_unit == (byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit)
         for unit in (bit_unit, byte_unit):
             np.testing.assert_array_equal(fluxcode.decode_unit(unit).values, fluxcode.decode_unit(best_unit).values)
 
 
-def test_best_planes_picks_byte_planes_on_repeating_cycles():
-    unit = fluxcode.encode_unit(_periodic(), Params(max_quantize_bits=10)).unit
+@pytest.mark.parametrize("level", [1, 5, 9])
+def test_byte_planes_on_repeating_cycles(level):
+    unit = fluxcode.encode_unit(_periodic(), Params(max_quantize_bits=10, level=level)).unit
     assert _format.unpack_header(unit).byte_planes
-    assert len(unit) < 0.8 * len(fluxcode.encode_unit(_periodic(), Params(max_quantize_bits=10, planes="bit")).unit)
+    with planes("bit"):
+        assert len(unit) < 0.8 * len(fluxcode.encode_unit(_periodic(), Params(max_quantize_bits=10)).unit)
 
 
 def test_update_byte_plane_unit():
@@ -472,7 +476,8 @@ def test_update_byte_plane_unit():
     # Same params: byte-identical to encoding the edited series from scratch
     assert fluxcode.update(unit, {5: new}, params).unit == fluxcode.encode_unit(x2, params).unit
     # Bit planes: untouched blocks are converted, and still decode identically
-    unit2 = fluxcode.update(unit, {5: new}, Params(max_quantize_bits=10, planes="bit")).unit
+    with planes("bit"):
+        unit2 = fluxcode.update(unit, {5: new}, params).unit
     assert not _format.unpack_header(unit2).byte_planes
     np.testing.assert_array_equal(fluxcode.decode_unit(unit2).values, fluxcode.decode_unit(fluxcode.encode_unit(x2, params).unit).values)
 

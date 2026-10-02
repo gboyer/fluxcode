@@ -16,28 +16,59 @@ import numpy.typing as npt
 import zstandard
 
 from . import _bitpacking, _decoder, _encoder, _format, _time
-from ._types import DecodedUnit, EncodedUnit, Params, PlaneMode, UpdatedUnit, is_int
+from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit, is_int
 
-ZSTD_LEVEL: int = 3
-"""Zstandard compression level used for encoding units."""
+
+class Effort(NamedTuple):
+    """How a unit is compressed at one Params.level.
+
+    Attributes:
+        layout: "heuristic" (byte planes when few residuals reach 256, else bit planes, one
+            compression), "best" (both, the smaller kept), "bit" or "byte" (tests only).
+        flush: Whether a zstd block ends after the columns and each dense residual plane.
+        zstd_level: The zstd compression level.
+    """
+
+    layout: str
+    flush: bool
+    zstd_level: int
+
+
+EFFORTS: dict[int, Effort] = {
+    1: Effort("heuristic", False, 1),
+    2: Effort("heuristic", False, 3),
+    **dict.fromkeys(range(3, 6), Effort("heuristic", True, 3)),
+    **dict.fromkeys(range(6, 8), Effort("best", True, 3)),
+    8: Effort("best", True, 7),
+    9: Effort("best", True, 9),
+}
+"""Params.level to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
+
+BYTE_PLANES_MAX_HIGH_SHARE: float = 0.05
+"""The heuristic layout picks byte planes when fewer than this share of the residuals reach 256:
+the high byte is then nearly constant, and byte-wise literals model the low byte well."""
+
+SMALL_FRAME_BYTES: int = 16_384
+"""A frame smaller than this is cheap to compress again, and is where the one-pass choices miss
+most (per unit, not in total bytes): a block-flushed frame is also compressed in one block run, and
+under the heuristic layout a unit is also compressed with the other layout; the smaller is kept."""
 
 _local = threading.local()
 
 
-def zstd() -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecompressor]:
-    """Retrieves thread-local zstandard compressor and decompressor instances.
+def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecompressor]:
+    """Retrieves thread-local zstandard compressor (at level) and decompressor instances.
 
     Returns:
         A tuple of (compressor, decompressor) dedicated to the current thread.
     """
-    cached_codec = getattr(_local, "z", None)
-    if cached_codec is None:
-        # Create separate compressor and decompressor per thread for thread-safety
-        cached_codec = _local.z = (
-            zstandard.ZstdCompressor(level=ZSTD_LEVEL, write_checksum=False, write_content_size=True),
-            zstandard.ZstdDecompressor(),
-        )
-    return cached_codec
+    codecs = getattr(_local, "z", None)
+    if codecs is None:
+        # Separate compressors and decompressor per thread for thread-safety
+        codecs = _local.z = {"decompressor": zstandard.ZstdDecompressor()}
+    if level not in codecs:
+        codecs[level] = zstandard.ZstdCompressor(level=level, write_checksum=False, write_content_size=True)
+    return codecs[level], codecs["decompressor"]
 
 
 def as_series(series_input: npt.ArrayLike, allow_empty: bool = False) -> np.ndarray:
@@ -280,13 +311,13 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     return time_rows
 
 
-def compress(rows: _format.UnitRows, num_samples: int, planes: PlaneMode, time_unit: int = 0) -> bytes:
+def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit: int = 0) -> bytes:
     """Serializes unit rows and builds the unit: header plus zstd frame of the body.
 
     Args:
         rows: The unit's rows (time_rows None for a unit without a time axis).
         num_samples: Sample count recorded in the header (the sum of the block sizes).
-        planes: Params.planes: bit planes, byte planes, or both and the smaller.
+        effort: How to compress (Params.level).
         time_unit: Time unit code recorded in the header (0 without a time axis).
 
     Returns:
@@ -296,22 +327,77 @@ def compress(rows: _format.UnitRows, num_samples: int, planes: PlaneMode, time_u
     fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)
     return _pack(
         lambda byte_planes: _bitpacking.write_unit(*fields, byte_planes=byte_planes, time_rows=rows.time_rows),
-        rows.block_flags.shape[0], num_samples, planes, time_unit,
+        rows.block_flags.shape[0], num_samples, effort, time_unit,
     )
 
 
+def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int) -> bytes:
+    """Compresses a unit body into one zstd frame, ending a block at each cut.
+
+    Every zstd block has its own literal Huffman table, so cutting the body between its
+    columns and planes codes each with its own statistics. The frame is an ordinary one that
+    records the content size.
+
+    Args:
+        body: 1D uint8 array of the uncompressed body.
+        cuts: Strictly increasing body offsets where a block ends.
+        zstd_level: The zstd compression level.
+
+    Returns:
+        The frame.
+    """
+    compressor = zstd(zstd_level)[0].compressobj(size=body.shape[0])
+    view = body.data
+    parts = []
+    previous = 0
+    for cut in cuts:
+        if previous < cut < body.shape[0]:
+            parts.append(compressor.compress(view[previous:cut]))
+            parts.append(compressor.flush(zstandard.COMPRESSOBJ_FLUSH_BLOCK))
+            previous = cut
+    parts.append(compressor.compress(view[previous:]))
+    parts.append(compressor.flush())
+    return b"".join(parts)
+
+
+def _frame(body: np.ndarray, num_blocks: int, byte_planes: bool, has_time: bool, effort: Effort) -> bytes:
+    """The zstd frame of a body: in one block run, or block-flushed at the columns and planes
+    and then also in one block run when the flushed frame comes out small (SMALL_FRAME_BYTES)."""
+    single = lambda: zstd(effort.zstd_level)[0].compress(body.data)
+    if not effort.flush:
+        return single()
+    _, offsets = _format.read_layout(body, num_blocks)
+    flushed = compress_body(body, _format.flush_points(body, num_blocks, offsets, has_time, byte_planes), effort.zstd_level)
+    if len(flushed) < SMALL_FRAME_BYTES:
+        one_run = single()
+        return one_run if len(one_run) < len(flushed) else flushed
+    return flushed
+
+
 def _pack(
-    write_body: Callable[[bool], np.ndarray], num_blocks: int, num_samples: int, planes: PlaneMode, time_unit: int
+    write_body: Callable[[bool], np.ndarray], num_blocks: int, num_samples: int, effort: Effort, time_unit: int
 ) -> bytes:
-    """The unit of the body write_body(byte_planes) builds, in the plane mode planes selects
-    ("best": both, and the smaller)."""
+    """The unit of the body write_body(byte_planes) builds, compressed as effort says."""
+    has_time = time_unit != 0
 
-    def build(byte_planes: bool) -> bytes:
+    def build(byte_planes: bool, body: np.ndarray | None = None) -> bytes:
         header = _format.pack_header(num_blocks, num_samples, byte_planes, time_unit)
-        return header + zstd()[0].compress(write_body(byte_planes).data)
+        body = write_body(byte_planes) if body is None else body
+        return header + _frame(body, num_blocks, byte_planes, has_time, effort)
 
-    if planes != "best":
-        return build(planes == "byte")
+    if effort.layout == "heuristic":
+        bit_body = write_body(False)
+        _, offsets = _format.read_layout(bit_body, num_blocks)
+        share = _bitpacking.high_byte_share(bit_body, num_blocks, int(offsets.group_offsets[-1]), has_time)
+        byte_planes = share < BYTE_PLANES_MAX_HIGH_SHARE
+        unit = build(True) if byte_planes else build(False, bit_body)
+        if len(unit) - _format.HEADER_BYTES >= SMALL_FRAME_BYTES:
+            return unit
+        other = build(False, bit_body) if byte_planes else build(True)
+        bit_unit, byte_unit = (other, unit) if byte_planes else (unit, other)
+        return byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit
+    if effort.layout != "best":
+        return build(effort.layout == "byte")
     bit_unit, byte_unit = build(False), build(True)
     # Ties go to byte planes (they decode faster: no bit transpose), so the choice is deterministic
     return byte_unit if len(byte_unit) <= len(bit_unit) else bit_unit
@@ -340,7 +426,7 @@ def encode(
     rows, stats = encode_rows(samples, block_sizes, params)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
-    return EncodedUnit(compress(rows, samples.shape[0], params.planes, time_unit), *stats)
+    return EncodedUnit(compress(rows, samples.shape[0], EFFORTS[params.level], time_unit), *stats)
 
 
 class ParsedUnit(NamedTuple):
@@ -646,7 +732,7 @@ def splice(
         lambda byte_planes: _bitpacking.splice_body(
             parsed.raw_body, parsed.layout, parsed.header.byte_planes, old_starts, indices, new_rows, byte_planes
         ),
-        num_blocks, num_samples, params.planes, parsed.header.time_unit,
+        num_blocks, num_samples, EFFORTS[params.level], parsed.header.time_unit,
     )
     return UpdatedUnit(unit, indices, *stats)
 

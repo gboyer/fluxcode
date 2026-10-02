@@ -338,13 +338,12 @@ def rmse_axis(ax, fontsize, zero=False):
 
 
 # The fluxcode curves, in the summary scatter and the per-dataset panels: the only lines there, so fluxcode
-# stands out from the markers. Solid: bit planes only; dashed: planes="best" (the default), which keeps the
-# smaller layout per unit.
+# stands out from the markers. Solid: level 1 (fastest); dashed: the default level.
 FLUX_CURVE, FLUX_CURVE_BYTE = ([FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6),
-                                                       noise_floor_sigma=None, planes=planes))
-                                for b in range(4, 17)] for planes in ("bit", "best"))
+                                                       noise_floor_sigma=None, level=level))
+                                for b in range(4, 17)] for level in (1, Params().level))
 FLUX_CURVE_COLOR = COLORS["fluxcode-16"]
-CURVE_STYLES = (("-", "fluxcode-B, B = 4..16, noise floor off"), ("--", "same, planes=\"best\" (default)"))
+CURVE_STYLES = (("-", "fluxcode-B, B = 4..16, noise floor off, level 1"), ("--", "same, default level"))
 
 
 def curve_stats():
@@ -460,18 +459,15 @@ def write_report(results):
     body.append("<h2 id='scatter'>Size vs error</h2><p>Every codec, one marker per family (shade by position in the "
                 "family). Bits/sample and RMSE are medians over the 12 datasets, so this is a summary; the per-dataset panels "
                 "below show the spread. gorilla-xor (lossless, about 65 bits/sample) is left out of the charts; it's in the tables. The lines are fluxcode at B = 4..16 "
-                "with the noise floor off (solid: bit planes only; dashed: <code>planes=\"best\"</code>, the default), each point the medians "
-                "over the datasets like the markers. The dashed line's lead comes from the three sines, which sit mid-ranking "
-                "and so move the median. Elsewhere the two lines coincide, apart from square and linear (16% and 5% "
-                "smaller with the best of both, at sizes too small to move the median; see the per-dataset panels). "
+                "with the noise floor off (solid: <code>level=1</code>, the fastest; dashed: the default level), each point the medians "
+                "over the datasets like the markers. "
                 "fluxcode-16-f0.25 is the default (noise floor on): it sits below the line because the noise floor only "
                 "shrinks the noisy datasets, while the median RMSE comes from the clean ones. The other noise-floor "
                 "settings are in the matrix and the per-dataset panels.</p>" + scatter
                 + f"<h3 id='scatter-kinds'>Per dataset</h3><p>Each panel is one dataset: bits/sample over its {REPORT_MINUTES} "
                 "one-minute units, RMSE the median over their blocks. The solid line is fluxcode-B at B = 4..16 with the noise "
-                "floor off and bit planes only; a marker below it beats fluxcode at equal size. The dashed line is "
-                "<code>planes=\"best\"</code>, the default (each unit compressed with bit and with byte planes, the smaller kept); it "
-                "departs from the solid line on the sines and the square wave, whose cycles repeat across the minute. "
+                "floor off at <code>level=1</code>; a marker below it beats fluxcode at equal size. The dashed line is "
+                "the default level (block flushes per plane and retries on small frames, docs/SPEC.md §1). "
                 "Lossless points (RMSE ≤ 10<sup>−6</sup>%) sit on a 0* row drawn at 10<sup>−7</sup>%. The dotted line is 4 bits/sample. Errors are against the "
                 "input, which for noisy-sine counts the noise as signal.</p>" + rd)
 

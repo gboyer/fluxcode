@@ -12,11 +12,9 @@ import numpy as np
 MIN_TARGET_BITS: float = 6.0
 """Minimum allowed per-unit bit target per sample."""
 
-PlaneMode = Literal["best", "bit", "byte"]
-"""Residual layout before zstd: bit planes, byte planes, or whichever compresses smaller."""
-
-PLANE_MODES: tuple[PlaneMode, ...] = ("best", "bit", "byte")
-"""The accepted values of Params.planes."""
+MIN_LEVEL: int = 1
+MAX_LEVEL: int = 9
+"""The range of Params.level."""
 
 TimeUnit = Literal["s", "ms", "us", "ns"]
 """Resolution of integer timestamps: seconds, milliseconds, microseconds or nanoseconds."""
@@ -114,11 +112,9 @@ class Params:
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.
-        planes: How the residuals are laid out before zstd: "bit" (16 bit planes), "byte"
-            (2 byte planes), or "best" (the default): compress the unit both ways and keep
-            the smaller, ties going to byte planes. "best" doubles the zstd work of encoding;
-            byte planes win on periodic signals and noisy sines (4-18% smaller), bit planes on
-            small or aperiodic residuals (random walks, chirps), and the choice is per unit.
+        level: Encoder effort, MIN_LEVEL (fastest) to MAX_LEVEL (smallest). It changes how
+            the unit is compressed (the residual layout, zstd block boundaries and level),
+            never the decoded values; the levels are listed in SPEC.md.
     """
 
     min_quantize_bits: int = 6
@@ -128,7 +124,7 @@ class Params:
     noise_floor_sigma: float | None = 0.25
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
-    planes: PlaneMode = "best"
+    level: int = 5
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -161,8 +157,8 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
-        if self.planes not in PLANE_MODES:
-            raise ValueError(f"planes must be one of {', '.join(map(repr, PLANE_MODES))}, got {self.planes!r}")
+        if not (is_int(self.level) and MIN_LEVEL <= self.level <= MAX_LEVEL):
+            raise ValueError(f"level must be an integer from {MIN_LEVEL} to {MAX_LEVEL}, got {self.level!r}")
 
 
 def is_int(val: object) -> bool:

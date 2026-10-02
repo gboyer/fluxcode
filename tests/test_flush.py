@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Garry Boyer
+"""Params.level: block flushing inside the unit's one zstd frame, the heuristic layout and the
+zstd level. The frame stays an ordinary one (content size recorded, one-shot decodable), the
+blocks end where the planes do, the heuristic picks a layout from the residuals' high byte, and
+no level changes the decoded values."""
+
+import numpy as np
+import pytest
+import zstandard
+from _series import planes
+from _signals import minute
+
+import fluxcode
+from fluxcode import Params, _format, _unit
+from fluxcode._types import MAX_LEVEL, MIN_LEVEL
+
+LEVELS = range(MIN_LEVEL, MAX_LEVEL + 1)
+
+
+def body_of(unit):
+    return _unit.decompress(unit).raw_body
+
+
+def test_every_level_has_an_effort():
+    assert sorted(_unit.EFFORTS) == list(LEVELS)
+    for bad in (0, MAX_LEVEL + 1, 5.0, True, "5"):
+        with pytest.raises(ValueError, match="level"):
+            Params(level=bad)
+
+
+@pytest.mark.parametrize("kind", ["random-walk", "sin-9.87hz", "linear", "noisy-sine"])
+def test_levels_decode_the_same(kind):
+    x = minute(kind, 1)
+    x[123] = np.nan  # a flagged block too
+    reference = None
+    for level in LEVELS:
+        (unit,), *_ = fluxcode.encode(x, Params(level=level))
+        frame = unit[_format.HEADER_BYTES:]
+        assert zstandard.frame_content_size(frame) == len(body_of(unit))
+        assert zstandard.ZstdDecompressor().decompress(frame) == bytes(body_of(unit))  # one shot, no section lengths
+        values = fluxcode.decode_unit(unit).values
+        if reference is None:
+            reference = values
+        np.testing.assert_array_equal(values, reference)
+
+
+@pytest.mark.parametrize("kind", ["random-walk", "sin-9.87hz", "linear"])
+def test_flushed_frame_is_no_bigger_than_one_run_when_small(kind):
+    with planes("bit"):
+        (unit,), *_ = fluxcode.encode(minute(kind, 2))
+    single = zstandard.ZstdCompressor(level=3).compress(bytes(body_of(unit)))
+    if len(single) < _unit.SMALL_FRAME_BYTES:  # small: also compressed in one run, the smaller kept
+        assert len(unit) - _format.HEADER_BYTES <= len(single)
+
+
+def test_large_unit_is_smaller_flushed():
+    with planes("bit"):
+        (unit,), *_ = fluxcode.encode(minute("random-walk", 3))
+    assert len(unit) - _format.HEADER_BYTES < len(zstandard.ZstdCompressor(level=3).compress(bytes(body_of(unit))))
+
+
+@pytest.mark.parametrize("byte_planes", [False, True])
+def test_flush_points(byte_planes):
+    with planes("byte" if byte_planes else "bit"):
+        (unit,), *_ = fluxcode.encode(minute("sin-9.87hz", 4))
+    parsed = _unit.decompress(unit)
+    nb = parsed.header.num_blocks
+    cuts = _format.flush_points(parsed.raw_body, nb, parsed.layout, parsed.has_time, byte_planes)
+    start = _format.residual_start(nb, parsed.has_time)
+    assert cuts == sorted(set(cuts)) and cuts[0] == start and cuts[-1] <= len(parsed.raw_body)
+    assert len(cuts) <= (3 if byte_planes else 17)
+    groups = int(parsed.layout.group_offsets[-1])
+    plane_bytes = 8 * groups if byte_planes else groups
+    for cut in cuts[1:]:  # every cut after the columns ends a plane that holds data
+        assert cut % plane_bytes == start % plane_bytes
+        assert np.count_nonzero(parsed.raw_body[cut - plane_bytes:cut]) * _format.FLUSH_MIN_DENSITY > plane_bytes
+
+
+def test_flush_points_skip_empty_planes():
+    with planes("bit"):
+        (unit,), *_ = fluxcode.encode(minute("linear", 4))  # near-constant residuals
+    parsed = _unit.decompress(unit)
+    cuts = _format.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, False)
+    assert len(cuts) < 17
+
+
+def test_compress_body_cuts():
+    body = np.random.default_rng(0).integers(0, 4, 5000, dtype=np.uint8)
+    for cuts in ([], [0], [5000], [10, 4000], [1, 2, 3, 4999]):
+        frame = _unit.compress_body(body, cuts, 3)
+        assert zstandard.ZstdDecompressor().decompress(frame) == body.tobytes()
+        assert zstandard.frame_content_size(frame) == 5000
+
+
+def test_heuristic_choice():
+    for kind, byte in (("sin-4.12hz", True), ("random-walk", False), ("chirp", False), ("noisy-sine", True)):
+        (unit,), *_ = fluxcode.encode(minute(kind, 5))
+        assert _format.unpack_header(unit).byte_planes is byte, kind
+
+
+def test_levels_trade_size():
+    kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
+    size = lambda level: sum(len(fluxcode.encode(minute(kind, 6), Params(level=level))[0][0]) for kind in kinds)
+    assert size(9) <= size(7) <= size(5) <= 1.03 * size(7)
+    assert size(5) <= size(2) <= size(1)

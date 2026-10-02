@@ -501,6 +501,42 @@ def get_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
     return value_bits - ((value_bits & 0x8000) << 1)
 
 
+FLUSH_MIN_DENSITY: int = 16
+"""A residual plane ends a zstd block only if more than 1 / FLUSH_MIN_DENSITY of its bytes are
+non-zero: a block costs tens of bytes of header and table, which a plane that is mostly zero
+(the high planes of small residuals) doesn't repay, and which also slows encoding."""
+
+
+def flush_points(raw_unit: np.ndarray, num_blocks: int, offsets: Layout, has_time: bool, byte_planes: bool) -> list[int]:
+    """Body offsets where the encoder ends a zstd block: after the per-block columns, and after
+    each residual plane (16 bit planes or 2 byte planes) that is dense enough to have statistics
+    of its own. Every zstd block carries its own literal Huffman table, so such a plane is coded
+    with the statistics of its own bytes (about 3% smaller than one block run for typical
+    units); the result is still one zstd frame, which any decoder reads unchanged.
+
+    Args:
+        raw_unit: 1D uint8 array of the uncompressed body.
+        num_blocks: Number of blocks.
+        offsets: The blocks' Layout.
+        has_time: Whether the unit has a time axis.
+        byte_planes: Whether the residuals are stored as byte planes.
+
+    Returns:
+        Strictly increasing offsets, empty for a unit with no residual plane bytes.
+    """
+    start = residual_start(num_blocks, has_time)
+    groups = int(offsets.group_offsets[-1])
+    plane_bytes, planes = (8 * groups, 2) if byte_planes else (groups, 16)
+    if not groups:
+        return []
+    points = [start]
+    for plane_idx in range(planes):
+        plane_start = start + plane_idx * plane_bytes
+        if np.count_nonzero(raw_unit[plane_start:plane_start + plane_bytes]) * FLUSH_MIN_DENSITY > plane_bytes:
+            points.append(plane_start + plane_bytes)
+    return points
+
+
 @njit(inline="always")
 def code_planes_start(num_blocks: int, num_groups: int, has_time: bool) -> int:
     """Offset of the nonfinite code planes: after the residual planes."""
