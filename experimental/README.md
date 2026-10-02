@@ -100,3 +100,4 @@ Run one with `uv run python -m bench.<name>` from this directory.
 
 [plane_coders/](plane_coders/README.md) is a separate experiment: would an RLE or arithmetic coder beat zstd on the
 residual bit planes (it is faster, and larger; not adopted)?
+[plane_layout/](plane_layout/README.md) asks whether bit planes vs byte planes can be predicted without compressing both.
