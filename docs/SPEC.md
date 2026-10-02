@@ -29,7 +29,7 @@ and so is the division into blocks (§2).
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
 | `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§5.7): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
-| `effort` | 1–9 | 5 | encoder effort: how the body is compressed (below). It changes the size and the encode time, never the decoded values |
+| `effort` | 1–9 | 4 | encoder effort: how the body is compressed (below). It changes the size and the encode time, never the decoded values |
 
 **Precedence.** e_fine is the §5.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
@@ -46,20 +46,18 @@ Huffman table, and the frame is an ordinary one either way), and the zstd levels
 |---|---|---|---|
 | 1 | heuristic | one run | 1 |
 | 2 | heuristic | one run | 3 |
-| 3–5 | heuristic | flushed | 3 |
-| 6–8 | best | flushed | 3 |
+| 3–4 | best | one run | 3 |
+| 5–8 | best | flushed | 3 |
 | 9 | best | flushed | 3 and 9 |
 
-*Heuristic*: byte planes if fewer than 5% of the unit's residuals reach 256 (zigzagged), else bit
-planes, one compression. *Best*: both layouts, the smaller kept, ties to byte planes (they decode
-faster). Two retries apply to a frame under 16 KB, which is cheap to compress again: a flushed
-frame is also compressed in one block run, and under the heuristic the unit is also compressed
-with the other layout, the smaller kept each time. Effort 9 compresses at both zstd levels and
-keeps the smaller (zstd 9 alone is larger on about a fifth of units), so it, like effort 6 over
-effort 5, tries a superset of the candidates below: a unit never grows from effort 5 to 6 to 9.
-Efforts 1 and 2 against 5 are ordered only on average (another zstd level, no flushes). Efforts
-sharing settings leave room for later strategies; their output may change when they get one.
-Measured size and speed per effort are in TUNING.md.
+*Heuristic*: byte planes if fewer than 1% of the unit's residuals (zigzagged) reach 128, else
+bit planes, one compression. *Best*: both layouts, the smaller kept, ties to byte planes (they
+decode faster). Efforts 3 and 4 are the encoder before efforts existed: their units are
+byte-identical to it. Effort 9 compresses at both zstd levels and keeps the smaller (zstd 9
+alone is larger on about a fifth of units), so no unit grows from effort 5 to 9; the other
+steps are ordered only on average (a flushed frame is larger than one run on tiny units, and
+effort 1 uses another zstd level). Efforts sharing settings leave room for later strategies;
+their output may change when they get one. Measured size and speed per effort are in TUNING.md.
 
 Fixed by this spec: the body stored field by field, each field holding every
 block's bytes in block order (§7). Every block records its size, 0 to 65,535 samples (1000 in

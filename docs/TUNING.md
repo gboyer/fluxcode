@@ -5,44 +5,61 @@ them. The format and algorithm are in [SPEC.md](SPEC.md).
 
 ## Effort
 
-**`effort`** (1–9, default 5) sets how hard the encoder works on compression: the residual layout,
+**`effort`** (1–9, default 4) sets how hard the encoder works on compression: the residual layout,
 block flushes inside the zstd frame and the zstd level (the table is in SPEC.md §1). It never
-changes the decoded values. Measured 2026-10-01 through the public API, one thread, on battery
-(times are comparable within the table, coarse in absolute terms), against the encoder before
-efforts existed (both layouts compressed, smaller kept, one block run, zstd 3: 5.174
-and 4.009 bits/sample at 9.4 and 8.5 ns/sample). *Report*: the report's 20 signals, 4 minutes each
-(4.8 M samples); *random*: 400 one-minute units of 14 random signal families with random
-`max_quantize_bits` and noise floor (24 M samples; `experimental/plane_layout/`).
+changes the decoded values. Efforts 3 and 4 are the encoder as it was before efforts existed (both
+layouts compressed, the smaller kept, one block run, zstd 3), and the table below is against it.
+Measured 2026-10-02 through the public API, one thread, AC power
+(`experimental/plane_layout/api_bench.py`; times are best of 3 over the whole set). *Report*: the
+report's 20 signals, 4 minutes each (4.8 M samples); *random*: 400 one-minute units of 14 random
+signal families with random `max_quantize_bits` and noise floor (24 M samples).
 
-| effort | size, report | size, random | encode time, report / random | decode |
-|---|---|---|---|---|
-| 1 | +1.0% | +2.3% | −2.8 ns/sample (−30%) / −2.2 (−26%) | same |
-| 2 | 0.0% | +1.3% | −2.4 ns/sample (−26%) / −1.7 (−20%) | same |
-| 3–5 | −2.1% | −0.3% | −0.6 ns/sample (−6%) / +0.1 (+1%) | same |
-| 6–8 | −2.1% | −2.1% | +2.8 ns/sample (+30%) / +2.2 (+26%) | same |
-| 9 | −2.9% | −3.3% | +43 ns/sample (+462%) / +40 (+465%) | same |
+EFFORT_TABLE
 
 Where the gains come from (`experimental/plane_layout/README.md` has the full study):
 
-- **Block flushes** (efforts 3–9). zstd codes the literals it doesn't match with one Huffman table
+- **Block flushes** (efforts 5–9). zstd codes the literals it doesn't match with one Huffman table
   per block, and one table for every plane fits none of them: the low byte is nearly uniform where
   the high one is peaked, and bit planes differ in density. Ending a block after each dense plane
-  gives each its own table, 1–2% smaller, in the same frame (no format change). A plane with at
+  gives each its own table, 1.5–2% smaller, in the same frame (no format change). A plane with at
   most 1/16 of its bytes non-zero doesn't repay a block's header and table, so it shares one.
-- **The heuristic layout** (efforts 1–5). Byte planes win when the residuals fit in the low byte
-  (the high byte is a constant) and on exactly repeating structure; bit planes win when the
-  residuals are very narrow (mostly zero: 8 samples per byte escape Huffman's 1-bit floor) or wide
-  (the two bytes' statistics pooled in one table fit neither). "Fewer than 5% of residuals reach
-  256" captures the wide case; the threshold scan is flat from 1% to 5%. It misses narrow noise and
-  near-constant planes, but those units are small: the retry with the other layout under 16 KB
-  brings the per-unit miss from 8% to 1.3% (geometric mean against the better layout) for a
-  second compression on a quarter to a third of units, all cheap to compress.
-- **The small-frame retry in one block run.** Under 1 KB, per-plane tables cost more than they
-  save on 75% of units (up to +90%); compressing those again in one run and keeping the smaller
-  makes flushing never worse than 3% on any unit. It moves the total by only 0.05%: it guards
-  single units, not the aggregate.
+  **They cost threaded throughput**: python-zstandard holds the GIL inside the call that ends a
+  block (`flush(FLUSH_BLOCK)`; a one-shot compress releases it). On the day-scale stress test
+  with 4 threads, flushing made encoding 40% slower (146 s against 104 s for 1000 tags × a day, in
+  the same size), and the 8-thread gigabyte encode 32% slower; one thread is unaffected, and 4
+  processes scale normally. Calling libzstd's streaming API directly through cffi still scaled
+  only 1.8× on 4 threads, so the fix is a call that compresses a whole unit with its cuts without
+  the GIL (a C extension or numba wrapper), not another Python API. Until then efforts 5 and up
+  suit one thread per process, or throughput that doesn't matter.
+- **The heuristic layout** (efforts 1–2) compresses once instead of twice: byte planes when the
+  residuals are narrow (the high byte is a constant and byte-wise literals model the low byte) and
+  on exactly repeating structure; bit planes from about 7 bits of residual up. "Fewer than 1% of
+  residuals reach 128" is within 0.1% of picking the better layout per unit on the stress test's
+  sensor mix and the report's signals (the plane_layout study's first rule, "fewer than 5% reach
+  256", fit its synthetic corpus but picked byte planes for analog ADC noise, 11% too large). It
+  can't see repeats, so it misses on low-entropy repeating or quantized signals. Per input type
+  (`experimental/plane_layout/per_input.py`), effort 2 against the encoder before efforts:
+  within ±0.1 bits/sample on most, and these are the outliers, which both layouts bring back to
+  the old size or better:
+
+  | input | before | effort 2 |
+  |---|---|---|
+  | sensor drift rounded to 0.1 | 1.78 | 2.13 |
+  | held values (report by exception, 0.01 grid) | 0.15 | 0.32 |
+  | quantized triangle and square waves | 0.15–2.41 | 0.35–2.73 |
+  | integer-period sines | 0.01–0.02 | 0.17–0.21 |
+  | random chirps | 4.50 | 4.69 |
+
+  High-entropy signals are not hurt, and are 0.1–0.5 bits/sample smaller with flushing (random
+  walks, AR(1), sin-50.3hz, analog ADC data). **Effort 3–4 or higher for tags of held, counter or
+  decimal-quantized values**, where the heuristic misses.
+- **No retries.** Compressing small frames again (in one block run, or with the other layout)
+  guards single small units, but zstd's time follows the 120 KB input, not the small output: on
+  the sensor mix, retries cost +32 µs per unit (+14%) for 0.02% with both layouts compressed.
+  A flushed frame can therefore be larger than one run on tiny units (up to +90% under 1 KB, tens
+  of bytes), which is why 5 against 4 is a smaller total, not a smaller unit every time.
 - **zstd 9 as well as 3** (effort 9). zstd 9 alone is larger than zstd 3 on 20–23% of units (up
-  to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against effort 6
+  to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against effort 5
   alone, −0.8% and −1.2% keeping the smaller per unit. zstd 7 alone gained only 0.1–0.25% and
   was dropped.
 

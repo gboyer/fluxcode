@@ -9,8 +9,8 @@ explains most of the effect and costs almost nothing to compute. Using it alone 
 1.2–1.5% larger than the encode-both oracle, against 2.3–4.6% for always using bit planes. The rest
 is exactly-repeating structure, and finding that costs more than zstd does.
 
-**Outcome.** `Params.planes` became `Params.effort` (1–9): the heuristic and per-plane zstd
-blocks at the default effort, both layouts at effort 6 and above, see
+**Outcome.** `Params.planes` became `Params.effort` (1–9): the revised heuristic at efforts 1–2,
+both layouts (the old default, byte for byte) at 3–4, per-plane zstd blocks from 5, see
 [What was adopted](#what-was-adopted-paramseffort). The rest of this page is the study as it ran,
 against the encoder of its day; `planes="..."` below refers to that API.
 
@@ -327,38 +327,51 @@ would shrink in a C implementation.
 
 ## What was adopted (`Params.effort`)
 
-The prototype went into the encoder with three changes, each from a follow-up measurement here
-(scripts below; sizes against the better layout, or against effort 6):
+The prototype went into the encoder with these changes, each from a follow-up measurement here
+(scripts below):
 
 - **One knob, `effort` 1–9**, in place of `planes`: layout (heuristic or both), block flushes and
   zstd level move together, because they interact (with a table per plane, bit planes stop being
-  the poor layout; stronger zstd levels prefer byte planes). The table and measured size and speed
-  are in docs/SPEC.md §1 and docs/TUNING.md (Effort); `api_bench.py` produces the latter.
-- **Small frames also try the other layout** (`small_frames.py`). The heuristic's misses are 8%
-  per unit (geometric mean) but 1.2–2% of the total bytes: they are small units. Compressing the
-  other layout too when the picked frame is under 16 KB brings the per-unit miss to 1.3% (0% on
-  the report's signals), for a second compression on 25–37% of units holding about 5% of the bytes.
-  At the default effort this makes the report's signals 2.1% smaller than `"best"` (the
-  prototype: 0.9%) at the same encode time. Exceptions for narrow residuals ("keep bit planes when
-  few residuals reach 2^k", k = 1–4) were worse in every variant, 9–20% per unit.
-- **No rule replaces the one-run retry** (`retry_rules.py`). Deciding to flush from the number of
-  non-zero plane bytes leaves units up to 90–217% larger; retrying only under smaller frame
-  sizes saves little (the retried frames are small and quick to compress). The retry moves the
-  total by only 0.05%: it guards single units.
+  the poor layout; stronger zstd levels prefer byte planes). The table is in docs/SPEC.md §1,
+  measured size and speed in docs/TUNING.md (Effort).
+- **A different layout rule** (`fleet.py`). The rule above, "fewer than 5% of residuals reach 256",
+  fit this study's synthetic corpus, but on the day-scale stress test's sensor mix (analog ADC
+  data, held values, counters: not in the corpus) it picked byte planes for analog noise of about
+  33 steps, 11% larger than bit planes with per-plane blocks; the mix came out 4.5% larger than
+  the encoder before efforts. "Fewer than 1% reach 128" is within 0.1% of the per-unit better
+  layout on the sensor mix and the report's signals, and better than the old rule on every set.
+- **No retries.** The prototype recompressed flushed frames under 16 KB in one block run, and a
+  first port also tried the other layout there (`small_frames.py`: per-unit misses 8% → 1.3%).
+  On the sensor mix, with many small units, those passes cost 14% of encode time for 0.02%:
+  zstd's time follows the 120 KB input, not the small output. Both were dropped; `retry_rules.py`
+  shows no cheaper rule replacing the one-run retry.
+- **Block flushes cost threaded throughput, so they are not the default** (the stress test: 4
+  threads, 1000 tags × a day). Flushing gives 1.5–2% smaller units with the
+  heuristic at the old encode speed on one thread, which is why the first port made it the default
+  (effort 4: sensor mix +0.02%, −8% encode time). But python-zstandard holds the GIL in
+  `flush(FLUSH_BLOCK)`: the day took 146 s instead of 104 s with threads (same size; 7.6 against
+  4.7 GB/s on 4 processes versus 4 threads), and the 8-thread gigabyte encode was 32% slower.
+  Every streaming API measured behaved the same (`compressobj`, `stream_writer`, `chunker`: 1.3–1.7×
+  on 4 threads against 3.7× for a one-shot compress), and libzstd's `ZSTD_compressStream2` called
+  directly through cffi reached 1.8×. A fix needs a call that compresses a unit with its cuts
+  without the GIL (a C extension or numba wrapper); until then efforts 3–4 are the old encoder
+  and flushing starts at effort 5.
+- **The heuristic's misses** are low-entropy repeating or quantized signals (held values, sensor
+  drift on a 0.1 grid, quantized periodic waves: up to +0.35 bits/sample, `per_input.py`), which
+  both layouts fix; high-entropy signals are not hurt.
 - **zstd 9 only alongside zstd 3** (`zstd_levels.py`). zstd 9 alone is larger than zstd 3 on
-  22–30% of units (up to +9%), zstd 7 on 26–37% (up to +37%), which cancels most of their gain
-  (−0.5 / −0.7% and −0.1 / −0.25% in total). Keeping the smaller of zstd 3 and 9 gives −0.8 /
-  −1.2% and never grows a unit; that is effort 9. zstd 7 was dropped.
+  22–30% of units (up to +9%), zstd 7 on 26–37% (up to +37%), which cancels most of their gain.
+  Keeping the smaller of zstd 3 and 9 never grows a unit; that is effort 9. zstd 7 was dropped.
 - **The heuristic reads whichever body is written first** (byte planes on encode, the unit's own
-  layout on update): padding is zero, so the share is identical in both layouts, and update doesn't
-  convert carried blocks just to measure it.
+  layout on update), 64 bits at a time: padding is zero, so the share is identical in both
+  layouts, and update doesn't convert carried blocks just to measure it.
 
 ## Takeaways for the format and the tuning notes
 
 - A one-pass layout choice from the share of residuals above 255 is a defensible fast option
   (about +1.2–1.5% against `"best"` here), and drops the second zstd pass, about a quarter of
   encode time (zstd is 48% of encode with `"best"`, see `../plane_coders/`). With block flushes
-  and the small-frame retries it became the default (above).
+  and a revised threshold it became efforts 1–2 (above).
 - The `docs/TUNING.md` statement "bit planes win where residuals are small or aperiodic" is only half
   right: the data say *narrow* and *wide* residuals favour bit planes (for different reasons) and
   byte planes win in between, and on repeating structure at any width.
@@ -376,7 +389,9 @@ uv run python plane_layout/analyze.py     # all the tables (the first run extrac
 uv run python plane_layout/table.py       # per-unit table for the combinations (~3 min), then combine.py
 uv run python plane_layout/combine.py
 uv run python plane_layout/api_bench.py    # public-API size and speed of each effort (docs/TUNING.md)
-uv run python plane_layout/small_frames.py # heuristic misses: narrow-residual rules, other layout on small frames
+uv run python plane_layout/fleet.py        # layout rules and efforts on the stress test's sensor mix (~5 min)
+uv run python plane_layout/per_input.py    # bits/sample per input type at efforts 2, 4, 5 (~3 min)
+uv run python plane_layout/small_frames.py # the first rule's misses: narrow-residual rules, other layout on small frames
 uv run python plane_layout/retry_rules.py  # rules to skip the one-run retry (needs table.py's output)
 uv run python plane_layout/zstd_levels.py  # zstd 7 / 9 alone vs alongside zstd 3, per unit (~3 min)
 uv run python plane_layout/combos.py      # best of 2 / 3 layouts x three framings (~5 min)

@@ -41,8 +41,9 @@ def sets():
 
 def run(items, effort):
     """(bytes, encode s, decode s) of every item encoded with effort's settings."""
-    saved = _unit.EFFORTS[5]
-    _unit.EFFORTS[5] = effort
+    default = Params().effort
+    saved = _unit.EFFORTS[default]
+    _unit.EFFORTS[default] = effort
     try:
         def enc():
             return [fluxcode.encode(x, p)[0] for x, p in items]
@@ -58,7 +59,7 @@ def run(items, effort):
                 fluxcode.decode(units)
             t_dec = min(t_dec, time.perf_counter() - t0)
     finally:
-        _unit.EFFORTS[5] = saved
+        _unit.EFFORTS[default] = saved
     return sum(len(u) for units in out for u in units), t_enc, t_dec
 
 

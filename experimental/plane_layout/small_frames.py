@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Where the heuristic layout misses, and what fixes it. Per unit: the size with bit planes and with
-byte planes under the default effort's framing (block flushes, one-run retry under 16 KB), and the
-share of residuals reaching 2^k. Two candidate fixes against the better of the two layouts:
+"""Where the study's first heuristic layout rule ("byte planes iff fewer than 5% of residuals reach
+256") misses, and two fixes tried. Per unit: the size with bit planes and with byte planes, block
+flushed, and the share of residuals reaching 2^k. Against the better of the two layouts:
 
 - a narrow-residual exception (keep bit planes when few residuals reach 2^k, k = 1..4), for the
-  case the high-byte rule can't see (narrow noise, near-constant planes);
+  case the high-byte rule can't see (narrow noise, near-constant planes): worse in every variant;
 - also compressing the other layout when the picked one's frame is under X bytes, and keeping
-  the smaller (adopted at X = 16 KB, effort 1-5).
+  the smaller: adopted at X = 16 KB at first, then dropped (see fleet.py: on a sensor mix of small
+  units the extra zstd passes cost 14% of encode time for 0.02%, after the rule moved to 128).
 
 "total" is the extra size over the better layout summed over units, "geo" the geometric mean of the
 per-unit ratio. Same random families and seeds as corpus.py, plus the report's signals.
@@ -28,7 +29,7 @@ import fluxcode
 from _series import planes, unit_rows
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _unit
+from fluxcode import Params
 
 SHARE_BITS = range(9)  # columns: share of residuals >= 2^k
 
@@ -36,7 +37,7 @@ SHARE_BITS = range(9)  # columns: share of residuals >= 2^k
 def row(x, params):
     sizes = []
     for layout in ("bit", "byte"):
-        with planes(layout):
+        with planes(layout):  # flushed
             sizes.append(len(fluxcode.encode(x, params)[0][0]))
     r = unit_rows(fluxcode.encode(x, params)[0][0]).residuals.astype(np.int32)
     u = ((r << 1) ^ (r >> 15)) & 0xFFFF
@@ -64,7 +65,7 @@ if __name__ == "__main__":
         bit, byte, share = d[:, 0], d[:, 1], d[:, 2:]
         oracle = np.minimum(bit, byte)
         stats = lambda c: f"total {100 * (c.sum() / oracle.sum() - 1):+5.2f}%  geo {100 * np.mean(np.log(c / oracle)):+5.2f}%"
-        picked_byte = share[:, 8] < _unit.BYTE_PLANES_MAX_HIGH_SHARE
+        picked_byte = share[:, 8] < 0.05  # the first rule
         picked = np.where(picked_byte, byte, bit)
         print(f"\n{name} ({len(d)} units). heuristic: {stats(picked)}")
         print("  narrow-residual exception, byte planes only if also share(u >= 2^k) >= t:")

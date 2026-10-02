@@ -37,7 +37,9 @@ class Effort(NamedTuple):
 EFFORTS: dict[int, Effort] = {
     1: Effort("heuristic", False, (1,)),
     2: Effort("heuristic", False, (3,)),
-    **dict.fromkeys(range(3, 5), Effort("heuristic", True, (3,))),
+    **dict.fromkeys(range(3, 5), Effort("best", False, (3,))),
+    # Block flushes gain 1.5-2% but hold the GIL inside python-zstandard's flush(): 4 threads
+    # encode 40% slower, so they start above the default (TUNING.md, Effort)
     **dict.fromkeys(range(5, 9), Effort("best", True, (3,))),
     # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
     9: Effort("best", True, (3, 9)),

@@ -86,24 +86,24 @@ def test_compress_body_cuts():
 
 def test_heuristic_choice():
     for kind, byte in (("sin-4.12hz", True), ("random-walk", False), ("chirp", False), ("noisy-sine", True)):
-        (unit,), *_ = fluxcode.encode(minute(kind, 5))
+        (unit,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2))
         assert _format.unpack_header(unit).byte_planes is byte, kind
 
 
 @pytest.mark.parametrize("kind", ["sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes", "quadratic"])
 def test_higher_efforts_are_never_larger(kind):
-    """Efforts 4, 5 and 9 each try a superset of the candidates of the one before, so no unit grows
+    """Effort 9 tries every candidate of effort 5 (and zstd 9), so no unit grows from 5 to 9
     (noisy-sine seed 1 was larger at zstd 9 alone)."""
     for seed in (1, 6):
         x = minute(kind, seed)
-        sizes = [len(fluxcode.encode(x, Params(effort=effort))[0][0]) for effort in (9, 5, 4)]
+        sizes = [len(fluxcode.encode(x, Params(effort=effort))[0][0]) for effort in (9, 5)]
         assert sizes == sorted(sizes), seed
 
 
 def test_efforts_trade_size():
     kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
     size = lambda effort: sum(len(fluxcode.encode(minute(kind, 6), Params(effort=effort))[0][0]) for kind in kinds)
-    assert size(5) <= size(4) <= 1.03 * size(5)
+    assert size(5) <= size(4) <= 1.03 * size(5)  # flushed against one block run: smaller in total, not per unit
     assert size(4) <= size(2) <= size(1)
 
 
