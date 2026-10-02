@@ -3,24 +3,13 @@
 Measurements behind the parameter defaults, and what to check on your data before settling
 them. The format and algorithm are in [SPEC.md](SPEC.md).
 
-## Bit-shuffle against byte planes
+## Bit planes and byte planes
 
-Bit-shuffle is smaller overall (continuous data 6.08 vs 6.71 bits/sample, discretized 8.14 vs
-8.66) and faster end to end. Above all it bounds the cost of the expensive inputs best: noisy,
-wide signals get 4–18% smaller. It loses 5–21% (at most 0.45 bits/sample) on smooth periodic
-signals, which were already cheap.
-
-The size advantage holds for B ≥ 13. At B ≤ 11 byte planes are 0.1–0.2 bits/sample smaller: the
-residuals fit in about a byte, and the low/high byte split already separates the random bits
-from the mostly-zero ones. Nibble planes (four 4-bit planes) fall between the
-two layouts at B ≥ 13 and never beat bit-shuffle overall ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design) in
-`experimental/`).
-
-**`planes`** chooses the layout: `"bit"`, `"byte"`, or `"best"` (the default), which compresses
-each unit both ways and keeps the smaller (the header records which). On clean periodic signals
-whose cycles repeat across the unit, zstd finds long matches in the byte planes that the 8-sample
-bit groups break up: in the prototype on synthetic minute units, sines at B = 10 went from 2.39 to
-1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
+**`planes`** chooses the residual layout: `"bit"` (16 bit planes), `"byte"` (2 byte planes), or
+`"best"` (the default), which compresses each unit both ways and keeps the smaller (the header
+records which). On clean periodic signals whose cycles repeat across the unit, zstd finds long
+matches in the byte planes that the 8-sample bit groups break up: in the prototype on synthetic
+minute units, sines at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
 
 Measured on 2026-10-01 (default params, B = 16, zstd level 3, 8 one-minute units per signal), the
 winner is consistent per signal kind: it wins on all 8 units, by a similar margin.
@@ -42,7 +31,14 @@ repeats. That split is why `"best"` is the default: it costs a second zstd pass 
 encode) and never loses. `"bit"` or `"byte"` skips the second pass when a tag's kind is known. A
 cheap size heuristic instead of encoding twice was tried and misjudged decimal sensor data by 20%.
 
-**zstd level** stays 3, measured on the same set (sizes against level 3 with bit planes;
+With a single layout for everything, as the prototype compared them, bit planes were smaller over
+its continuous and discretized signal sets (6.08 against 6.71 and 8.14 against 8.66
+bits/sample) for B ≥ 13, and byte planes by 0.1–0.2 bits/sample at B ≤ 11, where the residuals
+fit in about a byte. Nibble planes (four 4-bit planes) fell between the two and never beat bit
+planes overall ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design)
+in `experimental/`).
+
+**zstd level** stays 3, measured on the 2026-10-01 set above (sizes against level 3 with bit planes;
 compression time against level 3):
 
 | level | bit planes | best of both | compress time | decompress time |
