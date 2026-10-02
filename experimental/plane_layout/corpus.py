@@ -5,7 +5,7 @@ unit's residuals, for plane_layout/analyze.py.
 
 Signals are drawn from families with random parameters (frequencies, noise levels, quanta,
 precision limits), so a predictor is tested on shapes it wasn't tuned on. Each unit is encoded
-with planes="bit" and planes="byte"; the real unit sizes are the ground truth. The residuals
+with bit planes and with byte planes in one block run (the encoder before block flushes); the real unit sizes are the ground truth. The residuals
 (uint16, as stored) come from the byte-plane body.
 
     uv run python plane_layout/corpus.py [--n 2000] [--seed 1] [--out corpus.npz]
@@ -22,6 +22,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
+from _series import planes
 from fluxcode import Params, _format, _unit
 
 N = 60_000
@@ -110,8 +111,11 @@ def residuals(unit):
 
 def record(x, mx=16, nf=0.25):
     """(real bit-layout unit size, real byte-layout unit size, residuals) of one minute."""
-    (u_bit,), *_ = fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf, planes="bit"))
-    (u_byte,), *_ = fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf, planes="byte"))
+    params = Params(max_quantize_bits=mx, noise_floor_sigma=nf)
+    with planes("bit", flush=False):
+        (u_bit,), *_ = fluxcode.encode(x, params)
+    with planes("byte", flush=False):
+        (u_byte,), *_ = fluxcode.encode(x, params)
     return len(u_bit), len(u_byte), residuals(u_byte)
 
 

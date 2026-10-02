@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Size and speed through the public API for each Params.planes mode, on the report's signals
-(20 kinds x 4 minutes) and 400 random-family units. Run it once on the baseline code and once on
-the branch with flushing (PYTHONPATH picks which fluxcode is imported); modes a build lacks are
-skipped. One thread; times are best of 3 over the whole set.
+"""Size and speed through the public API at each distinct Params.effort, against the encoder
+before efforts (both layouts compressed, smaller kept, one block run, zstd 3), on the report's
+signals (20 kinds x 4 minutes) and 400 random-family units. One thread; times are best of 3 over
+the whole set. The numbers in docs/TUNING.md (Effort) come from this script.
 
-    PYTHONPATH=<repo> uv run python plane_layout/api_bench.py
+    uv run python plane_layout/api_bench.py
 """
 
 import os
@@ -21,7 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fluxcode
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params
+from fluxcode import Params, _unit
+
+BEFORE = _unit.Effort("best", False, (3,))
+"""The encoder before efforts: planes="best" without block flushes."""
 
 
 def sets():
@@ -33,38 +36,46 @@ def sets():
         _, q, x = draw_signal(rng)
         _, mx, nf = configs(rng)
         rand.append((x, Params(max_quantize_bits=mx, noise_floor_sigma=nf)))
-    return std, rand
+    return {"report signals": [(x, Params()) for x in std], "random families": rand}
 
 
-def run(items, planes):
-    def enc():
-        return [fluxcode.encode(x, Params(**{**(p.__dict__ if p else {}), "planes": planes}))[0] for x, p in items]
+def run(items, effort):
+    """(bytes, encode s, decode s) of every item encoded with effort's settings."""
+    saved = _unit.EFFORTS[5]
+    _unit.EFFORTS[5] = effort
+    try:
+        def enc():
+            return [fluxcode.encode(x, p)[0] for x, p in items]
 
-    out = enc()
-    t_enc = t_dec = float("inf")
-    for _ in range(3):
-        t0 = time.perf_counter()
-        enc()
-        t_enc = min(t_enc, time.perf_counter() - t0)
-        t0 = time.perf_counter()
-        for units in out:
-            fluxcode.decode(units)
-        t_dec = min(t_dec, time.perf_counter() - t0)
+        out = enc()
+        t_enc = t_dec = float("inf")
+        for _ in range(3):
+            t0 = time.perf_counter()
+            enc()
+            t_enc = min(t_enc, time.perf_counter() - t0)
+            t0 = time.perf_counter()
+            for units in out:
+                fluxcode.decode(units)
+            t_dec = min(t_dec, time.perf_counter() - t0)
+    finally:
+        _unit.EFFORTS[5] = saved
     return sum(len(u) for units in out for u in units), t_enc, t_dec
 
 
 if __name__ == "__main__":
-    print("fluxcode from", fluxcode.__file__)
-    std, rand = sets()
-    sets_ = {"report signals": [(x, None) for x in std], "random families": rand}
-    for label, items in sets_.items():
-        n = sum(len(x) for x, _ in items) / 1e6
-        print(f"\n{label}: {n:.1f} M samples")
-        print(f"{'planes':12s} {'bytes':>11s} {'bits/sample':>12s} {'encode s':>9s} {'ns/sample':>10s} {'decode s':>9s}")
-        for mode in ("best", "heuristic", "bit", "byte"):
-            try:
-                Params(planes=mode)
-            except ValueError:
-                continue
-            b, te, td = run(items, mode)
-            print(f"{mode:12s} {b:11d} {8 * b / (n * 1e6):12.3f} {te:9.2f} {te / n * 1e3:10.0f} {td:9.2f}")
+    distinct = {}
+    for effort, settings in sorted(_unit.EFFORTS.items()):
+        distinct.setdefault(settings, []).append(effort)
+    rows = [("before", BEFORE)] + [(f"{e[0]}–{e[-1]}" if len(e) > 1 else str(e[0]), s) for s, e in distinct.items()]
+    for label, items in sets().items():
+        n = sum(len(x) for x, _ in items)
+        print(f"\n{label}: {n / 1e6:.1f} M samples")
+        print(f"{'effort':8s} {'bits/sample':>12s} {'size':>8s} {'encode ns/sample':>24s} {'decode ns/sample':>24s}")
+        base = None
+        for name, settings in rows:
+            b, te, td = run(items, settings)
+            te, td = te / n * 1e9, td / n * 1e9
+            base = base or (b, te, td)
+            rel = lambda v, v0: f"{v:5.1f} ({v - v0:+5.1f}, {100 * (v / v0 - 1):+4.0f}%)"
+            print(f"{name:8s} {8 * b / n:12.3f} {100 * (b / base[0] - 1):+7.2f}% {rel(te, base[1]):>24s} {rel(td, base[2]):>24s}",
+                  flush=True)

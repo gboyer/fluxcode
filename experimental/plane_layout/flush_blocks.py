@@ -22,8 +22,9 @@ import zstandard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
+from _series import planes
 from _signals import KINDS, minute
-from fluxcode import Params, _format, _unit
+from fluxcode import _format, _unit
 
 ZD = zstandard.ZstdDecompressor()
 
@@ -71,7 +72,10 @@ if __name__ == "__main__":
         row = np.zeros(1 + len(cols))
         for seed in range(3):
             x = minute(name, 700 + 10 * k + seed) if name in KINDS else discrete_minute(name, 700 + 10 * k + seed)
-            units = {mode: fluxcode.encode(x, Params(planes=mode))[0][0] for mode in ("bit", "byte")}
+            units = {}
+            for mode in ("bit", "byte"):
+                with planes(mode, flush=False):
+                    units[mode] = fluxcode.encode(x)[0][0]
             ref = {m: fluxcode.decode([u])[0].values for m, u in units.items()}
             row[0] += min(len(u) for u in units.values())
             for j, every in enumerate(POLICIES.values()):

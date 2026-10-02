@@ -29,8 +29,9 @@ import zstandard
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fluxcode
+from _series import planes
 from _signals import CLOCKS, MINUTE, clock_minute, minute
-from fluxcode import Params, _format, _unit
+from fluxcode import _format, _unit
 from layouts import group_streams
 
 ZC = zstandard.ZstdCompressor(level=3, write_checksum=False, write_content_size=True)
@@ -39,7 +40,8 @@ Z = lambda *parts: len(ZC.compress(b"".join(bytes(p) for p in parts)))
 
 
 def body(x, mode, times=None):
-    units, *_ = fluxcode.encode(x, Params(planes=mode), times=times, time_unit=None if times is None else "ns")
+    with planes(mode, flush=False):
+        units, *_ = fluxcode.encode(x, times=times, time_unit=None if times is None else "ns")
     (unit,) = units
     return _unit.decompress(unit)
 

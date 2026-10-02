@@ -3,6 +3,9 @@
 """How much of encode() and decode() is zstd? Per signal and Params: wall time of the public call
 vs zstd level 3 on the same bodies (compress, and decompress), single thread, best of reps.
 
+Written for Params.planes, before Params.effort: run it at 93fe638 (`git worktree add <dir> 93fe638`),
+the encoder its README numbers come from.
+
     uv run python plane_coders/zstd_share.py [--minutes 2] [--reps 5]
 """
 

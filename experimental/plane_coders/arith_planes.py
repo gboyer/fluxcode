@@ -25,8 +25,9 @@ from numba import njit
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 
 import fluxcode
+from _series import planes as forced_layout
 from _signals import KINDS, MINUTE, discrete_minute, minute
-from fluxcode import Params, _format, _unit
+from fluxcode import _format, _unit
 
 PB = 16  # probability bits
 M = 1 << PB
@@ -200,7 +201,8 @@ def best(f, reps):
 
 def bit_planes(x):
     """(units' 16 x G planes) for a series, from real fluxcode units."""
-    units, *_ = fluxcode.encode(x, Params(planes="bit"))
+    with forced_layout("bit", flush=False):
+        units, *_ = fluxcode.encode(x)
     for u in units:
         parsed = _unit.decompress(u)
         nb = parsed.header.num_blocks

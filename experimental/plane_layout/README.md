@@ -9,6 +9,11 @@ explains most of the effect and costs almost nothing to compute. Using it alone 
 1.2–1.5% larger than the encode-both oracle, against 2.3–4.6% for always using bit planes. The rest
 is exactly-repeating structure, and finding that costs more than zstd does.
 
+**Outcome.** `Params.planes` became `Params.effort` (1–9): the heuristic and per-plane zstd
+blocks at the default effort, both layouts at effort 6 and above, see
+[What was adopted](#what-was-adopted-paramseffort). The rest of this page is the study as it ran,
+against the encoder of its day; `planes="..."` below refers to that API.
+
 ## The explanation
 
 Residuals are 16-bit zigzag values `u` per sample. zstd sees either 16 bit-plane streams (8 samples
@@ -283,7 +288,7 @@ run and the smaller kept.
   block's header and table shows); the retry fixes them at a cost of one extra, cheap compression on
   the 25–35% of units whose frame is small.
 
-### Integration in the encoder (prototype on this branch, `fluxcode/`)
+### Integration in the encoder (prototype, commit 93fe638)
 
 Everything goes through `_unit._pack`, the one place a body becomes a unit (used by `encode` and
 by `update`). Changes, about 90 lines and no format change:
@@ -320,11 +325,40 @@ flushing, `heuristic` is about 30% faster than `best` and 1.5% larger. The flush
 per-block work inside zstd (one table per block) plus about 2 µs of Python call overhead per cut; it
 would shrink in a C implementation.
 
+## What was adopted (`Params.effort`)
+
+The prototype went into the encoder with three changes, each from a follow-up measurement here
+(scripts below; sizes against the better layout, or against effort 6):
+
+- **One knob, `effort` 1–9**, in place of `planes`: layout (heuristic or both), block flushes and
+  zstd level move together, because they interact (with a table per plane, bit planes stop being
+  the poor layout; stronger zstd levels prefer byte planes). The table and measured size and speed
+  are in docs/SPEC.md §1 and docs/TUNING.md (Effort); `api_bench.py` produces the latter.
+- **Small frames also try the other layout** (`small_frames.py`). The heuristic's misses are 8%
+  per unit (geometric mean) but 1.2–2% of the total bytes: they are small units. Compressing the
+  other layout too when the picked frame is under 16 KB brings the per-unit miss to 1.3% (0% on
+  the report's signals), for a second compression on 25–37% of units holding about 5% of the bytes.
+  At the default effort this makes the report's signals 2.1% smaller than `"best"` (the
+  prototype: 0.9%) at the same encode time. Exceptions for narrow residuals ("keep bit planes when
+  few residuals reach 2^k", k = 1–4) were worse in every variant, 9–20% per unit.
+- **No rule replaces the one-run retry** (`retry_rules.py`). Deciding to flush from the number of
+  non-zero plane bytes leaves units up to 90–217% larger; retrying only under smaller frame
+  sizes saves little (the retried frames are small and quick to compress). The retry moves the
+  total by only 0.05%: it guards single units.
+- **zstd 9 only alongside zstd 3** (`zstd_levels.py`). zstd 9 alone is larger than zstd 3 on
+  22–30% of units (up to +9%), zstd 7 on 26–37% (up to +37%), which cancels most of their gain
+  (−0.5 / −0.7% and −0.1 / −0.25% in total). Keeping the smaller of zstd 3 and 9 gives −0.8 /
+  −1.2% and never grows a unit; that is effort 9. zstd 7 was dropped.
+- **The heuristic reads whichever body is written first** (byte planes on encode, the unit's own
+  layout on update): padding is zero, so the share is identical in both layouts, and update doesn't
+  convert carried blocks just to measure it.
+
 ## Takeaways for the format and the tuning notes
 
-- A one-pass `planes` choice from the share of residuals above 255 is a defensible fast option
+- A one-pass layout choice from the share of residuals above 255 is a defensible fast option
   (about +1.2–1.5% against `"best"` here), and drops the second zstd pass, about a quarter of
-  encode time (zstd is 48% of encode with `"best"`, see `../plane_coders/`). `"best"` stays the right default for size.
+  encode time (zstd is 48% of encode with `"best"`, see `../plane_coders/`). With block flushes
+  and the small-frame retries it became the default (above).
 - The `docs/TUNING.md` statement "bit planes win where residuals are small or aperiodic" is only half
   right: the data say *narrow* and *wide* residuals favour bit planes (for different reasons) and
   byte planes win in between, and on repeating structure at any width.
@@ -341,7 +375,10 @@ uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
 uv run python plane_layout/table.py       # per-unit table for the combinations (~3 min), then combine.py
 uv run python plane_layout/combine.py
-PYTHONPATH=<repo> uv run python plane_layout/api_bench.py   # public-API size and speed of each planes mode
+uv run python plane_layout/api_bench.py    # public-API size and speed of each effort (docs/TUNING.md)
+uv run python plane_layout/small_frames.py # heuristic misses: narrow-residual rules, other layout on small frames
+uv run python plane_layout/retry_rules.py  # rules to skip the one-run retry (needs table.py's output)
+uv run python plane_layout/zstd_levels.py  # zstd 7 / 9 alone vs alongside zstd 3, per unit (~3 min)
 uv run python plane_layout/combos.py      # best of 2 / 3 layouts x three framings (~5 min)
 uv run python plane_layout/flush_blocks.py  # one frame with a block per plane: real units, decoder unchanged
 uv run python plane_layout/sections.py    # separate frames with timestamps / non-finite codes (~1 min)
@@ -349,4 +386,7 @@ uv run python plane_layout/ctxmodel.py    # ideal cost of a context-modelled bit
 uv run python plane_layout/layouts.py     # bit/byte/nibble/mixed layouts, pooled vs split (~3 min); --codecs for xz, bzip2, zstd 19
 ```
 
-The `.npz` files (about 110 MB) are not committed.
+The `.npz` files (about 110 MB) are not committed. The scripts run against today's encoder, forcing
+a layout with `tests/_series.planes` (one block run, as the encoder of the study); the numbers in the
+sections before "What was adopted" came from the encoder at 93fe638, so a rerun at HEAD can
+differ slightly where block boundaries moved.

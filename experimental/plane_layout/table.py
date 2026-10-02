@@ -4,9 +4,9 @@
 unit size (header included) of each layout (bit planes, byte planes) under each framing (one
 block run as today, a flush after every plane / every 4 planes / every 8 planes, and the encoder's
 rule: a flush after each plane with more than 1/16 of its bytes non-zero), plus the features a
-one-pass rule could use. Needs the branch's fluxcode (PYTHONPATH=<repo>) for `flush_points`. Same signals as corpus.py (same seeds) and the report's.
+one-pass rule could use. Same signals as corpus.py (same seeds) and the report's.
 
-    PYTHONPATH=<repo> uv run python plane_layout/table.py     # writes table_fit.npz, table_test.npz, table_std.npz (~2 min)
+    uv run python plane_layout/table.py     # writes table_fit.npz, table_test.npz, table_std.npz (~2 min)
 """
 
 import os
@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
 from corpus import configs, draw_signal, residuals
+from _series import planes as forced_layout
 from flush_blocks import reflush
 from fluxcode import Params, _format, _unit
 
@@ -36,11 +37,14 @@ def dense(unit):
     """The unit re-framed with the encoder's rule (no small-unit retry)."""
     parsed = _unit.decompress(unit)
     cuts = _format.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, parsed.header.byte_planes)
-    return unit[:_format.HEADER_BYTES] + _unit.compress_body(parsed.raw_body, cuts)
+    return unit[:_format.HEADER_BYTES] + _unit.compress_body(parsed.raw_body, cuts, 3)
 
 
 def row(x, mx=16, nf=0.25):
-    units = {m: fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf, planes=m))[0][0] for m in ("bit", "byte")}
+    units = {}
+    for m in ("bit", "byte"):
+        with forced_layout(m, flush=False):
+            units[m] = fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf))[0][0]
     sizes = {m: [pooled(units[m])] + [len(reflush(units[m], e)) for e in EVERY] + [len(dense(units[m]))] for m in units}
     parsed = _unit.decompress(units["bit"])
     start = _format.residual_start(parsed.header.num_blocks, parsed.has_time)
