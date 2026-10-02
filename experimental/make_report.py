@@ -301,11 +301,12 @@ def family_handles():
         label=FAMILY_NAMES[f]) for f in FAMILIES]
 
 
-EXACT_PCT = 1e-6  # RMSE at or below this (% of range) counts as lossless: float round-off, no place on a log axis
-X_MAX = 15  # bits/sample axis limit; codecs beyond it are marked at the right edge
+EXACT_PCT = 1e-7  # RMSE at or below this (% of range) counts as lossless: float round-off, no place on a log axis
+Y_TOP = 15  # RMSE axis top (% of range) on the charts that share the fixed axes: the 10% tick plus a margin
+X_MAX = 16  # bits/sample axis limit; codecs beyond it are marked at the right edge
 NOT_PLOTTED = {"gorilla-xor"}  # lossless at ~65 bits/sample: in the tables, but too far out for the charts
-ZERO_PCT = 1e-7  # where a lossless RMSE (0) is drawn on the log axes, labelled 0*
-ZERO_NOTE = f"0*: lossless (RMSE ≤ {EXACT_PCT:g}%), drawn at {ZERO_PCT:g}%"
+ZERO_PCT = EXACT_PCT  # where a lossless RMSE (0) is drawn on the log axes, labelled 0*: the same value as the threshold
+ZERO_NOTE = "0*: lossless (RMSE ≤ $10^{-7}$%)"
 
 
 def shown(rmse_pct):
@@ -321,15 +322,15 @@ def pct_label(v):
     return f"{10 ** d}%" if d >= 0 else f"$10^{{{d}}}$%"
 
 
-def rmse_axis(ax, fontsize, zero=False):
+def rmse_axis(ax, fontsize, zero=False, top=None):
     """Log RMSE axis in % of range: decade ticks labelled with %, and with zero, a 0* row at ZERO_PCT in a shaded
-    strip below the continuous scale (decades from EXACT_PCT up), so the row reads as separate from it."""
-    bottom, top = ax.get_ylim()
+    strip below the continuous scale (decades from one above EXACT_PCT up), so the row reads as separate from it."""
+    bottom, top = ax.get_ylim()[0], top or ax.get_ylim()[1]
     if zero:
         bottom = ZERO_PCT / 3
         ax.set_ylim(bottom, top)
-        ax.axhspan(bottom, 3 * ZERO_PCT, color="0.5", alpha=0.12, lw=0, zorder=0)
-    first = round(np.log10(EXACT_PCT)) if zero else int(np.ceil(np.log10(bottom)))
+        ax.axhspan(bottom, 1.5 * ZERO_PCT, color="0.5", alpha=0.12, lw=0, zorder=0)
+    first = round(np.log10(EXACT_PCT)) + 1 if zero else int(np.ceil(np.log10(bottom)))
     decades = [10.0 ** d for d in range(first, int(np.floor(np.log10(top))) + 1)]
     major = ([ZERO_PCT] if zero else []) + decades
     ax.set_yticks(major, [pct_label(v) for v in major], fontsize=fontsize)
@@ -338,16 +339,16 @@ def rmse_axis(ax, fontsize, zero=False):
 
 
 # The fluxcode curves, in the summary scatter and the per-dataset panels: the only lines there, so fluxcode
-# stands out from the markers. One per effort (fastest, default, smallest), sweeping B = 4..16 with every other
-# parameter at its default, noise floor included, so the all-defaults codec (the diamond) is the B = 16 point of the
-# default effort's line. Colors run light to dark with effort, the default drawn heavier.
+# stands out from the markers. One per effort (fastest, default, smallest), sweeping B = 4..16 with the noise floor and
+# the bits target off (both only steer the quantization the sweep sets directly) and the rest at the defaults. Colors run light to dark with effort, the default drawn heavier.
 DEFAULT_EFFORT = Params().effort
 CURVE_EFFORTS = (DEFAULT_EFFORT, 1, 9)  # legend order: the default first
 _PURPLES = matplotlib.colormaps["Purples"]
 CURVE_STYLES = {e: dict(color=_PURPLES(0.5 + 0.5 * (e - 1) / 8), lw=2.4 if e == DEFAULT_EFFORT else 1.3,
                         label=f"effort {e}" + {1: " (fastest)", 9: " (smallest)", DEFAULT_EFFORT: " (default)"}[e])
                 for e in CURVE_EFFORTS}
-FLUX_CURVES = {e: [FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6), effort=e))
+FLUX_CURVES = {e: [FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6), noise_floor_sigma=None,
+                                        target_bits_per_sample=None, effort=e))
                    for b in range(4, 17)] for e in CURVE_EFFORTS}
 DEFAULT_CODEC = "fluxcode-16-f0.25"  # Params() unchanged: the diamond
 DEFAULT_LABEL = f"all defaults (B = 16, noise floor 0.25, effort {DEFAULT_EFFORT})"
@@ -386,7 +387,8 @@ def plot_scatter(results, curves):
     y = {c.name: 100 * float(np.median([results[k][c.name]["rmse"] for k in KINDS])) for c in CODECS}
     fig, ax = plt.subplots(figsize=(11, 6.6), layout="constrained")
     ax.set_yscale("log")
-    ax.set_xlim(-0.3, X_MAX)
+    ax.set_xlim(-0.2, X_MAX + 0.2)
+    ax.set_xticks(range(0, X_MAX + 1, 2))
     med_rmse = []
     for e, per_kind in curves.items():
         by_b = list(zip(*per_kind.values()))  # per B: one (bps, rmse) per kind
@@ -405,7 +407,7 @@ def plot_scatter(results, curves):
         pts.append((c.name + (f" ({x[c.name]:.0f} b/s, off scale)" if x[c.name] > X_MAX else ""), px, py))
     zero = (any(y[c.name] <= EXACT_PCT for c in CODECS if c.name not in NOT_PLOTTED)
             or any(r <= EXACT_PCT for r in med_rmse))
-    rmse_axis(ax, 9, zero)
+    rmse_axis(ax, 9, True, Y_TOP)  # fixed axes, the 0* row always there
     fig.canvas.draw()  # label a point only where it does not overlap an earlier label
     taken = []
     for name, px, py in pts:
@@ -418,7 +420,7 @@ def plot_scatter(results, curves):
         taken.append(box)
         ax.annotate(name, (px, py), textcoords="offset points", xytext=(-5, 2) if box[2] < u else (5, 2),
                     ha="right" if box[2] < u else "left", fontsize=6.5)
-    if zero:
+    if True:
         ax.text(0.01, 0.01, ZERO_NOTE, transform=ax.transAxes, ha="left", va="bottom", fontsize=8, color="0.4")
     ax.set(xlabel="bits / sample (median over the 12 kinds)", ylabel="median RMSE (% of block range, log)",
            title="Size vs error, all codecs (unlabeled points: see the summary matrix)")
@@ -447,8 +449,9 @@ def plot_rd(results, curves):
                        s=60 if is_default else 26, color=CURVE_STYLES[DEFAULT_EFFORT]["color"] if is_default else COLORS[c.name],
                        edgecolor="k", linewidth=0.8 if is_default else 0.3, zorder=4 if is_default else 3)
         ax.axvline(4, color="0.6", ls=":", lw=1, gid="ref")
-        ax.set_xlim(0, X_MAX)
-        rmse_axis(ax, 7, zero=lossless)
+        ax.set_xlim(-0.2, X_MAX + 0.2)
+        ax.set_xticks(range(0, X_MAX + 1, 2))
+        rmse_axis(ax, 7, True, Y_TOP)
         ax.set_title(kind, fontsize=10)
         ax.tick_params(labelsize=7)
         ax.grid(alpha=0.3, which="both", lw=0.4)
@@ -485,18 +488,18 @@ def write_report(results):
     body.append("<h2 id='scatter'>Size vs error</h2><p>Every codec except the fluxcode variants, one marker per family "
                 "(shade by position in the family). Bits/sample and RMSE are medians over the 12 datasets, so this is a "
                 "summary; the per-dataset panels below show the spread. gorilla-xor (lossless, about 65 bits/sample) is left "
-                "out of the charts; it's in the tables. fluxcode is the purple lines: B = 4..16 with every other parameter at "
-                f"its default (noise floor 0.25 included), one line per <code>effort</code>, darker for more effort; the "
-                f"default effort {DEFAULT_EFFORT} is the heavy line. The diamond is the all-defaults codec "
-                f"(<code>{DEFAULT_CODEC}</code>, B = 16), so it is the end of the default line. The noise detector picks "
-                "the quantization on the blocks that look like white noise, so B is the cap, not the step. The three lines "
+                "out of the charts; it's in the tables. fluxcode is the purple lines: B = 4..16 with the noise floor and the bits target off, since both only steer the quantization that B sets "
+                f"directly; one line per <code>effort</code>, darker for more effort, the default effort {DEFAULT_EFFORT} heavy. "
+                f"The diamond is the all-defaults codec (<code>{DEFAULT_CODEC}</code>: B = 16, noise floor 0.25): the noise detector "
+                "coarsens the step on white-noise blocks, so it sits left of the B = 16 end of the line. "
+                "The three lines "
                 "nearly coincide: effort trades encode time for a few percent of size. " + effort_gap +
                 "The other B and noise-floor variants of fluxcode are in the matrix and the per-dataset tables.</p>" + scatter
                 + f"<h3 id='scatter-kinds'>Per dataset</h3><p>Each panel is one dataset: bits/sample over its {REPORT_MINUTES} "
-                "one-minute units, RMSE the median over their blocks. The lines are fluxcode at B = 4..16, defaults otherwise, "
+                "one-minute units, RMSE the median over their blocks. The lines are fluxcode at B = 4..16, noise floor and bits target off, "
                 f"at efforts {DEFAULT_EFFORT} (heavy, the default), 1 and 9; the diamond is all defaults. A marker below "
                 "the heavy line beats fluxcode at equal size. "
-                "Lossless points (RMSE ≤ 10<sup>−6</sup>%) sit on a 0* row drawn at 10<sup>−7</sup>%. The dotted line is 4 bits/sample. Errors are against the "
+                "Lossless points (RMSE ≤ 10<sup>−7</sup>%) sit on the 0* row. The dotted line is 4 bits/sample. Errors are against the "
                 "input, which for noisy-sine counts the noise as signal.</p>" + rd)
 
     body.append("<h2 id='datasets'>Per-dataset results</h2>")
