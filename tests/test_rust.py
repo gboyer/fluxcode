@@ -79,6 +79,10 @@ def test_threads_give_the_serial_units():
         assert list(pool.map(lambda x: encode(x, None, params, True), series)) == serial
 
 
+def test_interface_version_matches():
+    assert fluxcode_rs.INTERFACE_VERSION == _compress.RUST_INTERFACE_VERSION
+
+
 def test_policy_constants_match_the_python_ones():
     """The Rust copies of the encoder's policy constants can't drift from fluxcode/_compress.py."""
     assert fluxcode_rs.FLUSH_MIN_DENSITY == _compress.FLUSH_MIN_DENSITY
@@ -87,7 +91,7 @@ def test_policy_constants_match_the_python_ones():
 
 
 def timed_inputs():
-    """Time-axis units: regular and irregular blocks, with an update that splices and one that deletes."""
+    """Time-axis series: (samples, times) with regular and with irregular intervals."""
     rng = np.random.default_rng(5)
     x = minute("noisy-sine", 1)[:6000]
     regular = np.datetime64("2026-01-01") + np.arange(6000) * np.timedelta64(10, "ms")

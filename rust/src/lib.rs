@@ -99,6 +99,8 @@ fn fluxcode_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_unit, m)?)?;
     m.add_function(wrap_pyfunction!(zstd_version, m)?)?;
     m.add_function(wrap_pyfunction!(simd_path, m)?)?;
+    // fluxcode/_compress.py loads the extension only if its RUST_INTERFACE_VERSION is this
+    m.add("INTERFACE_VERSION", 1)?;
     // the policy constants, which fluxcode/_compress.py has too: tests/test_rust.py compares them
     m.add("FLUSH_MIN_DENSITY", compress::FLUSH_MIN_DENSITY)?;
     m.add("BYTE_PLANES_BIT", compress::BYTE_PLANES_BIT)?;

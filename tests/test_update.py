@@ -222,3 +222,9 @@ def test_update_checks_time_unit_if_given():
         fluxcode.update(unit, new, times=new_times, time_unit="us")
     with pytest.raises(ValueError, match="time_unit must be one of"):
         fluxcode.update(unit, new, times=new_times, time_unit="h")
+
+
+def test_update_time_unit_on_a_unit_without_times():
+    unit = fluxcode.encode_unit(np.arange(20.0), block_len=10).unit
+    with pytest.raises(ValueError, match="no time axis"):
+        fluxcode.update(unit, {1: np.zeros(10)}, time_unit="ms")

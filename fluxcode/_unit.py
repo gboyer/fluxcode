@@ -475,9 +475,9 @@ def splice(
         old_body = _bitpacking.to_byte_planes(
             old_body, num_old_blocks, int(parsed.layout.group_offsets[-1]), has_time
         )
+    body, offsets = _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets)
     unit = _compress.pack(
-        lambda: _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets),
-        num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,
+        body, offsets, num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,
     )
     return UpdatedUnit(unit, indices, *stats)
 

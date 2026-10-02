@@ -4,8 +4,8 @@
 (_api) and the code that encodes, decodes and updates (_unit, _time_blocks).
 
 Samples become contiguous float64 arrays, times int64 ticks in a unit code, block sizes int64
-arrays; every argument error the public functions raise for bad input comes from here, apart from
-the data checks that need the data's kernels (non-decreasing times, block bounds).
+arrays. The argument errors of the public functions come from here, apart from the checks that need
+the data itself: non-decreasing times, and the block bounds of timed samples (_time_blocks.block_ids).
 """
 
 import datetime
@@ -310,7 +310,6 @@ def _scalar(value: object) -> object:
     return value[()] if isinstance(value, np.ndarray) else value
 
 
-
 def check_chunking(block_len: int, blocks_per_unit: int) -> None:
     """Checks encode's block_len and blocks_per_unit.
 
@@ -326,8 +325,10 @@ def check_stored_time_unit(time_unit: str | None, stored_unit: int) -> None:
     """Checks the optional time_unit argument of an update against the unit's time unit code.
 
     Raises:
-        ValueError: If time_unit is invalid, or isn't the unit's time unit.
+        ValueError: If time_unit is invalid, the unit has no time axis, or time_unit isn't the unit's.
     """
+    if time_unit is not None and not stored_unit:
+        raise ValueError("the unit has no time axis: time_unit must be None")
     if time_unit is not None and time_unit_code(time_unit) != stored_unit:
         raise ValueError(f"time_unit is {time_unit} but the unit stores {_format.TIME_UNIT_NAMES[stored_unit]}")
 

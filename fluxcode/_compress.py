@@ -11,7 +11,6 @@ here are checked against its in tests/test_rust.py.
 import importlib
 import os
 import threading
-from collections.abc import Callable
 from types import ModuleType
 from typing import NamedTuple
 
@@ -20,15 +19,21 @@ import zstandard
 
 from . import _bitpacking, _format
 
+RUST_INTERFACE_VERSION: int = 1
+"""The interface of the extension this code calls (compress_unit, pack_unit and the policy constants);
+rust/src/lib.rs exports the same INTERFACE_VERSION, raised there and here together when it changes."""
+
 
 def _load_rust() -> ModuleType | None:
     """The extension module, or None if it isn't installed or FLUXCODE_RUST=0."""
     if os.environ.get("FLUXCODE_RUST") == "0":
         return None
     try:
-        return importlib.import_module("fluxcode_rs")
+        module = importlib.import_module("fluxcode_rs")
     except ImportError:
         return None
+    # An extension built before this interface (or after it changed) falls back to Python
+    return module if getattr(module, "INTERFACE_VERSION", None) == RUST_INTERFACE_VERSION else None
 
 
 _rust: ModuleType | None = _load_rust()
@@ -195,17 +200,17 @@ def _smallest_unit(
 
 
 def pack(
-    build_body: Callable[[], tuple[np.ndarray, _format.Layout]],
+    body: np.ndarray,
+    offsets: _format.Layout,
     num_blocks: int,
     num_samples: int,
     effort: Effort,
     time_unit: int,
 ) -> bytes:
-    """The unit of the byte-plane body build_body() returns (with its Layout), compressed as
+    """The unit of a byte-plane body (with its Layout), compressed as
     effort says. The byte-plane body is the cheaper one to write: the bit-plane body is derived
     from it by one transpose of the residual region, and only if it is wanted."""
     has_time = time_unit != 0
-    body, offsets = build_body()
     num_groups = int(offsets.group_offsets[-1])
     if _rust is not None:
         return _rust.pack_unit(  # type: ignore[no-any-return]
@@ -251,12 +256,9 @@ def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit
         )
     offsets = _format.layout(rows.block_flags, rows.block_sizes)
 
-    def build_body() -> tuple[np.ndarray, _format.Layout]:
-        # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
-        body = _bitpacking.write_unit(
-            *(rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes),
-            byte_planes=True, time_rows=rows.time_rows, offsets=offsets,
-        )
-        return body, offsets
-
-    return pack(build_body, rows.block_flags.shape[0], num_samples, effort, time_unit)
+    # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
+    body = _bitpacking.write_unit(
+        *(rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes),
+        byte_planes=True, time_rows=rows.time_rows, offsets=offsets,
+    )
+    return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)
