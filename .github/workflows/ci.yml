@@ -20,6 +20,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
       - run: uv run pytest
+      # the optional Rust accelerator: build it, run the suite with it and without it (FLUXCODE_RUST=0)
+      - run: uv run --with maturin maturin develop --release --manifest-path rust/Cargo.toml
+      - run: uv run pytest
+      - run: FLUXCODE_RUST=0 uv run pytest
       - run: uv run ruff check
       # experimental/ is excluded from the lint config: still check it for syntax errors and undefined names
       - run: uv run ruff check --isolated --select E9,F63,F7,F82 experimental

@@ -7,6 +7,8 @@ with per-block sizes, so blocks of any size share one code path. The public entr
 in `_api` divide their input into blocks and call `encode`, `decode` or `splice` here.
 """
 
+import importlib
+import os
 import threading
 from collections.abc import Callable, Mapping
 from typing import NamedTuple
@@ -17,6 +19,22 @@ import zstandard
 
 from . import _bitpacking, _decoder, _encoder, _format, _time
 from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit, is_int
+
+
+def _load_rust() -> Callable[..., bytes] | None:
+    """The extension's compress_unit, or None if it isn't installed or FLUXCODE_RUST=0."""
+    if os.environ.get("FLUXCODE_RUST") == "0":
+        return None
+    try:
+        return vars(importlib.import_module("fluxcode_rs"))["compress_unit"]  # type: ignore[no-any-return]
+    except ImportError:
+        return None
+
+
+_compress_unit: Callable[..., bytes] | None = _load_rust()
+"""The optional Rust accelerator's compress_unit (the fluxcode[rust] extra): builds a unit's bytes without
+holding the GIL, which python-zstandard does inside a block flush. None if it isn't installed or
+FLUXCODE_RUST=0; units are the same either way (rust/README.md)."""
 
 
 class Effort(NamedTuple):
@@ -323,6 +341,16 @@ def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit
     Returns:
         The unit bytes.
     """
+    if _compress_unit is not None and rows.time_rows is None:
+        offsets = _format.layout(rows.block_flags, rows.block_sizes)
+        codes = rows.codes if offsets.code_offsets[-1] else np.zeros(0, np.uint8)
+        return _compress_unit(
+            rows.block_flags, np.ascontiguousarray(rows.block_sizes, np.int64),
+            np.ascontiguousarray(rows.grid_params, np.int64), np.ascontiguousarray(rows.value_anchors, np.int64),
+            np.ascontiguousarray(rows.residuals, np.int16), np.ascontiguousarray(codes, np.uint8),
+            effort.layout, effort.flush, list(effort.zstd_levels),
+            offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,
+        )
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
     fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)
     return _pack(

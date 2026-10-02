@@ -102,3 +102,5 @@ Run one with `uv run python -m bench.<name>` from this directory.
 residual bit planes (it is faster, and larger; not adopted)?
 [plane_layout/](plane_layout/README.md) asks whether bit planes vs byte planes can be predicted without compressing both;
 what it found became `Params.effort`.
+[rust_port/](rust_port/README.md) ports the encoder and decoder to Rust: only the zstd frame build is worth it (python-zstandard
+holds the GIL in a block flush); it became the optional `fluxcode[rust]` extension.
