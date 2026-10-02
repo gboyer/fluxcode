@@ -4,9 +4,8 @@
 byte for byte while both link the same libzstd (otherwise they differ but decode alike), it is safe
 across threads, and fluxcode works, with the same units, without it."""
 
-from concurrent.futures import ThreadPoolExecutor
-
 import platform
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
