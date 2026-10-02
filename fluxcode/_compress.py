@@ -12,6 +12,7 @@ import importlib
 import os
 import threading
 from collections.abc import Callable
+from types import ModuleType
 from typing import NamedTuple
 
 import numpy as np
@@ -20,20 +21,20 @@ import zstandard
 from . import _bitpacking, _format
 
 
-def _load_rust() -> Callable[..., bytes] | None:
-    """The extension's compress_unit, or None if it isn't installed or FLUXCODE_RUST=0."""
+def _load_rust() -> ModuleType | None:
+    """The extension module, or None if it isn't installed or FLUXCODE_RUST=0."""
     if os.environ.get("FLUXCODE_RUST") == "0":
         return None
     try:
-        return vars(importlib.import_module("fluxcode_rs"))["compress_unit"]  # type: ignore[no-any-return]
+        return importlib.import_module("fluxcode_rs")
     except ImportError:
         return None
 
 
-_compress_unit: Callable[..., bytes] | None = _load_rust()
-"""The optional Rust accelerator's compress_unit (the fluxcode[rust] extra): builds a unit's bytes without
-holding the GIL, which python-zstandard does inside a block flush. None if it isn't installed or
-FLUXCODE_RUST=0; units are the same either way (rust/README.md)."""
+_rust: ModuleType | None = _load_rust()
+"""The optional Rust accelerator (the fluxcode[rust] extra): builds a unit's bytes from its rows or from
+a body without holding the GIL, which python-zstandard does inside a block flush. None if it isn't
+installed or FLUXCODE_RUST=0; units are the same either way (rust/README.md)."""
 
 
 class Effort(NamedTuple):
@@ -206,6 +207,11 @@ def pack(
     has_time = time_unit != 0
     body, offsets = build_body()
     num_groups = int(offsets.group_offsets[-1])
+    if _rust is not None:
+        return _rust.pack_unit(  # type: ignore[no-any-return]
+            body, num_blocks, num_samples, num_groups, time_unit, effort.layout, effort.flush,
+            list(effort.zstd_levels),
+        )
 
     def byte_planes_predicted() -> bool:
         share = _bitpacking.wide_share(body, num_blocks, num_groups, has_time, True, BYTE_PLANES_BIT)
@@ -238,8 +244,8 @@ def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit
     Returns:
         The unit bytes.
     """
-    if _compress_unit is not None and rows.time_rows is None:
-        return _compress_unit(
+    if _rust is not None and rows.time_rows is None:
+        return _rust.compress_unit(  # type: ignore[no-any-return]
             rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
             effort.layout, effort.flush, list(effort.zstd_levels),
         )
