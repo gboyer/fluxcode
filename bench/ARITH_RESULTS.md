@@ -21,18 +21,25 @@ chirp 1.6x larger); it only wins ~5% on noisy data. A branchless class search ma
 # Zero-run coding vs zstd (`bench/zero_runs.py`)
 
 Alternating raw/zero runs (first run raw, possibly empty), each length a protobuf varint; a zero run
-is split out of a raw run only at 3+ bytes. The encoder skips 8 non-zero bytes per step. Same
-planes, same method as above; round trip checked.
+is only split out of a raw run at 3+ bytes. The encoder skips 8 bytes per step through non-zero
+and zero stretches. Same planes and method as above; round trip checked.
 
 | | size | encode | decode |
 |---|---|---|---|
 | zstd 3 | 1.00 | 1.00 | 1.00 |
-| zero runs | 1.22x | 1.13x slower | 1.14x slower |
+| zero runs | 1.22x | 0.37x (2.7x faster) | 0.19x (5x faster) |
 
-Per signal, encode ranges from 0.55x (chirp) to 4.4x (linear), decode from 0.53x (noisy sine) to
-5.9x (random walk, where zstd stores the plane raw and just memcpys). Size is about equal (1.0 to
-1.2x) on noisy signals but far worse where zstd finds more than zeros: all-ones planes (linear:
-192x, because those planes are 0xFF, not 0x00), repeats (quadratic 20x), square wave 3.9x.
+Faster than zstd on every signal, both ways. Size is 1.0-1.2x on noisy signals but far worse where
+zstd finds more than zeros: all-ones planes (linear: 192x, they're 0xFF), repeats (quadratic 20x),
+square wave 3.9x.
 
-**Verdict: not faster than zstd overall**, and larger. It wins decode on some mid-entropy signals
-(up to ~2x), loses it on incompressible ones, so there's no case for it as a replacement.
+**Correction.** A first run of this showed zero runs about as slow as zstd (1.13x enc, 1.14x dec).
+That was a numba pitfall, not the format: the raw-run copy was slow. `dst[d:d+n] = src[p:p+n]`
+is ~45x slower than memcpy, and a loop `dst[d + k] = src[p + k]` isn't vectorized (84 us vs 2.6 us
+for 120 KB; the signed index needs a wraparound check), while a loop over views is. Zero-run
+skipping by 8-byte words was the second fix. The rANS numbers above are less exposed (a serial
+dependency chain per symbol), but its 2-D `planes[j, i]` indexing wasn't audited.
+
+**Verdict: faster than zstd, but larger.** Worth considering only as a fast mode where the size
+cost (about 20% here, unbounded on all-ones or repetitive planes) is acceptable; it would need a
+fix for all-ones planes (e.g. XOR with the previous plane or a 0xFF run type) to be safe.

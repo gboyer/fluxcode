@@ -27,6 +27,16 @@ MIN_ZERO = 3
 
 
 @njit(cache=True)
+def copy(dst, d, src, p, n):
+    # Loop over views: dst[d + k] = src[p + k] isn't vectorized (signed index arithmetic needs a
+    # wraparound check), and slice assignment is ~45x slower than memcpy.
+    a = dst[d:d + n]
+    b = src[p:p + n]
+    for k in range(n):
+        a[k] = b[k]
+
+
+@njit(cache=True)
 def put_varint(out, pos, v):
     while v >= 128:
         out[pos] = np.uint8((v & 127) | 128)
@@ -57,7 +67,11 @@ def encode(data, out):
                 i += 1
                 continue
             j = i + 1
-            while j < n and data[j] == 0:  # (a word-at-a-time skip here wasn't worth the code)
+            while j < n and j % 8 != 0 and data[j] == 0:
+                j += 1
+            while j + 8 <= n and words[j >> 3] == 0:  # 8 zero bytes per step
+                j += 8
+            while j < n and data[j] == 0:
                 j += 1
             if j - i >= MIN_ZERO or j == n:
                 zstart = i
@@ -66,7 +80,7 @@ def encode(data, out):
             i = j
         raw_end = zstart if zstart < n else n
         pos = put_varint(out, pos, raw_end - start)
-        out[pos:pos + raw_end - start] = data[start:raw_end]
+        copy(out, pos, data, start, raw_end - start)
         pos += raw_end - start
         if raw_end == n:
             return pos
@@ -96,7 +110,7 @@ def decode(stream, out):
     n = out.shape[0]
     while o < n:
         ln, pos = get_varint(stream, pos)
-        out[o:o + ln] = stream[pos:pos + ln]
+        copy(out, o, stream, pos, ln)
         pos += ln
         o += ln
         if o >= n:
