@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _encoder, _unit
+from fluxcode import Params, _api, _compress, _encoder, _unit
 
 PER_UNIT = _api.DEFAULT_BLOCKS_PER_UNIT  # the helpers assume the default unit size
 
@@ -27,12 +27,12 @@ def decode_series(units):
 def planes(layout, flush=True, zstd_levels=(3,)):
     """Every Params.effort compresses with layout ("bit", "byte", "heuristic" or "best") while
     inside: the effort picks the layout, and some tests need a particular one."""
-    saved = dict(_unit.EFFORTS)
-    _unit.EFFORTS.update(dict.fromkeys(saved, _unit.Effort(layout, flush, zstd_levels)))
+    saved = dict(_compress.EFFORTS)
+    _compress.EFFORTS.update(dict.fromkeys(saved, _compress.Effort(layout, flush, zstd_levels)))
     try:
         yield
     finally:
-        _unit.EFFORTS.update(saved)
+        _compress.EFFORTS.update(saved)
 
 
 def unit_rows(unit):

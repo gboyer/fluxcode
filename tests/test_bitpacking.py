@@ -245,30 +245,32 @@ def splice_case(rng, num_old, has_time, sizes=(0, 1, 7, 8, 9, 300)):
     return old, new_ids, new
 
 
+def sample_offsets(sizes):
+    return np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+
+
 @pytest.mark.parametrize("has_time", [False, True])
-@pytest.mark.parametrize("old_byte_planes", [False, True])
-@pytest.mark.parametrize("byte_planes", [False, True])
 @pytest.mark.parametrize("seed", range(25))
-def test_splice_body_matches_write_unit(seed, byte_planes, old_byte_planes, has_time):
+def test_splice_body_matches_write_unit(seed, has_time):
     rng = np.random.default_rng(seed)
     old, new_ids, new = splice_case(rng, int(rng.integers(1, 12)), has_time)
-    old_body = _bitpacking.write_unit(*old[:6], byte_planes=old_byte_planes, time_rows=old.time_rows)
+    old_body = _bitpacking.write_unit(*old[:6], byte_planes=True, time_rows=old.time_rows)
     old_layout = _format.layout(old.block_flags, old.block_sizes)
     if has_time:
         # The splice reads only the old columns: check they come back from the body as given
         starts, steps, refs = (np.empty_like(column) for column in old.time_rows[:3])
         assert _bitpacking.read_time_columns(old_body, *old_layout, starts, steps, refs) == (0, 0)
         np.testing.assert_array_equal(starts, old.time_rows.starts)
-    body = _bitpacking.splice_body(old_body, old_layout, old_byte_planes,
-                                   old.time_rows.starts if has_time else None, new_ids, new, byte_planes)
+    body, offsets = _bitpacking.splice_body(old_body, old_layout, old.time_rows.starts if has_time else None, new_ids,
+                                            new, sample_offsets(new.block_sizes))
     merged = merge_rows(old, new_ids, new)
-    expected = _bitpacking.write_unit(*merged[:6], byte_planes=byte_planes, time_rows=merged.time_rows)
+    expected = _bitpacking.write_unit(*merged[:6], byte_planes=True, time_rows=merged.time_rows)
     np.testing.assert_array_equal(body, expected)
+    for got, want in zip(offsets, _format.layout(merged.block_flags, merged.block_sizes), strict=True):
+        np.testing.assert_array_equal(got, want)
 
 
-@pytest.mark.parametrize("old_byte_planes", [False, True])
-@pytest.mark.parametrize("byte_planes", [False, True])
-def test_splice_body_large_blocks(byte_planes, old_byte_planes):
+def test_splice_body_large_blocks():
     """Long blocks, every flag, the largest block size, and a replaced block that changes size."""
     rng = np.random.default_rng(7)
     old = random_rows(rng, [1000, _format.MAX_BLOCK_LEN, 257, 0, 1000], True, nonfinite=0.7, irregular=1, long=0.5)
@@ -277,12 +279,27 @@ def test_splice_body_large_blocks(byte_planes, old_byte_planes):
     gap_fill = np.array([2, 5, 6], np.int64)
     new = random_rows(rng, [4000, 0, 1], True, nonfinite=1, irregular=1, long=1)
     new.time_rows.starts[:] = [2 * 10 ** 12 + 1, 0, 7 * 10 ** 12]
-    old_body = _bitpacking.write_unit(*old[:6], byte_planes=old_byte_planes, time_rows=old.time_rows)
-    body = _bitpacking.splice_body(old_body, _format.layout(old.block_flags, old.block_sizes), old_byte_planes,
-                                   old.time_rows.starts, gap_fill, new, byte_planes)
+    old_body = _bitpacking.write_unit(*old[:6], byte_planes=True, time_rows=old.time_rows)
+    old_layout = _format.layout(old.block_flags, old.block_sizes)
+    body, _ = _bitpacking.splice_body(old_body, old_layout, old.time_rows.starts, gap_fill, new,
+                                      sample_offsets(new.block_sizes))
     merged = merge_rows(old, gap_fill, new)
     np.testing.assert_array_equal(
-        body, _bitpacking.write_unit(*merged[:6], byte_planes=byte_planes, time_rows=merged.time_rows))
+        body, _bitpacking.write_unit(*merged[:6], byte_planes=True, time_rows=merged.time_rows))
     with pytest.raises(ValueError, match="past the old unit's end"):
-        _bitpacking.splice_body(old_body, _format.layout(old.block_flags, old.block_sizes), old_byte_planes,
-                                old.time_rows.starts, new_ids, new._replace(block_flags=new.block_flags[:2]), byte_planes)
+        _bitpacking.splice_body(old_body, old_layout, old.time_rows.starts, new_ids,
+                                new._replace(block_flags=new.block_flags[:2]), sample_offsets(new.block_sizes))
+
+
+@pytest.mark.parametrize("has_time", [False, True])
+@pytest.mark.parametrize("seed", range(10))
+def test_plane_conversion_matches_write_unit(seed, has_time):
+    """One transpose of the residual region gives the other layout's body, for all blocks at once."""
+    rng = np.random.default_rng(seed)
+    rows = random_rows(rng, rng.choice([0, 1, 7, 8, 9, 300], int(rng.integers(0, 12))), has_time)
+    byte_body = _bitpacking.write_unit(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
+    bit_body = _bitpacking.write_unit(*rows[:6], byte_planes=False, time_rows=rows.time_rows)
+    num_blocks = rows.block_flags.shape[0]
+    num_groups = int(_format.layout(rows.block_flags, rows.block_sizes).group_offsets[-1])
+    np.testing.assert_array_equal(_bitpacking.to_bit_planes(byte_body, num_blocks, num_groups, has_time), bit_body)
+    np.testing.assert_array_equal(_bitpacking.to_byte_planes(bit_body, num_blocks, num_groups, has_time), byte_body)

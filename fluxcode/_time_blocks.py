@@ -8,13 +8,13 @@ of the unit's storage key) and passes the same ones to update_time_blocks. Times
 the duration and delete ranges are all converted to int64 ticks in the times' unit.
 """
 
-import bisect
 import datetime
 from collections.abc import Iterable
 from fractions import Fraction
 
 import numpy as np
 import numpy.typing as npt
+from numba import njit
 
 from . import _format, _time, _unit
 from ._types import EncodedUnit, Params, UpdatedUnit, is_int
@@ -195,20 +195,93 @@ def encode_time_blocks(
     return _unit.encode(samples, chunk(ticks, start, duration), params, ticks, unit_code)
 
 
-def _interleave(kept: np.ndarray, new: np.ndarray, is_new: np.ndarray) -> np.ndarray:
-    """The array with new's elements at the True positions of is_new and kept's in the rest."""
-    merged = np.empty(is_new.shape[0], kept.dtype)
-    merged[is_new] = new
-    merged[~is_new] = kept
-    return merged
+@njit(nogil=True, cache=True)
+def _merge_samples(
+    old_ticks: np.ndarray,
+    old_values: np.ndarray,
+    old_blocks: np.ndarray,
+    new_ticks: np.ndarray,
+    new_values: np.ndarray,
+    new_blocks: np.ndarray,
+    ranges: np.ndarray,
+    changed: np.ndarray,
+    out_ticks: np.ndarray,
+    out_values: np.ndarray,
+    block_sizes: np.ndarray,
+) -> int:
+    """Merges the new samples into the old ones in time order, for the blocks that change.
+
+    An old sample goes if a range covers it or a new sample has its time; each new sample goes
+    before the old samples that follow it in time (those at its own time have just gone), and
+    new samples at one time keep their order. Both sides are sorted, so this is one pass of
+    two cursors each. Only the samples of blocks that change are written: a block changes if
+    it gains a sample or loses one.
+
+    Args:
+        old_ticks, old_values, old_blocks: The old samples in time order and their blocks.
+        new_ticks, new_values, new_blocks: The new samples in time order and their blocks.
+        ranges: 2D int64 array of sorted, disjoint [start, end) delete ranges.
+        changed: Output bool array per block, set for the blocks that change (False on entry).
+        out_ticks, out_values: Output arrays of at least old + new samples receiving the
+            samples of the changed blocks.
+        block_sizes: Output int64 array per block (zero on entry) receiving each changed
+            block's new size.
+
+    Returns:
+        The number of samples written.
+    """
+    num_old, num_new, num_ranges = old_ticks.shape[0], new_ticks.shape[0], ranges.shape[0]
+    keep = np.empty(num_old, np.bool_)
+    range_idx = 0
+    new_idx = 0
+    for old_idx in range(num_old):
+        tick = old_ticks[old_idx]
+        while new_idx < num_new and new_ticks[new_idx] < tick:
+            new_idx += 1
+        while range_idx < num_ranges and ranges[range_idx, 1] <= tick:
+            range_idx += 1
+        gone = (new_idx < num_new and new_ticks[new_idx] == tick) or (
+            range_idx < num_ranges and ranges[range_idx, 0] <= tick
+        )
+        keep[old_idx] = not gone
+        if gone:
+            changed[old_blocks[old_idx]] = True
+    for new_idx in range(num_new):
+        changed[new_blocks[new_idx]] = True
+    out = 0
+    new_idx = 0
+    for old_idx in range(num_old + 1):
+        while new_idx < num_new and (old_idx == num_old or new_ticks[new_idx] < old_ticks[old_idx]):
+            out_ticks[out] = new_ticks[new_idx]
+            out_values[out] = new_values[new_idx]
+            block_sizes[new_blocks[new_idx]] += 1
+            out += 1
+            new_idx += 1
+        if old_idx < num_old and keep[old_idx] and changed[old_blocks[old_idx]]:
+            out_ticks[out] = old_ticks[old_idx]
+            out_values[out] = old_values[old_idx]
+            block_sizes[old_blocks[old_idx]] += 1
+            out += 1
+    return out
 
 
-def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
-    """Whether each tick is in one of the sorted, disjoint [start, end) ranges."""
-    if not ranges.shape[0]:
-        return np.zeros(ticks.shape[0], np.bool_)
-    range_idx = np.searchsorted(ranges[:, 0], ticks, "right") - 1
-    return (range_idx >= 0) & (ticks < ranges[np.maximum(range_idx, 0), 1])
+def _block_masks(ranges: np.ndarray, start: int, duration: int, num_blocks: int) -> tuple[np.ndarray, np.ndarray]:
+    """The existing blocks whose time span meets a range, and those inside one (merged) range.
+
+    Block bounds are Python ints: a span can end past int64, so both ends are clamped to the
+    blocks before numpy sees them.
+
+    Returns:
+        Two bool arrays per existing block: touched, covered. A covered block loses all its samples.
+    """
+    touched = np.zeros(num_blocks, np.bool_)
+    covered = np.zeros(num_blocks, np.bool_)
+    for range_start, range_end in ranges.tolist():
+        if range_end <= start:
+            continue
+        touched[min(max(range_start - start, 0) // duration, num_blocks):min(-(-(range_end - start) // duration), num_blocks)] = True
+        covered[min(max(-(-(range_start - start) // duration), 0), num_blocks):min((range_end - start) // duration, num_blocks)] = True
+    return touched, covered
 
 
 def update_time_blocks(
@@ -239,29 +312,12 @@ def update_time_blocks(
     if new_ids.shape[0] and (np.diff(ticks) < 0).any():
         raise _unit.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
-    # The existing blocks whose time span meets a range (block bounds as Python ints: past int64
-    # if need be, so both ends are clamped to the old blocks before numpy sees them)
-    spans = [
-        np.arange(min(max(range_start - start, 0) // duration, num_old_blocks),
-                  min(-(-(range_end - start) // duration), num_old_blocks))
-        for range_start, range_end in ranges.tolist()
-        if range_end > start
-    ]
-    touched_ids = np.unique(np.concatenate(spans)) if spans else np.zeros(0, np.int64)
-    # A block whose whole span is inside one (merged) range loses all its samples without being
-    # decoded; exact Python ints, as a span can end past int64
-    range_starts, range_ends = ranges[:, 0].tolist(), ranges[:, 1].tolist()
-    touched = set(touched_ids.tolist())
-    covered = set()
-    for block_idx in touched:
-        block_start = start + block_idx * duration
-        range_idx = bisect.bisect_right(range_starts, block_start) - 1
-        if range_idx >= 0 and range_ends[range_idx] >= block_start + duration:
-            covered.add(block_idx)
+    touched, covered = _block_masks(ranges, start, duration, num_old_blocks)
     # The existing blocks to decode: those a range meets or a new sample lands in, except the
-    # covered ones, which lose everything
-    new_blocks = set(np.unique(new_ids).tolist())
-    decoded = np.array(sorted(b for b in touched | new_blocks if b < num_old_blocks and b not in covered), np.int64)
+    # covered ones, which lose everything without being decoded
+    touched[new_ids[new_ids < num_old_blocks]] = True
+    touched &= ~covered
+    decoded = np.flatnonzero(touched)
     time_rows = _unit.read_time_rows(parsed, decoded)
     old_sizes = parsed.block_sizes
     gathered_values, gathered_ticks = np.zeros(0), np.zeros(0, np.int64)
@@ -276,45 +332,32 @@ def update_time_blocks(
                                                                  run_sizes)
         gathered_values, gathered_ticks = all_values[positions], all_ticks[positions]
         gathered_blocks = np.repeat(decoded, run_sizes)
-    # A decoded sample goes if a range covers it or a new sample has its time. Each new tick
-    # matches a run [lo, hi) of the (sorted) decoded ticks: the runs are marked by a running sum
-    # of +1 at each lo and -1 at each hi, which is faster than looking every decoded tick up.
-    match_lo = np.searchsorted(gathered_ticks, ticks, "left")
-    match_hi = np.searchsorted(gathered_ticks, ticks, "right")
-    num_gathered = gathered_ticks.shape[0]
-    marks = np.bincount(match_lo, minlength=num_gathered + 1) - np.bincount(match_hi, minlength=num_gathered + 1)
-    replaced = np.cumsum(marks)[:num_gathered] > 0
-    keep = ~(_in_ranges(gathered_ticks, ranges) | replaced)
-    # Merge, no sort: both sides are sorted and share no time, so each new sample goes where its
-    # lower match position falls among the kept ones (new samples at one time keep their order,
-    # as their positions only grow). A tick fixes its block, so each block's samples end up together.
-    kept_before = np.concatenate([[0], np.cumsum(keep)])[match_lo]
-    is_new = np.zeros(int(keep.sum()) + ticks.shape[0], np.bool_)
-    is_new[kept_before + np.arange(ticks.shape[0])] = True
-    merged_ticks, merged_values, merged_blocks = (
-        _interleave(old[keep], new, is_new)
-        for old, new in ((gathered_ticks, ticks), (gathered_values, samples), (gathered_blocks, new_ids))
-    )
     # Blocks to re-encode: those that gain a sample or lose one (a block that loses nothing and
     # gains nothing, empty ones included, is carried over)
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
-    changed = np.bincount(new_ids, minlength=num_blocks) > 0
-    changed[:num_old_blocks] |= np.bincount(gathered_blocks[~keep], minlength=num_old_blocks) > 0
-    covered_ids = np.fromiter(covered, np.int64, len(covered))
+    changed = np.zeros(num_blocks, np.bool_)
+    sizes = np.zeros(num_blocks, np.int64)
+    num_gathered = gathered_ticks.shape[0]
+    merged_ticks = np.empty(num_gathered + ticks.shape[0], np.int64)
+    merged_values = np.empty(num_gathered + ticks.shape[0])
+    num_merged = _merge_samples(
+        gathered_ticks, gathered_values, gathered_blocks, ticks, samples, new_ids, ranges, changed, merged_ticks,
+        merged_values, sizes,
+    )
+    covered_ids = np.flatnonzero(covered)
     changed[covered_ids] |= old_sizes[covered_ids] > 0
     indices = np.flatnonzero(changed)
     if not indices.shape[0]:
         return UpdatedUnit(unit, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
-    sizes = np.bincount(merged_blocks, minlength=num_blocks)[indices]
+    sizes = sizes[indices]
     if sizes.max() > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
-    in_changed = changed[merged_blocks]
     return _unit.splice(
         parsed,
         indices,
-        merged_values[in_changed],
+        merged_values[:num_merged],
         sizes,
-        merged_ticks[in_changed],
+        merged_ticks[:num_merged],
         params,
         time_rows,
     )

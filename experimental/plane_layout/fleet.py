@@ -26,11 +26,11 @@ import fluxcode
 from _series import planes, unit_rows
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _unit
+from fluxcode import Params, _compress, _unit
 from stress import PRESETS, gen_minute
 
 MIX = PRESETS["sensor-mix"]
-BEFORE = _unit.Effort("best", False, (3,))
+BEFORE = _compress.Effort("best", False, (3,))
 
 
 def row(x, params, weight):
@@ -84,14 +84,14 @@ def rules():
 def efforts():
     data = {kind: [gen_minute(kind, s) for s in range(8)] for kind in MIX}
     distinct = {}
-    for effort, settings in sorted(_unit.EFFORTS.items()):
+    for effort, settings in sorted(_compress.EFFORTS.items()):
         distinct.setdefault(settings, []).append(effort)
     rows = [("before", BEFORE)] + [(f"{e[0]}–{e[-1]}" if len(e) > 1 else str(e[0]), s) for s, e in distinct.items()]
-    saved = _unit.EFFORTS[4]
+    saved = _compress.EFFORTS[4]
     print("\nsensor mix, per unit (weighted), one thread:")
     base = None
     for name, settings in rows:
-        _unit.EFFORTS[4] = settings
+        _compress.EFFORTS[4] = settings
         size = elapsed = 0.0
         for kind, w in MIX.items():
             xs = data[kind]
@@ -107,7 +107,7 @@ def efforts():
         base = base or (size, elapsed)
         print(f"  effort {name:5s} size {100 * (size / base[0] - 1):+6.2f}%   encode {elapsed:5.0f} µs/unit "
               f"({elapsed - base[1]:+5.0f} µs, {100 * (elapsed / base[1] - 1):+4.0f}%)")
-    _unit.EFFORTS[4] = saved
+    _compress.EFFORTS[4] = saved
 
 
 if __name__ == "__main__":

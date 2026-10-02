@@ -12,7 +12,7 @@ from _series import planes, unit_rows
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _format, _unit
+from fluxcode import Params, _bitpacking, _compress, _format, _unit
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
 
 EFFORTS = range(MIN_EFFORT, MAX_EFFORT + 1)
@@ -23,7 +23,7 @@ def body_of(unit):
 
 
 def test_every_effort_has_settings():
-    assert sorted(_unit.EFFORTS) == list(EFFORTS)
+    assert sorted(_compress.EFFORTS) == list(EFFORTS)
     for bad in (0, MAX_EFFORT + 1, 5.0, True, "5"):
         with pytest.raises(ValueError, match="effort"):
             Params(effort=bad)
@@ -57,7 +57,7 @@ def test_flush_points(byte_planes):
         (unit,), *_ = fluxcode.encode(minute("sin-9.87hz", 4))
     parsed = _unit.decompress(unit)
     nb = parsed.header.num_blocks
-    cuts = _format.flush_points(parsed.raw_body, nb, parsed.layout, parsed.has_time, byte_planes)
+    cuts = _compress.flush_points(parsed.raw_body, nb, parsed.layout, parsed.has_time, byte_planes)
     start = _format.residual_start(nb, parsed.has_time)
     assert cuts == sorted(set(cuts)) and cuts[0] == start and cuts[-1] <= len(parsed.raw_body)
     assert len(cuts) <= (3 if byte_planes else 17)
@@ -65,21 +65,21 @@ def test_flush_points(byte_planes):
     plane_bytes = 8 * groups if byte_planes else groups
     for cut in cuts[1:]:  # every cut after the columns ends a plane that holds data
         assert cut % plane_bytes == start % plane_bytes
-        assert np.count_nonzero(parsed.raw_body[cut - plane_bytes:cut]) * _format.FLUSH_MIN_DENSITY > plane_bytes
+        assert np.count_nonzero(parsed.raw_body[cut - plane_bytes:cut]) * _compress.FLUSH_MIN_DENSITY > plane_bytes
 
 
 def test_flush_points_skip_empty_planes():
     with planes("bit"):
         (unit,), *_ = fluxcode.encode(minute("linear", 4))  # near-constant residuals
     parsed = _unit.decompress(unit)
-    cuts = _format.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, False)
+    cuts = _compress.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, False)
     assert len(cuts) < 17
 
 
 def test_compress_body_cuts():
     body = np.random.default_rng(0).integers(0, 4, 5000, dtype=np.uint8)
     for cuts in ([], [0], [5000], [10, 4000], [1, 2, 3, 4999]):
-        frame = _unit.compress_body(body, cuts, 3)
+        frame = _compress.compress_body(body, cuts, 3)
         assert zstandard.ZstdDecompressor().decompress(frame) == body.tobytes()
         assert zstandard.frame_content_size(frame) == 5000
 

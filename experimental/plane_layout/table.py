@@ -22,7 +22,7 @@ import fluxcode
 from corpus import configs, draw_signal, residuals
 from _series import planes as forced_layout
 from flush_blocks import reflush
-from fluxcode import Params, _format, _unit
+from fluxcode import Params, _compress, _format, _unit
 
 EVERY = (1, 4, 8)
 
@@ -30,14 +30,14 @@ EVERY = (1, 4, 8)
 def pooled(unit):
     """Unit size with the body in one block run (what the unit-level encoder did before flushing)."""
     body = _unit.decompress(unit).raw_body
-    return _format.HEADER_BYTES + len(_unit.zstd()[0].compress(body.data))
+    return _format.HEADER_BYTES + len(_compress.zstd()[0].compress(body.data))
 
 
 def dense(unit):
     """The unit re-framed with the encoder's rule (no small-unit retry)."""
     parsed = _unit.decompress(unit)
-    cuts = _format.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, parsed.header.byte_planes)
-    return unit[:_format.HEADER_BYTES] + _unit.compress_body(parsed.raw_body, cuts, 3)
+    cuts = _compress.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, parsed.header.byte_planes)
+    return unit[:_format.HEADER_BYTES] + _compress.compress_body(parsed.raw_body, cuts, 3)
 
 
 def row(x, mx=16, nf=0.25):

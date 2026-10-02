@@ -11,7 +11,7 @@ from _series import unit_rows
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _encoder, _format, _unit
+from fluxcode import Params, _compress, _encoder, _format, _unit
 from fluxcode._format import BLOCK_FLAG_NONFINITE, BLOCK_FLAG_ORDER, SHORT_BLOCK_LEN
 
 SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
@@ -186,7 +186,7 @@ def test_empty_block_time_columns_must_be_zero():
                         _format.time_ref_start(num_blocks)):
         bad = body.copy()
         bad[field_start + 1] = 1  # byte 0 of block 1's value
-        bad_unit = unit[:_format.HEADER_BYTES] + _unit.zstd()[0].compress(bad.tobytes())
+        bad_unit = unit[:_format.HEADER_BYTES] + _compress.zstd()[0].compress(bad.tobytes())
         with pytest.raises(ValueError, match="block 1: empty block with nonzero time columns"):
             fluxcode.decode_unit(bad_unit)
 

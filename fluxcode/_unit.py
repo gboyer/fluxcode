@@ -7,86 +7,15 @@ with per-block sizes, so blocks of any size share one code path. The public entr
 in `_api` divide their input into blocks and call `encode`, `decode` or `splice` here.
 """
 
-import importlib
-import os
-import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 import zstandard
 
-from . import _bitpacking, _decoder, _encoder, _format, _time
+from . import _bitpacking, _compress, _decoder, _encoder, _format, _time
 from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit, is_int
-
-
-def _load_rust() -> Callable[..., bytes] | None:
-    """The extension's compress_unit, or None if it isn't installed or FLUXCODE_RUST=0."""
-    if os.environ.get("FLUXCODE_RUST") == "0":
-        return None
-    try:
-        return vars(importlib.import_module("fluxcode_rs"))["compress_unit"]  # type: ignore[no-any-return]
-    except ImportError:
-        return None
-
-
-_compress_unit: Callable[..., bytes] | None = _load_rust()
-"""The optional Rust accelerator's compress_unit (the fluxcode[rust] extra): builds a unit's bytes without
-holding the GIL, which python-zstandard does inside a block flush. None if it isn't installed or
-FLUXCODE_RUST=0; units are the same either way (rust/README.md)."""
-
-
-class Effort(NamedTuple):
-    """How a unit is compressed at one Params.effort.
-
-    Attributes:
-        layout: "heuristic" (byte planes when few residuals reach 128, else bit planes, one
-            compression), "best" (both, the smaller kept), "bit" or "byte" (tests only).
-        flush: Whether a zstd block ends after the columns and each dense residual plane.
-        zstd_levels: The zstd compression levels tried, the smallest frame kept.
-    """
-
-    layout: str
-    flush: bool
-    zstd_levels: tuple[int, ...]
-
-
-EFFORTS: dict[int, Effort] = {
-    1: Effort("heuristic", False, (1,)),
-    2: Effort("heuristic", False, (3,)),
-    **dict.fromkeys(range(3, 5), Effort("best", False, (3,))),
-    # Block flushes gain 1.5-2% but hold the GIL inside python-zstandard's flush(): 4 threads
-    # encode 40% slower, so they start above the default (TUNING.md, Effort)
-    **dict.fromkeys(range(5, 9), Effort("best", True, (3,))),
-    # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
-    9: Effort("best", True, (3, 9)),
-}
-"""Params.effort to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
-
-BYTE_PLANES_BIT: int = 7
-BYTE_PLANES_MAX_SHARE: float = 0.01
-"""The heuristic layout picks byte planes when fewer than BYTE_PLANES_MAX_SHARE of the (zigzagged)
-residuals reach 2^BYTE_PLANES_BIT: narrow residuals, whose high byte is constant and whose low byte
-byte-wise literals model well. Wider ones, even within a byte, compress better as bit planes with
-a zstd block (and Huffman table) per plane (experimental/plane_layout, What was adopted)."""
-
-_local = threading.local()
-
-
-def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecompressor]:
-    """Retrieves thread-local zstandard compressor (at level) and decompressor instances.
-
-    Returns:
-        A tuple of (compressor, decompressor) dedicated to the current thread.
-    """
-    codecs = getattr(_local, "z", None)
-    if codecs is None:
-        # Separate compressors and decompressor per thread for thread-safety
-        codecs = _local.z = {"decompressor": zstandard.ZstdDecompressor()}
-    if level not in codecs:
-        codecs[level] = zstandard.ZstdCompressor(level=level, write_checksum=False, write_content_size=True)
-    return codecs[level], codecs["decompressor"]
 
 
 def as_series(series_input: npt.ArrayLike, allow_empty: bool = False) -> np.ndarray:
@@ -329,103 +258,6 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     return time_rows
 
 
-def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit: int = 0) -> bytes:
-    """Serializes unit rows and builds the unit: header plus zstd frame of the body.
-
-    Args:
-        rows: The unit's rows (time_rows None for a unit without a time axis).
-        num_samples: Sample count recorded in the header (the sum of the block sizes).
-        effort: How to compress (Params.effort).
-        time_unit: Time unit code recorded in the header (0 without a time axis).
-
-    Returns:
-        The unit bytes.
-    """
-    if _compress_unit is not None and rows.time_rows is None:
-        return _compress_unit(
-            rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
-            effort.layout, effort.flush, list(effort.zstd_levels),
-        )
-    # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
-    fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)
-    return _pack(
-        lambda byte_planes: _bitpacking.write_unit(*fields, byte_planes=byte_planes, time_rows=rows.time_rows),
-        rows.block_flags.shape[0], num_samples, effort, time_unit, first_byte_planes=True,
-    )
-
-
-def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int) -> bytes:
-    """Compresses a unit body into one zstd frame, ending a block at each cut.
-
-    Every zstd block has its own literal Huffman table, so cutting the body between its
-    columns and planes codes each with its own statistics. The frame is an ordinary one that
-    records the content size.
-
-    Args:
-        body: 1D uint8 array of the uncompressed body.
-        cuts: Strictly increasing body offsets where a block ends.
-        zstd_level: The zstd compression level.
-
-    Returns:
-        The frame.
-    """
-    compressor = zstd(zstd_level)[0].compressobj(size=body.shape[0])
-    view = body.data
-    parts = []
-    previous = 0
-    for cut in cuts:
-        if previous < cut < body.shape[0]:
-            parts.append(compressor.compress(view[previous:cut]))
-            parts.append(compressor.flush(zstandard.COMPRESSOBJ_FLUSH_BLOCK))
-            previous = cut
-    parts.append(compressor.compress(view[previous:]))
-    parts.append(compressor.flush())
-    return b"".join(parts)
-
-
-def _frame(body: np.ndarray, num_blocks: int, byte_planes: bool, has_time: bool, effort: Effort) -> bytes:
-    """The smallest zstd frame of a body over effort's zstd levels, in one block run or
-    block-flushed at the columns and dense planes. Ties keep the earlier level."""
-    if not effort.flush:
-        return min((zstd(level)[0].compress(body.data) for level in effort.zstd_levels), key=len)
-    _, offsets = _format.read_layout(body, num_blocks)
-    cuts = _format.flush_points(body, num_blocks, offsets, has_time, byte_planes)
-    return min((compress_body(body, cuts, level) for level in effort.zstd_levels), key=len)
-
-
-def _pack(
-    write_body: Callable[[bool], np.ndarray],
-    num_blocks: int,
-    num_samples: int,
-    effort: Effort,
-    time_unit: int,
-    first_byte_planes: bool,
-) -> bytes:
-    """The unit of the body write_body(byte_planes) builds, compressed as effort says. The
-    heuristic layout reads its statistic from the body in layout first_byte_planes, the one
-    cheaper to write, and writes the other only if it needs it."""
-    has_time = time_unit != 0
-    bodies: dict[bool, np.ndarray] = {}
-
-    def build(byte_planes: bool) -> bytes:
-        if byte_planes not in bodies:
-            bodies[byte_planes] = write_body(byte_planes)
-        header = _format.pack_header(num_blocks, num_samples, byte_planes, time_unit)
-        return header + _frame(bodies[byte_planes], num_blocks, byte_planes, has_time, effort)
-
-    if effort.layout in ("bit", "byte"):
-        return build(effort.layout == "byte")
-    if effort.layout == "heuristic":
-        first = bodies[first_byte_planes] = write_body(first_byte_planes)
-        _, offsets = _format.read_layout(first, num_blocks)
-        num_groups = int(offsets.group_offsets[-1])
-        share = _bitpacking.wide_share(first, num_blocks, num_groups, has_time, first_byte_planes, BYTE_PLANES_BIT)
-        return build(share < BYTE_PLANES_MAX_SHARE)
-    units = {False: build(False), True: build(True)}
-    # Ties go to byte planes (they decode faster: no bit transpose), so the choice is deterministic
-    return units[True] if len(units[True]) <= len(units[False]) else units[False]
-
-
 def encode(
     samples: np.ndarray, block_sizes: np.ndarray, params: Params, ticks: np.ndarray | None = None, time_unit: int = 0
 ) -> EncodedUnit:
@@ -449,7 +281,7 @@ def encode(
     rows, stats = encode_rows(samples, block_sizes, params)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
-    return EncodedUnit(compress(rows, samples.shape[0], EFFORTS[params.effort], time_unit), *stats)
+    return EncodedUnit(_compress.compress(rows, samples.shape[0], _compress.EFFORTS[params.effort], time_unit), *stats)
 
 
 class ParsedUnit(NamedTuple):
@@ -501,7 +333,7 @@ def decompress(unit: bytes) -> ParsedUnit:
     smallest, largest = _format.unit_size_bounds(num_blocks, num_samples, has_time)
     if not smallest <= content_size <= largest:
         raise ValueError(f"unit body of {content_size} bytes doesn't fit {num_blocks} blocks of {num_samples} samples")
-    raw_body = np.frombuffer(zstd()[1].decompress(frame), np.uint8)
+    raw_body = np.frombuffer(_compress.zstd()[1].decompress(frame), np.uint8)
     block_flags = raw_body[:num_blocks]
     block_sizes, offsets = _format.read_layout(raw_body, num_blocks)
     if int(offsets.sample_offsets[-1]) != num_samples:
@@ -631,41 +463,37 @@ def read_rows(parsed: ParsedUnit, time_rows: _format.TimeRows | None = None) -> 
     return rows
 
 
-def _last_tick(parsed: ParsedUnit, time_rows: _format.TimeRows, block_idx: int) -> int:
-    """The last tick of a non-empty block of a parsed unit, unpacking and expanding that block only.
+def _last_ticks(parsed: ParsedUnit, time_rows: _format.TimeRows, block_ids: np.ndarray) -> np.ndarray:
+    """The last ticks of non-empty blocks of a parsed unit, unpacking and expanding those blocks only.
 
     Args:
         parsed: The unit.
-        time_rows: Its time rows: the columns at least (the block's residuals are unpacked
+        time_rows: Its time rows: the columns at least (the blocks' residuals are unpacked
             into them).
-        block_idx: The block.
+        block_ids: 1D int64 array of the blocks.
     """
+    if not block_ids.shape[0]:
+        return np.zeros(0, np.int64)
     offsets = parsed.layout.sample_offsets
-    first, end = int(offsets[block_idx]), int(offsets[block_idx + 1])
-    block_ids = np.array([block_idx], np.int64)
     _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
-    block_rows = _format.TimeRows(
-        time_rows.starts[block_idx:block_idx + 1], time_rows.steps[block_idx:block_idx + 1],
-        time_rows.refs[block_idx:block_idx + 1], time_rows.residuals[first:end],
-    )
-    out_ticks = np.empty(end - first, np.int64)
-    expand_times(parsed.block_flags[block_idx:block_idx + 1], np.array([0, end - first], np.int64), block_rows,
-                 np.zeros(1, np.int64), out_ticks)
-    return int(out_ticks[-1])
+    out_ticks = np.empty(parsed.header.num_samples, np.int64)
+    expand_times(parsed.block_flags, offsets, time_rows, block_ids, out_ticks)
+    return out_ticks[offsets[block_ids + 1] - 1]
 
 
 def _check_spliced_order(
-    block_sizes: np.ndarray, block_starts: np.ndarray, is_new: np.ndarray, new_last_ticks: dict[int, int],
-    old_last_tick: Callable[[int], int],
+    parsed: ParsedUnit, time_rows: _format.TimeRows, block_sizes: np.ndarray, block_starts: np.ndarray,
+    is_new: np.ndarray, new_last_ticks: np.ndarray,
 ) -> None:
     """Checks that the times never decrease where a new block meets its non-empty neighbours.
 
     Args:
+        parsed: The existing unit.
+        time_rows: Its time rows (the columns at least).
         block_sizes: 1D int64 array of the spliced unit's block sizes.
         block_starts: 1D int64 array of its block start times.
         is_new: 1D bool array marking the new blocks.
-        new_last_ticks: Last tick of each non-empty new block.
-        old_last_tick: The last tick of a carried block, by index.
+        new_last_ticks: 1D int64 array of the last tick of each non-empty new block (by block).
 
     Raises:
         ValueError: If a block starts before the previous non-empty block's last time.
@@ -673,14 +501,18 @@ def _check_spliced_order(
     filled = np.flatnonzero(block_sizes)
     # Only pairs of consecutive non-empty blocks where one is new: the others were in order
     pairs = np.flatnonzero(is_new[filled[:-1]] | is_new[filled[1:]])
-    for previous_idx, block_idx in zip(filled[pairs].tolist(), filled[pairs + 1].tolist()):
-        last = new_last_ticks[previous_idx] if is_new[previous_idx] else old_last_tick(previous_idx)
-        first = int(block_starts[block_idx])
-        if first < last:
-            raise ValueError(
-                f"times must be non-decreasing: block {block_idx} starts at {first}, "
-                f"below block {previous_idx}'s last time {last}"
-            )
+    previous, following = filled[pairs], filled[pairs + 1]
+    last = new_last_ticks[previous]
+    carried = ~is_new[previous]
+    last[carried] = _last_ticks(parsed, time_rows, previous[carried])
+    decreasing = np.flatnonzero(block_starts[following] < last)
+    if decreasing.shape[0]:
+        pair_idx = int(decreasing[0])
+        raise ValueError(
+            f"times must be non-decreasing: block {int(following[pair_idx])} starts at "
+            f"{int(block_starts[following[pair_idx]])}, below block {int(previous[pair_idx])}'s last time "
+            f"{int(last[pair_idx])}"
+        )
 
 
 def splice(
@@ -732,6 +564,7 @@ def splice(
     num_samples = int(sizes.sum())
     check_unit_counts(num_blocks, num_samples)
     new_rows, stats = encode_rows(samples, block_sizes, params)
+    new_offsets = sample_offsets(block_sizes)
     old_starts = None
     if ticks is not None:
         new_time_rows = encode_time_rows(ticks, block_sizes, new_rows.block_flags)
@@ -744,19 +577,19 @@ def splice(
         starts = np.zeros(num_blocks, np.int64)
         starts[:num_old_blocks] = old_starts
         starts[indices] = new_time_rows.starts
-        new_offsets = sample_offsets(block_sizes)
-        new_last_ticks = {
-            int(b): int(ticks[new_offsets[rank + 1] - 1]) for rank, b in enumerate(indices) if block_sizes[rank]
-        }
-        old_rows = old_time_rows
-        _check_spliced_order(sizes, starts, is_new, new_last_ticks,
-                             lambda block_idx: _last_tick(parsed, old_rows, block_idx))
-    unit = _pack(
-        lambda byte_planes: _bitpacking.splice_body(
-            parsed.raw_body, parsed.layout, parsed.header.byte_planes, old_starts, indices, new_rows, byte_planes
-        ),
-        num_blocks, num_samples, EFFORTS[params.effort], parsed.header.time_unit,
-        first_byte_planes=parsed.header.byte_planes,
+        new_last_ticks = np.zeros(num_blocks, np.int64)
+        filled = block_sizes > 0
+        new_last_ticks[indices[filled]] = ticks[new_offsets[1:][filled] - 1]
+        _check_spliced_order(parsed, old_time_rows, sizes, starts, is_new, new_last_ticks)
+    has_time = parsed.has_time
+    old_body = parsed.raw_body
+    if not parsed.header.byte_planes:
+        old_body = _bitpacking.to_byte_planes(
+            old_body, num_old_blocks, int(parsed.layout.group_offsets[-1]), has_time
+        )
+    unit = _compress.pack(
+        lambda: _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets),
+        num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,
     )
     return UpdatedUnit(unit, indices, *stats)
 

@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fluxcode
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _unit
+from fluxcode import Params, _compress, _unit
 
-BEFORE = _unit.Effort("best", False, (3,))
+BEFORE = _compress.Effort("best", False, (3,))
 """The encoder before efforts: planes="best" without block flushes."""
 
 
@@ -42,8 +42,8 @@ def sets():
 def run(items, effort):
     """(bytes, encode s, decode s) of every item encoded with effort's settings."""
     default = Params().effort
-    saved = _unit.EFFORTS[default]
-    _unit.EFFORTS[default] = effort
+    saved = _compress.EFFORTS[default]
+    _compress.EFFORTS[default] = effort
     try:
         def enc():
             return [fluxcode.encode(x, p)[0] for x, p in items]
@@ -59,13 +59,13 @@ def run(items, effort):
                 fluxcode.decode(units)
             t_dec = min(t_dec, time.perf_counter() - t0)
     finally:
-        _unit.EFFORTS[default] = saved
+        _compress.EFFORTS[default] = saved
     return sum(len(u) for units in out for u in units), t_enc, t_dec
 
 
 if __name__ == "__main__":
     distinct = {}
-    for effort, settings in sorted(_unit.EFFORTS.items()):
+    for effort, settings in sorted(_compress.EFFORTS.items()):
         distinct.setdefault(settings, []).append(effort)
     rows = [("before", BEFORE)] + [(f"{e[0]}–{e[-1]}" if len(e) > 1 else str(e[0]), s) for s, e in distinct.items()]
     for label, items in sets().items():

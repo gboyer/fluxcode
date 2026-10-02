@@ -276,6 +276,52 @@ def unshuffle_block(
         high_words64[group_idx] = _transpose8(gathered_high)
 
 
+@njit(nogil=True, cache=True)
+def _bit_planes_into(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray) -> None:
+    """Writes the residual region of byte-plane body byte_body into out_body's as bit planes.
+
+    Blocks start on a multiple of 8 residuals in the byte planes and are padded with zeros, so
+    the groups of 8 bytes of all blocks line up across the region and one pass over it
+    converts every block."""
+    if num_groups:
+        bplanes = byte_planes_view(byte_body, num_blocks, num_groups, has_time)
+        shuffle_bytes(bplanes[0], bplanes[1], planes_view(out_body, num_blocks, num_groups, has_time), 0, num_groups)
+
+
+@njit(nogil=True, cache=True)
+def _byte_planes_into(bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray) -> None:
+    """Writes the residual region of bit-plane body bit_body into out_body's as byte planes
+    (_bit_planes_into reversed)."""
+    if num_groups:
+        bplanes = byte_planes_view(out_body, num_blocks, num_groups, has_time)
+        unshuffle_block(planes_view(bit_body, num_blocks, num_groups, has_time), 0, num_groups, bplanes[0], bplanes[1])
+
+
+def to_bit_planes(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
+    """The bit-plane body of a byte-plane body: its residual region transposed, the rest the same.
+
+    Args:
+        byte_body: 1D uint8 array of a body whose residuals are byte planes.
+        num_blocks: Number of blocks.
+        num_groups: Groups of all blocks.
+        has_time: Whether the unit has a time axis.
+
+    Returns:
+        A new 1D uint8 array.
+    """
+    bit_body = byte_body.copy()
+    _bit_planes_into(byte_body, num_blocks, num_groups, has_time, bit_body)
+    return bit_body
+
+
+def to_byte_planes(bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
+    """The byte-plane body of a bit-plane body (to_bit_planes reversed). The residual slots past
+    a block's samples come out zero if they were zero in the bit planes."""
+    byte_body = bit_body.copy()
+    _byte_planes_into(bit_body, num_blocks, num_groups, has_time, byte_body)
+    return byte_body
+
+
 @njit(inline="always")
 def unzigzag16(low_bytes: np.ndarray, high_bytes: np.ndarray, sample_idx: int) -> np.int16:
     """Decodes a single signed int16 value from low and high zigzag bytes.
@@ -1021,6 +1067,7 @@ def write_unit(
     codes: np.ndarray | None = None,
     byte_planes: bool = False,
     time_rows: TimeRows | None = None,
+    offsets: Layout | None = None,
 ) -> np.ndarray:
     """Serializes unit components into a newly allocated uncompressed body.
 
@@ -1034,6 +1081,7 @@ def write_unit(
             BLOCK_FLAG_NONFINITE flag set.
         byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
         time_rows: The time axis rows, or None for a unit without a time axis.
+        offsets: The unit's Layout if already computed.
 
     Returns:
         1D uint8 array containing the serialized uncompressed body.
@@ -1044,7 +1092,8 @@ def write_unit(
     """
     num_blocks = block_flags.shape[0]
     block_sizes = np.asarray(block_sizes, np.int64)
-    offsets = layout(block_flags, block_sizes)
+    if offsets is None:
+        offsets = layout(block_flags, block_sizes)
     if codes is None:
         if offsets.code_offsets[-1]:
             raise ValueError("flagged blocks need codes")
@@ -1140,7 +1189,6 @@ def _splice_body(
     old_code_offsets: np.ndarray,
     old_short_offsets: np.ndarray,
     old_long_offsets: np.ndarray,
-    old_byte_planes: bool,
     has_time: bool,
     old_time_starts: np.ndarray,
     new_ranks: np.ndarray,
@@ -1160,18 +1208,15 @@ def _splice_body(
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
-    byte_planes: bool,
     out_body: np.ndarray,
 ) -> None:
-    """Writes a body whose blocks come from the new rows (new_ranks[b] >= 0) or are old block
-    b, whose bytes are copied (see splice_body)."""
+    """Writes a byte-plane body whose blocks come from the new rows (new_ranks[b] >= 0) or are
+    old block b, whose bytes are copied (see splice_body)."""
     num_blocks = block_flags.shape[0]
     old_num_blocks = old_sample_offsets.shape[0] - 1
     old_groups, groups = int(old_group_offsets[old_num_blocks]), int(group_offsets[num_blocks])
-    old_planes = planes_view(old_body, old_num_blocks, old_groups, has_time)
     old_bplanes = byte_planes_view(old_body, old_num_blocks, old_groups, has_time)
     old_cplanes = code_planes_view(old_body, old_num_blocks, old_groups, int(old_code_offsets[old_num_blocks]), has_time)
-    planes = planes_view(out_body, num_blocks, groups, has_time)
     bplanes = byte_planes_view(out_body, num_blocks, groups, has_time)
     cplanes = code_planes_view(out_body, num_blocks, groups, int(code_offsets[num_blocks]), has_time)
     if has_time:
@@ -1188,11 +1233,6 @@ def _splice_body(
         long_planes[:, :] = 0
     else:
         old_short = old_long = short_planes = long_planes = np.zeros((TIME_SHORT_PLANES, 0), np.uint8)
-    max_len = 0
-    for block_idx in range(num_blocks):
-        max_len = max(max_len, block_sizes[block_idx])
-    scratch_low_bytes = np.empty(8 * plane_groups(max_len), np.uint8)
-    scratch_high_bytes = np.empty(8 * plane_groups(max_len), np.uint8)
     scratch_tail = np.empty(8, np.uint64)
     # The column fields as (start in the new body, start in the old body, byte planes)
     column_fields = [
@@ -1238,10 +1278,9 @@ def _splice_body(
                     previous_start = old_time_starts[last_filled]
                     seen_samples = True
             _copy_planes(
-                old_planes, old_bplanes, old_cplanes, old_short, old_long, old_group_offsets, old_code_offsets,
-                old_short_offsets, old_long_offsets, old_byte_planes, planes, bplanes, cplanes, short_planes,
-                long_planes, group_offsets, code_offsets, short_offsets, long_offsets, byte_planes, block_flags,
-                block_sizes, block_idx, run_end, scratch_low_bytes, scratch_high_bytes,
+                old_bplanes, old_cplanes, old_short, old_long, old_group_offsets, old_code_offsets,
+                old_short_offsets, old_long_offsets, bplanes, cplanes, short_planes, long_planes, group_offsets,
+                code_offsets, short_offsets, long_offsets, block_idx, run_end,
             )
             block_idx = run_end
             continue
@@ -1268,17 +1307,13 @@ def _splice_body(
             continue
         group_offset = group_offsets[block_idx - 1]
         first_sample = new_sample_offsets[rank]
-        block_residuals = new_residuals[first_sample:first_sample + block_len]
-        if byte_planes:
-            sample_start = 8 * group_offset
-            zigzag_block(
-                block_residuals,
-                bplanes[0, sample_start:sample_start + block_len],
-                bplanes[1, sample_start:sample_start + block_len],
-            )
-            bplanes[:, sample_start + block_len:8 * group_offsets[block_idx]] = 0
-        else:
-            shuffle_block(block_residuals, planes, group_offset, scratch_low_bytes, scratch_high_bytes)
+        sample_start = 8 * group_offset
+        zigzag_block(
+            new_residuals[first_sample:first_sample + block_len],
+            bplanes[0, sample_start:sample_start + block_len],
+            bplanes[1, sample_start:sample_start + block_len],
+        )
+        bplanes[:, sample_start + block_len:8 * group_offsets[block_idx]] = 0
         if flags & BLOCK_FLAG_NONFINITE:
             put_codes(new_codes[first_sample:first_sample + block_len], cplanes, code_offsets[block_idx - 1])
         if has_time and flags & BLOCK_FLAG_IRREGULAR_TIME:
@@ -1294,7 +1329,6 @@ def _splice_body(
 
 @njit(nogil=True, cache=True)
 def _copy_planes(
-    old_planes: np.ndarray,
     old_bplanes: np.ndarray,
     old_cplanes: np.ndarray,
     old_short: np.ndarray,
@@ -1303,8 +1337,6 @@ def _copy_planes(
     old_code_offsets: np.ndarray,
     old_short_offsets: np.ndarray,
     old_long_offsets: np.ndarray,
-    old_byte_planes: bool,
-    planes: np.ndarray,
     bplanes: np.ndarray,
     cplanes: np.ndarray,
     short_planes: np.ndarray,
@@ -1313,45 +1345,14 @@ def _copy_planes(
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
-    byte_planes: bool,
-    block_flags: np.ndarray,
-    block_sizes: np.ndarray,
     first_block: int,
     end_block: int,
-    scratch_low_bytes: np.ndarray,
-    scratch_high_bytes: np.ndarray,
 ) -> None:
     """Copies the plane bytes of the carried blocks first_block to end_block: each field's
-    bytes of a run of blocks are consecutive in both bodies. Residuals in the other plane
-    mode are converted block by block."""
+    bytes of a run of blocks are consecutive in both bodies."""
     num_groups = group_offsets[end_block] - group_offsets[first_block]
-    old_group_offset, group_offset = old_group_offsets[first_block], group_offsets[first_block]
-    if byte_planes == old_byte_planes:
-        if byte_planes:
-            _copy_columns(bplanes, 8 * group_offset, old_bplanes, 8 * old_group_offset, 8 * num_groups)
-        else:
-            _copy_columns(planes, group_offset, old_planes, old_group_offset, num_groups)
-    else:
-        for block_idx in range(first_block, end_block):
-            block_len = block_sizes[block_idx]
-            block_groups = group_offsets[block_idx + 1] - group_offsets[block_idx]
-            old_start, start = 8 * old_group_offsets[block_idx], 8 * group_offsets[block_idx]
-            # The copies go through _copy_bytes: numba's slice assignment costs several times more
-            if byte_planes:
-                # Bit planes to byte planes: the zigzag bytes, then zero padding
-                unshuffle_block(old_planes, old_group_offsets[block_idx], block_groups, scratch_low_bytes,
-                                scratch_high_bytes)
-                scratch_low_bytes[block_len:8 * block_groups] = 0
-                scratch_high_bytes[block_len:8 * block_groups] = 0
-                _copy_bytes(bplanes[0], start, scratch_low_bytes, 0, 8 * block_groups)
-                _copy_bytes(bplanes[1], start, scratch_high_bytes, 0, 8 * block_groups)
-            else:
-                # Byte planes to bit planes
-                _copy_bytes(scratch_low_bytes, 0, old_bplanes[0], old_start, block_len)
-                _copy_bytes(scratch_high_bytes, 0, old_bplanes[1], old_start, block_len)
-                scratch_low_bytes[block_len:8 * block_groups] = 0
-                scratch_high_bytes[block_len:8 * block_groups] = 0
-                shuffle_bytes(scratch_low_bytes, scratch_high_bytes, planes, group_offsets[block_idx], block_groups)
+    _copy_columns(bplanes, 8 * group_offsets[first_block], old_bplanes, 8 * old_group_offsets[first_block],
+                  8 * num_groups)
     _copy_columns(cplanes, code_offsets[first_block], old_cplanes, old_code_offsets[first_block],
                   code_offsets[end_block] - code_offsets[first_block])
     _copy_columns(short_planes, short_offsets[first_block], old_short, old_short_offsets[first_block],
@@ -1363,34 +1364,33 @@ def _copy_planes(
 def splice_body(
     old_body: np.ndarray,
     old_layout: Layout,
-    old_byte_planes: bool,
     old_time_starts: np.ndarray | None,
     new_block_ids: np.ndarray,
     new_rows: UnitRows,
-    byte_planes: bool,
-) -> np.ndarray:
-    """Builds the body of a unit with some blocks replaced or appended, copying the others' bytes.
+    new_sample_offsets: np.ndarray,
+) -> tuple[np.ndarray, Layout]:
+    """Builds the byte-plane body of a unit with some blocks replaced or appended, copying the
+    others' bytes.
 
     In every plane field a block's bytes start on a byte boundary, so a block carried over
     is copied from the old body as it is: no unpacking, and its padding bits stay as they
-    were. Only when the plane modes differ is a carried block's residual field converted
-    (between bit and byte planes, on its own). The new blocks are packed from their rows.
-    Without padding bits set in the old body, the result is write_unit of the merged rows.
+    were. The new blocks are packed from their rows. Without padding bits set in the old
+    body, the result is write_unit (byte planes) of the merged rows.
 
     Args:
-        old_body: 1D uint8 array of the old unit's uncompressed body.
+        old_body: 1D uint8 array of the old unit's uncompressed body, residuals as byte planes
+            (to_byte_planes converts a bit-plane body).
         old_layout: Its Layout.
-        old_byte_planes: Whether its residuals are byte planes.
         old_time_starts: 1D int64 array of its absolute block start times
             (read_time_columns), or None for a unit without a time axis.
         new_block_ids: 1D int64 array of the new blocks' indices, increasing. Every block
             past the old unit's end must be among them.
         new_rows: The new blocks' rows, in new_block_ids order (time_rows set exactly when
             the unit has a time axis).
-        byte_planes: Store the residuals as byte planes instead of bit planes.
+        new_sample_offsets: 1D int64 array of the new blocks' sample offsets (sample_offsets).
 
     Returns:
-        1D uint8 array of the new body.
+        A tuple of (body, layout): the new body as a 1D uint8 array, and its Layout.
     """
     old_num_blocks = old_layout.sample_offsets.shape[0] - 1
     num_blocks = max(old_num_blocks, int(new_block_ids[-1]) + 1) if new_block_ids.shape[0] else old_num_blocks
@@ -1411,13 +1411,12 @@ def splice_body(
     if new_time is None:
         new_time = allocate_time_rows(0, 0)
     _splice_body(
-        old_body, *old_layout, old_byte_planes, has_time,
+        old_body, *old_layout, has_time,
         old_time_starts if old_time_starts is not None else np.zeros(0, np.int64),
         new_ranks, new_rows.grid_params, new_rows.value_anchors, new_rows.residuals, new_rows.codes,
-        np.concatenate([[0], np.cumsum(new_rows.block_sizes)]).astype(np.int64), *new_time,
-        block_flags, block_sizes, *offsets, byte_planes, out_body,
+        new_sample_offsets, *new_time, block_flags, block_sizes, *offsets, out_body,
     )
-    return out_body
+    return out_body, offsets
 
 
 def check_time_rows_status(status: int, block_idx: int) -> None:

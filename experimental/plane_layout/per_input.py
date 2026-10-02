@@ -22,10 +22,10 @@ sys.path[:0] = [str(ROOT / "tests"), str(ROOT / "bench"), str(Path(__file__).res
 import fluxcode
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _unit
+from fluxcode import Params, _compress, _unit
 from stress import FLEET, gen_minute
 
-SETTINGS = {"before": _unit.EFFORTS[4], "effort 2": _unit.EFFORTS[2], "effort 5": _unit.EFFORTS[5]}
+SETTINGS = {"before": _compress.EFFORTS[4], "effort 2": _compress.EFFORTS[2], "effort 5": _compress.EFFORTS[5]}
 
 
 def groups():
@@ -48,12 +48,12 @@ def groups():
 
 def bits(items, settings):
     default = Params().effort
-    saved = _unit.EFFORTS[default]
-    _unit.EFFORTS[default] = settings
+    saved = _compress.EFFORTS[default]
+    _compress.EFFORTS[default] = settings
     try:
         return 8 * sum(len(fluxcode.encode(x, p)[0][0]) for x, p in items) / sum(len(x) for x, _ in items)
     finally:
-        _unit.EFFORTS[default] = saved
+        _compress.EFFORTS[default] = saved
 
 
 if __name__ == "__main__":
