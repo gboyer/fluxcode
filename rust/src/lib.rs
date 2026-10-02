@@ -12,8 +12,11 @@
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use planes::transpose8;
 use zstd_safe::zstd_sys::ZSTD_EndDirective::{ZSTD_e_end, ZSTD_e_flush};
 use zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer};
+
+mod planes;
 
 const BLOCK_FLAG_NONFINITE: u8 = 0x08;
 // BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR
@@ -72,16 +75,6 @@ impl<'a> Rows<'a> {
 #[inline(always)]
 fn zigzag(r: i16) -> u16 {
     ((r << 1) ^ (r >> 15)) as u16
-}
-
-#[inline(always)]
-fn transpose8(mut x: u64) -> u64 {
-    let mut d = (x ^ (x >> 7)) & 0x00AA00AA00AA00AA;
-    x = x ^ d ^ (d << 7);
-    d = (x ^ (x >> 14)) & 0x0000CCCC0000CCCC;
-    x = x ^ d ^ (d << 14);
-    d = (x ^ (x >> 28)) & 0x00000000F0F0F0F0;
-    x ^ d ^ (d << 28)
 }
 
 /// The uncompressed body of a unit without a time axis, in the byte-plane layout: the metadata columns,
@@ -148,58 +141,8 @@ fn to_bit_planes(byte_body: &[u8], n: usize, ng: usize) -> Vec<u8> {
     raw[..start].copy_from_slice(&byte_body[..start]);
     raw[end..].copy_from_slice(&byte_body[end..]);
     let (low, high) = byte_body[start..end].split_at(8 * ng);
-    let planes = &mut raw[start..end];
-    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().unwrap());
-    // 8 groups at a time: bit-transpose each group's word, then transpose the 8x8 bytes of the 8 results
-    // so that each plane takes the 8 bytes of its 8 groups in one store
-    let (low_batches, high_batches) = (low.chunks_exact(64), high.chunks_exact(64));
-    let (low_rest, high_rest) = (low_batches.remainder(), high_batches.remainder());
-    let rest_start = ng - low_rest.len() / 8;
-    for (i, (lw, hw)) in low_batches.zip(high_batches).enumerate() {
-        let g = 8 * i;
-        let mut lo: [u64; 8] = std::array::from_fn(|j| transpose8(word(&lw[8 * j..8 * j + 8])));
-        let mut hi: [u64; 8] = std::array::from_fn(|j| transpose8(word(&hw[8 * j..8 * j + 8])));
-        transpose_bytes(&mut lo);
-        transpose_bytes(&mut hi);
-        for k in 0..8 {
-            planes[k * ng + g..k * ng + g + 8].copy_from_slice(&lo[k].to_le_bytes());
-            planes[(8 + k) * ng + g..(8 + k) * ng + g + 8].copy_from_slice(&hi[k].to_le_bytes());
-        }
-    }
-    for (i, (lw, hw)) in low_rest.chunks_exact(8).zip(high_rest.chunks_exact(8)).enumerate() {
-        let (g, lo, hi) = (rest_start + i, transpose8(word(lw)).to_le_bytes(), transpose8(word(hw)).to_le_bytes());
-        for k in 0..8 {
-            planes[k * ng + g] = lo[k];
-            planes[(8 + k) * ng + g] = hi[k];
-        }
-    }
+    planes::transpose(low, high, &mut raw[start..end], ng, true);
     raw
-}
-
-/// Transposes the 8x8 matrix of bytes whose rows are the words (byte j of word k becomes byte k of word j).
-#[inline(always)]
-fn transpose_bytes(w: &mut [u64; 8]) {
-    #[inline(always)]
-    fn swap(w: &mut [u64; 8], i: usize, j: usize, shift: u32, mask: u64) {
-        let t = ((w[i] >> shift) ^ w[j]) & mask;
-        w[j] ^= t;
-        w[i] ^= t << shift;
-    }
-    const M8: u64 = 0x00FF00FF00FF00FF;
-    const M16: u64 = 0x0000FFFF0000FFFF;
-    const M32: u64 = 0x00000000FFFFFFFF;
-    swap(w, 0, 1, 8, M8);
-    swap(w, 2, 3, 8, M8);
-    swap(w, 4, 5, 8, M8);
-    swap(w, 6, 7, 8, M8);
-    swap(w, 0, 2, 16, M16);
-    swap(w, 1, 3, 16, M16);
-    swap(w, 4, 6, 16, M16);
-    swap(w, 5, 7, 16, M16);
-    swap(w, 0, 4, 32, M32);
-    swap(w, 1, 5, 32, M32);
-    swap(w, 2, 6, 32, M32);
-    swap(w, 3, 7, 32, M32);
 }
 
 /// Share of residual slots whose zigzagged residual reaches 2^BYTE_PLANES_BIT, from a byte-plane body.
@@ -375,6 +318,12 @@ fn compress_unit<'py>(
 
 /// The version of the libzstd this extension links, as (major, minor, release): the unit bytes match
 /// python-zstandard's only if its `ZSTD_VERSION` is the same.
+/// Which bit-plane transposition runs: "neon", "sse2" or "scalar".
+#[pyfunction]
+fn simd_path() -> &'static str {
+    planes::PATH
+}
+
 #[pyfunction]
 fn zstd_version() -> (u32, u32, u32) {
     let v = zstd_safe::version_number();
@@ -385,5 +334,6 @@ fn zstd_version() -> (u32, u32, u32) {
 fn fluxcode_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compress_unit, m)?)?;
     m.add_function(wrap_pyfunction!(zstd_version, m)?)?;
+    m.add_function(wrap_pyfunction!(simd_path, m)?)?;
     Ok(())
 }

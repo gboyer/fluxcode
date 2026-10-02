@@ -268,17 +268,22 @@ def update_time_blocks(
                                                                  run_sizes)
         gathered_values, gathered_ticks = all_values[positions], all_ticks[positions]
         gathered_blocks = np.repeat(decoded, run_sizes)
-    # A decoded sample goes if a range covers it or a new sample has its time (ticks sorted: the
-    # new samples at a time are the run between two searchsorted positions)
-    replaced = np.searchsorted(ticks, gathered_ticks, "right") > np.searchsorted(ticks, gathered_ticks, "left")
+    # A decoded sample goes if a range covers it or a new sample has its time. Each new tick
+    # matches a run [lo, hi) of the (sorted) decoded ticks: the runs are marked by a running sum
+    # of +1 at each lo and -1 at each hi, which is faster than looking every decoded tick up.
+    match_lo = np.searchsorted(gathered_ticks, ticks, "left")
+    match_hi = np.searchsorted(gathered_ticks, ticks, "right")
+    num_gathered = gathered_ticks.shape[0]
+    marks = np.bincount(match_lo, minlength=num_gathered + 1) - np.bincount(match_hi, minlength=num_gathered + 1)
+    replaced = np.cumsum(marks)[:num_gathered] > 0
     keep = ~(_in_ranges(gathered_ticks, ranges) | replaced)
     # Kept samples share no time with new ones, so a stable sort puts them in order with the new
     # ones, which keep theirs. A tick fixes its block, so each block's samples end up together.
-    merged_blocks = np.concatenate([gathered_blocks[keep], new_ids])
-    order = np.argsort(np.concatenate([gathered_ticks[keep], ticks]), kind="stable")
+    combined_ticks = np.concatenate([gathered_ticks[keep], ticks])
+    order = np.argsort(combined_ticks, kind="stable")
+    merged_ticks = combined_ticks[order]
     merged_values = np.concatenate([gathered_values[keep], samples])[order]
-    merged_ticks = np.concatenate([gathered_ticks[keep], ticks])[order]
-    merged_blocks = merged_blocks[order]
+    merged_blocks = np.concatenate([gathered_blocks[keep], new_ids])[order]
     # Blocks to re-encode: those that gain a sample or lose one (a block that loses nothing and
     # gains nothing, empty ones included, is carried over)
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
