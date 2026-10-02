@@ -29,8 +29,11 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   the same size), and the 8-thread gigabyte encode 32% slower; one thread is unaffected, and 4
   processes scale normally. Calling libzstd's streaming API directly through cffi still scaled
   only 1.8× on 4 threads, so the fix is a call that compresses a whole unit with its cuts without
-  the GIL (a C extension or numba wrapper), not another Python API. Until then efforts 5 and up
-  suit one thread per process, or throughput that doesn't matter.
+  the GIL: the optional Rust extension (`pip install fluxcode[rust]`, `rust/`) does, and gives the
+  same units. With it, effort 5 on the day-scale test (4 threads) encodes at 5.98 GB/s against
+  3.62 without (the default, effort 4: 7.10 against 6.71); `splice`/`update` and units with a time
+  axis don't use it yet. Without the extension, efforts 5 and up suit one thread per process, or
+  throughput that doesn't matter.
 - **The heuristic layout** (efforts 1–2) compresses once instead of twice: byte planes when the
   residuals are narrow (the high byte is a constant and byte-wise literals model the low byte) and
   on exactly repeating structure; bit planes from about 7 bits of residual up. "Fewer than 1% of

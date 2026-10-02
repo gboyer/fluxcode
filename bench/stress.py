@@ -139,7 +139,7 @@ def parse_data(spec):
 class Workload:
     def __init__(self, a):
         self.a = a
-        self.params = Params()
+        self.params = Params() if a.effort is None else Params(effort=a.effort)
         self.mix = parse_data(a.data)
         self.tags, self.units = a.tags, a.units
         rng = np.random.default_rng(a.seed)
@@ -409,6 +409,7 @@ def main():
     ap.add_argument("--times", choices=list(TIME_PRESETS), default="none",
                     help="timestamps: none, a clock kind, or clock-mix (60%% grid, 30%% grid+gaps, 10%% noisy)")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--effort", type=int, default=None, help="Params.effort (default: the library default)")
     ap.add_argument("--breakdown", action="store_true", help="also print a single-thread per-stage breakdown")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()

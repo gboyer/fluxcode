@@ -65,15 +65,36 @@ anchors, residuals and codes matched exactly in a 530-case differential test and
 - CI builds the extension and runs the suite with it and with `FLUXCODE_RUST=0`.
 - `Params.effort` is **unchanged**, so output doesn't depend on whether the extension is installed.
 
-## Inputs for the effort question
+## Decision: optional, and the effort table stays as it is
 
-With block flushes no longer holding the GIL, efforts below 5 could flush again when the extension is
-present. This experiment measured throughput only (sizes are in docs/TUNING.md). On the prototype's old
-effort table (flush from effort 3, heuristic layout; battery power, 8 threads) flush plus heuristic encoded
-at 3757 MiB/s with Rust against 1515 with Python, and unflushed effort 2 encoded at 3185 with Python. Two
-things to settle first: output would depend on whether the extension is installed unless the table
-changes for everyone, and main's default (effort 4, best of both layouts, no flush) costs differently from
-the heuristic's single compression.
+Three options were weighed after the extension was measured on main's efforts (AC power; sensor mix and
+report signals, `effort_candidates.py`, `results/effort_candidates.md`; day-scale stress,
+`results/stress_effort.md`):
+
+- **(b) Optional, effort meanings unchanged. Chosen.** The unit bytes are the same with and without the
+  extension (checked for every effort, signal and thread count), so the golden digests, the decoded values
+  and reproducibility don't depend on what is installed. Efforts 5 and up flush blocks and scale across
+  threads with the extension (day-scale test, 4 threads, effort 5: 5.98 against 3.62 GB/s, 1.65x; the
+  default, effort 4: 7.10 against 6.71, 1.06x); one thread is the same (0.97-1.05x).
+- **(c) Optional, but the table changes when it is installed.** Rejected: output would depend on the
+  install, and `effort=N` would mean different things on two machines.
+- **(a) Mandatory, with a table that assumes it.** The table it would allow is better: **heuristic layout
+  with block flushes** is smaller than today's default (best of both layouts, one block run) and faster at
+  every thread count once the flush doesn't hold the GIL (sensor mix / report signals; 8 threads: 7261 /
+  6348 MiB/s against 5506 / 4707, 32% / 35% faster, and 0.4% / 2.2% smaller; one thread 9% / 20% faster).
+  Not taken yet, because the extension covers only `compress` for units without a time axis: `splice` /
+  `update` and time-axis units still use python-zstandard, so the Python path can't be deleted and a build
+  requirement (a Rust toolchain from source, or wheels for every platform) would buy about 2% of size and
+  a third of threaded throughput for default users, not simplicity. And a platform without a wheel would
+  stop working.
+
+Revisit (a) when: abi3 wheels (`abi3-py310`: one per platform, not per Python version) are published for
+macOS, Linux and Windows, and `splice`/`update` and time-axis units run through the extension too (or are
+judged not to matter). Then the default can move to the heuristic with flushes, which beats today's on
+size and speed everywhere, with efforts above it as before.
+
+Measured on a laptop with 8 logical CPUs and synthetic data; the extension's win depends on thread count
+(none at 1 thread, 1.5-2.7x at 4-8 for efforts with flushes).
 
 ## Reproduce
 

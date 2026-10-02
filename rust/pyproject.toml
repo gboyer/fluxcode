@@ -7,7 +7,7 @@ name = "fluxcode-rs"
 version = "0.1.0"
 description = "Optional Rust accelerator for fluxcode's encoder: the zstd frame build without the GIL"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.10"  # abi3-py310: one wheel per platform
 dependencies = ["numpy>=1.24"]
 
 [tool.maturin]

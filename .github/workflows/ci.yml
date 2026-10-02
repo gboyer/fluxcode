@@ -20,10 +20,11 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
       - run: uv run pytest
-      # the optional Rust accelerator: build it, run the suite with it and without it (FLUXCODE_RUST=0)
-      - run: uv run --with maturin maturin develop --release --manifest-path rust/Cargo.toml
-      - run: uv run pytest
-      - run: FLUXCODE_RUST=0 uv run pytest
+      # the optional Rust accelerator (the rust extra, built from rust/): run the suite with it, which must
+      # include its tests (a plain `uv run` would sync it away again), and with it switched off
+      - run: uv run --locked --extra rust pytest -rs --junitxml=rust.xml
+      - run: python3 -c "import sys, xml.etree.ElementTree as t; r = t.parse('rust.xml').getroot().iter('testcase'); sys.exit(sum(1 for c in r if 'test_rust' in c.get('classname', '') and c.find('skipped') is not None))"
+      - run: FLUXCODE_RUST=0 uv run --locked --extra rust pytest
       - run: uv run ruff check
       # experimental/ is excluded from the lint config: still check it for syntax errors and undefined names
       - run: uv run ruff check --isolated --select E9,F63,F7,F82 experimental
