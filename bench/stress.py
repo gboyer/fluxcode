@@ -350,6 +350,12 @@ def run(a, wl):
 
 # --- single-thread stage breakdown of one unit (where the time goes) ---
 
+def compress_both(compressor, byte_body, bit_body):
+    """The two candidate frames of a default-effort unit."""
+    compressor.compress(byte_body.data)
+    compressor.compress(bit_body.data)
+
+
 def breakdown(wl, reps=200):
     p = wl.params
     rows = []
@@ -379,9 +385,9 @@ def breakdown(wl, reps=200):
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(unit) * 8 / x.size,
                      t(_unit.encode_rows, x, sizes, p),
-                     t(lambda: _bitpacking.write_unit(*unit_rows[:6], byte_planes=True, offsets=offsets)),
+                     t(_bitpacking.write_unit, *unit_rows[:6], True, None, offsets),
                      t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_groups, False),
-                     t(lambda: (cz.compress(byte_body.data), cz.compress(bit_body.data))), t(fluxcode.encode_unit, x, p),
+                     t(compress_both, cz, byte_body, bit_body), t(fluxcode.encode_unit, x, p),
                      t(dz.decompress, frame),
                      t(_decoder.decode_unit, rawd, offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,
                        block_ids, out, False, False),
