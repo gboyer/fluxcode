@@ -12,15 +12,16 @@ import numpy as np
 from numba import njit
 
 from ._format import (
+    BLOCK_FLAG_IRREGULAR_TIME,
+    BLOCK_FLAG_LONG_TIME,
+    BLOCK_FLAG_NONFINITE,
     BYTES_PER_ANCHOR,
-    BYTES_PER_HEADER,
+    BYTES_PER_FLAGS,
     BYTES_PER_PARAM,
     BYTES_PER_RESIDUAL_SAMPLE,
     BYTES_PER_SIZE,
-    HEAD_IRREGULAR_TIME,
-    HEAD_LONG_TIME,
-    HEAD_NONFINITE,
     NONFINITE_BITS_PER_SAMPLE,
+    TIME_BYTES_PER_BLOCK,
     TIME_SHORT_PLANES,
     Layout,
     TimeRows,
@@ -28,10 +29,12 @@ from ._format import (
     allocate_time_rows,
     block_sizes_start,
     code_planes_start,
+    get_int16,
     get_int64,
     grid_params_start,
     layout,
     plane_groups,
+    put_int16,
     put_int64,
     read_layout,
     residual_start,
@@ -614,7 +617,7 @@ def write_time_rows(
     """Serializes the time_start, time_step, time_ref and time_residual_planes fields.
 
     Args:
-        block_flags: 1D uint8 array of block flags (HEAD_IRREGULAR_TIME selects the residual planes).
+        block_flags: 1D uint8 array of block flags (BLOCK_FLAG_IRREGULAR_TIME selects the residual planes).
         sample_offsets, group_offsets, code_offsets, short_offsets, long_offsets: The Layout.
         time_starts: 1D int64 array of block start times (empty blocks' are ignored).
         time_steps: 1D int64 array of block time steps.
@@ -650,7 +653,7 @@ def write_time_rows(
         put_int64(out_raw_unit, time_start_start(num_blocks), num_blocks, block_idx, start_increase)
         put_int64(out_raw_unit, time_step_start(num_blocks), num_blocks, block_idx, time_steps[block_idx])
         put_int64(out_raw_unit, time_ref_start(num_blocks), num_blocks, block_idx, np.int64(time_refs[block_idx]))
-        if block_flags[block_idx] & HEAD_IRREGULAR_TIME:
+        if block_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME:
             shuffle_time_residuals(
                 time_residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]],
                 short_planes,
@@ -753,10 +756,10 @@ def read_time_columns(
         previous_start = out_time_starts[block_idx]
         seen_samples = True
         if block_len == 1 and (
-            out_time_steps[block_idx] != 0 or out_time_refs[block_idx] != 0 or raw_unit[block_idx] & HEAD_IRREGULAR_TIME
+            out_time_steps[block_idx] != 0 or out_time_refs[block_idx] != 0 or raw_unit[block_idx] & BLOCK_FLAG_IRREGULAR_TIME
         ):
             return TIME_ROWS_BAD_SINGLE, block_idx
-        if raw_unit[block_idx] & HEAD_LONG_TIME and _long_planes_zero(long_planes, long_offsets[block_idx], block_len):
+        if raw_unit[block_idx] & BLOCK_FLAG_LONG_TIME and _long_planes_zero(long_planes, long_offsets[block_idx], block_len):
             return TIME_ROWS_BAD_LONG, block_idx
     return TIME_ROWS_OK, 0
 
@@ -788,12 +791,12 @@ def read_time_residuals(
     )
     scratch_tail = np.empty(8, np.uint64)
     for block_idx in block_ids:
-        if raw_unit[block_idx] & HEAD_IRREGULAR_TIME:
+        if raw_unit[block_idx] & BLOCK_FLAG_IRREGULAR_TIME:
             unshuffle_time_residuals(
                 short_planes,
                 long_planes,
                 short_offsets[block_idx],
-                long_offsets[block_idx] if raw_unit[block_idx] & HEAD_LONG_TIME else -1,
+                long_offsets[block_idx] if raw_unit[block_idx] & BLOCK_FLAG_LONG_TIME else -1,
                 out_time_residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]],
                 scratch_tail,
             )
@@ -875,8 +878,8 @@ def write_rows(
         block_len = block_sizes[block_idx]
         out_raw_unit[block_sizes_start(num_blocks) + block_idx] = np.uint8(block_len & 0xFF)
         out_raw_unit[block_sizes_start(num_blocks) + num_blocks + block_idx] = np.uint8(block_len >> 8)
-        # Store the 8-byte grid parameter and value anchor in byte-planed layout
-        put_int64(out_raw_unit, grid_params_start(num_blocks), num_blocks, block_idx, grid_params[block_idx])
+        # Store the grid parameter (int16) and value anchor (int64) byte-planed
+        put_int16(out_raw_unit, grid_params_start(num_blocks), num_blocks, block_idx, grid_params[block_idx])
         put_int64(out_raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx, value_anchors[block_idx])
         block_residuals = residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]]
         if byte_planes:
@@ -891,7 +894,7 @@ def write_rows(
         else:
             # Zigzag, transpose, and store residual bit planes
             shuffle_block(block_residuals, planes, group_offsets[block_idx], scratch_low_bytes, scratch_high_bytes)
-        if block_flags[block_idx] & HEAD_NONFINITE:
+        if block_flags[block_idx] & BLOCK_FLAG_NONFINITE:
             # Store 2-bit code planes for flagged blocks
             put_codes(codes[sample_offsets[block_idx]:sample_offsets[block_idx + 1]], cplanes, code_offsets[block_idx])
 
@@ -937,7 +940,7 @@ def read_rows(
     cplanes = code_planes_view(raw_unit, num_blocks, num_groups, int(code_offsets[num_blocks]), has_time)
     for block_idx in range(num_blocks):
         # Read the byte-planed grid parameter and value anchor
-        out_grid_params[block_idx] = get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx)
+        out_grid_params[block_idx] = get_int16(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx)
         out_value_anchors[block_idx] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
@@ -954,7 +957,7 @@ def read_rows(
         for sample_idx in range(block_len):
             # Reverse zigzag mapping to recover signed residual differences
             out_residuals[first_sample + sample_idx] = unzigzag16(scratch_low_bytes, scratch_high_bytes, sample_idx)
-        if raw_unit[block_idx] & HEAD_NONFINITE:
+        if raw_unit[block_idx] & BLOCK_FLAG_NONFINITE:
             # Unpack non-finite codes for flagged blocks
             get_codes(cplanes, code_offsets[block_idx], out_codes[first_sample:first_sample + block_len])
 
@@ -978,7 +981,7 @@ def write_unit(
         value_anchors: 1D int64 array of block value anchors.
         residuals: 1D int16 array of every sample's difference residual.
         codes: Optional 1D uint8 array of every sample's code. Required if any block has the
-            HEAD_NONFINITE flag set.
+            BLOCK_FLAG_NONFINITE flag set.
         byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
         time_rows: The time axis rows, or None for a unit without a time axis.
 
@@ -1032,7 +1035,7 @@ def read_unit(
     """
     raw_arr = np.frombuffer(raw_unit, np.uint8) if not isinstance(raw_unit, np.ndarray) else raw_unit
     # The flags and sizes give the layout, so check they exist first
-    if raw_arr.shape[0] < (BYTES_PER_HEADER + BYTES_PER_SIZE) * num_blocks:
+    if raw_arr.shape[0] < (BYTES_PER_FLAGS + BYTES_PER_SIZE) * num_blocks:
         raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold {num_blocks} blocks")
     block_flags = raw_arr[:num_blocks].copy()
     block_sizes, offsets = read_layout(raw_arr, num_blocks)
@@ -1149,7 +1152,7 @@ def _splice_body(
         (value_anchor_start(num_blocks), value_anchor_start(old_num_blocks), BYTES_PER_ANCHOR),
     ]
     if has_time:
-        column_fields.append((time_start_start(num_blocks), time_start_start(old_num_blocks), 3 * BYTES_PER_ANCHOR))
+        column_fields.append((time_start_start(num_blocks), time_start_start(old_num_blocks), TIME_BYTES_PER_BLOCK))
     previous_start = np.int64(0)
     seen_samples = False
     block_idx = 0
@@ -1197,7 +1200,7 @@ def _splice_body(
         out_body[block_idx] = flags
         out_body[block_sizes_start(num_blocks) + block_idx] = np.uint8(block_len & 0xFF)
         out_body[block_sizes_start(num_blocks) + num_blocks + block_idx] = np.uint8(block_len >> 8)
-        put_int64(out_body, grid_params_start(num_blocks), num_blocks, block_idx, new_params[rank])
+        put_int16(out_body, grid_params_start(num_blocks), num_blocks, block_idx, new_params[rank])
         put_int64(out_body, value_anchor_start(num_blocks), num_blocks, block_idx, new_anchors[rank])
         if has_time:
             start_increase, time_step, time_ref = np.int64(0), np.int64(0), np.int64(0)
@@ -1226,9 +1229,9 @@ def _splice_body(
             bplanes[:, sample_start + block_len:8 * group_offsets[block_idx]] = 0
         else:
             shuffle_block(block_residuals, planes, group_offset, scratch_low_bytes, scratch_high_bytes)
-        if flags & HEAD_NONFINITE:
+        if flags & BLOCK_FLAG_NONFINITE:
             put_codes(new_codes[first_sample:first_sample + block_len], cplanes, code_offsets[block_idx - 1])
-        if has_time and flags & HEAD_IRREGULAR_TIME:
+        if has_time and flags & BLOCK_FLAG_IRREGULAR_TIME:
             shuffle_time_residuals(
                 new_time_residuals[first_sample:first_sample + block_len],
                 short_planes,

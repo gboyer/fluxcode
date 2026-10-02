@@ -11,7 +11,7 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _bitpacking, _format
-from fluxcode._format import HEAD_IRREGULAR_TIME, HEAD_LONG_TIME
+from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_LONG_TIME
 
 INT64_MAX = np.iinfo(np.int64).max
 INT64_MIN = np.iinfo(np.int64).min
@@ -41,7 +41,7 @@ def round_trip(values, times, params=Params(), block_len=BLOCK_LEN, **kwargs):
 
 
 def irregular_flags(unit):
-    return (unit_rows(unit).block_flags & HEAD_IRREGULAR_TIME) != 0
+    return (unit_rows(unit).block_flags & BLOCK_FLAG_IRREGULAR_TIME) != 0
 
 
 @pytest.mark.parametrize("unit_name", ["s", "ms", "us", "ns"])
@@ -215,26 +215,27 @@ def test_worked_example_layout():
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)
     num_blocks = 3
     flags, sizes = body[:3], np.array([8, 8, 4])
-    assert body.shape[0] == 209 == _format.unit_size(num_blocks, _format.layout(flags, sizes), True)
+    assert body.shape[0] == 191 == _format.unit_size(num_blocks, _format.layout(flags, sizes), True)
     np.testing.assert_array_equal(flags & 0x10, [0, 0x10, 0])
     np.testing.assert_array_equal(body[3:9], [8, 8, 4, 0, 0, 0])
-    value_anchor_planes = body[33:57].reshape(8, num_blocks)
+    assert not body[9:15].any()  # grid_params: exponent 0 for constant blocks
+    value_anchor_planes = body[15:39].reshape(8, num_blocks)
     np.testing.assert_array_equal(value_anchor_planes[6], [0x04, 0x02, 0x08])
     np.testing.assert_array_equal(value_anchor_planes[7], [0x40, 0x40, 0x40])
     assert not value_anchor_planes[:6].any()
-    time_start_planes = body[57:81].reshape(8, num_blocks)
+    time_start_planes = body[39:63].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_start_planes[0], [0xE8, 0x50, 0x64])
     np.testing.assert_array_equal(time_start_planes[1], [0x03, 0x00, 0x00])
     assert not time_start_planes[2:].any()
-    time_step_planes = body[81:105].reshape(8, num_blocks)
+    time_step_planes = body[63:87].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_step_planes[0], [0x0A, 0x0A, 0x0A])
     assert not time_step_planes[1:].any()
-    time_ref_planes = body[105:129].reshape(8, num_blocks)
+    time_ref_planes = body[87:111].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_ref_planes[0], [0x01, 0x01, 0x01])
     assert not time_ref_planes[1:].any()
     # Block 1's quotients [1, 1, 3, 1, 1, 1, 1] from sample 1: reference 1, zigzagged residuals
     # [0, 0, 0, 4, 0, 0, 0, 0], so only bit 2 of sample 3 is set
-    time_residual_planes = body[177:209]
+    time_residual_planes = body[159:191]
     assert time_residual_planes[2] == 0x08
     assert not np.delete(time_residual_planes, 2).any()
     np.testing.assert_array_equal(decoded_times(unit).view(np.int64), ticks)
@@ -279,9 +280,9 @@ def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_le
     long optionally flags blocks as long. Blocks hold block_len samples each, or sizes."""
     num_blocks = len(starts)
     sizes = np.full(num_blocks, block_len) if sizes is None else np.asarray(sizes)
-    block_flags = np.where(block_flags_irregular, HEAD_IRREGULAR_TIME, 0).astype(np.uint8)
+    block_flags = np.where(block_flags_irregular, BLOCK_FLAG_IRREGULAR_TIME, 0).astype(np.uint8)
     if long is not None:
-        block_flags |= np.where(long, HEAD_LONG_TIME, 0).astype(np.uint8)
+        block_flags |= np.where(long, BLOCK_FLAG_LONG_TIME, 0).astype(np.uint8)
     time_rows = _format.TimeRows(
         np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(refs, np.uint64),
         zigzag(residuals),
@@ -290,7 +291,7 @@ def corrupt_unit(block_flags_irregular, starts, steps, refs, residuals, block_le
         block_flags, sizes, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
         np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
     )
-    header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnit.NANOSECONDS))
+    header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnitCode.NANOSECONDS))
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -312,7 +313,7 @@ def test_corrupt_time_fields_are_rejected(irregular, starts, steps, refs, residu
 
 def test_long_flag_without_irregular_or_needed_is_rejected():
     residuals = np.r_[np.zeros(8), 0, np.ones(7)]
-    with pytest.raises(ValueError, match="block 0: head byte 0x20 sets reserved bits"):
+    with pytest.raises(ValueError, match="block 0: block flags 0x20 sets reserved bits"):
         fluxcode.decode_unit(corrupt_unit([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[True, False]))
     with pytest.raises(ValueError, match="block 1: long time residuals fit in 32 bits"):
         fluxcode.decode_unit(corrupt_unit([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[False, True]))
@@ -326,7 +327,7 @@ def test_long_blocks_only_where_residuals_need_64_bits():
     unit, decoded = round_trip(np.zeros(4000), ticks, time_unit="ns")
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     flags = unit_rows(unit).block_flags
-    np.testing.assert_array_equal((flags & HEAD_LONG_TIME) != 0, [False, False, True, False])
+    np.testing.assert_array_equal((flags & BLOCK_FLAG_LONG_TIME) != 0, [False, False, True, False])
     assert irregular_flags(unit).all()
 
 

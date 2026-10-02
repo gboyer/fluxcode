@@ -19,7 +19,7 @@ import numpy as np
 from numba import njit
 from numba.cpython.unsafe.numbers import trailing_zeros as _trailing_zeros_intrinsic
 
-from ._format import HEAD_IRREGULAR_TIME, HEAD_LONG_TIME
+from ._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_LONG_TIME
 
 _trailing_zeros = cast("Callable[[int | np.integer], int]", _trailing_zeros_intrinsic)
 """Numba intrinsic counting trailing zero bits, typed as its jitted call signature."""
@@ -202,7 +202,7 @@ def encode_times(
 ) -> tuple[int, int]:
     """Analyzes each block's times into a start, a step, a reference and (if irregular) residuals.
 
-    Sets HEAD_IRREGULAR_TIME in out_block_flags for irregular blocks, and HEAD_LONG_TIME for
+    Sets BLOCK_FLAG_IRREGULAR_TIME in out_block_flags for irregular blocks, and BLOCK_FLAG_LONG_TIME for
     those with a residual of 2^32 or more; other bits are kept. An empty block gets 0 for its
     start, step and reference; a block of one sample a step and reference of 0.
     Checks that the times never decrease, within blocks and from each non-empty block to the
@@ -228,7 +228,7 @@ def encode_times(
     for block_idx in range(num_blocks):
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
-        out_block_flags[block_idx] &= ~(HEAD_IRREGULAR_TIME | HEAD_LONG_TIME)
+        out_block_flags[block_idx] &= ~(BLOCK_FLAG_IRREGULAR_TIME | BLOCK_FLAG_LONG_TIME)
         if block_len:
             # Across blocks: each non-empty block starts at or after the previous one's last time
             if previous_last >= 0 and ticks[first_sample] < ticks[previous_last]:
@@ -288,10 +288,10 @@ def encode_times(
             all_bits |= quotients[sample_idx]
         out_time_steps[block_idx] = np.int64(step_gcd)
         out_time_refs[block_idx] = reference
-        out_block_flags[block_idx] |= HEAD_IRREGULAR_TIME
+        out_block_flags[block_idx] |= BLOCK_FLAG_IRREGULAR_TIME
         # Long: a residual needs more than the 32 planes every irregular block stores
         if all_bits >> np.uint64(32):
-            out_block_flags[block_idx] |= HEAD_LONG_TIME
+            out_block_flags[block_idx] |= BLOCK_FLAG_LONG_TIME
     return OK, 0
 
 
@@ -309,7 +309,7 @@ def expand_times(
     """Reconstructs the given blocks' ticks from their start, step, reference and residuals.
 
     Args:
-        block_flags: 1D uint8 array of block flags (HEAD_IRREGULAR_TIME selects the residuals).
+        block_flags: 1D uint8 array of block flags (BLOCK_FLAG_IRREGULAR_TIME selects the residuals).
         sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         time_starts: 1D int64 array of block start times.
         time_steps: 1D int64 array of block time steps.
@@ -334,7 +334,7 @@ def expand_times(
         start = np.uint64(time_starts[block_idx])
         step = time_steps[block_idx]
         reference = time_refs[block_idx]
-        irregular = block_flags[block_idx] & HEAD_IRREGULAR_TIME
+        irregular = block_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME
         if step < 0 or (irregular and step == 0):
             return BAD_STEP, block_idx
         times = out_times[first_sample:first_sample + block_len]

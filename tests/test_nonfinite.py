@@ -10,7 +10,7 @@ from _signals import KINDS, minute
 
 import fluxcode
 from fluxcode import Params
-from fluxcode._format import HEAD_NONFINITE
+from fluxcode._format import BLOCK_FLAG_NONFINITE
 
 L = 1000
 OFF = Params(noise_floor_sigma=None)
@@ -97,7 +97,7 @@ def test_finite_blocks_unchanged():
     np.testing.assert_array_equal(ha[keep], hb[keep])
     np.testing.assert_array_equal(pa[keep], pb[keep])
     np.testing.assert_array_equal(ra[keep], rb[keep])
-    assert hb[30] & HEAD_NONFINITE and not (hb[keep] & HEAD_NONFINITE).any()
+    assert hb[30] & BLOCK_FLAG_NONFINITE and not (hb[keep] & BLOCK_FLAG_NONFINITE).any()
     assert codes[30].tolist() == [1 if i == 500 else 0 for i in range(L)]
     assert len(unit) - len(ref) < 200  # 250 bytes of mostly-zero planes, compressed
 
@@ -233,7 +233,7 @@ def test_whole_blocks_between_finite_ones(pname):
     unit, _, _, _ = fluxcode.encode_unit(x, PARAMS[pname])
     head, _, _, _, _, codes, _ = unit_rows(unit)
     codes = codes.reshape(-1, L)
-    assert [bool(h & HEAD_NONFINITE) for h in head] == [False, True, False, True, False, True, True, False, True]
+    assert [bool(h & BLOCK_FLAG_NONFINITE) for h in head] == [False, True, False, True, False, True, True, False, True]
     assert (codes[1] == 1).all() and (codes[3] == 2).all() and (codes[5] == 3).all()
 
 

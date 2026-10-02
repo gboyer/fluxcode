@@ -22,16 +22,17 @@ from ._bitpacking import (
     unzigzag16,
 )
 from ._format import (
+    BLOCK_FLAG_DECIMAL,
+    BLOCK_FLAG_IRREGULAR_TIME,
+    BLOCK_FLAG_LONG_TIME,
+    BLOCK_FLAG_NONFINITE,
+    BLOCK_FLAG_ORDER,
+    BLOCK_FLAG_RESERVED,
     E_MAX,
     E_MIN,
-    HEAD_DECIMAL,
-    HEAD_IRREGULAR_TIME,
-    HEAD_LONG_TIME,
-    HEAD_NONFINITE,
-    HEAD_ORDER,
-    HEAD_RESERVED,
     P_MAX,
     P_MIN,
+    get_int16,
     get_int64,
     grid_params_start,
     value_anchor_start,
@@ -43,7 +44,7 @@ class ValidationStatus(enum.IntEnum):
     """Header and parameter validation status for uncompressed units."""
 
     OK = 0
-    BAD_HEAD = 1
+    BAD_FLAGS = 1
     BAD_PARAM = 2
     BAD_ANCHOR = 3
 
@@ -51,7 +52,7 @@ class ValidationStatus(enum.IntEnum):
 OK: int = int(ValidationStatus.OK)
 """Validation status indicating unit headers and parameters are valid."""
 
-BAD_HEAD: int = int(ValidationStatus.BAD_HEAD)
+BAD_FLAGS: int = int(ValidationStatus.BAD_FLAGS)
 """Validation status indicating reserved or unsupported bits in a block header."""
 
 BAD_PARAM: int = int(ValidationStatus.BAD_PARAM)
@@ -193,32 +194,32 @@ def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool)
 
     Returns:
         A tuple of (status, b):
-            status: Validation outcome (OK, BAD_HEAD, BAD_PARAM, or BAD_ANCHOR).
+            status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, or BAD_ANCHOR).
             b: Zero-based index of the first failing block (0 if OK).
     """
     num_blocks = sample_offsets.shape[0] - 1
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
     for block_idx in range(num_blocks):
-        header_byte = raw_unit[block_idx]
-        param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
+        flags = raw_unit[block_idx]
+        param_val = int(get_int16(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
         anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
             # An empty block stores nothing: its columns are 0
-            if header_byte:
-                return BAD_HEAD, block_idx
+            if flags:
+                return BAD_FLAGS, block_idx
             if param_val:
                 return BAD_PARAM, block_idx
             if anchor_bits[0]:
                 return BAD_ANCHOR, block_idx
             continue
         # Reserved bits 6-7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
-        irregular_time = header_byte & HEAD_IRREGULAR_TIME
-        if header_byte & HEAD_RESERVED or (irregular_time and not has_time):
-            return BAD_HEAD, block_idx
-        if header_byte & HEAD_LONG_TIME and not irregular_time:
-            return BAD_HEAD, block_idx
-        if header_byte & HEAD_DECIMAL:
+        irregular_time = flags & BLOCK_FLAG_IRREGULAR_TIME
+        if flags & BLOCK_FLAG_RESERVED or (irregular_time and not has_time):
+            return BAD_FLAGS, block_idx
+        if flags & BLOCK_FLAG_LONG_TIME and not irregular_time:
+            return BAD_FLAGS, block_idx
+        if flags & BLOCK_FLAG_DECIMAL:
             # Check decimal exponent range [-22, 22]
             if param_val < P_MIN or param_val > P_MAX:
                 return BAD_PARAM, block_idx
@@ -276,8 +277,8 @@ def decode_unit(
         block_len = sample_offsets[block_idx + 1] - first_sample
         if block_len == 0:
             continue
-        header_byte = raw_unit[block_idx]
-        param_val = int(get_int64(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
+        flags = raw_unit[block_idx]
+        param_val = int(get_int16(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
         # Anchor: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
         anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
         block_residuals = scratch_residuals[:block_len]
@@ -299,12 +300,12 @@ def decode_unit(
             # Unzigzag into signed differences
             unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
         # Integrate mod 2^16 by predictor order (bits 0-1)
-        integrate(block_residuals, header_byte & HEAD_ORDER)
+        integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
         # Dequantize according to grid type (decimal or power-of-two)
-        if header_byte & HEAD_DECIMAL:
+        if flags & BLOCK_FLAG_DECIMAL:
             dequantize_decimal(block_residuals, anchor_bits[0], param_val, block_out)
         else:
             dequantize_pow2(block_residuals, anchor_float[0], param_val, block_out)
         # Restore non-finite samples (NaN, +/-inf) from code planes
-        if header_byte & HEAD_NONFINITE:
+        if flags & BLOCK_FLAG_NONFINITE:
             restore_nonfinite(code_planes, code_offsets[block_idx], block_out)

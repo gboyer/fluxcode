@@ -10,7 +10,7 @@ from _signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
 
 import fluxcode
 from fluxcode import Params, _bitpacking, _encoder, _format, _unit
-from fluxcode._format import HEAD_DECIMAL, HEAD_ORDER
+from fluxcode._format import BLOCK_FLAG_DECIMAL, BLOCK_FLAG_ORDER
 
 OFF = Params(noise_floor_sigma=None)
 
@@ -45,7 +45,7 @@ def test_round_trip_error_bound(name, x, params):
     head, param = heads_params(units)
     err = np.abs(Y - X).max(1)
     rng = hi - lo
-    dec = (head & HEAD_DECIMAL) != 0
+    dec = (head & BLOCK_FLAG_DECIMAL) != 0
     for b in range(len(lo)):
         ulps = 4 * np.spacing(np.abs(X[b]).max())  # x - lo and lo + q * step each round once
         if dec[b]:
@@ -69,7 +69,7 @@ def test_decimal_bit_exact(d, f32):
     x = decimals.astype(np.float32).astype(np.float64) if f32 else decimals
     units, _, _, _ = encode_series(x)
     head, _ = heads_params(units)
-    assert (head & HEAD_DECIMAL).all()
+    assert (head & BLOCK_FLAG_DECIMAL).all()
     y = decode_series(units)
     np.testing.assert_array_equal(y, decimals)
     np.testing.assert_array_equal(y.astype(np.float32), x.astype(np.float32))
@@ -98,7 +98,7 @@ def test_order_independence(name, orders):
     units, _, _, _ = encode_series(x, Params(diff_orders=orders))
     np.testing.assert_array_equal(decode_series(units), decode_series(ref_units))
     head, _ = heads_params(units)
-    assert set(np.unique(head & HEAD_ORDER).tolist()) <= orders
+    assert set(np.unique(head & BLOCK_FLAG_ORDER).tolist()) <= orders
 
 
 def test_constant_block():
@@ -126,7 +126,7 @@ def test_decimal_too_wide_falls_back():
     x = np.round(np.linspace(0, 100_000, 1000) + 0.1 * np.arange(1000) % 1, 3)  # 0.001 grid, 1e8 steps
     units, _, _, _ = encode_series(x, OFF)
     head, _ = heads_params(units)
-    assert not (head & HEAD_DECIMAL).any()
+    assert not (head & BLOCK_FLAG_DECIMAL).any()
 
 
 @pytest.mark.parametrize("n", [1, 7, 999, 1000, 1001, 59_999, 60_000, 60_001, 150_500])
@@ -318,8 +318,8 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     params = Params(noise_floor_sigma=None)
     unit = fluxcode.encode_blocks(x, sizes, params, times=ticks, time_unit="ns").unit
     rows = unit_rows(unit)
-    assert np.count_nonzero(rows.block_flags & _format.HEAD_NONFINITE) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))
-    assert np.count_nonzero(rows.block_flags & _format.HEAD_LONG_TIME) == 1
+    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_NONFINITE) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))
+    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_LONG_TIME) == 1
     body = _unit.decompress(unit).raw_body
     for field, field_offsets in _plane_fields(body, num_blocks):
         assert field.shape[1]
@@ -348,7 +348,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.group_offsets[-1]), True)
     for block_idx in range(num_blocks):
         assert not byte_planes[:, 8 * lay.group_offsets[block_idx] + sizes[block_idx]:8 * lay.group_offsets[block_idx + 1]].any()
-    byte_unit = (_format.pack_header(num_blocks, n, True, int(_format.TimeUnit.NANOSECONDS))
+    byte_unit = (_format.pack_header(num_blocks, n, True, int(_format.TimeUnitCode.NANOSECONDS))
                  + zstandard.ZstdCompressor().compress(byte_body.tobytes()))
     for encoded in (unit, byte_unit):
         decoded = fluxcode.decode_unit(encoded)
@@ -420,7 +420,7 @@ def test_bad_block_sizes_are_rejected():
 
     def head(b):
         b[1] = 1  # the empty block's flags
-    with pytest.raises(ValueError, match="block 1: head byte"):
+    with pytest.raises(ValueError, match="block 1: block flags"):
         fluxcode.decode_unit(rebuilt(head))
 
     def param(b):

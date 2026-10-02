@@ -28,10 +28,10 @@ only when the header's time unit is not 0):
        An empty block's flags are 0.
     2. block_sizes (2 * num_blocks bytes):
        Per-block uint16 sample count, byte-planed (all low bytes, then all high bytes).
-    3. grid_params (8 * num_blocks bytes):
-       Per-block int64 grid parameter (power-of-two exponent or decimal power),
-       stored little-endian in byte-planed order (all byte 0s, all byte 1s, ...).
-    4. value_anchor (8 * num_blocks bytes, byte-planed like grid_params):
+    3. grid_params (2 * num_blocks bytes):
+       Per-block int16 grid parameter (power-of-two exponent or decimal power),
+       byte-planed (all low bytes, then all high bytes).
+    4. value_anchor (8 * num_blocks bytes, byte-planed: all byte 0s, all byte 1s, ...):
        Per-block reconstruction base: the bits of the float64 block minimum on the
        power-of-two grid, or the int64 decimal grid index of the minimum.
     5. time_start (8 * num_blocks bytes, byte-planed; time only):
@@ -63,36 +63,36 @@ from typing import NamedTuple
 import numpy as np
 from numba import njit
 
-HEAD_ORDER: int = 0x03
-"""Bitmask for the difference predictor order (bits 0-1 of the header byte)."""
+BLOCK_FLAG_ORDER: int = 0x03
+"""Block flags: the difference predictor order (bits 0-1)."""
 
-HEAD_DECIMAL: int = 0x04
-"""Bit flag indicating decimal quantization mode (bit 2 of the header byte)."""
+BLOCK_FLAG_DECIMAL: int = 0x04
+"""Block flags: decimal quantization (bit 2)."""
 
-HEAD_NONFINITE: int = 0x08
-"""Bit flag indicating the presence of non-finite code planes (bit 3)."""
+BLOCK_FLAG_NONFINITE: int = 0x08
+"""Block flags: non-finite code planes present (bit 3)."""
 
-HEAD_IRREGULAR_TIME: int = 0x10
-"""Bit flag indicating irregular times, with time residual planes (bit 4); only valid in
-units with a time axis."""
+BLOCK_FLAG_IRREGULAR_TIME: int = 0x10
+"""Block flags: irregular times, with time residual planes (bit 4); only valid in units with
+a time axis."""
 
-HEAD_LONG_TIME: int = 0x20
-"""Bit flag indicating long time residuals, stored in 64 bit planes instead of 32 (bit 5);
-only valid with HEAD_IRREGULAR_TIME."""
+BLOCK_FLAG_LONG_TIME: int = 0x20
+"""Block flags: long time residuals, stored in 64 bit planes instead of 32 (bit 5); only valid
+with BLOCK_FLAG_IRREGULAR_TIME."""
 
-HEAD_RESERVED: int = 0xC0
-"""Reserved bits in the header byte (bits 6-7); decoders must reject these."""
+BLOCK_FLAG_RESERVED: int = 0xC0
+"""Block flags: reserved bits (6-7); decoders reject them."""
 
-FLAG_BYTE_PLANES: int = 0x01
+UNIT_FLAG_BYTE_PLANES: int = 0x01
 """Unit header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
 
-FLAG_TIME_UNIT_SHIFT: int = 1
+UNIT_FLAG_TIME_UNIT_SHIFT: int = 1
 """Position of the 3-bit time unit in the unit header flags (bits 1-3)."""
 
-FLAG_TIME_UNIT_MASK: int = 0x0E
+UNIT_FLAG_TIME_UNIT_MASK: int = 0x0E
 """Unit header flag bits holding the time unit."""
 
-FLAG_RESERVED: int = 0xF0
+UNIT_FLAG_RESERVED: int = 0xF0
 """Reserved unit header flag bits (4-7); decoders must reject these."""
 
 MAX_BLOCK_LEN: int = 0xFFFF
@@ -129,7 +129,7 @@ CODE_NEG_INF: int = int(NonFiniteCode.NEG_INF)
 """Two-bit code representing negative infinity (-inf, 11b)."""
 
 
-class TimeUnit(enum.IntEnum):
+class TimeUnitCode(enum.IntEnum):
     """Time unit codes stored in unit header flags bits 1-3 (0: no time axis)."""
 
     NONE = 0
@@ -140,10 +140,10 @@ class TimeUnit(enum.IntEnum):
 
 
 TIME_UNIT_NAMES: dict[int, str] = {
-    TimeUnit.SECONDS: "s",
-    TimeUnit.MILLISECONDS: "ms",
-    TimeUnit.MICROSECONDS: "us",
-    TimeUnit.NANOSECONDS: "ns",
+    TimeUnitCode.SECONDS: "s",
+    TimeUnitCode.MILLISECONDS: "ms",
+    TimeUnitCode.MICROSECONDS: "us",
+    TimeUnitCode.NANOSECONDS: "ns",
 }
 """numpy datetime64 unit name of each time unit code."""
 
@@ -163,20 +163,20 @@ P_MIN: int = -22
 P_MAX: int = 22
 """Maximum valid decimal exponent (10^22 is an exact double)."""
 
-BYTES_PER_HEADER: int = 1
-"""Number of header bytes per block."""
+BYTES_PER_FLAGS: int = 1
+"""Bytes of block_flags per block."""
 
 BYTES_PER_SIZE: int = 2
-"""Number of block size bytes per block (uint16)."""
+"""Bytes of block_sizes per block (uint16)."""
 
-BYTES_PER_PARAM: int = 8
-"""Number of parameter bytes per block (int64 little-endian)."""
+BYTES_PER_PARAM: int = 2
+"""Bytes of grid_params per block (int16)."""
 
 BYTES_PER_ANCHOR: int = 8
-"""Number of anchor bytes per block (float64 bits or int64 grid index)."""
+"""Bytes of value_anchor per block (float64 bits or int64 grid index)."""
 
-METADATA_BYTES_PER_BLOCK: int = BYTES_PER_HEADER + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR
-"""Total metadata bytes per block (head byte + uint16 size + int64 parameter + anchor = 19 bytes)."""
+METADATA_BYTES_PER_BLOCK: int = BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR
+"""Bytes of the value columns per block (flags, size, grid parameter, anchor: 13)."""
 
 FORMAT_VERSION: int = 1
 """Unit format version recorded in the first header byte."""
@@ -197,8 +197,11 @@ BYTES_PER_RESIDUAL_SAMPLE: int = 2
 NONFINITE_BITS_PER_SAMPLE: int = 2
 """Number of code bits per sample for flagged blocks (2-bit plane layout)."""
 
-TIME_BYTES_PER_BLOCK: int = 24
-"""Bytes of time_start, time_step and time_ref per block in units with a time axis."""
+BYTES_PER_TIME_COLUMN: int = 8
+"""Bytes of each time column (time_start, time_step, time_ref) per block."""
+
+TIME_BYTES_PER_BLOCK: int = 3 * BYTES_PER_TIME_COLUMN
+"""Bytes of the time columns per block in units with a time axis (24)."""
 
 TIME_SHORT_PLANES: int = 32
 """Time residual bit planes stored for every irregular block; a long block stores as many again."""
@@ -250,11 +253,11 @@ def _fill_layout(
         flags = block_flags[block_idx]
         out_sample_offsets[block_idx + 1] = out_sample_offsets[block_idx] + num_samples
         out_group_offsets[block_idx + 1] = out_group_offsets[block_idx] + num_groups
-        out_code_offsets[block_idx + 1] = out_code_offsets[block_idx] + (num_groups if flags & HEAD_NONFINITE else 0)
+        out_code_offsets[block_idx + 1] = out_code_offsets[block_idx] + (num_groups if flags & BLOCK_FLAG_NONFINITE else 0)
         out_short_offsets[block_idx + 1] = out_short_offsets[block_idx] + (
-            num_groups if flags & HEAD_IRREGULAR_TIME else 0
+            num_groups if flags & BLOCK_FLAG_IRREGULAR_TIME else 0
         )
-        out_long_offsets[block_idx + 1] = out_long_offsets[block_idx] + (num_groups if flags & HEAD_LONG_TIME else 0)
+        out_long_offsets[block_idx + 1] = out_long_offsets[block_idx] + (num_groups if flags & BLOCK_FLAG_LONG_TIME else 0)
 
 
 def layout(block_flags: np.ndarray, block_sizes: np.ndarray) -> Layout:
@@ -365,7 +368,7 @@ def pack_header(num_blocks: int, num_samples: int, byte_planes: bool = False, ti
     Returns:
         The header bytes.
     """
-    flags = (FLAG_BYTE_PLANES if byte_planes else 0) | (time_unit << FLAG_TIME_UNIT_SHIFT)
+    flags = (UNIT_FLAG_BYTE_PLANES if byte_planes else 0) | (time_unit << UNIT_FLAG_TIME_UNIT_SHIFT)
     return UNIT_HEADER.pack(FORMAT_VERSION, flags, num_blocks, num_samples)
 
 
@@ -388,16 +391,16 @@ def unpack_header(unit: bytes) -> UnitHeader:
     version, flags, num_blocks, num_samples = UNIT_HEADER.unpack_from(unit)
     if version != FORMAT_VERSION:
         raise ValueError(f"unit format version {version} is not supported (expected {FORMAT_VERSION})")
-    if flags & FLAG_RESERVED:
+    if flags & UNIT_FLAG_RESERVED:
         raise ValueError("unit header sets reserved bits (not supported by this version)")
-    time_unit = (flags & FLAG_TIME_UNIT_MASK) >> FLAG_TIME_UNIT_SHIFT
-    if time_unit > TimeUnit.NANOSECONDS:
-        raise ValueError(f"unit header time unit {time_unit} is not supported (expected 0 to {int(TimeUnit.NANOSECONDS)})")
+    time_unit = (flags & UNIT_FLAG_TIME_UNIT_MASK) >> UNIT_FLAG_TIME_UNIT_SHIFT
+    if time_unit > TimeUnitCode.NANOSECONDS:
+        raise ValueError(f"unit header time unit {time_unit} is not supported (expected 0 to {int(TimeUnitCode.NANOSECONDS)})")
     if num_samples > min(MAX_UNIT_SAMPLES, num_blocks * MAX_BLOCK_LEN):
         raise ValueError(
             f"unit sample count {num_samples} is over {MAX_UNIT_SAMPLES} or what {num_blocks} blocks can hold"
         )
-    return UnitHeader(num_blocks, num_samples, bool(flags & FLAG_BYTE_PLANES), time_unit)
+    return UnitHeader(num_blocks, num_samples, bool(flags & UNIT_FLAG_BYTE_PLANES), time_unit)
 
 
 @njit(inline="always")
@@ -408,20 +411,20 @@ def residual_start(num_blocks: int, has_time: bool) -> int:
 
 @njit(inline="always")
 def block_sizes_start(num_blocks: int) -> int:
-    """Offset of the block_sizes field: after the N head bytes."""
-    return BYTES_PER_HEADER * num_blocks
+    """Offset of the block_sizes field: after the block_flags field."""
+    return BYTES_PER_FLAGS * num_blocks
 
 
 @njit(inline="always")
 def grid_params_start(num_blocks: int) -> int:
     """Offset of the grid_params field: after the block_flags and block_sizes fields."""
-    return (BYTES_PER_HEADER + BYTES_PER_SIZE) * num_blocks
+    return (BYTES_PER_FLAGS + BYTES_PER_SIZE) * num_blocks
 
 
 @njit(inline="always")
 def value_anchor_start(num_blocks: int) -> int:
     """Offset of the value_anchor field: after the grid_params field."""
-    return (BYTES_PER_HEADER + BYTES_PER_SIZE + BYTES_PER_PARAM) * num_blocks
+    return (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM) * num_blocks
 
 
 @njit(inline="always")
@@ -433,13 +436,13 @@ def time_start_start(num_blocks: int) -> int:
 @njit(inline="always")
 def time_step_start(num_blocks: int) -> int:
     """Offset of the time_step field: after the time_start field."""
-    return (METADATA_BYTES_PER_BLOCK + BYTES_PER_ANCHOR) * num_blocks
+    return (METADATA_BYTES_PER_BLOCK + BYTES_PER_TIME_COLUMN) * num_blocks
 
 
 @njit(inline="always")
 def time_ref_start(num_blocks: int) -> int:
     """Offset of the time_ref field: after the time_step field."""
-    return (METADATA_BYTES_PER_BLOCK + 2 * BYTES_PER_ANCHOR) * num_blocks
+    return (METADATA_BYTES_PER_BLOCK + 2 * BYTES_PER_TIME_COLUMN) * num_blocks
 
 
 @njit(inline="always")
@@ -450,7 +453,7 @@ def put_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes.
-        field_start: Offset of the field (grid_params_start or value_anchor_start).
+        field_start: Offset of the field (value_anchor_start or a time column's).
         num_blocks: Total number of blocks N.
         block_idx: Zero-based block index.
         value: Signed 64-bit integer to write.
@@ -469,7 +472,7 @@ def get_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes.
-        field_start: Offset of the field (grid_params_start or value_anchor_start).
+        field_start: Offset of the field (value_anchor_start or a time column's).
         num_blocks: Total number of blocks N.
         block_idx: Zero-based block index.
 
@@ -481,6 +484,21 @@ def get_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
         # Reassemble byte k from offset: field_start + k*N + b
         value_bits |= np.uint64(raw_unit[field_start + byte_idx * num_blocks + block_idx]) << np.uint64(8 * byte_idx)
     return np.int64(value_bits)
+
+
+@njit(inline="always")
+def put_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
+    """Writes block b's int16 value into a byte-planed field: the low byte at field_start + b,
+    the high byte num_blocks later."""
+    raw_unit[field_start + block_idx] = np.uint8(value & 0xFF)
+    raw_unit[field_start + num_blocks + block_idx] = np.uint8((value >> 8) & 0xFF)
+
+
+@njit(inline="always")
+def get_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
+    """Reads block b's int16 value from a byte-planed field, sign-extended to int64."""
+    value_bits = np.int64(raw_unit[field_start + block_idx]) | (np.int64(raw_unit[field_start + num_blocks + block_idx]) << 8)
+    return value_bits - ((value_bits & 0x8000) << 1)
 
 
 @njit(inline="always")

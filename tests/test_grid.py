@@ -9,7 +9,7 @@ from _series import unit_rows
 
 import fluxcode
 from fluxcode import Params, _encoder
-from fluxcode._format import HEAD_DECIMAL
+from fluxcode._format import BLOCK_FLAG_DECIMAL
 
 RAW = Params(noise_floor_sigma=None, decimal_detection=False)
 """Just the power-of-two grid: no noise floor, no decimal grids."""
@@ -133,7 +133,7 @@ def test_decoded_values_are_fixed_points(params):
         y = decode(unit)
         unit2, e2, _ = encode_block(y, params)
         flags = unit_rows(unit2).block_flags[0]
-        if e2 == e or flags & HEAD_DECIMAL:
+        if e2 == e or flags & BLOCK_FLAG_DECIMAL:
             np.testing.assert_array_equal(decode(unit2), y)
             checked += 1
     assert checked >= 15

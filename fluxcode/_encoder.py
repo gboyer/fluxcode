@@ -17,10 +17,10 @@ from numba.cpython.unsafe.numbers import leading_zeros as _leading_zeros
 
 from . import _extreme_magnitudes as xm
 from ._format import (
+    BLOCK_FLAG_DECIMAL,
+    BLOCK_FLAG_NONFINITE,
     E_MAX,
     E_MIN,
-    HEAD_DECIMAL,
-    HEAD_NONFINITE,
     P_MAX,
     P_MIN,
     SHORT_BLOCK_LEN,
@@ -632,11 +632,11 @@ def encode_block(
         out_residuals: Output 1D int16 array receiving residuals.
 
     Returns:
-        A tuple of (head_byte, param, decimal_base, anchor): decimal_base is the grid index K0
+        A tuple of (flags, param, decimal_base, anchor): decimal_base is the grid index K0
         of lower_bound on a detected decimal grid (the block's anchor), 0 on the power-of-two
         grid; anchor is the power-of-two grid's anchor (unused on a decimal grid).
     """
-    head_byte = 0
+    flags = 0
     anchor = lower_bound
     param_val = quant_exp
     decimal_base = np.int64(0)
@@ -650,7 +650,7 @@ def encode_block(
         if decimal_exp != NO_DECIMAL:
             decimal_detected = True
             param_val = decimal_exp
-            head_byte |= HEAD_DECIMAL
+            flags |= BLOCK_FLAG_DECIMAL
     # Fall back to power-of-two quantization if decimal grid not detected
     if not decimal_detected:
         anchor = quantize_block(samples, lower_bound, upper_bound, quant_exp, scratch_quantized)
@@ -658,7 +658,7 @@ def encode_block(
     selected_order = pick_order(scratch_quantized, pick_len, orders_mask)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
-    return head_byte | selected_order, param_val, decimal_base, anchor
+    return flags | selected_order, param_val, decimal_base, anchor
 
 
 @njit(inline="always")
@@ -666,7 +666,7 @@ def _store_anchor(
     out_value_anchors: np.ndarray,
     anchor_floats: np.ndarray,
     block_idx: int,
-    head_byte: int,
+    flags: int,
     anchor: float,
     decimal_base: np.int64,
 ) -> None:
@@ -678,11 +678,11 @@ def _store_anchor(
         anchor_floats: out_value_anchors viewed as float64, made once per unit rather
             than per block.
         block_idx: Zero-based block index.
-        head_byte: Block header byte; HEAD_DECIMAL selects the decimal anchor.
+        flags: Block header byte; BLOCK_FLAG_DECIMAL selects the decimal anchor.
         anchor: The power-of-two grid's anchor, stored as float64 bits.
         decimal_base: Grid index K0 of lo on a detected decimal grid.
     """
-    if head_byte & HEAD_DECIMAL:
+    if flags & BLOCK_FLAG_DECIMAL:
         out_value_anchors[block_idx] = decimal_base
     else:
         anchor_floats[block_idx] = anchor
@@ -771,13 +771,13 @@ def _apply_target_reallocation(
             first_sample = sample_offsets[block_idx]
             block_len = sample_offsets[block_idx + 1] - first_sample
             block_residuals = out_residuals[first_sample:first_sample + block_len]
-            prev_header = out_block_flags[block_idx]
+            prev_flags = out_block_flags[block_idx]
             prev_param = out_grid_params[block_idx]
             prev_anchor = out_value_anchors[block_idx]
             backup_residuals = scratch_residuals[:block_len]
             backup_residuals[:] = block_residuals
             block_samples = samples[first_sample:first_sample + block_len]
-            has_nonfinite = prev_header & HEAD_NONFINITE
+            has_nonfinite = prev_flags & BLOCK_FLAG_NONFINITE
             if has_nonfinite:
                 fill_nonfinite(block_samples, scratch_held[:block_len], out_codes[first_sample:first_sample + block_len])
                 block_samples = scratch_held[:block_len]
@@ -802,10 +802,10 @@ def _apply_target_reallocation(
                 decimal_base,
             )
             if has_nonfinite:
-                out_block_flags[block_idx] |= HEAD_NONFINITE
+                out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
             # Roll back if re-quantization failed to reduce estimated bits
             if estimate_bits(block_residuals) >= estimated_bits_per_block[block_idx]:
-                out_block_flags[block_idx] = prev_header
+                out_block_flags[block_idx] = prev_flags
                 out_grid_params[block_idx] = prev_param
                 out_value_anchors[block_idx] = prev_anchor
                 block_residuals[:] = backup_residuals
@@ -919,7 +919,7 @@ def encode_unit(
                     block_samples, block_min, block_max, math.ldexp(1.0, fine_exp), block_quantized
                 )
             if decimal_exp != NO_DECIMAL:
-                out_block_flags[block_idx] = HEAD_DECIMAL
+                out_block_flags[block_idx] = BLOCK_FLAG_DECIMAL
                 out_grid_params[block_idx] = decimal_exp
                 out_value_anchors[block_idx] = decimal_base
             else:
@@ -928,7 +928,7 @@ def encode_unit(
                 anchor_floats[block_idx] = quantize_block(block_samples, block_min, block_max, fine_exp, block_quantized)
             residual(block_quantized, 0, block_residuals)
             if has_nonfinite:
-                out_block_flags[block_idx] |= HEAD_NONFINITE
+                out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
             continue
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max
@@ -964,9 +964,9 @@ def encode_unit(
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
         if has_nonfinite:
-            out_block_flags[block_idx] |= HEAD_NONFINITE
+            out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
         if use_target:
-            if out_block_flags[block_idx] & HEAD_DECIMAL:
+            if out_block_flags[block_idx] & BLOCK_FLAG_DECIMAL:
                 # Decimal grid is already 10^p; track equivalent binary exponent
                 block_exponents[block_idx] = math.floor(math.log2(10.0 ** out_grid_params[block_idx]))
             coarsest_exponents[block_idx] = max(

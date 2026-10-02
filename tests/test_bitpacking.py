@@ -8,10 +8,10 @@ import pytest
 
 from fluxcode import _bitpacking, _format
 from fluxcode._format import (
-    HEAD_DECIMAL,
-    HEAD_IRREGULAR_TIME,
-    HEAD_LONG_TIME,
-    HEAD_NONFINITE,
+    BLOCK_FLAG_DECIMAL,
+    BLOCK_FLAG_IRREGULAR_TIME,
+    BLOCK_FLAG_LONG_TIME,
+    BLOCK_FLAG_NONFINITE,
 )
 
 RNG = np.random.default_rng(0)
@@ -27,13 +27,13 @@ def random_rows(rng, sizes, has_time, nonfinite=0.3, irregular=0.5, long=0.3):
     num_blocks, num_samples = sizes.shape[0], int(sizes.sum())
     offsets = np.concatenate([[0], np.cumsum(sizes)])
     filled = sizes > 0
-    flags = (rng.integers(0, 4, num_blocks) | rng.choice([0, HEAD_DECIMAL], num_blocks)).astype(np.uint8)
-    flags |= np.where(filled & (rng.random(num_blocks) < nonfinite), HEAD_NONFINITE, 0).astype(np.uint8)
-    params = np.where(filled, rng.integers(-2 ** 40, 2 ** 40, num_blocks), 0)
+    flags = (rng.integers(0, 4, num_blocks) | rng.choice([0, BLOCK_FLAG_DECIMAL], num_blocks)).astype(np.uint8)
+    flags |= np.where(filled & (rng.random(num_blocks) < nonfinite), BLOCK_FLAG_NONFINITE, 0).astype(np.uint8)
+    params = np.where(filled, rng.integers(-2 ** 15, 2 ** 15, num_blocks), 0)
     anchors = np.where(filled, rng.integers(-2 ** 63, 2 ** 63 - 1, num_blocks), 0)
     residuals = rng.integers(-2 ** 15, 2 ** 15, num_samples).astype(np.int16)
     codes = np.zeros(num_samples, np.uint8)
-    for block_idx in np.flatnonzero(flags & HEAD_NONFINITE):
+    for block_idx in np.flatnonzero(flags & BLOCK_FLAG_NONFINITE):
         codes[offsets[block_idx]:offsets[block_idx + 1]] = rng.integers(0, 4, sizes[block_idx])
     flags[~filled] = 0
     time_rows = None
@@ -43,11 +43,11 @@ def random_rows(rng, sizes, has_time, nonfinite=0.3, irregular=0.5, long=0.3):
         refs = np.where(sizes >= 2, rng.integers(0, 1000, num_blocks), 0).astype(np.uint64)
         time_residuals = np.zeros(num_samples, np.uint64)
         for block_idx in np.flatnonzero((sizes >= 2) & (rng.random(num_blocks) < irregular)):
-            flags[block_idx] |= HEAD_IRREGULAR_TIME
+            flags[block_idx] |= BLOCK_FLAG_IRREGULAR_TIME
             block = time_residuals[offsets[block_idx]:offsets[block_idx + 1]]
             block[1:] = rng.integers(0, 2 ** 20, block.shape[0] - 1)
             if rng.random() < long:
-                flags[block_idx] |= HEAD_LONG_TIME
+                flags[block_idx] |= BLOCK_FLAG_LONG_TIME
                 block[rng.integers(1, block.shape[0])] = rng.integers(2 ** 32, 2 ** 64, dtype=np.uint64)
         time_rows = _format.TimeRows(starts.astype(np.int64), steps.astype(np.int64), refs, time_residuals)
     return _format.UnitRows(flags, sizes, params.astype(np.int64), anchors.astype(np.int64), residuals, codes,
@@ -107,9 +107,9 @@ def test_round_trip(size, byte_planes, has_time):
 def test_round_trip_largest_block(byte_planes, has_time):
     rows = random_rows(np.random.default_rng(1), [_format.MAX_BLOCK_LEN, 1, 0, 3], has_time, nonfinite=1,
                        irregular=1, long=1)
-    assert rows.block_flags[0] & HEAD_NONFINITE
+    assert rows.block_flags[0] & BLOCK_FLAG_NONFINITE
     if has_time:
-        assert rows.block_flags[0] & HEAD_LONG_TIME and rows.block_flags[3] & HEAD_IRREGULAR_TIME
+        assert rows.block_flags[0] & BLOCK_FLAG_LONG_TIME and rows.block_flags[3] & BLOCK_FLAG_IRREGULAR_TIME
     body = _bitpacking.write_unit(*rows[:6], byte_planes=byte_planes, time_rows=rows.time_rows)
     assert_rows_equal(_bitpacking.read_unit(body, 4, byte_planes, has_time), rows)
     assert_padding_zero(body, rows, byte_planes, has_time)
@@ -121,8 +121,8 @@ def test_flags_select_the_fields():
     rows = random_rows(np.random.default_rng(2), [20] * 40, True)
     lay = _format.layout(rows.block_flags, rows.block_sizes)
     groups = np.diff(lay.group_offsets)
-    for flag, field_offsets in [(HEAD_NONFINITE, lay.code_offsets), (HEAD_IRREGULAR_TIME, lay.short_offsets),
-                                (HEAD_LONG_TIME, lay.long_offsets)]:
+    for flag, field_offsets in [(BLOCK_FLAG_NONFINITE, lay.code_offsets), (BLOCK_FLAG_IRREGULAR_TIME, lay.short_offsets),
+                                (BLOCK_FLAG_LONG_TIME, lay.long_offsets)]:
         flagged = (rows.block_flags & flag) > 0
         assert 0 < flagged.sum() < 40
         np.testing.assert_array_equal(np.diff(field_offsets), np.where(flagged, groups, 0))
@@ -131,8 +131,8 @@ def test_flags_select_the_fields():
 def _columns(raw, N):
     """The block_flags, block_sizes, grid_params and value_anchor columns of a body."""
     sizes = raw[N:2 * N].astype(np.int64) | (raw[2 * N:3 * N].astype(np.int64) << 8)
-    param = raw[3 * N:11 * N].reshape(8, N).T.copy().view(np.int64).ravel()
-    anchor = raw[11 * N:19 * N].reshape(8, N).T.copy().view(np.int64).ravel()
+    param = raw[3 * N:5 * N].reshape(2, N).T.copy().view(np.int16).ravel().astype(np.int64)
+    anchor = raw[5 * N:13 * N].reshape(8, N).T.copy().view(np.int64).ravel()
     return raw[:N], sizes, param, anchor
 
 
@@ -141,17 +141,17 @@ def test_shuffle_round_trip_and_layout(sizes):
     N = len(sizes)
     sizes = np.array(sizes)
     resid = RNG.integers(-2 ** 15, 2 ** 15, sizes.sum()).astype(np.int16)
-    head = np.array([1, 0 if not sizes[1] else 2, 3], np.uint8)
-    param = np.array([-5, 0 if not sizes[1] else 17, -(2 ** 40)], np.int64)
+    flags = np.array([1, 0 if not sizes[1] else 2, 3], np.uint8)
+    param = np.array([-5, 0 if not sizes[1] else 17, -1074], np.int64)
     anchor = np.array([-1.5, 0.0 if not sizes[1] else 1e300, 0.0]).view(np.int64)
-    raw = _bitpacking.write_unit(head, sizes, param, anchor, resid)
-    lay = _format.layout(head, sizes)
+    raw = _bitpacking.write_unit(flags, sizes, param, anchor, resid)
+    lay = _format.layout(flags, sizes)
     assert raw.shape[0] == _format.unit_size(N, lay)
-    for got, want in zip(_columns(raw, N), (head, sizes, param, anchor)):
+    for got, want in zip(_columns(raw, N), (flags, sizes, param, anchor)):
         np.testing.assert_array_equal(got, want)
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[19 * N:].reshape(16, -1)
+    planes = raw[13 * N:].reshape(16, -1)
     offsets = np.concatenate([[0], np.cumsum(sizes)])
     for b in range(N):
         block_planes = planes[:, lay.group_offsets[b]:lay.group_offsets[b + 1]]
@@ -160,7 +160,7 @@ def test_shuffle_round_trip_and_layout(sizes):
         np.testing.assert_array_equal(bits[:, :sizes[b]], ((block_u[None] >> np.arange(16)[:, None]) & 1).astype(np.uint8))
         assert not bits[:, sizes[b]:].any()  # each block's last group is padded with zero bits
     rows = _bitpacking.read_unit(raw, N)
-    for got, want in zip(rows[:5], (head, sizes, param, anchor, resid)):
+    for got, want in zip(rows[:5], (flags, sizes, param, anchor, resid)):
         np.testing.assert_array_equal(got, want)
     with pytest.raises(ValueError, match="doesn't hold"):
         _bitpacking.read_unit(raw[:-1], N)
@@ -170,19 +170,19 @@ def test_byte_planes_round_trip_and_layout():
     N, n = 3, 64
     sizes = np.full(N, n)
     resid = RNG.integers(-2 ** 15, 2 ** 15, N * n).astype(np.int16)
-    head = np.array([1, 2, 3], np.uint8)
-    param = np.array([-5, 17, -(2 ** 40)], np.int64)
+    flags = np.array([1, 2, 3], np.uint8)
+    param = np.array([-5, 17, -1074], np.int64)
     anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
-    raw = _bitpacking.write_unit(head, sizes, param, anchor, resid, byte_planes=True)
-    assert raw.shape[0] == _format.unit_size(N, _format.layout(head, sizes))
-    np.testing.assert_array_equal(raw[:19 * N], _bitpacking.write_unit(head, sizes, param, anchor, resid)[:19 * N])
+    raw = _bitpacking.write_unit(flags, sizes, param, anchor, resid, byte_planes=True)
+    assert raw.shape[0] == _format.unit_size(N, _format.layout(flags, sizes))
+    np.testing.assert_array_equal(raw[:13 * N], _bitpacking.write_unit(flags, sizes, param, anchor, resid)[:13 * N])
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[19 * N:].reshape(2, N * n)  # every low byte, then every high byte
+    planes = raw[13 * N:].reshape(2, N * n)  # every low byte, then every high byte
     np.testing.assert_array_equal(planes[0], u & 0xFF)
     np.testing.assert_array_equal(planes[1], u >> 8)
     rows = _bitpacking.read_unit(raw, N, byte_planes=True)
-    for got, want in zip(rows[:5], (head, sizes, param, anchor, resid)):
+    for got, want in zip(rows[:5], (flags, sizes, param, anchor, resid)):
         np.testing.assert_array_equal(got, want)
 
 
@@ -192,7 +192,7 @@ def test_bit_order_vector():
     v[3] = 0x0010  # zigzag(16) = 32 = 0x0020
     v[6] = 0x0200  # zigzag(512) = 1024 = 0x0400
     raw = _bitpacking.write_unit(np.zeros(1, np.uint8), np.array([8]), np.zeros(1, np.int64), np.zeros(1, np.int64), v)
-    planes = raw[19:].reshape(16, 1)  # after head (1), size (2), param (8) and anchor (8)
+    planes = raw[13:].reshape(16, 1)  # after flags (1), size (2), param (2) and anchor (8)
     expect = np.zeros(16, np.uint8)
     expect[5], expect[10] = 0b00001000, 0b01000000
     np.testing.assert_array_equal(planes[:, 0], expect)

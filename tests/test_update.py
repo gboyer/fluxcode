@@ -172,9 +172,9 @@ def test_update_refuses_units_it_cannot_read(head_bits):
     raw_body = _bitpacking.write_unit(*unit_rows(unit)[:6])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
     bad = unit[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
-    with pytest.raises(ValueError, match="block 5: head byte"):
+    with pytest.raises(ValueError, match="block 5: block flags"):
         fluxcode.update(bad, {0: np.zeros(L)})
-    with pytest.raises(ValueError, match="block 5: head byte"):
+    with pytest.raises(ValueError, match="block 5: block flags"):
         fluxcode.decode_unit(bad)
 
 
@@ -202,7 +202,7 @@ def test_non_finite_float_anchors_are_rejected(anchor):
 def test_out_of_range_decimal_anchors_are_rejected():
     x = np.round(np.cumsum(np.random.default_rng(3).normal(size=3 * L)), 2)
     unit, _, _, _ = fluxcode.encode_unit(x, Params(noise_floor_sigma=None))
-    assert (unit_rows(unit).block_flags & _format.HEAD_DECIMAL).all()
+    assert (unit_rows(unit).block_flags & _format.BLOCK_FLAG_DECIMAL).all()
 
     def bad_anchor(head, sizes, param, anchors, *_):
         anchors[1] = 1 << 52

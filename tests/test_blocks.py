@@ -12,7 +12,7 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _encoder, _format, _unit
-from fluxcode._format import HEAD_NONFINITE, HEAD_ORDER, SHORT_BLOCK_LEN
+from fluxcode._format import BLOCK_FLAG_NONFINITE, BLOCK_FLAG_ORDER, SHORT_BLOCK_LEN
 
 SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
 
@@ -82,12 +82,12 @@ def test_short_blocks_skip_the_analysis(size, decimal):
     unit, lo, _, _ = fluxcode.encode_blocks(x, [size], params)
     rows = unit_rows(unit)
     flags = int(rows.block_flags[0])
-    assert flags & HEAD_ORDER == 0 and flags & HEAD_NONFINITE
+    assert flags & BLOCK_FLAG_ORDER == 0 and flags & BLOCK_FLAG_NONFINITE
     finite = x[np.isfinite(x)]
     y = fluxcode.decode_unit(unit).values
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
     on_grid = decimal and finite.size > 1 and finite.max() > finite.min()
-    assert bool(flags & _format.HEAD_DECIMAL) == on_grid
+    assert bool(flags & _format.BLOCK_FLAG_DECIMAL) == on_grid
     if on_grid:
         assert rows.grid_params[0] == -2
         np.testing.assert_array_equal(y[np.isfinite(x)], finite)  # bit-exact
@@ -105,9 +105,9 @@ def test_short_blocks_skip_the_analysis(size, decimal):
 def test_short_blocks_honour_decimal_detection_off():
     x = np.array([1.25, 3.5, 2.75])
     rows = unit_rows(fluxcode.encode_blocks(x, [3], Params(decimal_detection=False)).unit)
-    assert not rows.block_flags[0] & _format.HEAD_DECIMAL
+    assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL
     rows = unit_rows(fluxcode.encode_blocks(x, [3]).unit)
-    assert rows.block_flags[0] & _format.HEAD_DECIMAL and rows.grid_params[0] == -2
+    assert rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_params[0] == -2
 
 
 def test_target_weights_blocks_by_size():

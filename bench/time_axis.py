@@ -77,7 +77,7 @@ def main():
         # The values mustn't depend on the time axis (fails on a stale numba cache: see README)
         assert np.array_equal(decoded.values, fluxcode.decode_unit(plain_unit).values)
         parsed = _unit.decompress(unit)
-        num_irregular = int(np.count_nonzero(parsed.block_flags & _format.HEAD_IRREGULAR_TIME))
+        num_irregular = int(np.count_nonzero(parsed.block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME))
         extra_bytes = len(unit) - len(plain_unit)
         encode_time = best(lambda times=times: fluxcode.encode_unit(values, times=times), args.reps) - plain_encode
         decode_time = best(lambda unit=unit: fluxcode.decode_unit(unit), args.reps) - plain_decode

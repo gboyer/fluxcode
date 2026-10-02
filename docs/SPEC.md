@@ -81,7 +81,7 @@ bound decoders use to reject implausible headers before decompressing.
 where `hi − lo` itself overflows (§3.1, §3.3, §4). Each extreme costs one decision per block;
 ordinary blocks take the plain formulas.
 
-**Non-finite values (NaN, ±inf) are encoded exactly.** A block holding any gets head bit 3 and
+**Non-finite values (NaN, ±inf) are encoded exactly.** A block holding any gets block flag bit 3 and
 two code planes in the unit's nonfinite field (§5): 00 finite, 01 NaN, 10 +inf, 11 −inf.
 - **Held values.** Before the block goes through §3, each non-finite sample is replaced by the
   previous finite value (the first finite value, for a leading run). The analysis stages never see
@@ -474,7 +474,7 @@ are 0 in a regular block, block flag bit 4 clear), and
 `time[i] = start + i · time_ref · time_step`. All arithmetic is exact in 64 bits; a decoder rejects
 a unit whose times would exceed int64 maximum (§5).
 
-**Non-finite codes** (head bit 3): after dequantizing, samples with code 01, 10 or 11 are
+**Non-finite codes** (block flag bit 3): after dequantizing, samples with code 01, 10 or 11 are
 overwritten with NaN (the canonical quiet NaN), +inf or −inf. Groups of 8 samples whose two code
 bytes are both 0 are skipped.
 
@@ -503,8 +503,8 @@ in this order; the four time fields are present only when `time_unit` ≠ 0:
 |---|---|---|
 | `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bit 4: irregular times, with time residual planes (§2a; rejected when `time_unit` = 0); bit 5: long time residuals, 64 planes instead of 32 (rejected without bit 4); bits 6–7: 0 (rejected otherwise). 0 for an empty block |
 | `block_sizes` | 2 × `num_blocks` | each block's sample count as uint16, byte-planed: every low byte, then every high byte |
-| `grid_params` | 8 × `num_blocks` | the block's grid parameter as int64: the power-of-two exponent (−1074 to 1023) or, in decimal mode, the decimal power (−22 to 22); 0 for an empty block. Byte-planed: byte 0 of every block, then byte 1 of every block, … byte 7. Eight bytes leave room for other grid parameters; the unused byte planes compress to almost nothing |
-| `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed like `grid_params`: a finite float64 anchor (the reference encoder snaps the block minimum to the grid, §3.3; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52); 0 for an empty block |
+| `grid_params` | 2 × `num_blocks` | the block's grid parameter as int16: the power-of-two exponent (−1074 to 1023) or, in decimal mode, the decimal power (−22 to 22); 0 for an empty block. Byte-planed like `block_sizes` |
+| `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed (byte 0 of every block, then byte 1, … byte 7): a finite float64 anchor (the reference encoder snaps the block minimum to the grid, §3.3; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52); 0 for an empty block |
 | `time_start` | 8 × `num_blocks` | the first non-empty block: its start time as int64; each later non-empty block: its start minus the previous non-empty block's start, as uint64; an empty block: 0. Byte-planed |
 | `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the GCD of its deltas (≥ 0; ≥ 1 in an irregular block; 0 in an empty block or one of a single sample) |
 | `time_ref` | 8 × `num_blocks` | the block's reference quotient as uint64, byte-planed: 1 in a regular block (0 if its times are all equal or it has one sample or none); in an irregular block, the value the residuals are taken from (§2a) |
@@ -513,7 +513,7 @@ in this order; the four time fields are present only when `time_unit` ≠ 0:
 | `time_residual_planes` | 32 × (`G_irregular` + `G_long`) | per sample of an irregular block, the uint64 residual: `zigzag(quotient − time_ref)` mod 2^64, with the quotient `(time[i] − time[i−1]) / time_step`; 0 for sample 0. First bit plane j = 0..31, then the irregular blocks in block order, then byte i; then bit plane j = 32..63, then the long blocks in block order, then byte i. Bit k of byte i is bit j of the residual of sample 8i + k; a short block's residuals are below 2^32 |
 
 ```
-body_size = 19 × num_blocks + 16 × G + 2 × G_nonfinite
+body_size = 13 × num_blocks + 16 × G + 2 × G_nonfinite
           + (time_unit ≠ 0) × (24 × num_blocks + 32 × (G_irregular + G_long))
 ```
 
@@ -551,21 +551,21 @@ values  constant per block: 2.5, 2.25, 3.0   (power-of-two mode)
 ```
 
 Header: `01 08 03 00 14 00 00 00` (flags 0x08: `time_unit` 4 in bits 1–3; 3 blocks; 20 samples).
-Body: 209 bytes = 19 × 3 + 16 × 3 + 24 × 3 + 32 × 1.
+Body: 191 bytes = 13 × 3 + 16 × 3 + 24 × 3 + 32 × 1.
 
 ```
 offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 0–2      block_flags          3      bit 4 set on block 1 only
 3–8      block_sizes          6      low bytes 08 08 04, high bytes 00 00 00
-9–32     grid_params          24
-33–56    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
+9–14     grid_params          6      exponent 0 (constant blocks): all 00
+15–38    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
                                      plane 6 = 04 02 08, plane 7 = 40 40 40
-57–80    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
+39–62    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
                                      planes 2–7 = 00 00 00
-81–104   time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
-105–128  time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
-129–176  residual_planes      48     one byte per plane per block (block 2's last 4 bits padding)
-177–208  time_residual_planes 32     block 1 (short: planes 0–31 only), quotients [1, 1, 3, 1, 1, 1, 1]
+63–86    time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
+87–110   time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
+111–158  residual_planes      48     one byte per plane per block (block 2's last 4 bits padding)
+159–190  time_residual_planes 32     block 1 (short: planes 0–31 only), quotients [1, 1, 3, 1, 1, 1, 1]
                                      from sample 1: minimum 1 (3σ² > (mean − min)²), residuals
                                      [0, 0, 0, 2, 0, 0, 0, 0], zigzagged [0, 0, 0, 4, 0, 0, 0, 0]:
                                      plane 2 = 0x08, all other planes 0x00

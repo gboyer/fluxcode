@@ -384,9 +384,9 @@ def decompress(unit: bytes) -> ParsedUnit:
             f"unit body of {raw_body.shape[0]} bytes doesn't match its blocks' sizes and flags"
         )
     validation_status, failing_block_idx = _decoder.check_unit(raw_body, offsets.sample_offsets, has_time)
-    if validation_status == _decoder.BAD_HEAD:
+    if validation_status == _decoder.BAD_FLAGS:
         raise ValueError(
-            f"block {failing_block_idx}: head byte {raw_body[failing_block_idx]:#04x} sets reserved bits "
+            f"block {failing_block_idx}: block flags {raw_body[failing_block_idx]:#04x} sets reserved bits "
             "(not supported by this version)"
         )
     if validation_status == _decoder.BAD_PARAM:
