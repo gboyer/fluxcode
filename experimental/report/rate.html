@@ -47,20 +47,20 @@ one zstd (level 3) call per unit; lowers B if a block's estimated size would exc
 <li>All real coders are round-trip verified per unit.</li>
 </ul>
 <h2 id='summary'>Summary</h2><table><tr><th class='l'>coder</th><th class='l'>rate control</th><th>avg bits/sample</th><th>overall RMSE</th><th>median block RMSE</th><th>worst block RMSE</th><th>worst max |err|</th><th>capped blocks</th><th>encode µs/block</th></tr>
-<tr><td><code>delta0123-rice</code></td><td class='l'>window</td><td>4.000</td><td>0.0584%</td><td>0.0570%</td><td>0.214%</td><td>0.367%</td><td>1</td><td>72450</td></tr>
-<tr><td><code>delta0123-rice</code></td><td class='l'>fixed</td><td>3.706</td><td>0.2493%</td><td>0.0633%</td><td>3.554%</td><td>6.246%</td><td>—</td><td>32430</td></tr>
-<tr><td><code>delta0123-zstd</code></td><td class='l'>window</td><td>3.996</td><td>0.0238%</td><td>0.0185%</td><td>0.236%</td><td>0.403%</td><td>38</td><td>12063</td></tr>
-<tr><td><code>delta0123-zstd</code></td><td class='l'>fixed</td><td>3.035</td><td>0.2426%</td><td>0.0402%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>3727</td></tr>
-<tr><td><code>delta0123-deflate</code></td><td class='l'>window</td><td>3.999</td><td>0.0255%</td><td>0.0214%</td><td>0.230%</td><td>0.399%</td><td>30</td><td>20497</td></tr>
-<tr><td><code>delta0123-deflate</code></td><td class='l'>fixed</td><td>2.972</td><td>0.2850%</td><td>0.0422%</td><td>3.335%</td><td>5.729%</td><td>—</td><td>5961</td></tr>
-<tr><td><code>flac</code></td><td class='l'>window</td><td>3.942</td><td>0.0422%</td><td>0.0396%</td><td>0.208%</td><td>0.356%</td><td>1</td><td>2263</td></tr>
-<tr><td><code>flac</code></td><td class='l'>fixed</td><td>3.484</td><td>0.2654%</td><td>0.0187%</td><td>3.857%</td><td>6.790%</td><td>—</td><td>1247</td></tr>
-<tr><td><code>best: rice|zstd</code></td><td class='l'>window</td><td>3.999</td><td>0.0206%</td><td>0.0166%</td><td>0.217%</td><td>0.373%</td><td>29</td><td>121925</td></tr>
-<tr><td><code>best: rice|zstd</code></td><td class='l'>fixed</td><td>2.976</td><td>0.2059%</td><td>0.0274%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>37955</td></tr>
-<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>window</td><td>3.990</td><td class="best">0.0153%</td><td>0.0078%</td><td>0.205%</td><td>0.359%</td><td>74</td><td>168769</td></tr>
-<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>fixed</td><td>3.102</td><td>0.1994%</td><td>0.0012%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>40837</td></tr>
-<tr><td><code>0-order entropy</code></td><td class='l'>window</td><td>4.000</td><td>0.0172%</td><td>0.0162%</td><td>0.103%</td><td>0.183%</td><td>2</td><td>6207</td></tr>
-<tr><td><code>0-order entropy</code></td><td class='l'>fixed</td><td>3.007</td><td>0.1720%</td><td>0.0144%</td><td>1.987%</td><td>3.406%</td><td>—</td><td>2462</td></tr>
+<tr><td><code>delta0123-rice</code></td><td class='l'>window</td><td>4.000</td><td>0.0584%</td><td>0.0570%</td><td>0.214%</td><td>0.367%</td><td>1</td><td>72002</td></tr>
+<tr><td><code>delta0123-rice</code></td><td class='l'>fixed</td><td>3.706</td><td>0.2493%</td><td>0.0633%</td><td>3.554%</td><td>6.246%</td><td>—</td><td>31973</td></tr>
+<tr><td><code>delta0123-zstd</code></td><td class='l'>window</td><td>3.996</td><td>0.0238%</td><td>0.0185%</td><td>0.236%</td><td>0.403%</td><td>38</td><td>11911</td></tr>
+<tr><td><code>delta0123-zstd</code></td><td class='l'>fixed</td><td>3.035</td><td>0.2426%</td><td>0.0402%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>3711</td></tr>
+<tr><td><code>delta0123-deflate</code></td><td class='l'>window</td><td>3.999</td><td>0.0255%</td><td>0.0214%</td><td>0.230%</td><td>0.399%</td><td>30</td><td>20449</td></tr>
+<tr><td><code>delta0123-deflate</code></td><td class='l'>fixed</td><td>2.972</td><td>0.2850%</td><td>0.0422%</td><td>3.335%</td><td>5.729%</td><td>—</td><td>5907</td></tr>
+<tr><td><code>flac</code></td><td class='l'>window</td><td>3.942</td><td>0.0422%</td><td>0.0396%</td><td>0.208%</td><td>0.356%</td><td>1</td><td>2246</td></tr>
+<tr><td><code>flac</code></td><td class='l'>fixed</td><td>3.484</td><td>0.2654%</td><td>0.0187%</td><td>3.857%</td><td>6.790%</td><td>—</td><td>1238</td></tr>
+<tr><td><code>best: rice|zstd</code></td><td class='l'>window</td><td>3.999</td><td>0.0206%</td><td>0.0166%</td><td>0.217%</td><td>0.373%</td><td>29</td><td>121068</td></tr>
+<tr><td><code>best: rice|zstd</code></td><td class='l'>fixed</td><td>2.976</td><td>0.2059%</td><td>0.0274%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>38003</td></tr>
+<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>window</td><td>3.990</td><td class="best">0.0153%</td><td>0.0078%</td><td>0.205%</td><td>0.359%</td><td>74</td><td>167355</td></tr>
+<tr><td><code>best: rice|zstd|flac</code></td><td class='l'>fixed</td><td>3.102</td><td>0.1994%</td><td>0.0012%</td><td>2.703%</td><td>4.818%</td><td>—</td><td>40217</td></tr>
+<tr><td><code>0-order entropy</code></td><td class='l'>window</td><td>4.000</td><td>0.0172%</td><td>0.0162%</td><td>0.103%</td><td>0.183%</td><td>2</td><td>6137</td></tr>
+<tr><td><code>0-order entropy</code></td><td class='l'>fixed</td><td>3.007</td><td>0.1720%</td><td>0.0144%</td><td>1.987%</td><td>3.406%</td><td>—</td><td>2502</td></tr>
 <tr><td><code>delta0123-zstd-8</code></td><td class='l'>one-shot</td><td>2.826</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>6</td></tr>
 <tr><td><code>delta0123-zstd-10</code></td><td class='l'>one-shot</td><td>3.844</td><td>0.0313%</td><td>0.0282%</td><td>0.226%</td><td>0.393%</td><td>36</td><td>6</td></tr>
 <tr><td><code>delta0123-zstd-12</code></td><td class='l'>one-shot</td><td>4.413</td><td>0.0224%</td><td>0.0071%</td><td>0.226%</td><td>0.393%</td><td>124</td><td>7</td></tr>
