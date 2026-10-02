@@ -124,7 +124,7 @@ class Params:
     noise_floor_sigma: float | None = 0.25
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
-    effort: int = 5
+    effort: int = 4
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.

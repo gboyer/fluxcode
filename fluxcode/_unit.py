@@ -23,7 +23,7 @@ class Effort(NamedTuple):
     """How a unit is compressed at one Params.effort.
 
     Attributes:
-        layout: "heuristic" (byte planes when few residuals reach 256, else bit planes, one
+        layout: "heuristic" (byte planes when few residuals reach 128, else bit planes, one
             compression), "best" (both, the smaller kept), "bit" or "byte" (tests only).
         flush: Whether a zstd block ends after the columns and each dense residual plane.
         zstd_levels: The zstd compression levels tried, the smallest frame kept.
@@ -37,21 +37,19 @@ class Effort(NamedTuple):
 EFFORTS: dict[int, Effort] = {
     1: Effort("heuristic", False, (1,)),
     2: Effort("heuristic", False, (3,)),
-    **dict.fromkeys(range(3, 6), Effort("heuristic", True, (3,))),
-    **dict.fromkeys(range(6, 9), Effort("best", True, (3,))),
+    **dict.fromkeys(range(3, 5), Effort("heuristic", True, (3,))),
+    **dict.fromkeys(range(5, 9), Effort("best", True, (3,))),
     # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
     9: Effort("best", True, (3, 9)),
 }
 """Params.effort to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
 
-BYTE_PLANES_MAX_HIGH_SHARE: float = 0.05
-"""The heuristic layout picks byte planes when fewer than this share of the residuals reach 256:
-the high byte is then nearly constant, and byte-wise literals model the low byte well."""
-
-SMALL_FRAME_BYTES: int = 16_384
-"""A frame smaller than this is cheap to compress again, and is where the one-pass choices miss
-most (per unit, not in total bytes): a block-flushed frame is also compressed in one block run, and
-under the heuristic layout a unit is also compressed with the other layout; the smaller is kept."""
+BYTE_PLANES_BIT: int = 7
+BYTE_PLANES_MAX_SHARE: float = 0.01
+"""The heuristic layout picks byte planes when fewer than BYTE_PLANES_MAX_SHARE of the (zigzagged)
+residuals reach 2^BYTE_PLANES_BIT: narrow residuals, whose high byte is constant and whose low byte
+byte-wise literals model well. Wider ones, even within a byte, compress better as bit planes with
+a zstd block (and Huffman table) per plane (experimental/plane_layout, What was adopted)."""
 
 _local = threading.local()
 
@@ -361,21 +359,13 @@ def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int) -> bytes:
 
 
 def _frame(body: np.ndarray, num_blocks: int, byte_planes: bool, has_time: bool, effort: Effort) -> bytes:
-    """The smallest zstd frame of a body over effort's zstd levels: in one block run, or
-    block-flushed at the columns and planes and then also in one block run when the flushed frame
-    comes out small (SMALL_FRAME_BYTES). Ties keep the earlier candidate."""
-    cuts = None
-    if effort.flush:
-        _, offsets = _format.read_layout(body, num_blocks)
-        cuts = _format.flush_points(body, num_blocks, offsets, has_time, byte_planes)
-    frames = []
-    for level in effort.zstd_levels:
-        flushed = None if cuts is None else compress_body(body, cuts, level)
-        if flushed is not None:
-            frames.append(flushed)
-        if flushed is None or len(flushed) < SMALL_FRAME_BYTES:
-            frames.append(zstd(level)[0].compress(body.data))
-    return min(frames, key=len)
+    """The smallest zstd frame of a body over effort's zstd levels, in one block run or
+    block-flushed at the columns and dense planes. Ties keep the earlier level."""
+    if not effort.flush:
+        return min((zstd(level)[0].compress(body.data) for level in effort.zstd_levels), key=len)
+    _, offsets = _format.read_layout(body, num_blocks)
+    cuts = _format.flush_points(body, num_blocks, offsets, has_time, byte_planes)
+    return min((compress_body(body, cuts, level) for level in effort.zstd_levels), key=len)
 
 
 def _pack(
@@ -403,14 +393,10 @@ def _pack(
     if effort.layout == "heuristic":
         first = bodies[first_byte_planes] = write_body(first_byte_planes)
         _, offsets = _format.read_layout(first, num_blocks)
-        share = _bitpacking.high_byte_share(first, num_blocks, int(offsets.group_offsets[-1]), has_time, first_byte_planes)
-        picked = share < BYTE_PLANES_MAX_HIGH_SHARE
-        unit = build(picked)
-        if len(unit) - _format.HEADER_BYTES >= SMALL_FRAME_BYTES:
-            return unit
-        units = {picked: unit, not picked: build(not picked)}
-    else:
-        units = {False: build(False), True: build(True)}
+        num_groups = int(offsets.group_offsets[-1])
+        share = _bitpacking.wide_share(first, num_blocks, num_groups, has_time, first_byte_planes, BYTE_PLANES_BIT)
+        return build(share < BYTE_PLANES_MAX_SHARE)
+    units = {False: build(False), True: build(True)}
     # Ties go to byte planes (they decode faster: no bit transpose), so the choice is deterministic
     return units[True] if len(units[True]) <= len(units[False]) else units[False]
 

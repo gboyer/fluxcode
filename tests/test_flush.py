@@ -8,7 +8,7 @@ no effort changes the decoded values."""
 import numpy as np
 import pytest
 import zstandard
-from _series import planes
+from _series import planes, unit_rows
 from _signals import minute
 
 import fluxcode
@@ -43,15 +43,6 @@ def test_efforts_decode_the_same(kind):
         if reference is None:
             reference = values
         np.testing.assert_array_equal(values, reference)
-
-
-@pytest.mark.parametrize("kind", ["random-walk", "sin-9.87hz", "linear"])
-def test_flushed_frame_is_no_bigger_than_one_run_when_small(kind):
-    with planes("bit"):
-        (unit,), *_ = fluxcode.encode(minute(kind, 2))
-    single = zstandard.ZstdCompressor(level=3).compress(bytes(body_of(unit)))
-    if len(single) < _unit.SMALL_FRAME_BYTES:  # small: also compressed in one run, the smaller kept
-        assert len(unit) - _format.HEADER_BYTES <= len(single)
 
 
 def test_large_unit_is_smaller_flushed():
@@ -101,29 +92,33 @@ def test_heuristic_choice():
 
 @pytest.mark.parametrize("kind", ["sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes", "quadratic"])
 def test_higher_efforts_are_never_larger(kind):
-    """Efforts 5, 6 and 9 each try a superset of the candidates of the one before, so no unit grows
+    """Efforts 4, 5 and 9 each try a superset of the candidates of the one before, so no unit grows
     (noisy-sine seed 1 was larger at zstd 9 alone)."""
     for seed in (1, 6):
         x = minute(kind, seed)
-        sizes = [len(fluxcode.encode(x, Params(effort=effort))[0][0]) for effort in (9, 6, 5)]
+        sizes = [len(fluxcode.encode(x, Params(effort=effort))[0][0]) for effort in (9, 5, 4)]
         assert sizes == sorted(sizes), seed
 
 
 def test_efforts_trade_size():
     kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
     size = lambda effort: sum(len(fluxcode.encode(minute(kind, 6), Params(effort=effort))[0][0]) for kind in kinds)
-    assert size(5) <= 1.03 * size(6)
-    assert size(5) <= size(2) <= size(1)
+    assert size(5) <= size(4) <= 1.03 * size(5)
+    assert size(4) <= size(2) <= size(1)
 
 
 @pytest.mark.parametrize("kind", ["sin-4.12hz", "random-walk", "noisy-sine"])
-def test_high_byte_share_is_the_same_in_both_layouts(kind):
+def test_wide_share_is_the_same_in_both_layouts(kind):
     x = minute(kind, 3)
-    shares = []
+    bodies = []
     for layout in ("bit", "byte"):
         with planes(layout):
             (unit,), *_ = fluxcode.encode(x, Params(max_quantize_bits=12))
-        parsed = _unit.decompress(unit)
-        shares.append(_bitpacking.high_byte_share(parsed.raw_body, parsed.header.num_blocks,
-                                                  int(parsed.layout.group_offsets[-1]), parsed.has_time, layout == "byte"))
-    assert shares[0] == shares[1]
+        bodies.append(_unit.decompress(unit))
+    rows = unit_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
+    zigzag = ((rows << 1) ^ (rows >> 15)) & 0xFFFF
+    for bit_idx in (0, 3, 7, 8, 12, 15):
+        shares = [_bitpacking.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.group_offsets[-1]), p.has_time,
+                                         p.header.byte_planes, bit_idx) for p in bodies]
+        slots = 8 * int(bodies[0].layout.group_offsets[-1])
+        assert shares[0] == shares[1] == np.count_nonzero(zigzag >> bit_idx) / slots, bit_idx

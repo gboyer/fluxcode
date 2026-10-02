@@ -88,11 +88,17 @@ def planes_view(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time
     return raw_unit[start_offset:end_offset].reshape(16, num_groups)
 
 
+_POPCOUNT = np.array([byte.bit_count() for byte in range(256)], np.int64)
+"""Set bits of each byte value."""
+
+
 @njit(nogil=True, cache=True)
-def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, byte_planes: bool) -> float:
+def wide_share(
+    raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, byte_planes: bool, bit_idx: int
+) -> float:
     """The fraction of a unit's residual slots (samples plus padding, 8 per group) whose zigzagged
-    residual reaches 256: a non-zero high byte, or a bit in any of bit planes 8 to 15. Padding is
-    zero, so both layouts give the same share.
+    residual reaches 2^bit_idx: a bit in any of bit planes bit_idx to 15, or the same bits of the low
+    and high bytes. Padding is zero, so both layouts give the same share.
 
     Args:
         raw_unit: 1D uint8 array of a body.
@@ -100,6 +106,7 @@ def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_
         num_groups: Groups of all blocks.
         has_time: Whether the unit has a time axis.
         byte_planes: Whether the body holds byte planes.
+        bit_idx: The bit, 0 to 15.
 
     Returns:
         The share, 0.0 for a unit without plane bytes.
@@ -108,17 +115,26 @@ def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_
         return 0.0
     count = 0
     if byte_planes:
-        for high_byte in byte_planes_view(raw_unit, num_blocks, num_groups, has_time)[1]:
-            count += high_byte != 0
+        bplanes = byte_planes_view(raw_unit, num_blocks, num_groups, has_time)
+        # Eight slots per 64-bit word: mask each byte, fold its bits into bit 0, count the ones
+        low_words = bplanes[0].view(np.uint64)
+        high_words = bplanes[1].view(np.uint64)
+        low_mask = np.uint64(((0xFF << bit_idx) & 0xFF if bit_idx < 8 else 0) * 0x0101010101010101)
+        high_mask = np.uint64(((0xFF << max(bit_idx - 8, 0)) & 0xFF) * 0x0101010101010101)
+        ones = np.uint64(0x0101010101010101)
+        for word_idx in range(num_groups):
+            word = (low_words[word_idx] & low_mask) | (high_words[word_idx] & high_mask)
+            word |= word >> np.uint64(4)
+            word |= word >> np.uint64(2)
+            word |= word >> np.uint64(1)
+            count += int(((word & ones) * ones) >> np.uint64(56))
         return count / (8 * num_groups)
     planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
+    wide = np.zeros(num_groups, np.uint8)
+    for plane_idx in range(bit_idx, 16):
+        wide |= planes[plane_idx]
     for group_idx in range(num_groups):
-        bits = 0
-        for plane_idx in range(8, 16):
-            bits |= int(planes[plane_idx, group_idx])
-        while bits:
-            count += bits & 1
-            bits >>= 1
+        count += _POPCOUNT[wide[group_idx]]
     return count / (8 * num_groups)
 
 
