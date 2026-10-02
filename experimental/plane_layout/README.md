@@ -55,11 +55,10 @@ smaller layout):
 The oracle is 4.4% smaller than always-bit on the fit set.
 
 By the entropy of the high byte (fit set): below 0.25 bit/sample, byte planes win 63–75% of the
-units, by 3–43% in the geometric mean, and bit planes lose 6–12% against the oracle; above it,
+units, by 7–43% in the geometric mean, and bit planes lose 6–12% against the oracle; above it,
 byte planes win 11–38% and lose 4–10% when they're picked, and bit planes lose under 1%. The
 failures of the cheap rule are in the first group: units where byte planes are *not* better, either
-because the residuals are narrow noise (sensor-0.1: bit planes win by 20%, `random-walk q2^-4` by
-17%) or because the planes are almost entirely constant, where bit planes cost nothing and byte
+because the residuals are narrow noise (sensor-0.1: byte planes are 20% larger, `random-walk q2^-4` 17%) or because the planes are almost entirely constant, where bit planes cost nothing and byte
 planes don't (quadratic: byte planes are 4.6× larger).
 
 ## What didn't work
@@ -78,8 +77,8 @@ planes don't (quadratic: byte planes are 4.6× larger).
 ## Takeaways for the format and the tuning notes
 
 - A one-pass `planes` choice from the share of residuals above 255 is a defensible fast option
-  (about +1.2–1.5% against `"best"` here), and roughly doubles encode speed on units where zstd is
-  half of encode. `"best"` stays the right default for size.
+  (about +1.2–1.5% against `"best"` here), and drops the second zstd pass, about a quarter of
+  encode time (zstd is 48% of encode with `"best"`, see `../plane_coders/`). `"best"` stays the right default for size.
 - The `docs/TUNING.md` statement "bit planes win where residuals are small or aperiodic" is only half
   right: the data say *narrow* and *wide* residuals favour bit planes (for different reasons) and
   byte planes win in between, and on repeating structure at any width.
