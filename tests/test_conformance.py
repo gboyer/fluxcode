@@ -5,7 +5,7 @@
 import numpy as np
 import pytest
 import zstandard
-from _series import decode_series, encode_series, gated, heads_params, unit_rows
+from _series import decode_series, encode_series, flags_params, gated, unit_rows
 from _signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
 
 import fluxcode
@@ -16,7 +16,7 @@ OFF = Params(noise_floor_sigma=None)
 
 
 def rows(unit):
-    """(head, param, residual) of a one-unit encoding."""
+    """(flags, param, residual) of a one-unit encoding."""
     rows = unit_rows(unit)
     return rows.block_flags, rows.grid_params, rows.residuals
 
@@ -42,10 +42,10 @@ def test_round_trip_error_bound(name, x, params):
     np.testing.assert_array_equal(lo, X.min(1))
     np.testing.assert_array_equal(hi, X.max(1))
     np.testing.assert_allclose(mean, X.mean(1), rtol=1e-12, atol=1e-12 * np.abs(X).max())
-    head, param = heads_params(units)
+    flags, param = flags_params(units)
     err = np.abs(Y - X).max(1)
     rng = hi - lo
-    dec = (head & BLOCK_FLAG_DECIMAL) != 0
+    dec = (flags & BLOCK_FLAG_DECIMAL) != 0
     for b in range(len(lo)):
         ulps = 4 * np.spacing(np.abs(X[b]).max())  # x - lo and lo + q * step each round once
         if dec[b]:
@@ -68,8 +68,8 @@ def test_decimal_bit_exact(d, f32):
     decimals = K / 10.0 ** d
     x = decimals.astype(np.float32).astype(np.float64) if f32 else decimals
     units, _, _, _ = encode_series(x)
-    head, _ = heads_params(units)
-    assert (head & BLOCK_FLAG_DECIMAL).all()
+    flags, _ = flags_params(units)
+    assert (flags & BLOCK_FLAG_DECIMAL).all()
     y = decode_series(units)
     np.testing.assert_array_equal(y, decimals)
     np.testing.assert_array_equal(y.astype(np.float32), x.astype(np.float32))
@@ -97,8 +97,8 @@ def test_order_independence(name, orders):
     ref_units, _, _, _ = encode_series(x)
     units, _, _, _ = encode_series(x, Params(diff_orders=orders))
     np.testing.assert_array_equal(decode_series(units), decode_series(ref_units))
-    head, _ = heads_params(units)
-    assert set(np.unique(head & BLOCK_FLAG_ORDER).tolist()) <= orders
+    flags, _ = flags_params(units)
+    assert set(np.unique(flags & BLOCK_FLAG_ORDER).tolist()) <= orders
 
 
 def test_constant_block():
@@ -125,8 +125,8 @@ def test_decimal_too_wide_falls_back():
     """More than 2^16 decimal steps across the block: the power-of-two grid."""
     x = np.round(np.linspace(0, 100_000, 1000) + 0.1 * np.arange(1000) % 1, 3)  # 0.001 grid, 1e8 steps
     units, _, _, _ = encode_series(x, OFF)
-    head, _ = heads_params(units)
-    assert not (head & BLOCK_FLAG_DECIMAL).any()
+    flags, _ = flags_params(units)
+    assert not (flags & BLOCK_FLAG_DECIMAL).any()
 
 
 @pytest.mark.parametrize("n", [1, 7, 999, 1000, 1001, 59_999, 60_000, 60_001, 150_500])
@@ -216,7 +216,7 @@ def test_subnormal_ranges(make, lossless, params):
     y = decode_series(units)
     err = np.abs(y - x).reshape(-1, 1000).max(1)
     assert (err <= (hi - lo) / (2 ** params.min_quantize_bits - 0.5)).all()
-    _, param = heads_params(units)
+    _, param = flags_params(units)
     assert (err[param == -1074] == 0).all()
     if lossless and params.max_quantize_bits == 16 and params.noise_floor_sigma is None:  # noise may gate
         assert (param == -1074).all()
@@ -418,10 +418,10 @@ def test_bad_block_sizes_are_rejected():
     with pytest.raises(ValueError, match="add up"):
         fluxcode.decode_unit(rebuilt(overflow))
 
-    def head(b):
+    def flags(b):
         b[1] = 1  # the empty block's flags
     with pytest.raises(ValueError, match="block 1: block flags"):
-        fluxcode.decode_unit(rebuilt(head))
+        fluxcode.decode_unit(rebuilt(flags))
 
     def param(b):
         b[3 * 3 + 1] = 1  # byte 0 of the empty block's grid parameter

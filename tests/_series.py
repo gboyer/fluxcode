@@ -26,7 +26,7 @@ def unit_rows(unit):
     return _unit.read_rows(_unit.decompress(unit))
 
 
-def heads_params(units):
+def flags_params(units):
     hp = [(unit_rows(u).block_flags, unit_rows(u).grid_params) for u in units]
     return np.concatenate([h for h, _ in hp]), np.concatenate([p for _, p in hp])
 
@@ -34,7 +34,7 @@ def heads_params(units):
 def gated(x, f=0.25):
     """Per block: did the noise floor coarsen the step? (Decimal detection off: p isn't an exponent.)"""
     units, lo, hi, _ = encode_series(x, Params(noise_floor_sigma=f, decimal_detection=False))
-    _, param = heads_params(units)
+    _, param = flags_params(units)
     fine = np.array([_encoder.range_exponent(a, b, 16) for a, b in zip(lo, hi)])
     return param > fine
 

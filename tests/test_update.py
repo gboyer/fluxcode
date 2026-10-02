@@ -166,7 +166,7 @@ def test_update_with_non_finite_blocks():
 
 @pytest.mark.parametrize("head_bits", [0x10, 0x20, 0x40, 0x80])
 def test_update_refuses_units_it_cannot_read(head_bits):
-    """A unit with reserved head bits (a future feature), or the irregular time bit (0x10) without a
+    """A unit with reserved flags bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""
     _, unit, _, _, _ = encoded()
     raw_body = _bitpacking.write_unit(*unit_rows(unit)[:6])
@@ -181,7 +181,7 @@ def test_update_refuses_units_it_cannot_read(head_bits):
 def test_update_refuses_out_of_range_parameters():
     _, unit, _, _, _ = encoded()
 
-    def bad_param(head, sizes, param, *_):
+    def bad_param(flags, sizes, param, *_):
         param[2] = 5000
 
     with pytest.raises(ValueError, match="block 2: parameter"):
@@ -192,7 +192,7 @@ def test_update_refuses_out_of_range_parameters():
 def test_non_finite_float_anchors_are_rejected(anchor):
     _, unit, _, _, _ = encoded()
 
-    def bad_anchor(head, sizes, param, anchors, *_):
+    def bad_anchor(flags, sizes, param, anchors, *_):
         anchors.view(np.float64)[4] = anchor
 
     with pytest.raises(ValueError, match="block 4: anchor"):
@@ -204,7 +204,7 @@ def test_out_of_range_decimal_anchors_are_rejected():
     unit, _, _, _ = fluxcode.encode_unit(x, Params(noise_floor_sigma=None))
     assert (unit_rows(unit).block_flags & _format.BLOCK_FLAG_DECIMAL).all()
 
-    def bad_anchor(head, sizes, param, anchors, *_):
+    def bad_anchor(flags, sizes, param, anchors, *_):
         anchors[1] = 1 << 52
 
     with pytest.raises(ValueError, match="block 1: anchor"):

@@ -44,8 +44,8 @@ def test_accepts_lists_and_float32():
 def exponents(x, params):
     units, lo, hi, _ = encode_series(x, params)
     rows = unit_rows(units[0])
-    head, param = rows.block_flags, rows.grid_params
-    return head, param, hi - lo
+    flags, param = rows.block_flags, rows.grid_params
+    return flags, param, hi - lo
 
 
 @pytest.mark.parametrize("kind", KINDS)

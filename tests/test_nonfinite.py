@@ -231,9 +231,9 @@ def test_whole_blocks_between_finite_ones(pname):
     x = np.concatenate(blocks)
     check_round_trip(x, PARAMS[pname])
     unit, _, _, _ = fluxcode.encode_unit(x, PARAMS[pname])
-    head, _, _, _, _, codes, _ = unit_rows(unit)
+    flags, _, _, _, _, codes, _ = unit_rows(unit)
     codes = codes.reshape(-1, L)
-    assert [bool(h & BLOCK_FLAG_NONFINITE) for h in head] == [False, True, False, True, False, True, True, False, True]
+    assert [bool(h & BLOCK_FLAG_NONFINITE) for h in flags] == [False, True, False, True, False, True, True, False, True]
     assert (codes[1] == 1).all() and (codes[3] == 2).all() and (codes[5] == 3).all()
 
 
