@@ -2,10 +2,11 @@
 # Copyright (c) 2026 Garry Boyer
 """Per-unit table for combining the layout heuristic with block flushing: the real compressed
 unit size (header included) of each layout (bit planes, byte planes) under each framing (one
-block run as today, a flush after every plane / every 4 planes / every 8 planes), plus the
-features a one-pass rule could use. Same signals as corpus.py (same seeds) and the report's.
+block run as today, a flush after every plane / every 4 planes / every 8 planes, and the encoder's
+rule: a flush after each plane with more than 1/16 of its bytes non-zero), plus the features a
+one-pass rule could use. Needs the branch's fluxcode (PYTHONPATH=<repo>) for `flush_points`. Same signals as corpus.py (same seeds) and the report's.
 
-    uv run python plane_layout/table.py     # writes table_fit.npz, table_test.npz, table_std.npz (~2 min)
+    PYTHONPATH=<repo> uv run python plane_layout/table.py     # writes table_fit.npz, table_test.npz, table_std.npz (~2 min)
 """
 
 import os
@@ -25,9 +26,22 @@ from fluxcode import Params, _format, _unit
 EVERY = (1, 4, 8)
 
 
+def pooled(unit):
+    """Unit size with the body in one block run (what the unit-level encoder did before flushing)."""
+    body = _unit.decompress(unit).raw_body
+    return _format.HEADER_BYTES + len(_unit.zstd()[0].compress(body.data))
+
+
+def dense(unit):
+    """The unit re-framed with the encoder's rule (no small-unit retry)."""
+    parsed = _unit.decompress(unit)
+    cuts = _format.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, parsed.header.byte_planes)
+    return unit[:_format.HEADER_BYTES] + _unit.compress_body(parsed.raw_body, cuts)
+
+
 def row(x, mx=16, nf=0.25):
     units = {m: fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf, planes=m))[0][0] for m in ("bit", "byte")}
-    sizes = {m: [len(units[m])] + [len(reflush(units[m], e)) for e in EVERY] for m in units}
+    sizes = {m: [pooled(units[m])] + [len(reflush(units[m], e)) for e in EVERY] + [len(dense(units[m]))] for m in units}
     parsed = _unit.decompress(units["bit"])
     start = _format.residual_start(parsed.header.num_blocks, parsed.has_time)
     g = int(parsed.layout.group_offsets[-1])

@@ -236,33 +236,52 @@ bits/sample against today's best of bit and byte planes):
 
 Nibble planes are left out: they need a format change, and best of 3 needs a third encode.
 
-From a per-unit table of real unit sizes (header included) for bit and byte planes under four
-framings, sizes against today's `"best"` (two compressions, one block run); flush = a block ends
-after the columns and after every residual plane:
+From a per-unit table of real unit sizes (header included, `table.py`; summarized by `combine.py`)
+for bit and byte planes under five framings, sizes against today's `"best"` (two compressions, one
+block run). Framings: a block ends after the columns and after **every plane**, every 4th or 8th
+plane, or after each **dense plane**: one with more than 1/16 of its bytes non-zero (the rule the
+encoder prototype uses). **+ retry**: a flushed frame under 16 KB is also compressed in one block
+run and the smaller kept.
 
 | policy | compressions | fit | held out | report |
 |---|---|---|---|---|
 | today: best of bit/byte | 2 | 0 | 0 | 0 |
-| heuristic (`mean(u > 255)` < 5% → byte) | 1 | +1.5% | +1.4% | +1.2% |
-| heuristic + flush every plane | 1 | **−0.05%** | **−0.06%** | **−0.84%** |
-| heuristic + flush every 4 planes | 1 | +0.3% | +0.2% | −0.5% |
-| best of bit/byte + flush every plane | 2 | −1.9% | −1.8% | −2.0% |
-| oracle over all 8 layout × framing combinations | 8 | −2.0% | −1.9% | −2.1% |
+| heuristic (`mean(u > 255)` < 5% → byte), one block run | 1 | +1.52% | +1.40% | +1.21% |
+| heuristic, flush every plane | 1 | −0.05% | −0.06% | −0.84% |
+| heuristic, flush every 4 planes | 1 | +0.26% | +0.23% | −0.48% |
+| heuristic, flush every 8 planes | 1 | +0.57% | +0.49% | +0.16% |
+| heuristic, flush dense planes | 1 | −0.12% | −0.12% | −0.98% |
+| **heuristic, flush dense planes + retry (the encoder prototype)** | 1–2 | **−0.16%** | **−0.17%** | **−0.98%** |
+| always bit planes, flush dense planes + retry | 1–2 | +1.23% | +0.67% | −1.12% |
+| best of bit/byte, flush every plane | 2 | −1.93% | −1.77% | −2.01% |
+| best of bit/byte, flush dense planes | 2 | −2.17% | −1.97% | −2.17% |
+| best of bit/byte, flush dense planes + retry | 2–3 | −2.19% | −2.00% | −2.19% |
+| oracle over all 10 layout × framing combinations | 10 | −2.22% | −2.03% | −2.19% |
 
 - Flush and the heuristic add up: **the heuristic plus flushing matches today's size with one
   compression instead of two**. Flushing helps the heuristic more than it helps best-of-two,
-  because with a table per plane bit planes stop being the poor layout (flushed bit planes alone
-  are +1.8%, +1.2%, −0.5%).
-- The best threshold for the heuristic is the same with flushing (5%: the scan is flat from 1% to
-  5% and rises above 7.5%).
-- Flushing helps big units and hurts tiny ones. By unit size (fit set): under 1 KB flushing every
-  plane costs 8.5% in total (median +12 bytes; better on 11% of units), 1–10 KB −0.5%, 10–30 KB
-  +0.7% *saved*, 30–60 KB +1.2%, over 60 KB +2.6% saved.
-- Two cheap guards fix the tiny units: (1) end a block after a plane only if more than 1/16 of its
-  bytes are non-zero (the high planes of small residuals add a block header and table for nothing):
-  −3.25% instead of −2.86% on bit planes, and the mean per-unit penalty falls from +3.4% to +0.7%;
-  (2) if the flushed frame comes out under 16 KB, also compress in one block run and keep the
-  smaller: worst unit +2.9% instead of +136%, total another −0.05%.
+  because with a table per plane bit planes stop being the poor layout.
+- Cutting only after dense planes beats cutting after every plane (−0.12% against −0.05% for the
+  heuristic, −2.17% against −1.93% for best-of-two), and it is cheaper: fewer blocks.
+- The heuristic's threshold is the same with this framing: byte iff fewer than 5% of residuals
+  reach 256 (the scan is flat from 1% to 5%, and worse from 7.5%).
+- Flushing helps big units and hurts tiny ones (fit set, heuristic layout, total bytes saved against
+  one block run; 'worse' = share of units that grow):
+
+| one-run unit size | units | every plane | dense planes | dense + retry |
+|---|---|---|---|---|
+| under 1 KB | 349 | 8.5% bigger (86% worse) | 5.2% bigger (75% worse) | +0.6% saved (0% worse) |
+| 1–3 KB | 97 | 0.5% bigger | +0.9% saved | +3.3% saved |
+| 3–10 KB | 148 | 0.5% bigger | 0.3% bigger | +0.9% saved |
+| 10–30 KB | 427 | +0.7% saved | +0.8% saved | +0.8% saved |
+| 30–60 KB | 736 | +1.2% saved | +1.2% saved | +1.2% saved |
+| over 60 KB | 243 | +2.6% saved | +2.7% saved | +2.7% saved |
+| worst unit | | +136% | +91% | +2.9% |
+| mean per-unit change | | +1.70% | +0.57% | −1.23% |
+
+  Without the retry the tiny units are still worse (their frames are a few hundred bytes, so every
+  block's header and table shows); the retry fixes them at a cost of one extra, cheap compression on
+  the 25–35% of units whose frame is small.
 
 ### Integration in the encoder (prototype on this branch, `fluxcode/`)
 
