@@ -12,7 +12,7 @@
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use zstd_safe::zstd_sys::ZSTD_EndDirective::{ZSTD_e_continue, ZSTD_e_end, ZSTD_e_flush};
+use zstd_safe::zstd_sys::ZSTD_EndDirective::{ZSTD_e_end, ZSTD_e_flush};
 use zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer};
 
 const BLOCK_FLAG_NONFINITE: u8 = 0x08;
@@ -27,6 +27,8 @@ const BYTE_PLANES_MAX_SHARE: f64 = 0.01;
 
 /// A unit's rows and the offsets of each block in the samples, residual groups and code groups.
 struct Rows<'a> {
+    n: usize,
+    ng: usize,
     flags: &'a [u8],
     sizes: &'a [i64],
     params: &'a [i64],
@@ -60,10 +62,10 @@ impl<'a> Rows<'a> {
             go[b + 1] = go[b] + groups;
             co[b + 1] = co[b] + if flags[b] & BLOCK_FLAG_NONFINITE != 0 { groups } else { 0 };
         }
-        if residuals.len() != so[n] || (co[n] > 0 && codes.len() != so[n]) {
+        if residuals.len() != so[n] || codes.len() != so[n] {
             return Err(mismatch());
         }
-        Ok(Rows { flags, sizes, params, anchors, residuals, codes, so, go, co })
+        Ok(Rows { n, ng: go[n], flags, sizes, params, anchors, residuals, codes, so, go, co })
     }
 }
 
@@ -86,9 +88,7 @@ fn transpose8(mut x: u64) -> u64 {
 /// the zigzagged residuals as a low and a high byte plane (each block padded with zeros to whole groups
 /// of 8), then the non-finite code planes.
 fn write_body(r: &Rows) -> Vec<u8> {
-    let n = r.flags.len();
-    let ng = r.go[n];
-    let ncg = r.co[n];
+    let (n, ng, ncg) = (r.n, r.ng, r.co[r.n]);
     let res_start = METADATA_BYTES_PER_BLOCK * n;
     let mut raw = vec![0u8; res_start + 16 * ng + 2 * ncg];
     let (params, anchors) = ((1 + 2) * n, (1 + 2 + 2) * n);
@@ -116,14 +116,23 @@ fn write_body(r: &Rows) -> Vec<u8> {
         }
         if r.flags[b] & BLOCK_FLAG_NONFINITE != 0 {
             let c0 = r.co[b];
-            for (g, chunk) in r.codes[s0..s0 + len].chunks(8).enumerate() {
-                let (mut b0, mut b1) = (0u8, 0u8);
-                for (k, &c) in chunk.iter().enumerate() {
-                    b0 |= (c & 1) << k;
-                    b1 |= ((c >> 1) & 1) << k;
-                }
-                p0[c0 + g] = b0;
-                p1[c0 + g] = b1;
+            let block = &r.codes[s0..s0 + len];
+            let full = block.chunks_exact(8);
+            let tail = full.remainder();
+            let mut g = 0;
+            for chunk in full {
+                // byte 0 of the transpose holds every code's low bit, byte 1 the high bit
+                let t = transpose8(u64::from_le_bytes(chunk.try_into().unwrap()));
+                p0[c0 + g] = t as u8;
+                p1[c0 + g] = (t >> 8) as u8;
+                g += 1;
+            }
+            if !tail.is_empty() {
+                let mut word = [0u8; 8];
+                word[..tail.len()].copy_from_slice(tail);
+                let t = transpose8(u64::from_le_bytes(word));
+                p0[c0 + g] = t as u8;
+                p1[c0 + g] = (t >> 8) as u8;
             }
         }
     }
@@ -134,18 +143,63 @@ fn write_body(r: &Rows) -> Vec<u8> {
 /// into one byte of each of the 16 bit planes. The rest of the body is the same.
 fn to_bit_planes(byte_body: &[u8], n: usize, ng: usize) -> Vec<u8> {
     let start = METADATA_BYTES_PER_BLOCK * n;
-    let mut raw = byte_body.to_vec();
-    let (low, high) = byte_body[start..start + 16 * ng].split_at(8 * ng);
-    let planes = &mut raw[start..start + 16 * ng];
-    for (g, (lw, hw)) in low.chunks_exact(8).zip(high.chunks_exact(8)).enumerate() {
-        let lo = transpose8(u64::from_le_bytes(lw.try_into().unwrap())).to_le_bytes();
-        let hi = transpose8(u64::from_le_bytes(hw.try_into().unwrap())).to_le_bytes();
+    let end = start + 16 * ng;
+    let mut raw = Vec::with_capacity(byte_body.len());
+    raw.extend_from_slice(&byte_body[..start]);
+    raw.resize(end, 0);
+    raw.extend_from_slice(&byte_body[end..]);
+    let (low, high) = byte_body[start..end].split_at(8 * ng);
+    let planes = &mut raw[start..end];
+    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().unwrap());
+    // 8 groups at a time: bit-transpose each group's word, then transpose the 8x8 bytes of the 8 results
+    // so that each plane takes the 8 bytes of its 8 groups in one store
+    let batches = ng / 8;
+    for (i, (lw, hw)) in low.chunks_exact(64).zip(high.chunks_exact(64)).take(batches).enumerate() {
+        let g = 8 * i;
+        let mut lo: [u64; 8] = std::array::from_fn(|j| transpose8(word(&lw[8 * j..8 * j + 8])));
+        let mut hi: [u64; 8] = std::array::from_fn(|j| transpose8(word(&hw[8 * j..8 * j + 8])));
+        transpose_bytes(&mut lo);
+        transpose_bytes(&mut hi);
+        for k in 0..8 {
+            planes[k * ng + g..k * ng + g + 8].copy_from_slice(&lo[k].to_le_bytes());
+            planes[(8 + k) * ng + g..(8 + k) * ng + g + 8].copy_from_slice(&hi[k].to_le_bytes());
+        }
+    }
+    for g in 8 * batches..ng {
+        let lo = transpose8(word(&low[8 * g..8 * g + 8])).to_le_bytes();
+        let hi = transpose8(word(&high[8 * g..8 * g + 8])).to_le_bytes();
         for k in 0..8 {
             planes[k * ng + g] = lo[k];
             planes[(8 + k) * ng + g] = hi[k];
         }
     }
     raw
+}
+
+/// Transposes the 8x8 matrix of bytes whose rows are the words (byte j of word k becomes byte k of word j).
+#[inline(always)]
+fn transpose_bytes(w: &mut [u64; 8]) {
+    #[inline(always)]
+    fn swap(w: &mut [u64; 8], i: usize, j: usize, shift: u32, mask: u64) {
+        let t = ((w[i] >> shift) ^ w[j]) & mask;
+        w[j] ^= t;
+        w[i] ^= t << shift;
+    }
+    const M8: u64 = 0x00FF00FF00FF00FF;
+    const M16: u64 = 0x0000FFFF0000FFFF;
+    const M32: u64 = 0x00000000FFFFFFFF;
+    swap(w, 0, 1, 8, M8);
+    swap(w, 2, 3, 8, M8);
+    swap(w, 4, 5, 8, M8);
+    swap(w, 6, 7, 8, M8);
+    swap(w, 0, 2, 16, M16);
+    swap(w, 1, 3, 16, M16);
+    swap(w, 4, 6, 16, M16);
+    swap(w, 5, 7, 16, M16);
+    swap(w, 0, 4, 32, M32);
+    swap(w, 1, 5, 32, M32);
+    swap(w, 2, 6, 32, M32);
+    swap(w, 3, 7, 32, M32);
 }
 
 /// Share of residual slots whose zigzagged residual reaches 2^BYTE_PLANES_BIT, from a byte-plane body.
@@ -218,8 +272,7 @@ fn compress_with_header(header: &[u8], body: &[u8], cuts: &[usize], level: i32) 
         let mut prev = 0;
         for &cut in cuts {
             if prev < cut && cut < body.len() {
-                run(&body[prev..cut], ZSTD_e_continue)?;
-                run(&[], ZSTD_e_flush)?;
+                run(&body[prev..cut], ZSTD_e_flush)?;
                 prev = cut;
             }
         }
@@ -230,7 +283,7 @@ fn compress_with_header(header: &[u8], body: &[u8], cuts: &[usize], level: i32) 
 
 /// A unit as its header and the smallest frame of its body over the zstd levels (ties keep the earlier level).
 fn build(r: &Rows, body: &[u8], byte_planes: bool, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
-    let (n, ng) = (r.flags.len(), r.go[r.flags.len()]);
+    let (n, ng) = (r.n, r.ng);
     let mut header = [0u8; HEADER_BYTES];
     header[0] = FORMAT_VERSION;
     header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
@@ -248,7 +301,7 @@ fn build(r: &Rows, body: &[u8], byte_planes: bool, flush: bool, levels: &[i32]) 
 }
 
 fn compress_unit_impl(r: &Rows, layout: &str, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
-    let (n, ng) = (r.flags.len(), r.go[r.flags.len()]);
+    let (n, ng) = (r.n, r.ng);
     // the byte-plane body is the cheaper one to write; the bit-plane body is derived from it
     let byte_body = write_body(r);
     match layout {
