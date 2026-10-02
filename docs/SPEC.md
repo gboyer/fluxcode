@@ -265,7 +265,7 @@ average, because of the power-of-two floor) on top of noise σ.
   random walks pass 21% of the time at 9 samples, 9.4% at 64, 4.3% at 128, 0.8% at 256 and never
   at 1000, while white noise passes 96% of the time at 256. So 256 is a chosen trade-off (about
   1% false positives, 5% missed white noise), not a hard limit. Smaller blocks keep the B-bit step.
-- **Re-encoding decoded data** (a straddling `update_time_blocks`) computes the noise floor again
+- **Re-encoding decoded data** (a merging `update_time_blocks`) computes the noise floor again
   from the merged block: kept samples, now decoded, plus the new ones. Nothing is reused, as when
   encoding from scratch. Quantizing adds white noise of variance s²/12 with s ≤ f·σ = σ/4, so σ
   can rise by at most √(1 + 1/192) − 1 ≈ 0.26%; the estimate also moves by a little either way.
@@ -597,12 +597,15 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   series must be non-decreasing throughout, which it checks where a new block meets its non-empty
   neighbours. Without a target, the updated unit is byte-identical to encoding the updated
   series from scratch (every block is encoded independently).
-- **`update_time_blocks` touches only the blocks its ranges meet.** It discards every sample timed
-  in the ranges (`[start, end)` each) and adds the new samples, which must lie in them. A block
-  whose time span the ranges don't meet is carried over as `update` carries it, without being
-  decoded. A block wholly inside the ranges is encoded from the new samples alone. A block
-  straddling a range edge is decoded, keeps its samples outside the ranges and is re-encoded with
-  the new ones. The kept samples are already points of the absolute grid (§5.4), so on the same
+- **`update_time_blocks` is an upsert plus a range deletion, touching only the blocks it affects.**
+  It first discards every sample timed in the optional delete ranges (`[start, end)` each), then
+  adds the new samples, which may be timed anywhere (a new sample inside a range is kept). Every
+  existing sample with the same timestamp as a new one is discarded too: the new sample replaces
+  it. New samples sharing a timestamp are all kept, in their order. With no ranges it is an
+  upsert; with no samples, a deletion. A block that no range meets and no new sample falls in is
+  carried over as `update` carries it, without being decoded. A block wholly inside the ranges is
+  encoded from the new samples alone. Any other affected block is decoded, keeps its surviving
+  samples and is re-encoded with the new ones. The kept samples are already points of the absolute grid (§5.4), so on the same
   or a finer step they come back bit for bit, however the merged block's min and max moved. Only a
   coarser step rounds them again, once, without bias (ties to even); repeated coarsening adds a
   geometric series, so their error stays under one step of the coarsest grid the block has used.
@@ -639,9 +642,10 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 7. **Update:** untouched blocks decode identically and keep their rows; without a target,
    `update` (replacing blocks with ones of other sizes, emptying and appending past a gap) is
    byte-identical to encoding the updated blocks. `update_time_blocks` is byte-identical to
-   `encode_time_blocks` of the expected series (old samples outside the ranges plus the new
-   ones) for ranges filling empty blocks, covering whole blocks, straddling block edges and
-   appending; it decodes only straddling blocks and accepts ranges as one pair, a list, a `(k, 2)`
+   `encode_time_blocks` of the expected series (old samples outside the ranges and not
+   sharing a time with a new one, plus the new ones) for ranges filling empty blocks, covering
+   whole blocks, straddling block edges, upserts with no ranges (including duplicate times in the
+   new data and in the unit) and appending; it decodes only the blocks it merges and accepts ranges as one pair, a list, a `(k, 2)`
    array of datetime64 or ticks, and naive datetimes.
 8. **Non-finite:** NaN / ±inf runs at a block's start, middle and end, scattered, alternating,
    and whole blocks, on every signal kind and with the target: exact NaN positions and infinities,

@@ -5,7 +5,7 @@
 
 The start time and duration aren't stored: the caller keeps them (typically the start is part
 of the unit's storage key) and passes the same ones to update_time_blocks. Times, the start,
-the duration and update ranges are all converted to int64 ticks in the times' unit.
+the duration and delete ranges are all converted to int64 ticks in the times' unit.
 """
 
 import bisect
@@ -97,11 +97,11 @@ def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -
     return ticks
 
 
-def to_ranges(update_ranges: RangesLike, time_unit: int) -> np.ndarray:
-    """Converts update ranges into sorted, disjoint [start, end) ranges of ticks.
+def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
+    """Converts delete ranges into sorted, disjoint [start, end) ranges of ticks.
 
     Args:
-        update_ranges: One (start, end) pair, or an iterable of them, or an array of shape
+        delete_ranges: One (start, end) pair, or an iterable of them, or an array of shape
             (k, 2), of times like start_time. Ranges may overlap or touch; empty ones are
             ignored.
         time_unit: The ticks' TimeUnit code.
@@ -113,30 +113,30 @@ def to_ranges(update_ranges: RangesLike, time_unit: int) -> np.ndarray:
     Raises:
         ValueError: If the ranges aren't pairs of times, or a range ends before it starts.
     """
-    if isinstance(update_ranges, np.ndarray) and update_ranges.ndim == 0:
-        raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}")
-    if isinstance(update_ranges, np.ndarray):
-        items = list(update_ranges.reshape(1, 2) if update_ranges.shape == (2,) else update_ranges)
-    elif isinstance(update_ranges, Iterable):
+    if isinstance(delete_ranges, np.ndarray) and delete_ranges.ndim == 0:
+        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")
+    if isinstance(delete_ranges, np.ndarray):
+        items = list(delete_ranges.reshape(1, 2) if delete_ranges.shape == (2,) else delete_ranges)
+    elif isinstance(delete_ranges, Iterable):
         try:
-            items = list(update_ranges)
+            items = list(delete_ranges)
         except TypeError:
-            raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}") from None
+            raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}") from None
         # One pair of times rather than a sequence of pairs
         if len(items) == 2 and not any(isinstance(item, (tuple, list, np.ndarray)) for item in items):
             items = [items]
     else:
-        raise ValueError(f"update_ranges must be (start, end) pairs, got {update_ranges!r}")  # noqa: TRY004
+        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")  # noqa: TRY004
     pairs = []
     for item in items:
         pair = list(item) if isinstance(item, (tuple, list)) or (isinstance(item, np.ndarray) and item.ndim) else None
         if pair is None or len(pair) != 2:
-            raise ValueError(f"update_ranges must be (start, end) pairs, got {item!r}")
-        pairs.append([to_ticks(_scalar(point), time_unit, "update_ranges") for point in pair])
+            raise ValueError(f"delete_ranges must be (start, end) pairs, got {item!r}")
+        pairs.append([to_ticks(_scalar(point), time_unit, "delete_ranges") for point in pair])
     ticks = np.array(pairs, np.int64).reshape(-1, 2)
     backwards = np.flatnonzero(ticks[:, 1] < ticks[:, 0])
     if backwards.shape[0]:
-        raise ValueError(f"update range {int(backwards[0])} ends before it starts")
+        raise ValueError(f"delete range {int(backwards[0])} ends before it starts")
     # Merge into disjoint ranges: sorted by start, each absorbing those that start inside it
     merged: list[list[int]] = []
     for range_start, range_end in sorted(ticks[ticks[:, 1] > ticks[:, 0]].tolist()):
@@ -210,7 +210,7 @@ def update_time_blocks(
     params: Params,
     start_time: TimeLike,
     block_duration: DurationLike,
-    update_ranges: RangesLike,
+    delete_ranges: RangesLike | None,
     time_unit: str | None,
 ) -> UpdatedUnit:
     """Implements fluxcode.update_time_blocks."""
@@ -226,11 +226,7 @@ def update_time_blocks(
         raise ValueError(f"times must be 1-D with one entry per sample ({samples.shape[0]}), got shape {ticks.shape}")
     start = to_ticks(start_time, unit_code, "start_time")
     duration = to_ticks(block_duration, unit_code, "block_duration", duration=True)
-    ranges = to_ranges(update_ranges, unit_code)
-    outside_ranges = np.flatnonzero(~_in_ranges(ticks, ranges))
-    if outside_ranges.shape[0]:
-        outside = int(outside_ranges[0])
-        raise ValueError(f"times must be within update_ranges: sample {outside} at {int(ticks[outside])} isn't")
+    ranges = to_ranges([] if delete_ranges is None else delete_ranges, unit_code)
     new_ids = block_ids(ticks, start, duration)
     if new_ids.shape[0] and (np.diff(ticks) < 0).any():
         raise _unit.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
@@ -254,7 +250,9 @@ def update_time_blocks(
         range_idx = bisect.bisect_right(range_starts, block_start) - 1
         if range_idx >= 0 and range_ends[range_idx] >= block_start + duration:
             covered.add(block_idx)
-    straddling = np.array(sorted(touched - covered), np.int64)
+    # New samples can replace samples of the same time in any existing block they land in
+    upserted = set(np.unique(new_ids[new_ids < num_old_blocks]).tolist())
+    straddling = np.array(sorted((touched | upserted) - covered), np.int64)
     # The time columns, and the residuals of the blocks to decode only
     time_rows = _unit.read_time_rows(parsed, straddling)
     old_values: np.ndarray = np.zeros(0)
@@ -273,10 +271,10 @@ def update_time_blocks(
         if block_idx < num_old_blocks and block_idx not in covered:
             kept_values = old_values[old_offsets[block_idx]:old_offsets[block_idx + 1]]
             kept_ticks = old_ticks[old_offsets[block_idx]:old_offsets[block_idx + 1]]
-            keep = ~_in_ranges(kept_ticks, ranges)
+            keep = ~_in_ranges(kept_ticks, ranges) & ~np.isin(kept_ticks, new_ticks)
             if keep.all() and not new_values.shape[0]:
-                continue  # nothing in this block is in a range
-            # Kept samples are outside the ranges and new ones inside: no tick is shared
+                continue  # nothing in this block is deleted or replaced
+            # No kept sample shares a time with a new one; new samples sharing one keep their order
             merged_ticks = np.concatenate([kept_ticks[keep], new_ticks])
             order = np.argsort(merged_ticks, kind="stable")
             new_values = np.concatenate([kept_values[keep], new_values])[order]

@@ -204,7 +204,7 @@ def encode_hour(x, t, params=Params()):
 
 def update_hour(unit, x, t, ranges, time_unit=None):
     """update_time_blocks of a unit made by encode_hour."""
-    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=MINUTE, update_ranges=ranges,
+    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=MINUTE, delete_ranges=ranges,
                                        time_unit=time_unit)
 
 
@@ -383,7 +383,7 @@ def test_update_time_blocks_discards_only():
     [(datetime.datetime(2026, 3, 1, 12, 30), datetime.datetime(2026, 3, 1, 12, 31))],  # noqa: DTZ001
     [(datetime.datetime(2026, 3, 1, 12, 30), START + 31 * MINUTE)],  # noqa: DTZ001
 ])
-def test_update_range_forms(ranges):
+def test_delete_range_forms(ranges):
     x, t = hour_of_data()
     unit = encode_hour(x, t).unit
     x_new, t_new = new_data([minutes(30, 31)])
@@ -391,7 +391,7 @@ def test_update_range_forms(ranges):
     assert update_hour(unit, x_new, t_new, ranges).unit == ref.unit
 
 
-def test_update_ranges_from_any_iterable():
+def test_delete_ranges_from_any_iterable():
     x, t = hour_of_data()
     unit = encode_hour(x, t).unit
     x_new, t_new = new_data([minutes(30, 31)])
@@ -409,8 +409,6 @@ def test_update_time_blocks_errors():
     x, t = hour_of_data()
     unit = encode_hour(x, t).unit
     x_new, t_new = new_data([minutes(30, 31)])
-    with pytest.raises(ValueError, match="within update_ranges"):
-        update_hour(unit, x_new, t_new, minutes(29, 30))
     with pytest.raises(ValueError, match="ends before it starts"):
         update_hour(unit, x_new, t_new, minutes(31, 30))
     with pytest.raises(ValueError, match=r"\(start, end\) pairs"):
@@ -428,10 +426,10 @@ def test_update_time_blocks_errors():
     # Integer ticks are in the unit's time unit
     by_ticks = update_hour(unit, x_new, t_new.view(np.int64), minutes(30, 31))
     assert by_ticks.unit == update_hour(unit, x_new, t_new, minutes(30, 31)).unit
-    # Samples with no non-empty range to hold them
+    # Empty ranges delete nothing: the new samples are upserted
+    ref = update_hour(unit, x_new, t_new, None).unit
     for empty in ([], [minutes(30, 30)], np.zeros((0, 2), np.int64)):
-        with pytest.raises(ValueError, match="within update_ranges"):
-            update_hour(unit, x_new, t_new, empty)
+        assert update_hour(unit, x_new, t_new, empty).unit == ref
     # 0-d arrays aren't pairs, as the ranges or as one of their items
     with pytest.raises(ValueError, match=r"\(start, end\) pairs"):
         update_hour(unit, x_new, t_new, np.array(5))
@@ -441,6 +439,79 @@ def test_update_time_blocks_errors():
         update_hour(unit, x_new, t_new, [(START, START + MINUTE), np.array(6)])
 
 
+def test_update_time_blocks_upsert_replaces_equal_times():
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    rng = np.random.default_rng(5)
+    pick = np.sort(rng.choice(t.size, 40, replace=False))
+    # Existing times get new values, and some new times land between them or past the end
+    t_new = np.sort(np.concatenate([t[pick], t[pick[:10]] + np.timedelta64(1, "ms"), [START + 62 * MINUTE]]))
+    x_new = np.round(np.linspace(-50, 50, t_new.size), 2)
+    unit2, indices, _, _, _ = update_hour(unit, x_new, t_new, None)
+    drop = np.isin(t, t_new)
+    tt = np.concatenate([t[~drop], t_new])
+    order = np.argsort(tt, kind="stable")
+    xx = np.concatenate([x[~drop], x_new])[order]
+    assert unit2 == encode_hour(xx, tt[order]).unit
+    # Every time a new sample has replaced the old one: no extra samples at those times
+    assert (np.isin(fluxcode.decode_unit(unit2).times, t[pick]).sum()) == len(pick)
+    # The blocks the samples land in, and the empty ones appended to reach the last
+    old_blocks = len(fluxcode.decode_unit(unit).block_sizes)
+    hit = {int((v - START) // MINUTE) for v in t_new}
+    assert indices.tolist() == sorted(hit | set(range(old_blocks, max(hit) + 1)))
+    # Upserting the same samples again changes the bytes of no block's data
+    assert update_hour(unit2, x_new, t_new, None).unit == unit2
+
+
+def test_update_time_blocks_upsert_keeps_duplicate_new_times():
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    stamp = t[100]
+    t_new = np.array([stamp, stamp, stamp, START + 59 * MINUTE + np.timedelta64(5, "ms")])
+    x_new = np.array([1.0, 2.0, 3.0, 4.0])
+    values, times, _ = fluxcode.decode_unit(update_hour(unit, x_new, t_new, None).unit)
+    assert values[times == stamp].tolist() == [1.0, 2.0, 3.0]  # the old sample at stamp is gone
+    assert (times == stamp).sum() == 3
+    # A time already duplicated in the unit is replaced entirely
+    unit = encode_hour(np.array([1.0, 2.0, 3.0]), np.array([START, START, START + MINUTE])).unit
+    values, times, _ = fluxcode.decode_unit(update_hour(unit, np.array([9.0]), np.array([START]), None).unit)
+    assert values.tolist() == [9.0, 3.0]
+
+
+def test_update_time_blocks_delete_then_upsert_anywhere():
+    """New samples may be timed outside the deleted ranges; ones inside a range are kept."""
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    ranges = [minutes(30, 32)]
+    x_new, t_new = new_data([minutes(31, 34)])  # half inside the range, half outside
+    values, times, _ = fluxcode.decode_unit(update_hour(unit, x_new, t_new, ranges).unit)
+    inside = (t >= ranges[0][0]) & (t < ranges[0][1])
+    drop = inside | np.isin(t, t_new)
+    tt = np.concatenate([t[~drop], t_new])
+    order = np.argsort(tt, kind="stable")
+    np.testing.assert_array_equal(times, tt[order])
+    np.testing.assert_array_equal(values, np.concatenate([x[~drop], x_new])[order])
+
+
+def test_update_time_blocks_upsert_decodes_only_blocks_it_lands_in(monkeypatch):
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    decoded = []
+    original = _unit.decode_blocks
+    monkeypatch.setattr(_unit, "decode_blocks",
+                        lambda parsed, ids, *rest: decoded.append(ids.tolist()) or original(parsed, ids, *rest))
+    result = update_hour(unit, np.array([1.0, 2.0]), np.array([t[900], t[2000]]), None)
+    assert decoded == [sorted({int((t[900] - START) // MINUTE), int((t[2000] - START) // MINUTE)})]
+    assert result.indices.tolist() == decoded[0]
+
+
+def test_update_time_blocks_nothing_to_do():
+    x, t = hour_of_data()
+    unit = encode_hour(x, t).unit
+    result = update_hour(unit, [], np.zeros(0, np.int64), None)
+    assert result.unit == unit and result.indices.shape == (0,)
+
+
 def test_update_time_blocks_ranges_past_int64_blocks():
     """With a duration of one tick, a range near int64 maximum is ~2^64 blocks past the start:
     far past the unit's blocks, so discarding it changes nothing."""
@@ -448,5 +519,5 @@ def test_update_time_blocks_ranges_past_int64_blocks():
     unit = fluxcode.encode_time_blocks(np.arange(3.0), np.arange(3) + int64.min + 1, start_time=int64.min + 1,
                                        block_duration=1, time_unit="ns").unit
     result = fluxcode.update_time_blocks(unit, [], np.zeros(0, np.int64), start_time=int64.min + 1, block_duration=1,
-                                         update_ranges=[(int64.max - 10, int64.max)])
+                                         delete_ranges=[(int64.max - 10, int64.max)])
     assert result.unit == unit and result.indices.shape == (0,)

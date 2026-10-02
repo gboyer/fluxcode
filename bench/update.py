@@ -40,7 +40,7 @@ def encode_seconds(x, t):
 
 def update_seconds(unit, x, t, update_range):
     """update_time_blocks of a unit made by encode_seconds."""
-    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=SECOND, update_ranges=update_range)
+    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=SECOND, delete_ranges=update_range)
 
 
 def median_us(call, reps):

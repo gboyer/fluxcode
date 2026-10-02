@@ -178,7 +178,7 @@ def test_straddling_updates_keep_a_bounded_error():
     for _ in range(200):
         center, spread = x[kept].mean(), np.ptp(x[kept])
         new = center + rng.uniform(-2, 2) * spread * rng.uniform(0.5, 2, replaced.sum())
-        unit = fluxcode.update_time_blocks(unit, new, t[replaced], RAW, update_ranges=[(lo, hi)],
+        unit = fluxcode.update_time_blocks(unit, new, t[replaced], RAW, delete_ranges=[(lo, hi)],
                                            start_time=START, block_duration=SECOND).unit
         e = int(unit_rows(unit).grid_params[5])
         y = decode(unit)[kept]

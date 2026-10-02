@@ -346,20 +346,23 @@ def update_time_blocks(
     *,
     start_time: TimeLike,
     block_duration: DurationLike,
-    update_ranges: RangesLike,
+    delete_ranges: RangesLike | None = None,
     time_unit: TimeUnit | None = None,
 ) -> UpdatedUnit:
-    """Replaces the samples in time ranges of a unit made by encode_time_blocks.
+    """Upserts samples into, and deletes time ranges from, a unit made by encode_time_blocks.
 
-    Every existing sample timed within update_ranges is discarded, and the samples of x
-    (which must all be timed within them) take their place. start_time and block_duration
-    must be the ones the unit was encoded with: they aren't stored in it, so they can't be
-    checked.
+    First every existing sample timed within delete_ranges is discarded. Then the samples of
+    x are added: an existing sample with the same timestamp as a new one is replaced, and new
+    samples sharing a timestamp are all kept (in their order). So with only x, it is an
+    upsert; with only delete_ranges, a deletion; with both, a range replacement (x may be
+    timed anywhere: samples in a deleted range are kept, as they're added after it). start_time
+    and block_duration must be the ones the unit was encoded with: they aren't stored in it,
+    so they can't be checked.
 
-    Blocks whose time span doesn't meet a range are carried over untouched, without being
-    decoded or re-encoded. Blocks wholly inside the ranges are encoded from the new samples
-    alone. Blocks that straddle a range boundary are decoded, their samples outside the
-    ranges kept and merged with the new ones, and re-encoded. The kept samples are points of
+    Blocks that no range meets and no new sample falls in are carried over untouched, without
+    being decoded or re-encoded. Blocks wholly inside the ranges are encoded from the new
+    samples alone. Other affected blocks are decoded, their surviving samples merged with the
+    new ones, and re-encoded. The kept samples are points of
     the absolute power-of-two grid, so on the same or a finer step they come back bit for
     bit; only a coarser step rounds them again (once, without bias). However often a block is
     updated, their error stays under one step of the coarsest grid it has used (decimal data
@@ -370,13 +373,13 @@ def update_time_blocks(
 
     Args:
         unit: Existing unit bytes, with a time axis.
-        x: 1D array-like of float64 samples (may be empty: then the update only discards).
+        x: 1D array-like of float64 samples (may be empty: then the update only deletes).
         times: Their timestamps, non-decreasing: datetime64 in the unit's time unit, or
             integer ticks in it.
         params: Encoder configuration parameters.
         start_time: Start of block 0 (see encode_time_blocks).
         block_duration: Length of every block (see encode_time_blocks).
-        update_ranges: The time ranges to replace, each [start, end) with start and end
+        delete_ranges: Optional time ranges to delete, each [start, end) with start and end
             like start_time: one (start, end) pair, an iterable of pairs, or an array of
             shape (k, 2) (datetime64 or integer ticks). Ranges may overlap.
         time_unit: Optional: the unit's time unit, checked if given.
@@ -387,11 +390,11 @@ def update_time_blocks(
         statistics. If nothing changes, the unit is returned as is and indices is empty.
 
     Raises:
-        ValueError: If the unit is corrupt or has no time axis, a sample is timed outside
-            update_ranges or before start_time, the times decrease, a block or the unit would
+        ValueError: If the unit is corrupt or has no time axis, a sample is timed before
+            start_time, the times decrease, a block or the unit would
             hold too many samples, or the time arguments are invalid.
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
     return _time_blocks.update_time_blocks(
-        unit, x, times, params, start_time, block_duration, update_ranges, time_unit
+        unit, x, times, params, start_time, block_duration, delete_ranges, time_unit
     )

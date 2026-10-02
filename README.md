@@ -94,13 +94,13 @@ unit, indices, mins, maxs, means = fluxcode.update(unit, {3: new_blocks[0], 30: 
 assert fluxcode.decode_unit(unit).values.size == 30_700
 
 # Blocks of a fixed duration (here one second): blocks with no data are empty, and the unit
-# grows as data arrives. update_time_blocks replaces what the unit holds in time ranges.
+# grows as data arrives. update_time_blocks upserts samples and deletes time ranges.
 ms = np.datetime64("2026-09-27T00:00", "ms") + np.arange(x.size)
 hour = {"start_time": ms[0], "block_duration": np.timedelta64(1, "s")}
 first, late = slice(0, 10_000), slice(10_000, 20_000)      # 20 s of 30; seconds 10-19 come later
 unit, *_ = fluxcode.encode_time_blocks(x[first], ms[first], **hour)
 gap = (ms[10_000], ms[20_000])                              # [start, end)
-unit, *_ = fluxcode.update_time_blocks(unit, x[late], ms[late], update_ranges=gap, **hour)
+unit, *_ = fluxcode.update_time_blocks(unit, x[late], ms[late], delete_ranges=gap, **hour)
 assert fluxcode.decode_unit(unit).block_sizes.tolist() == [1000] * 20
 
 # Long series: encode() splits into units; decode() returns one (values, times) per unit.
@@ -141,11 +141,13 @@ which set the step to 0.25σ.
   blocks decode to identical values. `times` (a dict with the same keys) is required exactly when
   the unit has a time axis. The update functions return `UpdatedUnit(unit, indices, block_min,
   block_max, block_mean)`: the new unit and the statistics of the blocks they re-encoded.
-- `update_time_blocks(unit, x, times, params, *, start_time, block_duration, update_ranges,
-  time_unit=None)`: discards the unit's samples in `update_ranges` (`[start, end)` pairs: one pair, a list, or a
-  `(k, 2)` array) and puts the new samples, all timed within them, in their place. Blocks the
-  ranges don't meet are carried over without being decoded; blocks that straddle a range edge are
-  decoded, merged and re-encoded: their kept samples are grid points, so they come back bit for
+- `update_time_blocks(unit, x, times, params, *, start_time, block_duration, delete_ranges=None,
+  time_unit=None)`: an upsert plus a range deletion. It first deletes the unit's samples in
+  `delete_ranges` (`[start, end)` pairs: one pair, a list, or a `(k, 2)` array), then adds the new
+  samples, which may be timed anywhere: an existing sample with the same timestamp as a new one is
+  replaced, and new samples sharing a timestamp are all kept. Samples only is an upsert, ranges
+  only a deletion, both a range replacement. Blocks that no range meets and no new sample falls in
+  are carried over without being decoded; the others are decoded, merged and re-encoded: their kept samples are grid points, so they come back bit for
   bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
@@ -202,7 +204,7 @@ From [docs/SPEC.md §8](docs/SPEC.md#8-guarantees), which states them exactly:
   `block_max` that encode returns are the samples' own: allow half a step either way if you use
   them as hard bounds on decoded values.
 - **Updates don't drift.** Decoded values are grid points, so re-encoding them on the same or a
-  finer step returns them bit for bit. Samples a straddling `update_time_blocks` keeps stay within
+  finer step returns them bit for bit. Samples an `update_time_blocks` keeps in a block it re-encodes stay within
   one step of the coarsest grid their block has used, however many times it runs.
 - **Decimal data is lossless.** Values that are decimals of p places (as parsed from text) decode
   to the identical float64, as long as the block spans fewer than 2^16 decimal steps. Decimals

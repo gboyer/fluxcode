@@ -28,10 +28,12 @@ Typical usage:
     # Replace block 3 and append a block:
     unit, indices, mins, maxs, means = fluxcode.update(unit, {3: block3, 4: block4})
 
-    # An hour in one-minute blocks, then replace the data of a few minutes:
+    # An hour in one-minute blocks, then replace the data of a few minutes. New samples
+    # replace existing ones with the same times; delete_ranges are deleted first (with
+    # only samples it is an upsert, with only ranges a deletion):
     hour = dict(start_time=np.datetime64("2026-01-01T10:00"), block_duration=np.timedelta64(1, "m"))
     unit, *_ = fluxcode.encode_time_blocks(x, t, **hour)
-    unit, *_ = fluxcode.update_time_blocks(unit, x_new, t_new, update_ranges=(t0, t1), **hour)
+    unit, *_ = fluxcode.update_time_blocks(unit, x_new, t_new, delete_ranges=(t0, t1), **hour)
 """
 
 from ._api import (
