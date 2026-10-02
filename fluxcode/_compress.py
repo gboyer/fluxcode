@@ -11,6 +11,7 @@ here are checked against its in tests/test_rust.py.
 import importlib
 import os
 import threading
+import warnings
 from types import ModuleType
 from typing import NamedTuple
 
@@ -33,7 +34,16 @@ def _load_rust() -> ModuleType | None:
     except ImportError:
         return None
     # An extension built before this interface (or after it changed) falls back to Python
-    return module if getattr(module, "INTERFACE_VERSION", None) == RUST_INTERFACE_VERSION else None
+    if getattr(module, "INTERFACE_VERSION", None) != RUST_INTERFACE_VERSION:
+        warnings.warn(
+            "the installed fluxcode_rs doesn't match this fluxcode (interface version "
+            f"{getattr(module, 'INTERFACE_VERSION', None)}, expected {RUST_INTERFACE_VERSION}): using the Python "
+            "path; rebuild it (uv sync --extra rust --reinstall-package fluxcode-rs)",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
+    return module
 
 
 _rust: ModuleType | None = _load_rust()

@@ -27,6 +27,9 @@ mod planes;
 
 use format::{Rows, Shape};
 
+/// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the extension.
+const INTERFACE_VERSION: u32 = 1;
+
 /// compress_unit(block_flags, block_sizes, grid_params, value_anchors, residuals, codes,
 ///               layout, flush, zstd_levels) -> bytes
 /// A unit without a time axis: header plus zstd frame, as _compress.compress builds it.
@@ -100,7 +103,7 @@ fn fluxcode_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(zstd_version, m)?)?;
     m.add_function(wrap_pyfunction!(simd_path, m)?)?;
     // fluxcode/_compress.py loads the extension only if its RUST_INTERFACE_VERSION is this
-    m.add("INTERFACE_VERSION", 1)?;
+    m.add("INTERFACE_VERSION", INTERFACE_VERSION)?;
     // the policy constants, which fluxcode/_compress.py has too: tests/test_rust.py compares them
     m.add("FLUSH_MIN_DENSITY", compress::FLUSH_MIN_DENSITY)?;
     m.add("BYTE_PLANES_BIT", compress::BYTE_PLANES_BIT)?;

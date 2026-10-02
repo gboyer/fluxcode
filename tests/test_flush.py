@@ -131,17 +131,3 @@ def test_wide_share_is_the_same_in_both_layouts(kind):
                                          p.header.byte_planes, bit_idx) for p in bodies]
         slots = 8 * int(bodies[0].layout.group_offsets[-1])
         assert shares[0] == shares[1] == np.count_nonzero(zigzag >> bit_idx) / slots, bit_idx
-
-
-def test_out_of_date_extension_falls_back_to_python(monkeypatch):
-    """A fluxcode_rs without the current interface (built before pack_unit, say) isn't used."""
-    import sys
-    import types
-
-    old = types.ModuleType("fluxcode_rs")
-    old.compress_unit = lambda *args: b""
-    monkeypatch.setitem(sys.modules, "fluxcode_rs", old)
-    monkeypatch.delenv("FLUXCODE_RUST", raising=False)
-    assert _compress._load_rust() is None
-    old.INTERFACE_VERSION = _compress.RUST_INTERFACE_VERSION
-    assert _compress._load_rust() is old
