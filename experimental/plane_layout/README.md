@@ -129,6 +129,68 @@ the low byte's groups and one for the high byte's.
   bit and byte planes under zstd 3 averages 3.92: zstd's gain over a memoryless model comes from
   matches and structure, though in 47% of units a memoryless model would already beat it.
 
+## Separate frames and the rest of the body (`sections.py`)
+
+The body is the per-block columns, the 16 residual planes, the non-finite code planes (flagged
+blocks only) and the time residual planes (irregular blocks only), one zstd frame today. Mean
+compressed bytes per unit over 18 units per scenario (6 signals × 3 seeds), `today` = best of bit
+and byte planes as one frame; **A** = residuals as 4 nibble frames plus one frame for the columns,
+code planes and time residuals; **B** = a frame each for the columns, the code planes and the time
+residuals; **C** = all of those pooled into the first nibble frame:
+
+| scenario | columns | residuals | code planes | time residuals | today | A | B | C |
+|---|---|---|---|---|---|---|---|---|
+| plain | 126 | 46,922 | | | 47,041 | +2.8% | +2.8% | +3.1% |
+| regular clock | 173 | 46,922 | | | 47,094 | +2.7% | +2.7% | +2.9% |
+| clock with gaps | 196 | 46,922 | | 53 | 47,222 | +2.6% | +2.6% | +2.8% |
+| noisy clock | 316 | 46,922 | | 54,009 | 100,820 | +1.7% | +1.7% | +3.4% |
+| NaN/inf blocks | 151 | 50,721 | 452 | | 51,360 | −0.4% | −0.4% | −0.1% |
+| NaN/inf + noisy clock | 342 | 50,721 | 452 | 54,009 | 104,134 | +1.2% | +1.2% | +2.8% |
+
+(The first four columns are each section compressed alone.) The columns and code planes are tiny
+(0.1–0.5 KB per unit): putting them in one extra frame (A) or one each (B) makes no difference, and
+pooling them into a nibble frame (C) is slightly worse. So the extras don't constrain the idea; they
+go in one more frame. A format using several frames needs the frame lengths (zstd frames don't
+record their compressed size), a few bytes in the header.
+
+A **noisy clock's time residuals** (µs jitter on a ns clock, 32 planes) cost 54 KB per unit, more than
+the values here: the same bit-vs-byte-vs-nibble question applies to them, and was not studied.
+
+## How far could a context-modelled bit-plane coder go? (`ctxmodel.py`)
+
+An EBCOT-style coder was *not* built; this estimates its ideal code length. Each sample is coded as
+its bit length (the plane-by-plane significance decision) conditioned on its neighbours' bit lengths,
+then the first mantissa bits adaptively and the rest raw; every decision costs −log2 of an adaptive
+count estimate. Calibrated on i.i.d. Gaussian residuals against the true entropy, the model is
+within 0.02–0.07 bits/sample of it, at every width (σ = 1…2048).
+
+| i.i.d. Gaussian, bits/sample over the entropy | ideal context model | best of zstd bit / byte / nibble-split |
+|---|---|---|
+| σ ≤ 32 and σ = 512 | +0.02…0.07 | +0.05…0.12 |
+| σ = 64, 128, 2048 | +0.06…0.07 | +0.32, +0.40, +0.39 |
+
+So on noise, zstd with the right layout (nibble-split is the best fixed one) is within about 0.05–0.1
+bit of the limit most of the time, and loses 0.3–0.4 bit (4–5%) at a few widths where no layout
+fits. On the corpus the picture reverses (500 fit units, 160 report units, plane bytes only,
+bits/sample against today's best of bit and byte planes):
+
+| | fit | report |
+|---|---|---|
+| zstd 3, best of bit/byte (today) | 3.78 | 5.15 |
+| zstd 3, nibble split | +1.6% | +2.1% |
+| ideal: bit length from the previous 2 samples, 2 modelled mantissa bits | +25.7% | +14.6% |
+| best of the ideal model and zstd, per unit | −2.8% | −3.3% |
+
+- The ideal model beats zstd on 34% (fit) and 46% (report) of units, but only wins by a few
+  percent where it does (noisy sine, random walk, AR(1): 1.00–1.05× of zstd's size), and loses by
+  1.4–160× on periodic and stepped signals (sawtooth 2.6×, sine 1.7×, steps 1.4×, integer-period
+  sine 160×) where zstd's matches find exact repeats the model can't.
+- **Conclusion:** the plane coder's limit is the noise entropy, and zstd with a good layout is
+  already near it on noise; the remaining headroom is in structure, which needs prediction or
+  matching, not a better bit-plane model. A hybrid choosing per unit would gain 3%, no more.
+- A per-sample binary arithmetic coder would also cost about 1 M decisions per unit: not viable as
+  a speed play.
+
 ## Takeaways for the format and the tuning notes
 
 - A one-pass `planes` choice from the share of residuals above 255 is a defensible fast option
@@ -148,6 +210,8 @@ uv run python plane_layout/corpus.py --n 2000 --seed 1 --out corpus.npz   # ~25 
 uv run python plane_layout/corpus.py --n 1000 --seed 2 --out test.npz
 uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
+uv run python plane_layout/sections.py    # separate frames with timestamps / non-finite codes (~1 min)
+uv run python plane_layout/ctxmodel.py    # ideal cost of a context-modelled bit-plane coder
 uv run python plane_layout/layouts.py     # bit/byte/nibble/mixed layouts, pooled vs split (~3 min); --codecs for xz, bzip2, zstd 19
 ```
 
