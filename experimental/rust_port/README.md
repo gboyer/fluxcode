@@ -115,6 +115,11 @@ uv run python rust_port/zstd_flush_gil.py                   # the flush scaling 
 - Dropping candidates early (heuristic's layout first, give up once the flushed blocks exceed the best frame):
   same units, effort 5-8 `best` on sin-4.12hz 225 -> 210 µs, effort 9 on sin-4.12hz 1874 -> 1575 and on
   noisy-sine 909 -> 823 µs; no change on the others (their candidates are close in size).
+- Effort 9 trying every candidate at level 3 before any at level 9 (A/B against layout-major, same session):
+  non-finite unit +18% faster (2594 -> 2152 µs), linear +10% slower (104 -> 115 µs), the other signals within
+  noise. Adopted; the output is the same.
+- A layout chosen separately for the low and high byte halves (the low byte plane holds the bits of bit
+  planes 0-7): at most 0.2% smaller on sensor and random-walk, nothing elsewhere. Not worth a format change.
 - zstd's block splitter forced on at level 3 without manual flushes: at most 1% smaller (sin, sensor), 0 on the
   rest, and 50-160% slower. Not adopted.
 - Threads across units or layouts inside `encode`: not tried, since the target callers already run threads.

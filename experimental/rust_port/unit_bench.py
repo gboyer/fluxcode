@@ -8,6 +8,8 @@ signal, the best of many calls, in µs. Rust-only changes show here where compre
 """
 
 import argparse
+import platform
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -46,6 +48,8 @@ def main():
     ap.add_argument("--reps", type=int, default=200)
     a = ap.parse_args()
     cols = [("byte", False, [3]), ("bit", False, [3]), ("best", False, [3]), ("best", True, [3]), ("heuristic", True, [3]), ("best", True, [3, 9])]
+    power = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True).stdout.splitlines()[:1] if platform.system() == "Darwin" else ["unknown"]
+    print(f"power: {power[0] if power else 'unknown'}; libzstd {fluxcode_rs.zstd_version()}\n")
     print("| signal | " + " | ".join(f"{l}{'+flush' if f else ''}{'' if v == [3] else ' ' + str(v)}" for l, f, v in cols) + " |")
     print("|---|" + "---:|" * len(cols))
     for sig in SIGNALS:

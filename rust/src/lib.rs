@@ -144,17 +144,18 @@ fn write_body(r: &Rows) -> Vec<u8> {
 fn to_bit_planes(byte_body: &[u8], n: usize, ng: usize) -> Vec<u8> {
     let start = METADATA_BYTES_PER_BLOCK * n;
     let end = start + 16 * ng;
-    let mut raw = Vec::with_capacity(byte_body.len());
-    raw.extend_from_slice(&byte_body[..start]);
-    raw.resize(end, 0);
-    raw.extend_from_slice(&byte_body[end..]);
+    let mut raw = vec![0u8; byte_body.len()];
+    raw[..start].copy_from_slice(&byte_body[..start]);
+    raw[end..].copy_from_slice(&byte_body[end..]);
     let (low, high) = byte_body[start..end].split_at(8 * ng);
     let planes = &mut raw[start..end];
     let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().unwrap());
     // 8 groups at a time: bit-transpose each group's word, then transpose the 8x8 bytes of the 8 results
     // so that each plane takes the 8 bytes of its 8 groups in one store
-    let batches = ng / 8;
-    for (i, (lw, hw)) in low.chunks_exact(64).zip(high.chunks_exact(64)).enumerate() {
+    let (low_batches, high_batches) = (low.chunks_exact(64), high.chunks_exact(64));
+    let (low_rest, high_rest) = (low_batches.remainder(), high_batches.remainder());
+    let rest_start = ng - low_rest.len() / 8;
+    for (i, (lw, hw)) in low_batches.zip(high_batches).enumerate() {
         let g = 8 * i;
         let mut lo: [u64; 8] = std::array::from_fn(|j| transpose8(word(&lw[8 * j..8 * j + 8])));
         let mut hi: [u64; 8] = std::array::from_fn(|j| transpose8(word(&hw[8 * j..8 * j + 8])));
@@ -165,9 +166,8 @@ fn to_bit_planes(byte_body: &[u8], n: usize, ng: usize) -> Vec<u8> {
             planes[(8 + k) * ng + g..(8 + k) * ng + g + 8].copy_from_slice(&hi[k].to_le_bytes());
         }
     }
-    for g in 8 * batches..ng {
-        let lo = transpose8(word(&low[8 * g..8 * g + 8])).to_le_bytes();
-        let hi = transpose8(word(&high[8 * g..8 * g + 8])).to_le_bytes();
+    for (i, (lw, hw)) in low_rest.chunks_exact(8).zip(high_rest.chunks_exact(8)).enumerate() {
+        let (g, lo, hi) = (rest_start + i, transpose8(word(lw)).to_le_bytes(), transpose8(word(hw)).to_le_bytes());
         for k in 0..8 {
             planes[k * ng + g] = lo[k];
             planes[(8 + k) * ng + g] = hi[k];
@@ -287,24 +287,36 @@ fn compress_with_header(
     })
 }
 
+/// The 8 header bytes of a unit.
+fn header(r: &Rows, byte_planes: bool) -> [u8; HEADER_BYTES] {
+    let mut header = [0u8; HEADER_BYTES];
+    header[0] = FORMAT_VERSION;
+    header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
+    header[2..4].copy_from_slice(&(r.n as u16).to_le_bytes());
+    header[4..8].copy_from_slice(&(r.so[r.n] as u32).to_le_bytes());
+    header
+}
+
 /// A unit as its header and the smallest frame of the candidate bodies (byte planes or not) over the zstd
 /// levels. Ties go to byte planes, then to the earlier level, whatever the order the candidates are tried
 /// in; a candidate that can't beat the best so far is dropped as soon as its flushed blocks show it.
+/// All candidates are tried at a level before the next level, so the cheap level's frames set the limit
+/// for the expensive ones.
 fn build(r: &Rows, candidates: &[(bool, &[u8])], flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
-    let (n, ng) = (r.n, r.ng);
+    let prepared: Vec<_> = candidates
+        .iter()
+        .map(|&(byte_planes, body)| {
+            let cuts = if flush { flush_points(body, r.n, r.ng, byte_planes) } else { vec![] };
+            (byte_planes, body, header(r, byte_planes), cuts)
+        })
+        .collect();
     let mut best: Option<(Vec<u8>, usize)> = None;
-    for &(byte_planes, body) in candidates {
-        let mut header = [0u8; HEADER_BYTES];
-        header[0] = FORMAT_VERSION;
-        header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
-        header[2..4].copy_from_slice(&(n as u16).to_le_bytes());
-        header[4..8].copy_from_slice(&(r.so[n] as u32).to_le_bytes());
-        let cuts = if flush { flush_points(body, n, ng, byte_planes) } else { vec![] };
-        for (i, &level) in levels.iter().enumerate() {
-            let rank = if byte_planes { i } else { levels.len() + i };
+    for (i, &level) in levels.iter().enumerate() {
+        for (byte_planes, body, header, cuts) in &prepared {
+            let rank = if *byte_planes { i } else { levels.len() + i };
             // a frame of this length or less wins (a tie only against a worse rank)
             let limit = best.as_ref().map(|(b, best_rank)| if rank < *best_rank { b.len() } else { b.len() - 1 });
-            if let Some(unit) = compress_with_header(&header, body, &cuts, level, limit)? {
+            if let Some(unit) = compress_with_header(header, body, cuts, level, limit)? {
                 if limit.map_or(true, |l| unit.len() <= l) {
                     best = Some((unit, rank));
                 }
@@ -318,17 +330,18 @@ fn compress_unit_impl(r: &Rows, layout: &str, flush: bool, levels: &[i32]) -> Re
     let (n, ng) = (r.n, r.ng);
     // the byte-plane body is the cheaper one to write; the bit-plane body is derived from it
     let byte_body = write_body(r);
-    let byte_planes_first = wide_share_byte_planes(&byte_body, n, ng) < BYTE_PLANES_MAX_SHARE;
+    let byte_planes_predicted = || wide_share_byte_planes(&byte_body, n, ng) < BYTE_PLANES_MAX_SHARE;
     match layout {
         "byte" => build(r, &[(true, &byte_body)], flush, levels),
         "bit" => build(r, &[(false, &to_bit_planes(&byte_body, n, ng))], flush, levels),
-        "heuristic" if byte_planes_first => build(r, &[(true, &byte_body)], flush, levels),
+        "heuristic" if byte_planes_predicted() => build(r, &[(true, &byte_body)], flush, levels),
         "heuristic" => build(r, &[(false, &to_bit_planes(&byte_body, n, ng))], flush, levels),
         "best" => {
             let bit_body = to_bit_planes(&byte_body, n, ng);
-            // the heuristic's pick first: the other one is often dropped partway
             let (byte, bit) = ((true, byte_body.as_slice()), (false, bit_body.as_slice()));
-            build(r, &if byte_planes_first { [byte, bit] } else { [bit, byte] }, flush, levels)
+            // with flushes the heuristic's pick goes first, since the other is often dropped partway; without
+            // them nothing can be dropped and the order is free (so the statistic isn't computed)
+            build(r, &if flush && !byte_planes_predicted() { [bit, byte] } else { [byte, bit] }, flush, levels)
         }
         _ => Err(format!("unknown layout {layout:?}")),
     }
