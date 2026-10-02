@@ -243,8 +243,11 @@ thread_local! {
 }
 
 /// `header` followed by the zstd frame of `body`, ended after each of the `cuts` (with none, a single
-/// block-ending call, which is what python-zstandard's `compress` does).
-fn compress_with_header(header: &[u8], body: &[u8], cuts: &[usize], level: i32) -> Result<Vec<u8>, String> {
+/// block-ending call, which is what python-zstandard's `compress` does). With a `limit`, gives up (None)
+/// as soon as the blocks written so far are longer than it: the frame can only grow.
+fn compress_with_header(
+    header: &[u8], body: &[u8], cuts: &[usize], level: i32, limit: Option<usize>,
+) -> Result<Option<Vec<u8>>, String> {
     CCTX.with(|c| {
         let cctx = &mut *c.borrow_mut();
         let e = |c: usize| zstd_safe::get_error_name(c).to_string();
@@ -255,7 +258,7 @@ fn compress_with_header(header: &[u8], body: &[u8], cuts: &[usize], level: i32) 
         cctx.set_pledged_src_size(Some(body.len() as u64)).map_err(e)?;
         let mut out: Vec<u8> = Vec::with_capacity(header.len() + zstd_safe::compress_bound(body.len()) + 64 * (cuts.len() + 2));
         out.extend_from_slice(header);
-        let mut run = |input: &[u8], op: zstd_safe::zstd_sys::ZSTD_EndDirective| -> Result<(), String> {
+        let mut run = |input: &[u8], op: zstd_safe::zstd_sys::ZSTD_EndDirective| -> Result<usize, String> {
             let mut inb = InBuffer::around(input);
             loop {
                 // the capacity above covers the worst case, so this only guards against a stalled loop
@@ -265,59 +268,67 @@ fn compress_with_header(header: &[u8], body: &[u8], cuts: &[usize], level: i32) 
                 let pos = out.len();
                 let remaining = cctx.compress_stream2(&mut OutBuffer::around_pos(&mut out, pos), &mut inb, op).map_err(e)?;
                 if inb.pos == input.len() && remaining == 0 {
-                    return Ok(());
+                    return Ok(out.len());
                 }
             }
         };
         let mut prev = 0;
         for &cut in cuts {
             if prev < cut && cut < body.len() {
-                run(&body[prev..cut], ZSTD_e_flush)?;
+                let len = run(&body[prev..cut], ZSTD_e_flush)?;
                 prev = cut;
+                if limit.is_some_and(|l| len > l) {
+                    return Ok(None);
+                }
             }
         }
         run(&body[prev..], ZSTD_e_end)?;
-        Ok(out)
+        Ok(Some(out))
     })
 }
 
-/// A unit as its header and the smallest frame of its body over the zstd levels (ties keep the earlier level).
-fn build(r: &Rows, body: &[u8], byte_planes: bool, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+/// A unit as its header and the smallest frame of the candidate bodies (byte planes or not) over the zstd
+/// levels. Ties go to byte planes, then to the earlier level, whatever the order the candidates are tried
+/// in; a candidate that can't beat the best so far is dropped as soon as its flushed blocks show it.
+fn build(r: &Rows, candidates: &[(bool, &[u8])], flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
     let (n, ng) = (r.n, r.ng);
-    let mut header = [0u8; HEADER_BYTES];
-    header[0] = FORMAT_VERSION;
-    header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
-    header[2..4].copy_from_slice(&(n as u16).to_le_bytes());
-    header[4..8].copy_from_slice(&(r.so[n] as u32).to_le_bytes());
-    let cuts = if flush { flush_points(body, n, ng, byte_planes) } else { vec![] };
-    let mut best: Option<Vec<u8>> = None;
-    for &level in levels {
-        let unit = compress_with_header(&header, body, &cuts, level)?;
-        if best.as_ref().map_or(true, |b| unit.len() < b.len()) {
-            best = Some(unit);
+    let mut best: Option<(Vec<u8>, usize)> = None;
+    for &(byte_planes, body) in candidates {
+        let mut header = [0u8; HEADER_BYTES];
+        header[0] = FORMAT_VERSION;
+        header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
+        header[2..4].copy_from_slice(&(n as u16).to_le_bytes());
+        header[4..8].copy_from_slice(&(r.so[n] as u32).to_le_bytes());
+        let cuts = if flush { flush_points(body, n, ng, byte_planes) } else { vec![] };
+        for (i, &level) in levels.iter().enumerate() {
+            let rank = if byte_planes { i } else { levels.len() + i };
+            // a frame of this length or less wins (a tie only against a worse rank)
+            let limit = best.as_ref().map(|(b, best_rank)| if rank < *best_rank { b.len() } else { b.len() - 1 });
+            if let Some(unit) = compress_with_header(&header, body, &cuts, level, limit)? {
+                if limit.map_or(true, |l| unit.len() <= l) {
+                    best = Some((unit, rank));
+                }
+            }
         }
     }
-    best.ok_or_else(|| "no zstd levels".to_string())
+    best.map(|(unit, _)| unit).ok_or_else(|| "no zstd levels".to_string())
 }
 
 fn compress_unit_impl(r: &Rows, layout: &str, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
     let (n, ng) = (r.n, r.ng);
     // the byte-plane body is the cheaper one to write; the bit-plane body is derived from it
     let byte_body = write_body(r);
+    let byte_planes_first = wide_share_byte_planes(&byte_body, n, ng) < BYTE_PLANES_MAX_SHARE;
     match layout {
-        "byte" => build(r, &byte_body, true, flush, levels),
-        "bit" => build(r, &to_bit_planes(&byte_body, n, ng), false, flush, levels),
-        "heuristic" => {
-            if wide_share_byte_planes(&byte_body, n, ng) < BYTE_PLANES_MAX_SHARE {
-                build(r, &byte_body, true, flush, levels)
-            } else {
-                build(r, &to_bit_planes(&byte_body, n, ng), false, flush, levels)
-            }
-        }
+        "byte" => build(r, &[(true, &byte_body)], flush, levels),
+        "bit" => build(r, &[(false, &to_bit_planes(&byte_body, n, ng))], flush, levels),
+        "heuristic" if byte_planes_first => build(r, &[(true, &byte_body)], flush, levels),
+        "heuristic" => build(r, &[(false, &to_bit_planes(&byte_body, n, ng))], flush, levels),
         "best" => {
-            let byte = build(r, &byte_body, true, flush, levels)?;
-            let bit = build(r, &to_bit_planes(&byte_body, n, ng), false, flush, levels)?;
-            Ok(if byte.len() <= bit.len() { byte } else { bit })
+            let bit_body = to_bit_planes(&byte_body, n, ng);
+            // the heuristic's pick first: the other one is often dropped partway
+            let (byte, bit) = ((true, byte_body.as_slice()), (false, bit_body.as_slice()));
+            build(r, &if byte_planes_first { [byte, bit] } else { [bit, byte] }, flush, levels)
         }
         _ => Err(format!("unknown layout {layout:?}")),
     }

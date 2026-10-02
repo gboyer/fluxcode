@@ -45,17 +45,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=200)
     a = ap.parse_args()
-    cols = [("byte", False), ("bit", False), ("best", False), ("best", True), ("heuristic", True)]
-    print("| signal | " + " | ".join(f"{l}{'+flush' if f else ''}" for l, f in cols) + " |")
+    cols = [("byte", False, [3]), ("bit", False, [3]), ("best", False, [3]), ("best", True, [3]), ("heuristic", True, [3]), ("best", True, [3, 9])]
+    print("| signal | " + " | ".join(f"{l}{'+flush' if f else ''}{'' if v == [3] else ' ' + str(v)}" for l, f, v in cols) + " |")
     print("|---|" + "---:|" * len(cols))
     for sig in SIGNALS:
         rows = rows_of(sig)
         out = []
-        for layout, flush in cols:
+        for layout, flush, levels in cols:
             t = np.inf
             for _ in range(a.reps):
                 t0 = time.perf_counter()
-                fluxcode_rs.compress_unit(*rows, layout, flush, [3])
+                fluxcode_rs.compress_unit(*rows, layout, flush, levels)
                 t = min(t, time.perf_counter() - t0)
             out.append(f"{t * 1e6:.0f}")
         print(f"| {sig} | " + " | ".join(out) + " |")
