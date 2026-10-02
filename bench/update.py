@@ -4,7 +4,9 @@
 
 - `update` of one block of a 60 x 1000 unit (with and without times), and an append;
 - `update_time_blocks` of a range straddling two blocks, on a unit of 60 one-second blocks of
-  1000 samples and on one of 3,600 one-second blocks of 10 samples (an hour at 10 Hz).
+  1000 samples and on one of 3,600 one-second blocks of 10 samples (an hour at 10 Hz);
+- `update_time_blocks` upserts (no ranges) on the hour unit: one sample in one block, and one
+  sample in each of the 3,600 blocks.
 
 Timings are the median of --reps calls after a warm-up; each update is reported relative to
 encoding the same unit from scratch.
@@ -38,9 +40,9 @@ def encode_seconds(x, t):
     return fluxcode.encode_time_blocks(x, t, start_time=START, block_duration=SECOND).unit
 
 
-def update_seconds(unit, x, t, update_range):
+def update_seconds(unit, x, t, delete_range=None):
     """update_time_blocks of a unit made by encode_seconds."""
-    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=SECOND, delete_ranges=update_range)
+    return fluxcode.update_time_blocks(unit, x, t, start_time=START, block_duration=SECOND, delete_ranges=delete_range)
 
 
 def median_us(call, reps):
@@ -83,6 +85,10 @@ def rows(name, x, reps):
     encode_h = median_us(lambda: encode_seconds(xh, th), max(reps // 3, 10))
     straddle_h = median_us(
         lambda: update_seconds(hour, xh[inside_h][::-1], th[inside_h], (lo_h, hi_h)), max(reps // 3, 10))
+    # Upserts: existing times replaced, so the unit's shape stays the same
+    one_t_h = median_us(lambda: update_seconds(hour, xh[5_000:5_001] + 1, th[5_000:5_001]), max(reps // 3, 10))
+    every = np.arange(0, 36_000, 10)  # one sample from each block
+    every_h = median_us(lambda: update_seconds(hour, xh[every] + 1, th[every]), max(reps // 3, 10))
     return [
         f"| {name} | `update`, 1 of 60 blocks | {encode:.0f} µs | {relative(one, encode)} |",
         f"| {name} | `update` with times, 1 of 60 | {encode_t:.0f} µs | {relative(one_t, encode_t)} |",
@@ -91,6 +97,10 @@ def rows(name, x, reps):
          f"{relative(straddle, encode_tb)} |"),
         (f"| {name} | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | {encode_h:.0f} µs | "
          f"{relative(straddle_h, encode_h)} |"),
+        (f"| {name} | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | {encode_h:.0f} µs | "
+         f"{relative(one_t_h, encode_h)} |"),
+        (f"| {name} | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | {encode_h:.0f} µs | "
+         f"{relative(every_h, encode_h)} |"),
     ]
 
 

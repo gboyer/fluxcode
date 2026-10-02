@@ -250,51 +250,55 @@ def update_time_blocks(
         range_idx = bisect.bisect_right(range_starts, block_start) - 1
         if range_idx >= 0 and range_ends[range_idx] >= block_start + duration:
             covered.add(block_idx)
-    # New samples can replace samples of the same time in any existing block they land in
-    upserted = set(np.unique(new_ids[new_ids < num_old_blocks]).tolist())
-    straddling = np.array(sorted((touched | upserted) - covered), np.int64)
-    # The time columns, and the residuals of the blocks to decode only
-    time_rows = _unit.read_time_rows(parsed, straddling)
-    old_values: np.ndarray = np.zeros(0)
-    old_ticks: np.ndarray | None = np.zeros(0, np.int64)
-    if straddling.shape[0]:
-        old_values, old_ticks = _unit.decode_blocks(parsed, straddling, time_rows)
-    assert old_ticks is not None
-    old_offsets = parsed.layout.sample_offsets
-    new_offsets = _unit.sample_offsets(np.bincount(new_ids, minlength=max(num_old_blocks, int(new_ids[-1]) + 1)
-                                                   if new_ids.shape[0] else num_old_blocks))
-    targets = sorted(touched | set(np.unique(new_ids).tolist()))
-    pieces_values, pieces_ticks, sizes, indices = [], [], [], []
-    for block_idx in targets:
-        new_values = samples[new_offsets[block_idx]:new_offsets[block_idx + 1]]
-        new_ticks = ticks[new_offsets[block_idx]:new_offsets[block_idx + 1]]
-        if block_idx < num_old_blocks and block_idx not in covered:
-            kept_values = old_values[old_offsets[block_idx]:old_offsets[block_idx + 1]]
-            kept_ticks = old_ticks[old_offsets[block_idx]:old_offsets[block_idx + 1]]
-            keep = ~_in_ranges(kept_ticks, ranges) & ~np.isin(kept_ticks, new_ticks)
-            if keep.all() and not new_values.shape[0]:
-                continue  # nothing in this block is deleted or replaced
-            # No kept sample shares a time with a new one; new samples sharing one keep their order
-            merged_ticks = np.concatenate([kept_ticks[keep], new_ticks])
-            order = np.argsort(merged_ticks, kind="stable")
-            new_values = np.concatenate([kept_values[keep], new_values])[order]
-            new_ticks = merged_ticks[order]
-        elif block_idx < num_old_blocks and not parsed.block_sizes[block_idx] and not new_values.shape[0]:
-            continue  # empty and stays empty
-        pieces_values.append(new_values)
-        pieces_ticks.append(new_ticks)
-        sizes.append(new_values.shape[0])
-        indices.append(block_idx)
-    if any(size > _format.MAX_BLOCK_LEN for size in sizes):
-        raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
-    if not indices:
+    # The existing blocks to decode: those a range meets or a new sample lands in, except the
+    # covered ones, which lose everything
+    new_blocks = set(np.unique(new_ids).tolist())
+    decoded = np.array(sorted(b for b in touched | new_blocks if b < num_old_blocks and b not in covered), np.int64)
+    time_rows = _unit.read_time_rows(parsed, decoded)
+    old_sizes = parsed.block_sizes
+    gathered_values, gathered_ticks = np.zeros(0), np.zeros(0, np.int64)
+    gathered_blocks = np.zeros(0, np.int64)
+    if decoded.shape[0]:
+        all_values, all_ticks = _unit.decode_blocks(parsed, decoded, time_rows)
+        assert all_ticks is not None
+        # The decoded blocks' samples in one run, in time order (blocks ascend)
+        run_sizes = old_sizes[decoded]
+        run_starts = parsed.layout.sample_offsets[decoded]
+        positions = np.arange(int(run_sizes.sum())) + np.repeat(run_starts - (np.cumsum(run_sizes) - run_sizes),
+                                                                 run_sizes)
+        gathered_values, gathered_ticks = all_values[positions], all_ticks[positions]
+        gathered_blocks = np.repeat(decoded, run_sizes)
+    # A decoded sample goes if a range covers it or a new sample has its time (ticks sorted: the
+    # new samples at a time are the run between two searchsorted positions)
+    replaced = np.searchsorted(ticks, gathered_ticks, "right") > np.searchsorted(ticks, gathered_ticks, "left")
+    keep = ~(_in_ranges(gathered_ticks, ranges) | replaced)
+    # Kept samples share no time with new ones, so a stable sort puts them in order with the new
+    # ones, which keep theirs. A tick fixes its block, so each block's samples end up together.
+    merged_blocks = np.concatenate([gathered_blocks[keep], new_ids])
+    order = np.argsort(np.concatenate([gathered_ticks[keep], ticks]), kind="stable")
+    merged_values = np.concatenate([gathered_values[keep], samples])[order]
+    merged_ticks = np.concatenate([gathered_ticks[keep], ticks])[order]
+    merged_blocks = merged_blocks[order]
+    # Blocks to re-encode: those that gain a sample or lose one (a block that loses nothing and
+    # gains nothing, empty ones included, is carried over)
+    num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
+    changed = np.bincount(new_ids, minlength=num_blocks) > 0
+    changed[:num_old_blocks] |= np.bincount(gathered_blocks[~keep], minlength=num_old_blocks) > 0
+    covered_ids = np.fromiter(covered, np.int64, len(covered))
+    changed[covered_ids] |= old_sizes[covered_ids] > 0
+    indices = np.flatnonzero(changed)
+    if not indices.shape[0]:
         return UpdatedUnit(unit, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
+    sizes = np.bincount(merged_blocks, minlength=num_blocks)[indices]
+    if sizes.max() > _format.MAX_BLOCK_LEN:
+        raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
+    in_changed = changed[merged_blocks]
     return _unit.splice(
         parsed,
-        np.array(indices, np.int64),
-        np.concatenate(pieces_values),
-        np.array(sizes, np.int64),
-        np.concatenate(pieces_ticks).astype(np.int64, copy=False),
+        indices,
+        merged_values[in_changed],
+        sizes,
+        merged_ticks[in_changed],
         params,
         time_rows,
     )

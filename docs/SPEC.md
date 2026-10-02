@@ -605,8 +605,9 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   upsert; with no samples, a deletion. A block that no range meets and no new sample falls in is
   carried over as `update` carries it, without being decoded. A block wholly inside the ranges is
   encoded from the new samples alone. Any other affected block is decoded, keeps its surviving
-  samples and is re-encoded with the new ones. The kept samples are already points of the absolute grid (§5.4), so on the same
-  or a finer step they come back bit for bit, however the merged block's min and max moved. Only a
+  samples and is re-encoded with the new ones. The kept samples are already points of the
+  absolute grid (§5.4), so on the same or a finer step they come back bit for bit, however the
+  merged block's min and max moved. Only a
   coarser step rounds them again, once, without bias (ties to even); repeated coarsening adds a
   geometric series, so their error stays under one step of the coarsest grid the block has used.
   Decimal data on a decimal grid stays exact. New samples past the unit's end append blocks
@@ -645,8 +646,8 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    `encode_time_blocks` of the expected series (old samples outside the ranges and not
    sharing a time with a new one, plus the new ones) for ranges filling empty blocks, covering
    whole blocks, straddling block edges, upserts with no ranges (including duplicate times in the
-   new data and in the unit) and appending; it decodes only the blocks it merges and accepts ranges as one pair, a list, a `(k, 2)`
-   array of datetime64 or ticks, and naive datetimes.
+   new data and in the unit) and appending; it decodes only the blocks it merges and accepts ranges as one pair, a list, a
+   `(k, 2)` array of datetime64 or ticks, and naive datetimes.
 8. **Non-finite:** NaN / ±inf runs at a block's start, middle and end, scattered, alternating,
    and whole blocks, on every signal kind and with the target: exact NaN positions and infinities,
    finite samples within the bounds, summary statistics over the finite samples; blocks without

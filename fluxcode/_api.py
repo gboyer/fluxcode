@@ -387,7 +387,8 @@ def update_time_blocks(
     Returns:
         UpdatedUnit tuple (unit, indices, block_min, block_max, block_mean): the new unit,
         and the blocks re-encoded (including emptied and appended ones) with their
-        statistics. If nothing changes, the unit is returned as is and indices is empty.
+        statistics. If nothing is deleted and no samples are given, the unit is returned as is and indices
+        is empty.
 
     Raises:
         ValueError: If the unit is corrupt or has no time axis, a sample is timed before
