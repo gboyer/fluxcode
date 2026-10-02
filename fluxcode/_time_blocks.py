@@ -195,6 +195,14 @@ def encode_time_blocks(
     return _unit.encode(samples, chunk(ticks, start, duration), params, ticks, unit_code)
 
 
+def _interleave(kept: np.ndarray, new: np.ndarray, is_new: np.ndarray) -> np.ndarray:
+    """The array with new's elements at the True positions of is_new and kept's in the rest."""
+    merged = np.empty(is_new.shape[0], kept.dtype)
+    merged[is_new] = new
+    merged[~is_new] = kept
+    return merged
+
+
 def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
     """Whether each tick is in one of the sorted, disjoint [start, end) ranges."""
     if not ranges.shape[0]:
@@ -277,13 +285,16 @@ def update_time_blocks(
     marks = np.bincount(match_lo, minlength=num_gathered + 1) - np.bincount(match_hi, minlength=num_gathered + 1)
     replaced = np.cumsum(marks)[:num_gathered] > 0
     keep = ~(_in_ranges(gathered_ticks, ranges) | replaced)
-    # Kept samples share no time with new ones, so a stable sort puts them in order with the new
-    # ones, which keep theirs. A tick fixes its block, so each block's samples end up together.
-    combined_ticks = np.concatenate([gathered_ticks[keep], ticks])
-    order = np.argsort(combined_ticks, kind="stable")
-    merged_ticks = combined_ticks[order]
-    merged_values = np.concatenate([gathered_values[keep], samples])[order]
-    merged_blocks = np.concatenate([gathered_blocks[keep], new_ids])[order]
+    # Merge, no sort: both sides are sorted and share no time, so each new sample goes where its
+    # lower match position falls among the kept ones (new samples at one time keep their order,
+    # as their positions only grow). A tick fixes its block, so each block's samples end up together.
+    kept_before = np.concatenate([[0], np.cumsum(keep)])[match_lo]
+    is_new = np.zeros(int(keep.sum()) + ticks.shape[0], np.bool_)
+    is_new[kept_before + np.arange(ticks.shape[0])] = True
+    merged_ticks, merged_values, merged_blocks = (
+        _interleave(old[keep], new, is_new)
+        for old, new in ((gathered_ticks, ticks), (gathered_values, samples), (gathered_blocks, new_ids))
+    )
     # Blocks to re-encode: those that gain a sample or lose one (a block that loses nothing and
     # gains nothing, empty ones included, is carried over)
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)

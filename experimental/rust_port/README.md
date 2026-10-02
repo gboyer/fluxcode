@@ -112,6 +112,12 @@ uv run python rust_port/zstd_flush_gil.py                   # the flush scaling 
   which costs about 19 µs over it. Transposing 8 groups at once (bit transpose per word, then the 8x8 bytes of
   eight words, one store per plane) took that from about 25 µs to 19; building the result without copying
   the body first saves 2 µs. End to end the units are within the 5% noise of before.
+- NEON and SSE2 for the bit-plane transposition (`rust/src/planes.rs`, 16 groups per step; scalar elsewhere):
+  `bit` -8 µs (sin -11%, linear -26%), default-effort `best` -9 µs (sin -4.5%, linear -24%), effort 5-9 about
+  -4% on sin; A/B against the scalar build, twice each, same session. The transpose itself is now a small part
+  of what remains: the body is a fresh 120 KB allocation per call (page faults), not measured yet.
+  `rustc --test rust/src/planes.rs` checks every path against the definition; the SSE2 code was built and run
+  in an x86_64 Linux container and is checked in CI on x86_64 and arm64 runners.
 - Dropping candidates early (heuristic's layout first, give up once the flushed blocks exceed the best frame):
   same units, effort 5-8 `best` on sin-4.12hz 225 -> 210 µs, effort 9 on sin-4.12hz 1874 -> 1575 and on
   noisy-sine 909 -> 823 µs; no change on the others (their candidates are close in size).

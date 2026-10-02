@@ -25,6 +25,8 @@ jobs:
       - run: uv run --locked --extra rust pytest -rs --junitxml=rust.xml
       - run: python3 -c "import sys, xml.etree.ElementTree as t; r = t.parse('rust.xml').getroot().iter('testcase'); sys.exit(sum(1 for c in r if 'test_rust' in c.get('classname', '') and c.find('skipped') is not None))"
       - run: FLUXCODE_RUST=0 uv run --locked --extra rust pytest
+      # the bit-plane transposition's vector paths (NEON, SSE2) against its definition, on this runner's architecture
+      - run: rustc --edition 2021 --test -O rust/src/planes.rs -o planes_test && ./planes_test
       - run: uv run ruff check
       # experimental/ is excluded from the lint config: still check it for syntax errors and undefined names
       - run: uv run ruff check --isolated --select E9,F63,F7,F82 experimental

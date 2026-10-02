@@ -6,6 +6,8 @@ across threads, and fluxcode works, with the same units, without it."""
 
 from concurrent.futures import ThreadPoolExecutor
 
+import platform
+
 import numpy as np
 import pytest
 import zstandard
@@ -103,3 +105,8 @@ def test_unknown_layout_is_rejected():
             flags, np.array([3], np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros(3, np.int16),
             np.zeros(3, np.uint8), "size", True, [3],
         )
+
+
+def test_bit_planes_use_the_vector_path_of_the_architecture():
+    expected = {"arm64": "neon", "aarch64": "neon", "x86_64": "sse2", "AMD64": "sse2"}
+    assert fluxcode_rs.simd_path() == expected.get(platform.machine(), "scalar")
