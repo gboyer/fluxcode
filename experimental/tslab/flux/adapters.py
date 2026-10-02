@@ -11,7 +11,7 @@ import time
 import fluxcode
 import numpy as np
 import zstandard
-from fluxcode import Params, _bitpacking, _encoder, _format
+from fluxcode import Params, _bitpacking, _encoder, _format, _unit
 
 from tslab.common.datasets import DISCRETE, load, load_discrete
 
@@ -34,12 +34,9 @@ class FluxCodec:
 
     def encode_unit(self, X):
         unit = self.unit(X)
-        nb = len(X)
-        raw = np.frombuffer(zstandard.ZstdDecompressor().decompress(unit[_format.HEADER_BYTES:]), np.uint8)
-        start = _format.grid_params_start(nb)
-        param = np.ascontiguousarray(raw[start:start + 8 * nb].reshape(8, nb).T).view("<i8").ravel()  # byte-planed
-        infos = [{"order": int(h & _format.HEAD_ORDER), "decimal": bool(h & _format.HEAD_DECIMAL), "param": int(p)}
-                 for h, p in zip(raw[:nb], param)]
+        rows = _unit.read_rows(_unit.decompress(unit))  # the package's own reader: no layout assumptions here
+        infos = [{"order": int(f & _format.BLOCK_FLAG_ORDER), "decimal": bool(f & _format.BLOCK_FLAG_DECIMAL),
+                  "param": int(p)} for f, p in zip(rows.block_flags, rows.grid_params)]
         return unit, infos
 
     def decode_unit(self, data, nb, n):

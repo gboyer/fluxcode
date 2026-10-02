@@ -7,6 +7,8 @@
 
 **What changed during implementation:**
 
+- **Names.** The per-block "head byte" below is the `block_flags` field, and the SPEC sections
+  it cites have been renumbered (the format is now SPEC §7).
 - **Self-describing units.** A unit starts with a 16-byte header (version, block length, sample
   count), and each block stores its own anchor (SPEC §5). `decode(units)` takes only the units and
   returns one array per unit; `decode_unit(unit)` returns the unit's samples as a 1-D array. No

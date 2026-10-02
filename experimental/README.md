@@ -74,7 +74,7 @@ uv run python make_time_report.py   # report/time.html                   (~5 s)
 Charts are SVG, and the build fails if a chart has no data. Each script deletes its own earlier outputs
 in `report/` before writing. `make_rate_report.py` runs the rate-control experiment of REPORT.md §6 on
 "regime" minutes and writes `report/rate.html` in the same style. `make_time_report.py` writes
-`report/time.html`: only fluxcode's time axis (docs/SPEC.md §2a), i.e. what exact timestamps cost for the
+`report/time.html`: only fluxcode's time axis (docs/SPEC.md §4), i.e. what exact timestamps cost for the
 common clock shapes (a perfect grid, a grid with a few gaps, a noisy clock) and some harder ones; its
 timings need a quiet machine. `report/` is generated, and committed so it can be read without rerunning.
 

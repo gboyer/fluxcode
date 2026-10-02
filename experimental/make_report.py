@@ -623,7 +623,7 @@ def noise_section():
     img = save_fig(fig, OUT, 'noise', 'noise floor sweep')
     h = ["<h3 id='noise-floor'>Noise floor sweep: fluxcode-16, f = 0 … 1</h3>"
          "<p>On blocks whose second differences look like white noise (lag-1 autocorrelation &lt; −0.6), the step "
-         "becomes at most f·σ, with σ a robust estimate from the same differences (docs/SPEC.md §3.1a). B stays 16; "
+         "becomes at most f·σ, with σ a robust estimate from the same differences (docs/SPEC.md §5.2). B stays 16; "
          "on these signals the noise-floor step is coarser than the 16-bit step for every f ≥ 0.01, so f alone sets "
          "the size. fluxcode's default is f = 0.25. Noisy signals only (600 blocks each, minute units); clean signals are unaffected at every f. Errors "
          "are median RMS over blocks in units of the true noise σ, against the input and against the same signal "
