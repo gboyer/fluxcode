@@ -84,6 +84,15 @@ def test_compress_body_cuts():
         assert zstandard.frame_content_size(frame) == 5000
 
 
+def test_compress_body_gives_up_over_the_limit():
+    body = np.random.default_rng(0).integers(0, 256, 20_000, dtype=np.uint8)  # incompressible: a block ~ its size
+    cuts = [5000, 10_000, 15_000]
+    frame = _compress.compress_body(body, cuts, 3)
+    assert frame is not None
+    assert _compress.compress_body(body, cuts, 3, limit=len(frame)) == frame
+    assert _compress.compress_body(body, cuts, 3, limit=4000) is None  # dropped after the first block
+
+
 def test_heuristic_choice():
     for kind, byte in (("sin-4.12hz", True), ("random-walk", False), ("chirp", False), ("noisy-sine", True)):
         (unit,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2))

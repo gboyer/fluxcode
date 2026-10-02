@@ -8,148 +8,13 @@ of the unit's storage key) and passes the same ones to update_time_blocks. Times
 the duration and delete ranges are all converted to int64 ticks in the times' unit.
 """
 
-import datetime
-from collections.abc import Iterable
-from fractions import Fraction
-
 import numpy as np
 import numpy.typing as npt
 from numba import njit
 
-from . import _format, _time, _unit
-from ._types import EncodedUnit, Params, UpdatedUnit, is_int
-
-TimeLike = np.datetime64 | datetime.datetime | int
-"""A point in time: datetime64 or datetime (naive, UTC recommended), or an integer tick."""
-
-DurationLike = np.timedelta64 | datetime.timedelta | int
-"""A length of time: timedelta64 or timedelta, or an integer number of ticks."""
-
-RangesLike = tuple[TimeLike, TimeLike] | Iterable[tuple[TimeLike, TimeLike]] | np.ndarray
-"""Time ranges, each [start, end): one (start, end) pair, an iterable of pairs, or an array of
-shape (k, 2) of datetime64 or integer ticks."""
-
-_UNIT_NANOSECONDS: dict[str, Fraction] = {
-    "W": Fraction(604_800 * 10**9),
-    "D": Fraction(86_400 * 10**9),
-    "h": Fraction(3_600 * 10**9),
-    "m": Fraction(60 * 10**9),
-    "s": Fraction(10**9),
-    "ms": Fraction(10**6),
-    "us": Fraction(10**3),
-    "ns": Fraction(1),
-    "ps": Fraction(1, 10**3),
-    "fs": Fraction(1, 10**6),
-    "as": Fraction(1, 10**9),
-}
-"""Length of each fixed-length numpy datetime unit in nanoseconds (months and years vary)."""
-
-
-def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -> int:
-    """Converts a time (or a duration) into an exact integer number of ticks.
-
-    Args:
-        value: An integer tick count, a datetime64 / timedelta64 scalar, a naive
-            datetime.datetime / datetime.timedelta, or anything with to_datetime64 /
-            to_timedelta64 (pandas).
-        time_unit: The ticks' TimeUnit code.
-        name: The argument's name, for errors.
-        duration: Whether value is a duration rather than a point in time.
-
-    Returns:
-        The value in ticks.
-
-    Raises:
-        ValueError: If value has the wrong type, is NaT or time zone aware, isn't a whole
-            number of ticks, or doesn't fit int64.
-    """
-    # timedelta64 subclasses numpy's signed integer: it isn't a tick count
-    if isinstance(value, (int, np.integer)) and is_int(value) and not isinstance(value, np.timedelta64):
-        ticks = int(value)
-    else:
-        kind = "timedelta64" if duration else "datetime64"
-        converter = getattr(value, f"to_{kind}", None)
-        if converter is not None:
-            if getattr(value, "tzinfo", None) is not None:
-                raise ValueError(f"{name} is time zone aware: convert it to naive UTC")
-            value = converter()
-        if isinstance(value, datetime.datetime) and not duration:
-            if value.tzinfo is not None:
-                raise ValueError(f"{name} is time zone aware: convert it to naive UTC")
-            value = np.datetime64(value, "us")
-        elif isinstance(value, datetime.timedelta) and duration:
-            value = np.timedelta64(value, "us")
-        if not isinstance(value, np.timedelta64 if duration else np.datetime64):
-            raise ValueError(f"{name} must be a {kind}, a {'timedelta' if duration else 'datetime'} or integer ticks, "
-                             f"got {value!r}")
-        if np.isnat(value):
-            raise ValueError(f"{name} is NaT")
-        source_unit, unit_count = np.datetime_data(value.dtype)
-        if source_unit not in _UNIT_NANOSECONDS:
-            raise ValueError(f"{name} is in {source_unit}, which isn't a fixed length of time")
-        exact = int(value.view(np.int64)) * unit_count * _UNIT_NANOSECONDS[source_unit] / _UNIT_NANOSECONDS[
-            _format.TIME_UNIT_NAMES[time_unit]]
-        if exact.denominator != 1:
-            raise ValueError(f"{name} {value} isn't a whole number of {_format.TIME_UNIT_NAMES[time_unit]}")
-        ticks = int(exact)
-    if not _time.INT64_MIN < ticks <= _time.INT64_MAX:
-        raise ValueError(f"{name} doesn't fit int64 ticks")
-    return ticks
-
-
-def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
-    """Converts delete ranges into sorted, disjoint [start, end) ranges of ticks.
-
-    Args:
-        delete_ranges: One (start, end) pair, or an iterable of them, or an array of shape
-            (k, 2), of times like start_time. Ranges may overlap or touch; empty ones are
-            ignored.
-        time_unit: The ticks' TimeUnit code.
-
-    Returns:
-        2D int64 array of shape (k, 2) of non-empty ranges in increasing order, each ending
-        before the next starts.
-
-    Raises:
-        ValueError: If the ranges aren't pairs of times, or a range ends before it starts.
-    """
-    if isinstance(delete_ranges, np.ndarray) and delete_ranges.ndim == 0:
-        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")
-    if isinstance(delete_ranges, np.ndarray):
-        items = list(delete_ranges.reshape(1, 2) if delete_ranges.shape == (2,) else delete_ranges)
-    elif isinstance(delete_ranges, Iterable):
-        try:
-            items = list(delete_ranges)
-        except TypeError:
-            raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}") from None
-        # One pair of times rather than a sequence of pairs
-        if len(items) == 2 and not any(isinstance(item, (tuple, list, np.ndarray)) for item in items):
-            items = [items]
-    else:
-        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")  # noqa: TRY004
-    pairs = []
-    for item in items:
-        pair = list(item) if isinstance(item, (tuple, list)) or (isinstance(item, np.ndarray) and item.ndim) else None
-        if pair is None or len(pair) != 2:
-            raise ValueError(f"delete_ranges must be (start, end) pairs, got {item!r}")
-        pairs.append([to_ticks(_scalar(point), time_unit, "delete_ranges") for point in pair])
-    ticks = np.array(pairs, np.int64).reshape(-1, 2)
-    backwards = np.flatnonzero(ticks[:, 1] < ticks[:, 0])
-    if backwards.shape[0]:
-        raise ValueError(f"delete range {int(backwards[0])} ends before it starts")
-    # Merge into disjoint ranges: sorted by start, each absorbing those that start inside it
-    merged: list[list[int]] = []
-    for range_start, range_end in sorted(ticks[ticks[:, 1] > ticks[:, 0]].tolist()):
-        if merged and range_start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], range_end)
-        else:
-            merged.append([range_start, range_end])
-    return np.array(merged, np.int64).reshape(-1, 2)
-
-
-def _scalar(value: object) -> object:
-    """A numpy array element as a scalar of its own type (datetime64 stays datetime64)."""
-    return value[()] if isinstance(value, np.ndarray) else value
+from . import _args, _format, _unit
+from ._args import DurationLike, RangesLike, TimeLike
+from ._types import EncodedUnit, Params, UpdatedUnit
 
 
 def block_ids(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
@@ -187,11 +52,11 @@ def encode_time_blocks(
     time_unit: str | None,
 ) -> EncodedUnit:
     """Implements fluxcode.encode_time_blocks."""
-    samples = _unit.as_series(x, allow_empty=True)
-    ticks, unit_code = _unit.series_ticks(times, time_unit, samples.shape[0])
+    samples = _args.as_series(x, allow_empty=True)
+    ticks, unit_code = _args.series_ticks(times, time_unit, samples.shape[0])
     assert ticks is not None
-    start = to_ticks(start_time, unit_code, "start_time")
-    duration = to_ticks(block_duration, unit_code, "block_duration", duration=True)
+    start = _args.to_ticks(start_time, unit_code, "start_time")
+    duration = _args.to_ticks(block_duration, unit_code, "block_duration", duration=True)
     return _unit.encode(samples, chunk(ticks, start, duration), params, ticks, unit_code)
 
 
@@ -298,19 +163,12 @@ def update_time_blocks(
     parsed = _unit.decompress(unit)
     if not parsed.has_time:
         raise ValueError("the unit has no time axis: use update")
-    unit_code = parsed.header.time_unit
-    if time_unit is not None and _unit.time_unit_code(time_unit) != unit_code:
-        raise ValueError(f"time_unit is {time_unit} but the unit stores {_format.TIME_UNIT_NAMES[unit_code]}")
-    samples = _unit.as_series(x, allow_empty=True)
-    ticks, _ = _unit.as_ticks(times, None, unit_code)
-    if ticks.shape != samples.shape:
-        raise ValueError(f"times must be 1-D with one entry per sample ({samples.shape[0]}), got shape {ticks.shape}")
-    start = to_ticks(start_time, unit_code, "start_time")
-    duration = to_ticks(block_duration, unit_code, "block_duration", duration=True)
-    ranges = to_ranges([] if delete_ranges is None else delete_ranges, unit_code)
+    samples, ticks, start, duration, ranges = _args.time_blocks_update(
+        x, times, start_time, block_duration, delete_ranges, time_unit, parsed.header.time_unit
+    )
     new_ids = block_ids(ticks, start, duration)
     if new_ids.shape[0] and (np.diff(ticks) < 0).any():
-        raise _unit.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
+        raise _args.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
     touched, covered = _block_masks(ranges, start, duration, num_old_blocks)
     # The existing blocks to decode: those a range meets or a new sample lands in, except the

@@ -292,11 +292,14 @@ Code layout (`fluxcode/`), from the public API down:
   tuples.
 - `_unit.py`: building and parsing units from flat sample arrays and block sizes;
   `_time_blocks.py`: dividing timed samples into blocks of a fixed duration.
+- `_compress.py`: the compression policy (efforts, layout choice, flush points, framing, candidate
+  choice); `rust/src/compress.rs` is its port.
 - `_encoder.py`, `_decoder.py`: the per-block kernels (SPEC §5, §6); `_time.py`: the time axis
   kernels (§4); `_noise.py`, `_nonfinite.py` and `_extreme_magnitudes.py`: the noise estimate,
   NaN/inf blocks and extreme ranges, each off the common path.
 - `_format.py`: the header, field offsets and row types (§7); `_bitpacking.py`: writing and
-  reading the body's fields, and splicing bodies for `update`.
+  reading the body's fields, and splicing bodies for `update`. `rust/src/` has the same-named
+  `format.rs` and `bitpacking.rs`.
 
 The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
 defining each kernel, not the constants and helpers it inlines from other modules. After editing

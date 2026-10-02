@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _compress, _encoder, _unit
+from fluxcode import Params, _api, _args, _compress, _encoder, _unit
 
 PER_UNIT = _api.DEFAULT_BLOCKS_PER_UNIT  # the helpers assume the default unit size
 
@@ -64,4 +64,4 @@ def unchecked_params(**kw):
 def encode_unchecked(x, **kw):
     """encode_unit's bytes for one unit under unchecked_params(**kw)."""
     x = np.asarray(x, np.float64)
-    return _unit.encode(x, _api._fixed_sizes(x.shape[0], _api.DEFAULT_BLOCK_LEN), unchecked_params(**kw)).unit
+    return _unit.encode(x, _args.fixed_sizes(x.shape[0], _api.DEFAULT_BLOCK_LEN), unchecked_params(**kw)).unit

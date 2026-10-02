@@ -21,11 +21,10 @@ arguments and call _unit (units and blocks) or _time_blocks (time division).
 
 from collections.abc import Mapping, Sequence
 
-import numpy as np
 import numpy.typing as npt
 
-from . import _format, _time_blocks, _unit
-from ._time_blocks import DurationLike, RangesLike, TimeLike
+from . import _args, _time_blocks, _unit
+from ._args import DurationLike, RangesLike, TimeLike
 from ._types import (
     DEFAULT_PARAMS,
     DecodedUnit,
@@ -34,7 +33,6 @@ from ._types import (
     Params,
     TimeUnit,
     UpdatedUnit,
-    is_int,
 )
 
 DEFAULT_BLOCK_LEN: int = 1000
@@ -42,21 +40,6 @@ DEFAULT_BLOCK_LEN: int = 1000
 
 DEFAULT_BLOCKS_PER_UNIT: int = 60
 """Default blocks per unit of encode: 60 blocks of 1000 make a unit one minute at 1 kHz."""
-
-
-def _fixed_sizes(num_samples: int, block_len: int) -> np.ndarray:
-    """Block sizes of num_samples in blocks of block_len, the last one short if need be.
-
-    Raises:
-        ValueError: If block_len is not from 1 to 65,535.
-    """
-    if not (is_int(block_len) and 1 <= block_len <= _format.MAX_BLOCK_LEN):
-        raise ValueError(f"block_len must be from 1 to {_format.MAX_BLOCK_LEN}, got {block_len!r}")
-    num_blocks = -(-num_samples // block_len)
-    sizes = np.full(num_blocks, block_len, np.int64)
-    if num_blocks:
-        sizes[-1] = num_samples - (num_blocks - 1) * block_len
-    return sizes
 
 
 # Encoding
@@ -104,9 +87,9 @@ def encode_unit(
         ValueError: If x is empty or needs more than 65,535 blocks or 2^26 samples, or the
             times are invalid (see above) or don't match x in length.
     """
-    series_arr = _unit.as_series(x)
-    sizes = _fixed_sizes(series_arr.shape[0], block_len)
-    ticks, time_unit_code = _unit.series_ticks(times, time_unit, series_arr.shape[0])
+    series_arr = _args.as_series(x)
+    sizes = _args.fixed_sizes(series_arr.shape[0], block_len)
+    ticks, time_unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
     return _unit.encode(series_arr, sizes, params, ticks, time_unit_code)
 
 
@@ -147,11 +130,11 @@ def encode_blocks(
             unit would hold more than 65,535 blocks or 2^26 samples, or the times are
             invalid or don't match x in length.
     """
-    series_arr = _unit.as_series(x, allow_empty=True)
-    sizes = _unit.as_block_sizes(block_sizes)
+    series_arr = _args.as_series(x, allow_empty=True)
+    sizes = _args.as_block_sizes(block_sizes)
     if int(sizes.sum()) != series_arr.shape[0]:
         raise ValueError(f"block_sizes add up to {int(sizes.sum())}, not the {series_arr.shape[0]} samples of x")
-    ticks, time_unit_code = _unit.series_ticks(times, time_unit, series_arr.shape[0])
+    ticks, time_unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
     return _unit.encode(series_arr, sizes, params, ticks, time_unit_code)
 
 
@@ -229,33 +212,10 @@ def encode(
         ValueError: If x is empty, a unit would be too large, or the times are invalid or
             don't match x in length.
     """
-    series_arr = _unit.as_series(x)
-    _fixed_sizes(0, block_len)
-    if not (is_int(blocks_per_unit) and blocks_per_unit >= 1):
-        raise ValueError(f"blocks_per_unit must be >= 1, got {blocks_per_unit!r}")
-    ticks, time_unit_code = _unit.series_ticks(times, time_unit, series_arr.shape[0])
-    # Samples per full unit
-    samples_per_unit = blocks_per_unit * block_len
-    num_blocks = -(-min(samples_per_unit, series_arr.shape[0]) // block_len)
-    _unit.check_unit_counts(num_blocks, min(samples_per_unit, series_arr.shape[0]))
-    if ticks is not None:
-        # Each unit checks its own times: check the unit boundaries here
-        unit_starts = np.arange(samples_per_unit, ticks.shape[0], samples_per_unit)
-        decreases = unit_starts[ticks[unit_starts] < ticks[unit_starts - 1]]
-        if decreases.shape[0]:
-            raise _unit.decrease_error(ticks, int(decreases[0]))
-    parts = []
-    for idx in range(0, series_arr.shape[0], samples_per_unit):
-        chunk = series_arr[idx:idx + samples_per_unit]
-        parts.append(_unit.encode(
-            chunk,
-            _fixed_sizes(chunk.shape[0], block_len),
-            params,
-            None if ticks is None else ticks[idx:idx + samples_per_unit],
-            time_unit_code,
-        ))
-    units, mins, maxs, means = (list(col) for col in zip(*parts))
-    return EncodedSeries(units, mins, maxs, means)
+    series_arr = _args.as_series(x)
+    _args.check_chunking(block_len, blocks_per_unit)
+    ticks, time_unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
+    return _unit.encode_series(series_arr, block_len, blocks_per_unit, ticks, time_unit_code, params)
 
 
 # Decoding
@@ -304,6 +264,7 @@ def update(
     params: Params = DEFAULT_PARAMS,
     *,
     times: Mapping[int, npt.ArrayLike] | None = None,
+    time_unit: TimeUnit | None = None,
 ) -> UpdatedUnit:
     """Replaces or appends whole blocks within an existing unit.
 
@@ -322,6 +283,7 @@ def update(
             required if and only if the unit has a time axis. datetime64 in the unit's time
             unit, or integer ticks in it. The updated unit's times must be non-decreasing
             throughout.
+        time_unit: Optional: the unit's time unit, checked if given.
 
     Returns:
         UpdatedUnit tuple (unit, indices, block_min, block_max, block_mean): the new unit,
@@ -330,12 +292,11 @@ def update(
 
     Raises:
         ValueError: If unit is corrupt, an index is negative, a block is not 1-D or too
-            large, the unit would be too large, or times are missing, unexpected, mis-keyed,
-            mis-shaped or out of order.
+            large, the unit would be too large, time_unit isn't the unit's, or times are missing,
+            unexpected, mis-keyed, mis-shaped or out of order.
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
-    return _unit.update(unit, blocks, params, times)
-
+    return _unit.update(unit, blocks, params, times, time_unit)
 
 
 def update_time_blocks(

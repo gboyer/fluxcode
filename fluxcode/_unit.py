@@ -14,142 +14,8 @@ import numpy as np
 import numpy.typing as npt
 import zstandard
 
-from . import _bitpacking, _compress, _decoder, _encoder, _format, _time
-from ._types import DecodedUnit, EncodedUnit, Params, UpdatedUnit, is_int
-
-
-def as_series(series_input: npt.ArrayLike, allow_empty: bool = False) -> np.ndarray:
-    """Validates and converts input into a contiguous 1D float64 array.
-
-    Args:
-        series_input: Array-like input.
-        allow_empty: Whether an empty array is accepted.
-
-    Returns:
-        Contiguous 1D float64 numpy array.
-
-    Raises:
-        ValueError: If series_input is not 1D, or is empty and allow_empty is False.
-    """
-    series_array = np.ascontiguousarray(series_input, dtype=np.float64)
-    if series_array.ndim != 1 or (series_array.shape[0] == 0 and not allow_empty):
-        raise ValueError(f"x must be a {'' if allow_empty else 'non-empty '}1-D array, got shape {series_array.shape}")
-    return series_array
-
-
-def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) -> tuple[np.ndarray, int]:
-    """Converts timestamps into contiguous int64 ticks and their time unit code.
-
-    Args:
-        times: datetime64[s|ms|us|ns] array (the unit is taken from the dtype), or an
-            integer array of ticks in time_unit.
-        time_unit: Unit of integer ticks ('s', 'ms', 'us' or 'ns'); None for datetime64.
-        stored_unit: For update: the unit's time unit code, which datetime64 times must
-            match and integer ticks are in (time_unit, if given, must match it too). 0 when
-            encoding.
-
-    Returns:
-        A tuple of (ticks, time_unit_code): a contiguous int64 array with the input's shape
-        and the TimeUnit code.
-
-    Raises:
-        ValueError: If the dtype isn't datetime64[s|ms|us|ns] or integer, time_unit is
-            missing for integer ticks or given for datetime64, the unit doesn't match
-            stored_unit, or an unsigned tick exceeds int64.
-    """
-    times_array = np.asarray(times)
-    if times_array.dtype.kind == "M":
-        if time_unit is not None:
-            raise ValueError("time_unit applies to integer times only: datetime64 times carry their own unit")
-        dtype_unit, unit_count = np.datetime_data(times_array.dtype)
-        if unit_count != 1 or dtype_unit not in _format.TIME_UNIT_CODES:
-            raise ValueError(f"times must be datetime64 in s, ms, us or ns, got {times_array.dtype}")
-        unit_code = _format.TIME_UNIT_CODES[dtype_unit]
-        ticks = times_array.view(np.int64)
-    elif times_array.dtype.kind in "iu" or (times_array.size == 0 and times_array.dtype.kind == "f"):
-        # An empty list converts to float64: take it as integer ticks
-        unit_code = time_unit_code(time_unit, stored_unit)
-        if times_array.dtype.kind == "u" and times_array.size and int(times_array.max()) > _time.INT64_MAX:
-            raise ValueError("integer times must fit in int64")
-        ticks = times_array.astype(np.int64, copy=False)
-    else:
-        raise ValueError(
-            f"times must be datetime64 (s, ms, us or ns) or integer ticks with time_unit, got dtype {times_array.dtype}"
-            + (" (time zone aware times aren't supported: convert to naive UTC)" if times_array.dtype == object else "")
-        )
-    if stored_unit and unit_code != stored_unit:
-        raise ValueError(
-            f"times are in {_format.TIME_UNIT_NAMES[unit_code]} but the unit stores "
-            f"{_format.TIME_UNIT_NAMES[stored_unit]}"
-        )
-    return np.ascontiguousarray(ticks), unit_code
-
-
-def time_unit_code(time_unit: str | None, stored_unit: int = 0) -> int:
-    """The TimeUnit code of integer ticks: time_unit's, or the stored unit's when it is None.
-
-    Raises:
-        ValueError: If time_unit is invalid, or None without a stored unit.
-    """
-    unit_names = "', '".join(_format.TIME_UNIT_CODES)
-    if time_unit is None:
-        if not stored_unit:
-            raise ValueError(f"integer times need time_unit ('{unit_names}')")
-        return stored_unit
-    if time_unit not in _format.TIME_UNIT_CODES:
-        raise ValueError(f"time_unit must be one of '{unit_names}', got {time_unit!r}")
-    return _format.TIME_UNIT_CODES[time_unit]
-
-
-def series_ticks(
-    times: npt.ArrayLike | None, time_unit: str | None, num_samples: int
-) -> tuple[np.ndarray | None, int]:
-    """Converts encode's times argument into 1D int64 ticks (None without times).
-
-    Raises:
-        ValueError: If the times are invalid or don't have num_samples entries.
-    """
-    if times is None:
-        if time_unit is not None:
-            raise ValueError("time_unit needs times")
-        return None, 0
-    ticks, unit_code = as_ticks(times, time_unit)
-    if ticks.shape != (num_samples,):
-        raise ValueError(f"times must be 1-D with one entry per sample ({num_samples}), got shape {ticks.shape}")
-    return ticks, unit_code
-
-
-def as_block_sizes(block_sizes: npt.ArrayLike) -> np.ndarray:
-    """Validates block sizes: a 1-D integer array of 0 to 65,535 each.
-
-    Returns:
-        Contiguous 1D int64 array.
-
-    Raises:
-        ValueError: If block_sizes isn't a 1-D integer array of sizes in range.
-    """
-    sizes = np.asarray(block_sizes)
-    if sizes.ndim != 1 or not (np.issubdtype(sizes.dtype, np.integer) or sizes.shape[0] == 0):
-        raise ValueError(f"block_sizes must be a 1-D integer array, got {sizes.dtype} of shape {sizes.shape}")
-    sizes = np.ascontiguousarray(sizes, np.int64)
-    if sizes.shape[0] and not (0 <= sizes.min() and sizes.max() <= _format.MAX_BLOCK_LEN):
-        raise ValueError(f"block sizes must be from 0 to {_format.MAX_BLOCK_LEN}")
-    return sizes
-
-
-def check_unit_counts(num_blocks: int, num_samples: int, block_sizes: np.ndarray | None = None) -> None:
-    """Checks that a unit's block and sample counts (and block sizes) are within the format's bounds.
-
-    Raises:
-        ValueError: If there are over 65,535 blocks or 2^26 samples, or a block holds over
-            65,535 samples.
-    """
-    if block_sizes is not None and block_sizes.shape[0] and int(block_sizes.max()) > _format.MAX_BLOCK_LEN:
-        raise ValueError(f"a block holds at most {_format.MAX_BLOCK_LEN} samples, got {int(block_sizes.max())}")
-    if num_blocks > _format.MAX_BLOCKS:
-        raise ValueError(f"a unit holds at most {_format.MAX_BLOCKS} blocks, got {num_blocks}")
-    if num_samples > _format.MAX_UNIT_SAMPLES:
-        raise ValueError(f"a unit holds at most {_format.MAX_UNIT_SAMPLES} samples, got {num_samples}")
+from . import _args, _bitpacking, _compress, _decoder, _encoder, _format, _time
+from ._types import DecodedUnit, EncodedSeries, EncodedUnit, Params, UpdatedUnit
 
 
 def sample_offsets(block_sizes: np.ndarray) -> np.ndarray:
@@ -224,16 +90,6 @@ def encode_rows(samples: np.ndarray, block_sizes: np.ndarray, params: Params) ->
     return rows, stats
 
 
-def decrease_error(ticks: np.ndarray, sample_idx: int) -> ValueError:
-    """The error for times that decrease at sample_idx (or contain NaT)."""
-    if (ticks == _time.INT64_MIN).any():
-        return ValueError("times contain NaT")
-    return ValueError(
-        f"times must be non-decreasing: sample {sample_idx} is {int(ticks[sample_idx])}, "
-        f"below sample {sample_idx - 1} at {int(ticks[sample_idx - 1])}"
-    )
-
-
 def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_flags: np.ndarray) -> _format.TimeRows:
     """Analyzes the blocks' ticks into time rows, checking that they never decrease.
 
@@ -254,7 +110,7 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     time_rows = _format.allocate_time_rows(block_sizes.shape[0], ticks.shape[0])
     status, sample_idx = _time.encode_times(ticks, sample_offsets(block_sizes), in_out_block_flags, *time_rows)
     if status != _time.OK:
-        raise decrease_error(ticks, sample_idx)
+        raise _args.decrease_error(ticks, sample_idx)
     return time_rows
 
 
@@ -277,11 +133,43 @@ def encode(
         ValueError: If the unit would be too large, or the times contain NaT or decrease
             anywhere.
     """
-    check_unit_counts(block_sizes.shape[0], samples.shape[0], block_sizes)
+    _args.check_unit_counts(block_sizes.shape[0], samples.shape[0], block_sizes)
     rows, stats = encode_rows(samples, block_sizes, params)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
     return EncodedUnit(_compress.compress(rows, samples.shape[0], _compress.EFFORTS[params.effort], time_unit), *stats)
+
+
+def encode_series(
+    samples: np.ndarray, block_len: int, blocks_per_unit: int, ticks: np.ndarray | None, time_unit: int, params: Params
+) -> EncodedSeries:
+    """Encodes a series as a sequence of units of blocks_per_unit blocks of block_len samples
+    (the last block, and the last unit, may be shorter), each via encode.
+
+    Raises:
+        ValueError: If a unit would be too large, or the times decrease anywhere.
+    """
+    samples_per_unit = blocks_per_unit * block_len
+    num_blocks = -(-min(samples_per_unit, samples.shape[0]) // block_len)
+    _args.check_unit_counts(num_blocks, min(samples_per_unit, samples.shape[0]))
+    if ticks is not None:
+        # Each unit checks its own times: check the unit boundaries here
+        unit_starts = np.arange(samples_per_unit, ticks.shape[0], samples_per_unit)
+        decreases = unit_starts[ticks[unit_starts] < ticks[unit_starts - 1]]
+        if decreases.shape[0]:
+            raise _args.decrease_error(ticks, int(decreases[0]))
+    parts = []
+    for idx in range(0, samples.shape[0], samples_per_unit):
+        chunk = samples[idx:idx + samples_per_unit]
+        parts.append(encode(
+            chunk,
+            _args.fixed_sizes(chunk.shape[0], block_len),
+            params,
+            None if ticks is None else ticks[idx:idx + samples_per_unit],
+            time_unit,
+        ))
+    units, mins, maxs, means = (list(col) for col in zip(*parts))
+    return EncodedSeries(units, mins, maxs, means)
 
 
 class ParsedUnit(NamedTuple):
@@ -549,7 +437,7 @@ def splice(
     """
     num_old_blocks = parsed.header.num_blocks
     num_blocks = max(num_old_blocks, int(indices[-1]) + 1) if indices.shape[0] else num_old_blocks
-    check_unit_counts(num_blocks, 0)
+    _args.check_unit_counts(num_blocks, 0)
     # Appended blocks that indices skip become empty blocks; they hold no samples, so the
     # samples (and ticks) keep their order
     gaps = np.setdiff1d(np.arange(num_old_blocks, num_blocks), indices) if num_blocks > num_old_blocks else indices[:0]
@@ -562,7 +450,7 @@ def splice(
     sizes[:num_old_blocks] = parsed.block_sizes
     sizes[indices] = block_sizes
     num_samples = int(sizes.sum())
-    check_unit_counts(num_blocks, num_samples)
+    _args.check_unit_counts(num_blocks, num_samples)
     new_rows, stats = encode_rows(samples, block_sizes, params)
     new_offsets = sample_offsets(block_sizes)
     old_starts = None
@@ -599,6 +487,7 @@ def update(
     blocks: Mapping[int, npt.ArrayLike],
     params: Params,
     times: Mapping[int, npt.ArrayLike] | None,
+    time_unit: str | None = None,
 ) -> UpdatedUnit:
     """Validates update's arguments and splices the new blocks into the unit (see _api.update).
 
@@ -608,34 +497,8 @@ def update(
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
     parsed = decompress(unit)
-    if not isinstance(blocks, Mapping):
-        raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")  # noqa: TRY004
-    if not all(is_int(idx) and idx >= 0 for idx in blocks):
-        raise ValueError(f"block indices must be integers >= 0, got {sorted(map(repr, blocks))}")
-    indices = sorted(int(idx) for idx in blocks)
-    # Before anything is sized by the indices
-    if indices and indices[-1] >= _format.MAX_BLOCKS:
-        raise ValueError(f"a unit holds at most {_format.MAX_BLOCKS} blocks, got block index {indices[-1]}")
-    if parsed.has_time:
-        if times is None:
-            raise ValueError("the unit has a time axis: times are required")
-        if sorted(int(idx) for idx in times) != indices:
-            raise ValueError("times must have the same block indices as blocks")
-    elif times is not None:
-        raise ValueError("the unit has no time axis: times must be None")
-    by_index = {int(idx): block for idx, block in blocks.items()}
-    samples = [as_series(by_index[idx], allow_empty=True) for idx in indices]
-    sizes = as_block_sizes([block.shape[0] for block in samples]) if samples else np.zeros(0, np.int64)
-    ticks = None
-    if times is not None:
-        times_by_index = {int(idx): block_times for idx, block_times in times.items()}
-        block_ticks = [as_ticks(times_by_index[idx], None, parsed.header.time_unit)[0] for idx in indices]
-        for idx, block, tick_block in zip(indices, samples, block_ticks):
-            if tick_block.shape != block.shape:
-                raise ValueError(f"block {idx}: times must have the shape of its samples {block.shape}, got {tick_block.shape}")
-        ticks = np.concatenate(block_ticks) if block_ticks else np.zeros(0, np.int64)
-    if not indices:
+    _args.check_stored_time_unit(time_unit, parsed.header.time_unit)
+    indices, samples, sizes, ticks = _args.update_blocks(blocks, times, parsed.header.time_unit)
+    if not indices.shape[0]:
         return UpdatedUnit(unit, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
-    return splice(
-        parsed, np.array(indices, np.int64), np.concatenate(samples), sizes, ticks, params
-    )
+    return splice(parsed, indices, samples, sizes, ticks, params)

@@ -85,13 +85,13 @@ def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecomp
     Returns:
         A tuple of (compressor, decompressor) dedicated to the current thread.
     """
-    codecs = getattr(_local, "z", None)
-    if codecs is None:
+    if not hasattr(_local, "decompressor"):
         # Separate compressors and decompressor per thread for thread-safety
-        codecs = _local.z = {"decompressor": zstandard.ZstdDecompressor()}
-    if level not in codecs:
-        codecs[level] = zstandard.ZstdCompressor(level=level, write_checksum=False, write_content_size=True)
-    return codecs[level], codecs["decompressor"]
+        _local.decompressor = zstandard.ZstdDecompressor()
+        _local.compressors = {}
+    if level not in _local.compressors:
+        _local.compressors[level] = zstandard.ZstdCompressor(level=level, write_checksum=False, write_content_size=True)
+    return _local.compressors[level], _local.decompressor
 
 
 def flush_points(

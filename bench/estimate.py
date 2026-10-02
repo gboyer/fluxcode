@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from _series import decode_series, encode_series
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 
-from fluxcode import Params, _encoder, _unit
+from fluxcode import Params, _compress, _encoder, _unit
 
 B16 = Params(min_quantize_bits=16, noise_floor_sigma=None)
 
@@ -26,7 +26,7 @@ def estimate_and_actual(x, params):
     sizes = np.full(x.size // 1000, 1000)
     rows, _ = _unit.encode_rows(x, sizes, params)
     est = np.mean([_encoder.estimate_bits(r) for r in rows.residuals.reshape(-1, 1000)])
-    return est, 8 * len(_unit.compress(rows, x.size, "bit")) / x.size
+    return est, 8 * len(_compress.compress(rows, x.size, _compress.Effort("bit", False, (3,)))) / x.size
 
 
 def main(minutes=5):

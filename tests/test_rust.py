@@ -128,6 +128,7 @@ def test_time_axis_units_and_updates_match_python(effort):
         else:
             a, b = fluxcode.decode_unit(unit_rust), fluxcode.decode_unit(unit_python)
             assert np.array_equal(a.values, b.values, equal_nan=True)
+            assert a.times is not None and b.times is not None
             assert np.array_equal(a.times, b.times)
 
 

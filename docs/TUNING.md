@@ -42,8 +42,8 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   only 1.8× on 4 threads, so the fix is a call that compresses a whole unit with its cuts without
   the GIL: the optional Rust extension (`rust/`; `uv sync --extra rust` from a checkout, not on PyPI yet) does, and gives the
   same units. With it, effort 5 on the day-scale test (4 threads) encodes at 5.98 GB/s against
-  3.62 without (the default, effort 4: 7.10 against 6.71); `splice`/`update` and units with a time
-  axis don't use it yet. Without the extension, efforts 5 and up suit one thread per process, or
+  3.62 without (the default, effort 4: 7.10 against 6.71); units with a time axis and `update` use it
+  for the compression of a body that Python built (`pack_unit`). Without the extension, efforts 5 and up suit one thread per process, or
   throughput that doesn't matter.
 - **The heuristic layout** (efforts 1–2) compresses once instead of twice: byte planes when the
   residuals are narrow (the high byte is a constant and byte-wise literals model the low byte) and

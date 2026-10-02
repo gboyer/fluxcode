@@ -209,3 +209,16 @@ def test_out_of_range_decimal_anchors_are_rejected():
 
     with pytest.raises(ValueError, match="block 1: anchor"):
         fluxcode.decode_unit(rebuilt(unit, bad_anchor))
+
+
+def test_update_checks_time_unit_if_given():
+    t = np.datetime64("2026-01-01") + np.arange(20) * np.timedelta64(1, "ms")
+    unit = fluxcode.encode_unit(np.arange(20.0), times=t, block_len=10).unit
+    new = {1: np.zeros(10)}
+    new_times = {1: t[10:]}
+    assert fluxcode.update(unit, new, times=new_times, time_unit="ms").unit == fluxcode.update(
+        unit, new, times=new_times).unit
+    with pytest.raises(ValueError, match="time_unit is us but the unit stores ms"):
+        fluxcode.update(unit, new, times=new_times, time_unit="us")
+    with pytest.raises(ValueError, match="time_unit must be one of"):
+        fluxcode.update(unit, new, times=new_times, time_unit="h")

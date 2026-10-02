@@ -54,7 +54,7 @@ from _signals import (
 )
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _decoder, _format, _unit
+from fluxcode import Params, _bitpacking, _compress, _decoder, _format, _unit
 
 BLOCK, BLOCKS = 1000, 60
 DAY_UNITS = 1440
@@ -356,7 +356,7 @@ def breakdown(wl, reps=200):
     for k, xs in zip(wl.kinds, wl.pool):
         x = xs[1]
         sizes = np.full(BLOCKS, BLOCK)
-        cz, dz = _unit.zstd()
+        cz, dz = _compress.zstd()
         unit_rows, _ = _unit.encode_rows(x, sizes, p)
         raw = _bitpacking.write_unit(*unit_rows[:6]).data  # as _unit.compress passes it
         frame = cz.compress(raw)
