@@ -1,14 +1,16 @@
 # fluxcode performance report
 
-2026-09-24; sizes updated 2026-09-25 for the current format (unit header and per-block anchors).
-Timings are from a quiet rerun on 2026-09-25 (AC power, idle, fastest of 5 runs). How fast fluxcode encodes and decodes a day of data from a sensor fleet (a synthetic
+2026-09-24; every table rerun on 2026-10-01 (AC power, one run each, load average about 1.6)
+after variable block sizes, snapped power-of-two grids and `planes="best"` as the default. How fast fluxcode encodes and decodes a day of data from a sensor fleet (a synthetic
 day-scale stress test), where the time goes, and which inputs slow it down. Raw output: [bench/STRESS_RESULTS.md](../bench/STRESS_RESULTS.md);
 harness: [bench/stress.py](../bench/stress.py).
 
-2026-10-01: variable block sizes (a per-block `block_sizes` column, an 8-byte header, flat
-per-block offsets in every kernel) measured against the previous format, one thread, best of 300,
-one-minute units: encode +1–3% (+2–6 µs, a little more with times), decode +2–4% (+2–5 µs),
-units 1–7 bytes smaller. The tables below predate it.
+Most of the change from the previous tables is `planes="best"`: every unit is compressed twice,
+with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller and
+encode about 1.5x slower; `planes="bit"` skips the second pass. Variable block sizes alone (a
+per-block `block_sizes` column, an 8-byte header, flat per-block offsets in every kernel) cost
+encode +1–3% (+2–6 µs per unit) and decode +2–4% (+2–5 µs), and units are 1–7 bytes smaller.
+Snapping the grid costs nothing measurable.
 
 ## Summary
 
@@ -18,13 +20,14 @@ of an Apple M3 (MacBook Air, Mac15,13):
 
 | phase | wall time | throughput | per block, per worker |
 |---|---|---|---|
-| encode | **71.4 s** | 9.7 GB/s (1.21e9 samples/s) | 3.31 µs |
+| encode | **104.7 s** | 6.6 GB/s (0.83e9 samples/s) | 4.85 µs |
 | decode | **39.3 s** | 17.6 GB/s | 1.82 µs |
 
-The day compresses to 40.8 GB (3.78 bits/sample, 17x). Encode runs at about 1210x real time, so
-keeping up with the live stream takes about 0.3% of one core; speed only matters for
-backfill. The worst input found (a NaN scattered through every block) takes encode to 108 s per
-day, 1.5x the baseline. Performance is more than sufficient for this use case.
+The day compresses to 39.9 GB (3.69 bits/sample, 17x). Encode runs at about 830x real time, so
+keeping up with the live stream takes about 0.5% of one core; speed only matters for
+backfill. The worst input found (a NaN scattered through every block) takes encode to 186 s per
+day, 1.8x the baseline. Performance is more than sufficient for this use case. With
+`planes="bit"` (the layout before 2026-10-01) the day encoded in 71 s at 40.8 GB.
 
 ## Method
 
@@ -51,14 +54,15 @@ day, 1.5x the baseline. Performance is more than sufficient for this use case.
 
 ### Scaling and overhead
 
-- **Python overhead is negligible.** `encode_unit` costs the sum of its stages to within a few
-  µs per unit (for example 174 µs total against 89 + 28 + 55 for analog).
+- **Python overhead is negligible.** `encode_unit` costs about the sum of its stages (for
+  example 256 µs for analog: 100 for the kernels, 32 + 60 for the bit-plane body and its zstd
+  pass, and the rest for the byte-plane body and its pass).
 - **The GIL is not a bottleneck.** Threads and processes give the same throughput, and 99-100%
   of worker wall time is spent inside codec calls.
 - **Load balance.** An earlier static split of tags across workers left some idle for the second
   half of a run, because kinds differ in cost (77-213 µs per unit). Claiming tags dynamically
   fixed it.
-- **Thermals.** The machine is fanless. Encode drifted from 10.1-10.3 to about 9.5 GB/s over the 71 s
+- **Thermals.** The machine is fanless. Encode drifted from 7.1 to about 6.3 GB/s over the 105 s
   phase. Runs longer than about 2 minutes, such as a multi-day backfill, weren't measured and
   would likely slow further.
 
@@ -66,39 +70,40 @@ day, 1.5x the baseline. Performance is more than sufficient for this use case.
 
 | kind | bits/sample | kernels | write_unit | zstd | encode_unit | decode_unit |
 |---|---|---|---|---|---|---|
-| analog | 5.91 | 89 | 28 | 55 | 174 | 81 |
-| held | 0.27 | 86 | 28 | 22 | 138 | 94 |
-| digital | 0.01 | 39 | 28 | 8 | 77 | 70 |
-| sensor-0.1 | 1.77 | 108 | 28 | 57 | 190 | 100 |
-| random-walk | 12.70 | 95 | 29 | 87 | 213 | 88 |
+| analog | 5.90 | 100 | 32 | 60 | 256 | 91 |
+| held | 0.27 | 97 | 31 | 24 | 182 | 105 |
+| digital | 0.01 | 46 | 31 | 9 | 106 | 93 |
+| sensor-0.1 | 1.77 | 117 | 31 | 61 | 342 | 112 |
+| random-walk | 12.67 | 101 | 32 | 88 | 317 | 100 |
 
-Encode is about half numba kernels (quantization, order pick, residual), a fixed ~28 µs for
-`write_unit` (the bit-plane shuffle), and 8-87 µs of zstd depending on entropy.
+`write_unit` and `zstd` are one bit-plane pass; `encode_unit` (default `planes="best"`) does a
+bit-plane and a byte-plane pass. Encode is numba kernels (quantization, order pick, residual),
+about 31 µs for the bit-plane shuffle, and 9-88 µs of zstd per pass depending on entropy.
 
 ### Adversarial inputs (full-day times, extrapolated from 250-tag runs)
 
 | input | encode | decode | vs baseline encode |
 |---|---|---|---|
-| baseline mix, 3 NaN min/tag/day | 71 s | 39 s | 1.00x |
-| every tag a random walk (12.6 bits/sample) | 89 s | 39 s | 1.25x |
-| 120 NaN min/tag/day in 20 runs (8% of samples) | 73 s | 39 s | 1.02x |
-| isolated NaNs, 0.05% of samples (~40% of blocks) | 84 s | 42 s | 1.18x |
-| isolated NaNs, 1% of samples (every block) | 108 s | 49 s | 1.51x |
+| baseline mix, 3 NaN min/tag/day | 105 s | 39 s | 1.00x |
+| every tag a random walk (12.6 bits/sample) | 155 s | 46 s | 1.48x |
+| 120 NaN min/tag/day in 20 runs (8% of samples) | 116 s | 42 s | 1.10x |
+| isolated NaNs, 0.05% of samples (~40% of blocks) | 135 s | 46 s | 1.29x |
+| isolated NaNs, 1% of samples (every block) | 186 s | 54 s | 1.77x |
 
-- **NaN runs cost nothing measurable.** Blocks that are entirely NaN are cheap; only the two
+- **NaN runs cost little.** Blocks that are entirely NaN are cheap; only the two
   partial blocks at the ends of each run take the non-finite path.
 - **Scattered NaNs are the worst case.** A tag with intermittent bad-quality samples sends every
   affected block down the non-finite path. Before the `noise_finite` rewrite (branch-free
-  loops, scratch buffers allocated once per unit), the 1%-scattered case took 137 s; it now takes
-  108 s.
+  loops, scratch buffers allocated once per unit), the 1%-scattered case took 137 s; after it,
+  108 s with bit planes only (2026-09-25), and 186 s with both plane passes now.
 - **Decimal detection near misses.** A block on a decimal grid except for one late sample makes
-  each candidate exponent scan the whole block before failing: 4.28 µs/block against 3.53 for
-  plain data (single thread; [bench/decimal_near_miss.py](../bench/decimal_near_miss.py), results in
-  STRESS_RESULTS.md). `decimal_detection=False`
-  avoids it (3.48 µs/block). The note is
-  in the spec, §3.2.
+  each candidate exponent scan the whole block before failing. With bit planes only that cost
+  4.28 µs/block against 3.53 for plain data (2026-09-25); with both plane passes it is within
+  run-to-run noise (5.79-5.95 against 5.34-5.86; single thread,
+  [bench/decimal_near_miss.py](../bench/decimal_near_miss.py), results in STRESS_RESULTS.md).
+  `decimal_detection=False` avoids it. The note is in the spec, §3.2.
 
-### Timestamps (`--times`, 2026-09-27)
+### Timestamps (`--times`)
 
 The same day with an exact timestamp per sample (datetime64[ns]; docs/SPEC.md §2a). Each tag gets
 one clock kind, from a pool like the values: `clock-mix` is 60% a perfect 1 kHz grid, 30% a grid
@@ -107,32 +112,37 @@ with a few gaps (Poisson, mean 2 per minute, each 5 ms to 3 s) and 10% a noisy h
 
 | run | encode | decode | compressed | bits/sample |
 |---|---|---|---|---|
-| no timestamps | 81.4 s | 41.9 s | 40.78 GB | 3.78 |
-| `--times clock-mix` | 92.5 s (+14%) | 53.9 s (+29%) | 48.51 GB (+19%) | 4.49 |
+| no timestamps | 104.7 s | 39.3 s | 39.89 GB | 3.69 |
+| `--times clock-mix` | 148.6 s (+42%) | 55.6 s (+41%) | 47.68 GB (+20%) | 4.42 |
 
 Per clock kind, every tag on that clock (250 tags, the same session; percentages against no timestamps):
 
 | clock | encode µs/block/worker | decode µs/block/worker | bits/sample |
 |---|---|---|---|
-| none | 3.60 | 1.88 | 3.75 |
-| perfect grid | 4.13 (+15%) | 2.26 (+20%) | 3.76 |
-| grid with a few gaps | 4.27 (+19%) | 2.39 (+27%) | 3.76 |
-| noisy clock | 7.87 (+119%) | 4.70 (+150%) | 10.85 |
+| none | 5.05 | 1.84 | 3.67 |
+| perfect grid | 6.00 (+19%) | 2.45 (+33%) | 3.68 |
+| grid with a few gaps | 6.57 (+30%) | 2.55 (+39%) | 3.68 |
+| noisy clock | 12.95 (+156%) | 4.89 (+166%) | 10.80 |
+
+- **Both plane passes carry the time fields.** Each body holds the time columns and time residual
+  planes, so `planes="best"` compresses them twice too: the time axis costs more encode time
+  than it did with bit planes only (+14% for the day, 2026-09-27), at the same size.
 
 - **Grids cost bandwidth, not bits.** A regular block stores 24 bytes before compression, but
   encode reads and decode writes 8 bytes of ticks per sample, as many as the values. Single
   threaded that is +16 µs (+9%) to encode and +12 µs (+11%) to decode a unit
-  (`bench/time_axis.py`); on 4 threads, which share memory bandwidth, it is the 15-20% above.
+  (`bench/time_axis.py`, 2026-09-27); on 4 threads, which share memory bandwidth, it is the
+  19-30% above.
 - **Noisy clocks dominate the mix.** The 10% of tags on a noisy clock add 7.1 bits/sample of real
-  jitter entropy, most of the day's extra 7.7 GB, and each irregular block goes through the GCD,
+  jitter entropy, most of the day's extra 7.8 GB, and each irregular block goes through the GCD,
   the reference, 32 residual planes and zstd.
 - **32 residual planes, 64 only for long blocks** (a residual of 2^32 or more: in ns ticks, a gap
   of seconds). zstd scans zero bytes at about 9 GB/s, so the 32 dead planes per block cost 26-38 µs
-  of encode per irregular unit (the day: 101.1 s before, 92.5 s after), at the same size.
+  of encode per irregular unit (the day: 101.1 s before, 92.5 s after, 2026-09-27), at the same size.
 - **The per-block reference** (the rounded mean or the minimum of the quotients) cut the day's
   timestamps from 9.14 to 7.73 GB (the noisy clocks from 12.16 to 10.86 bits/sample) at no
-  measurable encode cost and about 2% on decode (alternating quarter-day runs, 3 each).
-- **No regression without timestamps.** Alternating quarter-day runs of this version and the
+  measurable encode cost and about 2% on decode (alternating quarter-day runs, 3 each; 2026-09-27).
+- **No regression without timestamps** (2026-09-27). Alternating quarter-day runs of this version and the
   version before the time axis (3 each) differ by about 1.5% (3.74 against 3.70 µs/block encode,
   1.92 against 1.89 decode), within the run-to-run spread of a fanless machine; sizes are
   byte-identical. `bench_gb.py` shows the same (within 1-2% either way).
@@ -140,18 +150,39 @@ Per clock kind, every tag on that clock (250 tags, the same session; percentages
 ### Single thread, per signal type (`bench/bench_gb.py`)
 
 A separate benchmark from the day-scale stress run above: 1 GiB of float64 (134,100 blocks, 15 signal
-types) through the public API on one thread, idle machine on AC power. Full tables:
-[bench/RESULTS.md](../bench/RESULTS.md). Per-block times are lower than the stress run's 3.31 µs
+types) through the public API on one thread, on AC power. Full tables:
+[bench/RESULTS.md](../bench/RESULTS.md). Per-block times differ from the stress run's 4.85 µs
 because there is one worker and no thermal drift, and the signal mix differs.
 
 | | bits/sample | encode µs/block (MB/s) | decode µs/block (MB/s) |
 |---|---|---|---|
-| default (noise floor 0.25) | 4.88 | 3.17 (2521) | 1.86 (4308) |
-| noise floor off | 6.93 | 2.59 (3091) | 1.77 (4524) |
-| target 6 bits/sample | 3.75 | 4.27 (1872) | 1.98 (4044) |
+| default (noise floor 0.25, `planes="best"`) | 4.76 | 5.08 (1574) | 1.73 (4626) |
+| noise floor off | 6.87 | 4.72 (1697) | 1.82 (4397) |
+| target 6 bits/sample | 3.39 | 6.01 (1332) | 1.71 (4667) |
+| `planes="bit"` | 4.86 | 3.37 (2374) | 2.01 (3988) |
 
-Default encode ranges from 2.3 µs/block (linear) to 4.6 (chirp). Timings on battery with
+`planes="best"` costs +1.71 µs/block (+51%) to encode for 2.1% smaller output, and decodes 14%
+faster: the units that pick byte planes skip the bit transpose. Default encode ranges from
+2.8 µs/block (linear) to 7.5 (sin-9.87hz). Timings on battery with
 other applications running were 1.5–1.8× slower, so benchmark on AC power with the machine idle.
+
+### Updates (`bench/update.py`)
+
+Single thread, default params, each update against encoding the same series from scratch (full
+table: [bench/UPDATE_RESULTS.md](../bench/UPDATE_RESULTS.md)):
+
+| operation | vs encode |
+|---|---|
+| `update` of 1 of 60 blocks (with or without times) | −13% to −16% (−33 to −55 µs) |
+| `update` appending a 61st block | −2% to −8% |
+| `update_time_blocks`, 2 s straddling 3 of 60 one-second blocks | −25% to −26% |
+| `update_time_blocks`, 2 s straddling 3 of 3,600 blocks of 10 samples | −29% to −35% (−370 to −407 µs) |
+
+An update decompresses the old unit, encodes only the new blocks, and copies every carried block's
+bytes into the new body (`_bitpacking.splice_body`), so it skips the kernels and the shuffle for
+the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode does, and builds
+the body in the other plane mode by converting the carried blocks one by one. With `planes="bit"`
+a one-block update was −40% against encode (on battery).
 
 ## Implementation notes
 
@@ -218,6 +249,12 @@ None of these change the format.
   that tested `isfinite(x[i])` instead of the codes slowed the whole function from 0.7 to
   1.15 µs/block, even though the fallback never ran. Time the stage before and after a refactor.
 - Benchmark stages with every output used: LLVM removes unused reductions, which makes them look free.
+- **numba slice assignment between arrays is slow** (`dst[a:b] = src[c:d]`, and 2-D slices worse):
+  it doesn't vectorize, and in `splice_body` cost 6-10x an explicit loop. Indexing with a runtime
+  signed offset (`dst[offset + i]`) also blocks vectorization, through the negative-index
+  wraparound check. The fast form slices both rows first and indexes them from 0
+  (`_bitpacking._copy_columns` / `_copy_bytes`): 96 → 14 µs for a 60-block splice, and 100 → 40 µs
+  when converting plane modes.
 
 ## Optimizations considered and not taken
 

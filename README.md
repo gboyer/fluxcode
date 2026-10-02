@@ -155,27 +155,29 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 | 0.0000% | 2.32 | 1.53 |
-| square wave | 0.05 | 0.0000% | 2.45 | 1.68 |
-| sine, 4.12 Hz | 2.78 | 0.0010% | 3.02 | 1.93 |
-| sine, 50.3 Hz | 6.73 | 0.0010% | 3.54 | 2.04 |
-| chirp | 7.84 | 0.0010% | 4.71 | 1.91 |
-| random walk | 12.66 | 0.0015% | 3.80 | 1.72 |
-| random walk rounded to 0.01 | 9.28 | 0% (exact) | 3.73 | 1.76 |
-| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 3.56 | 2.09 |
-| noisy sine (σ = 5) | 5.49 | 0.2333% | 3.13 | 2.18 |
-| Gaussian spikes on uniform noise | 6.68 | 1.4667% | 3.55 | 1.70 |
-| **all 15 signals** | **4.88** | | **3.25** | **1.91** |
+| linear ramp | 0.02 | 0.0000% | 2.75 | 1.30 |
+| square wave | 0.04 | 0.0000% | 2.91 | 1.13 |
+| sine, 4.12 Hz | 2.40 | 0.0010% | 6.01 | 2.09 |
+| sine, 50.3 Hz | 6.74 | 0.0010% | 5.94 | 2.11 |
+| chirp | 7.81 | 0.0010% | 7.41 | 2.01 |
+| random walk | 12.62 | 0.0015% | 5.54 | 1.78 |
+| random walk rounded to 0.01 | 9.28 | 0% (exact) | 6.31 | 1.84 |
+| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 6.21 | 2.15 |
+| noisy sine (σ = 5) | 5.24 | 0.2334% | 4.20 | 1.56 |
+| Gaussian spikes on uniform noise | 6.63 | 1.4661% | 5.04 | 1.81 |
+| **all 15 signals** | **4.76** | | **5.08** | **1.73** |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
-With `try_byte_planes=True` the whole set is 4.80 bits/sample (sines 4.12 Hz 2.44, 9.87 Hz 3.44)
-at 4.94 µs/block to encode; the gain is much larger at lower `max_quantize_bits` (see the
+Encode compresses each unit twice, with bit and with byte planes (`planes="best"`). With
+`planes="bit"` the whole set is 4.86 bits/sample at 3.37 µs/block to encode (sines 4.12 Hz 2.73,
+9.87 Hz 3.64); byte planes gain much more at lower `max_quantize_bits` (see the
 [research report](experimental/report/index.html#scatter-kinds)).
 
-Decoding runs at about 4 GB/s per core, and the kernels release the GIL:
-8 threads encode about 10 GB/s (note: 4 of those are "efficiency cores").
+Decoding runs at about 4.6 GB/s per core, and the kernels release the GIL:
+4 threads encode about 5 GB/s and decode about 15 GB/s (8 threads add little: 4 of the 8 cores
+are "efficiency cores").
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) has a sample industrial-scale run
 (1000 channels × 1 day at 1 kHz) and where the time goes.
 The implementation is fully in numba, SIMD optimized, and tuned for ARM NEON.
