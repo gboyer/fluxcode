@@ -1,11 +1,12 @@
 # fluxcode — specification
 
-Lossy (bounded-error) and, for decimal data, lossless compression of 1 kHz float64 time
-series, with their timestamps stored exactly if given (§2a). One compressed unit holds blocks of
-0 to 65,535 samples each; the unit records every block's size. `encode` divides a series into
-units of 60 blocks of 1000 by default, one channel-minute. Implementation: the `fluxcode` package
-(`encode_unit` / `encode_blocks` / `encode_time_blocks` / `decode_unit` / `update` /
-`update_time_blocks`, bulk `encode` / `decode`, `Params`).
+Lossy (bounded-error) and, for decimal data, lossless compression of float64 time series,
+designed around 1 kHz sensor data, with their timestamps stored exactly if given (§4). One
+compressed unit holds blocks of 0 to 65,535 samples each; the unit records every block's size.
+`encode` divides a series into units of 60 blocks of 1000 by default, one channel-minute at
+1 kHz. Implementation: the `fluxcode` package (encoding: `encode_unit`, `encode_blocks`,
+`encode_time_blocks`, bulk `encode`; decoding: `decode_unit`, bulk `decode`; updating: `update`,
+`update_time_blocks`; and `Params`).
 
 This document covers the format, the encoding algorithm and its guarantees. Speed and
 implementation notes are in [PERFORMANCE.md](PERFORMANCE.md); measured noise-floor behaviour and
@@ -15,36 +16,32 @@ choices are in [REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quanti
 ## 1. Parameters
 
 All parameters are **encoder-only**. The unit is self-describing: its header records the block
-length, sample count and time unit, and each block records its own order, grid (power-of-two
-exponent or decimal step) and anchor, and its start time and time step, so a decoder needs only
-the unit. Timestamps are data, not parameters (§2a), and so is the division into blocks (§2).
+count, the sample count, the time unit and the residual layout, and each block records its own
+size, order, grid (power-of-two exponent or decimal step) and anchor, and its start time, time
+step and reference, so a decoder needs only the unit. Timestamps are data, not parameters (§4), and so is the division into blocks (§2).
 
 | parameter | values | default | effect |
 |---|---|---|---|
-| `max_quantize_bits` | min–16 | 16 | hard: the finest step. The block's snapped power-of-two grid spans at most 2^max steps (65,535 at 16, §3.1; `B` in the formulas below) |
+| `max_quantize_bits` | min–16 | 16 | hard: the finest step. The block's snapped power-of-two grid spans at most 2^max steps (65,535 at 16, §5.1; `B` in the formulas below) |
 | `min_quantize_bits` | 1–max | 6 | hard: the coarsest step. Neither the noise floor nor the target coarsens a block past 2^min steps across its range |
-| `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders the encoder may choose from (§3.4) |
+| `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders the encoder may choose from (§5.5) |
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
-| `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§3.1a; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
-| `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§3.6): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
-| `planes` | `"best"`, `"bit"`, `"byte"` | `"best"` | the residual layout (§5): 16 bit planes, 2 byte planes, or both compressed and the smaller kept (ties keep bit planes). `"best"` doubles the zstd work of encoding; byte planes win on periodic signals and noisy sines, bit planes on small or aperiodic residuals (TUNING.md) |
+| `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
+| `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§5.7): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
+| `planes` | `"best"`, `"bit"`, `"byte"` | `"best"` | the residual layout (§7): 16 bit planes, 2 byte planes, or both compressed and the smaller kept (ties keep bit planes). `"best"` doubles the zstd work of encoding; byte planes win on periodic signals and noisy sines, bit planes on small or aperiodic residuals (TUNING.md) |
 
-**Precedence.** e_fine is the §3.1 exponent at `max_quantize_bits`, e_coarse the one at
+**Precedence.** e_fine is the §5.1 exponent at `max_quantize_bits`, e_coarse the one at
 `min_quantize_bits`. A block starts at e_fine; the noise floor raises it on gated blocks; it is
 clamped to e_coarse; decimal detection then looks for a decimal grid coarser than that step;
 finally the target (if set and the unit is over budget) coarsens blocks further, still never past
 e_coarse. With both the noise floor and the target on, each block takes the coarser step.
 
-Fixed by this spec: zstd level 3, blocks interleaved by field. Every block records its size, 0 to
-65,535 samples (1000 in everything measured), and a unit holds up to 65,535 blocks. Bit planes
-store each block in whole bytes, so a block whose size isn't a multiple of 8 pads its last byte
-with zero bits (§5).
+Fixed by this spec: zstd level 3, and the body stored field by field, each field holding every
+block's bytes in block order (§7). Every block records its size, 0 to 65,535 samples (1000 in
+most measurements), and a unit holds up to 65,535 blocks. Bit planes store each block in whole
+bytes, so a block whose size isn't a multiple of 8 pads its last byte with zero bits.
 
-Residuals are bit-shuffled or split into byte planes (header flag, §5). By default (`planes =
-"best"`) the encoder compresses each unit both ways and keeps the smaller: neither layout wins on
-most data, and the winner depends on the signal (measurements in TUNING.md).
-
-## 2. Units and summary statistics
+## 2. Units and blocks
 
 **A unit is one storage artifact** (e.g. a database row): blocks encoded and decoded together.
 Units are independent. **Blocks have any size from 0 to 65,535 samples**, each recorded in the
@@ -56,17 +53,17 @@ unit, so a series can be divided in whatever way suits it:
 - **Fixed duration** (`encode_time_blocks`): block b holds the samples timed in
   `[start + b·duration, start + (b+1)·duration)`, for irregular data or data that arrives
   incomplete: a minute with no samples is an empty block, and `update_time_blocks` later
-  replaces what the unit holds in given time ranges (§6). `start` and `duration` are the
+  replaces what the unit holds in given time ranges (§8). `start` and `duration` are the
   caller's (typically the start is part of the unit's storage key): the unit doesn't store them.
 
 **Decoding needs only the unit.** The header records the block count and the sample count, the
-body each block's size (§5), and each block its own anchor, so no index column or length has to
+body each block's size (§7), and each block its own anchor, so no index column or length has to
 be kept beside it. Nothing is padded: a block holds exactly its samples.
 
 **Empty and short blocks.** An empty block stores no samples: its flags, grid parameter and anchor
 (and time columns) are 0, and its summary statistics NaN. A block of at most 8 samples isn't
-analyzed: it takes the finest step (e_fine, §3.1), order 0 (the quantized values themselves), no
-noise floor and no part in the target (§3.6). Decimal detection (§3.2) still runs, against the
+analyzed: it takes the finest step (e_fine, §5.1), order 0 (the quantized values themselves), no
+noise floor and no part in the target (§5.7). Decimal detection (§5.3) still runs, against the
 finest step: it needs no analysis, so short blocks of decimal data stay bit-exact. Non-finite
 values in them are still coded exactly.
 
@@ -78,12 +75,15 @@ decoding never uses them.
 `num_samples` is at most 2^26: not a format limit (the header field holds up to 2^32 − 1), but the
 bound decoders use to reject implausible headers before decompressing.
 **Any finite block encodes**, from ranges of a few subnormals (2^−1074) to ranges past 2^1023,
-where `hi − lo` itself overflows (§3.1, §3.3, §4). Each extreme costs one decision per block;
+where `hi − lo` itself overflows (§5.1, §5.4, §6). Each extreme costs one decision per block;
 ordinary blocks take the plain formulas.
 
-**Non-finite values (NaN, ±inf) are encoded exactly.** A block holding any gets block flag bit 3 and
-two code planes in the unit's nonfinite field (§5): 00 finite, 01 NaN, 10 +inf, 11 −inf.
-- **Held values.** Before the block goes through §3, each non-finite sample is replaced by the
+## 3. Non-finite values
+
+NaN, +inf and −inf are encoded exactly. A block holding any sets block flag bit 3 and stores a
+2-bit code per sample in the `nonfinite_code_planes` field (§7): 00 finite, 01 NaN, 10 +inf,
+11 −inf.
+- **Held values.** Before the block goes through §5, each non-finite sample is replaced by the
   previous finite value (the first finite value, for a leading run). The analysis stages never see
   NaN or inf. A held run is a zero residual under order 1. Under orders 2 and 3 its start and end
   each leave a residual or two (the slope changes); the order pick isn't made aware of that.
@@ -99,16 +99,16 @@ two code planes in the unit's nonfinite field (§5): 00 finite, 01 NaN, 10 +inf,
   n/2 such differences (500 at n = 1000): below that a random walk starts passing the gate, so
   the block keeps its full precision. One NaN per block on the noisy test signals costs nothing
   (noisy-sine 5.42 → 5.41 bits/sample); skipping the noise floor there would cost 2.5×.
-- **Cost:** a block with no non-finite values encodes exactly as if the feature didn't exist. A
-  flagged block adds n/4 bytes of mostly-zero planes before compression.
+- **Cost:** a block with no non-finite values stores no codes and encodes exactly as it would
+  without them. A flagged block adds n/4 bytes of mostly-zero planes before compression.
 
-## 2a. Time axis
+## 4. Time axis
 
 A unit may also store the samples' **timestamps, exactly**. They are optional: a unit without them
-is byte-identical to one written before the time axis existed, and decodes with `times = None`.
+has time unit 0 in its header and no time fields in its body, and decodes with `times = None`.
 
 **Ticks and units.** Timestamps are int64 ticks since 1970-01-01 in one of the Arrow and numpy
-datetime64 units, recorded in the header (§5). The unit only fixes the range and meaning of a
+datetime64 units, recorded in the header (§7). The unit only fixes the range and meaning of a
 tick; storage cost doesn't depend on it (the per-block GCD below absorbs a coarser grid):
 
 | time unit | code | int64 range around 1970 |
@@ -126,7 +126,7 @@ decrease. Equal consecutive timestamps are allowed. The format itself enforces t
 block (deltas are unsigned) and between block starts (start increases are unsigned), so any
 decoded unit has non-decreasing times within each block and non-decreasing block starts.
 
-**Per block** (`time_start`, `time_step`, `time_ref`, `time_residual_planes` in §5): every block
+**Per block** (`time_start`, `time_step`, `time_ref`, `time_residual_planes` in §7): every block
 stores its start, a step and a reference. The step is the GCD of the block's deltas
 `time[i] − time[i−1]`, and each sample i > 0 has the **quotient** `(time[i] − time[i−1]) / time_step`,
 which is `time_ref` plus the sample's residual:
@@ -202,9 +202,9 @@ on 4 threads, where memory bandwidth is shared, that costs 12–18% (docs/PERFOR
   bytes per regular unit against 280 raw. The value anchor is not transformed: XOR with the
   previous anchor (+0.1% overall) and zigzagged integer deltas (−0.03%) were both noise.
 
-## 3. Encoding one block
+## 5. Encoding one block
 
-### 3.1 Power-of-two exponent
+### 5.1 Power-of-two exponent
 
 ```
 L  = 2^B if B < 16 else 65535            # q is stored mod 2^16: it must stay below 2^16
@@ -213,7 +213,7 @@ e  = the finest exponent in [−1074, 1023] with  rint(hi · 2^-e) − rint(lo �
 ps = 2^e                                 # the power-of-two step
 ```
 
-rint rounds half to even. The grid is absolute (§3.3): the points nearest lo and hi can sit up
+rint rounds half to even. The grid is absolute (§5.4): the points nearest lo and hi can sit up
 to half a step outside [lo, hi], so the snapped grid can need one more level than the range alone,
 and the rule counts the levels it actually uses. To compute it, start from the unsnapped rule
 
@@ -243,7 +243,9 @@ exponents always fit.
 
 The encoder computes e_fine with B = `max_quantize_bits` and e_coarse with B = `min_quantize_bits`.
 
-### 3.1a Noise floor (if `noise_floor_sigma` = f is set, rng > 0 and the block has at least 256 samples)
+### 5.2 Noise floor
+
+If `noise_floor_sigma` = f is set, rng > 0 and the block has at least 256 samples:
 
 ```
 d     = x[i+2] − 2·x[i+1] + x[i]  for i = 0..n−3,  minus its mean   # second differences
@@ -292,14 +294,14 @@ average, because of the power-of-two floor) on top of noise σ.
   then by one level, once. Measured over 5 decode/re-encode rounds of 300 noisy 1000-sample
   blocks (all gated): σ of the decoded data averaged 1.0002× the original (at most 1.008×); 8
   blocks went one level finer on the first round and none changed after. Finer is exact on the
-  snapped grid (§3.3), and coarser is one bounded rounding. A merged block can also cross 256
+  snapped grid (§5.4), and coarser is one bounded rounding. A merged block can also cross 256
   samples, which switches the noise floor on or off between updates, with the same two cases.
 - **The gate is per block and all-or-nothing.** Per-sample variants (full precision kept at
   spikes) cost 20–35% more for an error already below the noise on the spike ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design)).
 
-### 3.2 Decimal detection (if `decimal_detection` is on and rng > 0)
+### 5.3 Decimal detection
 
-Runs after the noise floor, with `ps` the (possibly coarsened) step. A decimal grid finer than
+If `decimal_detection` is on and rng > 0. Runs after the noise floor, with `ps` the (possibly coarsened) step. A decimal grid finer than
 `ps` is never used: when exact decimals would need more than B bits, or are finer than the
 noise, the block takes the power-of-two grid.
 
@@ -316,7 +318,7 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
 ```
 
 - **Absolute grid.** Values must sit on multiples of 10^p itself, not merely be spaced 10^p apart.
-  That is what makes reconstruction bit-exact (§4).
+  That is what makes reconstruction bit-exact (§6).
 - **Tolerance** is a quarter power-of-two step. The decimal grid is only chosen when every sample
   is within that of it, so decimal mode's max error is never larger than power-of-two mode's
   at the same step.
@@ -329,7 +331,7 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
 - **Not detected:** other steps (ADC counts in engineering units, 0.5, 0.25, 2⁻ᵏ). They use the
   power-of-two grid.
 
-### 3.3 Quantize
+### 5.4 Quantize
 
 ```
 power of two:  K    = rint(lo · 2^-e)              anchor = K · 2^e
@@ -341,7 +343,7 @@ decimal:       K0   = floor(lo · 10^-p + 0.5)
 **The power-of-two grid is absolute:** its points are the multiples of 2^e, and the anchor is the
 one nearest the block's minimum. Every power-of-two grid is then a subset of the finer ones, so
 re-encoding decoded values on the same or a finer step returns them bit for bit, wherever the
-block sits and however its minimum moved. That bounds the error of repeated updates (§6).
+block sits and however its minimum moved. That bounds the error of repeated updates (§8).
 
 - **One rounding for K and q.** The minimum maps to exactly K, and rounding is monotonic, so q = 0
   at the minimum and q ≥ 0 everywhere. With different roundings for the two, a minimum exactly
@@ -365,7 +367,7 @@ Decimal detection is skipped for wide blocks: no 10^p grid with p ≤ 22 spans 2
 grids already share one rounding between K0 and q, and can't have ties: detection only accepts
 samples within a quarter step of the grid.
 
-In both modes 0 ≤ q[i] ≤ L ≤ 65,535 (§3.1), and q = 0 at the minimum.
+In both modes 0 ≤ q[i] ≤ L ≤ 65,535 (§5.1), and q = 0 at the minimum.
 When decimal detection succeeds, its candidate pass has already computed these q; they are reused.
 
 **The block's anchor** is what a decoder adds q to: a finite float64 on the power-of-two grid
@@ -377,9 +379,9 @@ fraction, (K0 + q)·10^p a decimal); float64 enters only at the final rounding.
 **Snapping is encoder behaviour, not a format rule.** The decoder doesn't check that an anchor is
 snapped, as it doesn't check the exponent or the difference order: an anchor carries meaning, and
 any finite one decodes correctly. An unsnapped anchor from another writer costs at most half a
-step on the first straddling update, and the bound of §6 holds from then on.
+step on the first straddling update, and the bound of §8 holds from then on.
 
-### 3.4 Order
+### 5.5 Order
 
 For each k in `diff_orders`, compute the variance of `diff(q[0..M−1], k)` over the first M = min(250, n) samples (M − k values, no padding):
 
@@ -393,7 +395,7 @@ from the unit, so encoders may pick it differently. Picking on the first 250 sam
 the full-block pick on 97% of blocks and costs 0.4% in size on continuous data (nothing on
 discretized data).
 
-### 3.5 Residuals
+### 5.6 Residuals
 
 ```
 r = k-th difference of (0, …, 0, q[0], …, q[n-1])  with k = order zeros prepended; keep the last n
@@ -406,12 +408,12 @@ u = ((v << 1) XOR (v >> 15)) & 0xFFFF       # zigzag -> uint16
 ```
 
 Order-k differences of 16-bit values need up to 16 + k + 1 bits. But every q is in [0, 2^16),
-so integrating mod 2^16 (§4) recovers q exactly. Two bytes per sample always suffice. The
+so integrating mod 2^16 (§6) recovers q exactly. Two bytes per sample always suffice. The
 prepended zeros make the first residuals the start values, so there's no separate header.
 
-### 3.6 Per-unit target (if `target_bits_per_sample` = t is set)
+### 5.7 Per-unit target
 
-After every block of the unit has been through §3.1–3.5, estimate each block's size from its
+If `target_bits_per_sample` = t is set. After every block of the unit has been through §5.1–5.6, estimate each block's size from its
 residual, the **class entropy**: with L(u) the bit length of the zigzagged residual (0 for 0),
 
 ```
@@ -426,7 +428,7 @@ e_b     = the block's exponent (for a decimal block, floor(log2 10^p): its grid 
 give_b  = min(round(max(h_b − 1, 0)), e_coarse_b − e_b)        # whole bits block b can give
 k       = the smallest k ≥ 1 with Σ_b n_b·min(k, give_b) ≥ Σ_b n_b·h_b − t·N   (k ≤ 16)
 k_b     = min(k, give_b)
-blocks with k_b > 0: redo §3.2–3.5 at e_b + k_b; keep the result only if its h_b went down
+blocks with k_b > 0: redo §5.3–5.6 at e_b + k_b; keep the result only if its h_b went down
 ```
 
 - Coarsening a block by one bit saves about one bit per sample while its estimate is above ~1
@@ -446,7 +448,7 @@ blocks with k_b > 0: redo §3.2–3.5 at e_b + k_b; keep the result only if its 
 - In `update` and `update_time_blocks`, the cap applies to the re-encoded blocks only, with a
   budget of t × their samples.
 
-## 4. Decoding one block
+## 6. Decoding one block
 
 ```
 v = (u >> 1) XOR −(u & 1)                   # un-zigzag
@@ -468,17 +470,17 @@ so evaluate at half scale: `y = min(2·(a/2 + q·2^(e−1)), DBL_MAX)`, with `y 
 (a/2 rounds if a is subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
 
 **Time axis** (header time unit ≠ 0): block starts are the running sum of the `time_start` field
-(§5). Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64 (residuals
+(§7). Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64 (residuals
 are 0 in a regular block, block flag bit 4 clear), and
 `time[i] = start + time_step · (quotient[1] + … + quotient[i])`. A regular block is therefore
 `time[i] = start + i · time_ref · time_step`. All arithmetic is exact in 64 bits; a decoder rejects
-a unit whose times would exceed int64 maximum (§5).
+a unit whose times would exceed int64 maximum (§7).
 
 **Non-finite codes** (block flag bit 3): after dequantizing, samples with code 01, 10 or 11 are
 overwritten with NaN (the canonical quiet NaN), +inf or −inf. Groups of 8 samples whose two code
 bytes are both 0 are skipped.
 
-## 5. Unit format
+## 7. Unit format
 
 A unit is an 8-byte header followed by one zstd frame holding the body (level 3, content size
 recorded, no checksum). The header is uncompressed, so a decoder can validate it before
@@ -501,13 +503,13 @@ in this order; the four time fields are present only when `time_unit` ≠ 0:
 
 | field | size in bytes | contents |
 |---|---|---|
-| `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§2); bit 4: irregular times, with time residual planes (§2a; rejected when `time_unit` = 0); bit 5: long time residuals, 64 planes instead of 32 (rejected without bit 4); bits 6–7: 0 (rejected otherwise). 0 for an empty block |
+| `block_flags` | `num_blocks` | bits 0–1: order; bit 2: decimal mode; bit 3: non-finite codes present (§3); bit 4: irregular times, with time residual planes (§4; rejected when `time_unit` = 0); bit 5: long time residuals, 64 planes instead of 32 (rejected without bit 4); bits 6–7: 0 (rejected otherwise). 0 for an empty block |
 | `block_sizes` | 2 × `num_blocks` | each block's sample count as uint16, byte-planed: every low byte, then every high byte |
 | `grid_params` | 2 × `num_blocks` | the block's grid parameter as int16: the power-of-two exponent (−1074 to 1023) or, in decimal mode, the decimal power (−22 to 22); 0 for an empty block. Byte-planed like `block_sizes` |
-| `value_anchor` | 8 × `num_blocks` | the block's anchor (§3.3), byte-planed (byte 0 of every block, then byte 1, … byte 7): a finite float64 anchor (the reference encoder snaps the block minimum to the grid, §3.3; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52); 0 for an empty block |
+| `value_anchor` | 8 × `num_blocks` | the block's anchor (§5.4), byte-planed (byte 0 of every block, then byte 1, … byte 7): a finite float64 anchor (the reference encoder snaps the block minimum to the grid, §5.4; 0.0 for a block with no finite samples), or in decimal mode the int64 decimal grid index of the minimum (magnitude < 2^52); 0 for an empty block |
 | `time_start` | 8 × `num_blocks` | the first non-empty block: its start time as int64; each later non-empty block: its start minus the previous non-empty block's start, as uint64; an empty block: 0. Byte-planed |
 | `time_step` | 8 × `num_blocks` | the block's time step as int64, byte-planed: the GCD of its deltas (≥ 0; ≥ 1 in an irregular block; 0 in an empty block or one of a single sample) |
-| `time_ref` | 8 × `num_blocks` | the block's reference quotient as uint64, byte-planed: 1 in a regular block (0 if its times are all equal or it has one sample or none); in an irregular block, the value the residuals are taken from (§2a) |
+| `time_ref` | 8 × `num_blocks` | the block's reference quotient as uint64, byte-planed: 1 in a regular block (0 if its times are all equal or it has one sample or none); in an irregular block, the value the residuals are taken from (§4) |
 | `residual_planes` | 16 × `G` | flags bit 0 clear: bit plane j = 0..15, then block, then byte i = 0..`g_b` − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`. Flags bit 0 set: byte plane j = 0..1 (low, then high byte of `u`), then block, then sample 0..8 × `g_b` − 1 |
 | `nonfinite_code_planes` | 2 × `G_nonfinite` | code plane j = 0..1, then the flagged blocks in block order, then byte i. Bit k of byte i is bit j of the code of sample 8i + k |
 | `time_residual_planes` | 32 × (`G_irregular` + `G_long`) | per sample of an irregular block, the uint64 residual: `zigzag(quotient − time_ref)` mod 2^64, with the quotient `(time[i] − time[i−1]) / time_step`; 0 for sample 0. First bit plane j = 0..31, then the irregular blocks in block order, then byte i; then bit plane j = 32..63, then the long blocks in block order, then byte i. Bit k of byte i is bit j of the residual of sample 8i + k; a short block's residuals are below 2^32 |
@@ -518,7 +520,7 @@ body_size = 13 × num_blocks + 16 × G + 2 × G_nonfinite
 ```
 
 Repeated block sizes cost almost nothing: on 60 blocks of 1000, the `block_sizes` column adds
-4–8 bytes after zstd, less than the 8 bytes the header saved over its earlier 16-byte form.
+4–8 bytes after zstd.
 
 A decoder checks the frame's recorded content size against the header before decompressing: it
 must lie between the sizes with the fewest plane bytes (ceil(`num_samples` / 8) per plane, no
@@ -571,11 +573,11 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
                                      plane 2 = 0x08, all other planes 0x00
 ```
 
-## 6. Guarantees
+## 8. Guarantees
 
 - **Max error ≤ half the step used = 2^(e−1)** (up to one rounding of the sample's magnitude).
   - **Always ≤ range / (2^min_quantize_bits − ½)**: range/63.5, 1.6% of the block's range, at the
-    default of 6, whatever the noise floor or the target does. The ½ is from the exponent bump in §3.1.
+    default of 6, whatever the noise floor or the target does. The ½ is from the exponent bump in §5.1.
   - Blocks at `max_quantize_bits` (neither noise floor nor target applied): ≤ range / (2^max − ½),
     about 2^−max of the block's range (0.0015% at 16).
   - Noise-floor blocks: ≤ f·σ/2, in the signal's units. This is not bounded relative to the
@@ -600,7 +602,7 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 - **Decoded data is a fixed point:** decode(encode(y)) = y for any decoded y. The unit bytes are
   identical from the second encode on.
 - **Timestamps are exact.** Given times decode to the identical int64 ticks, in the same unit.
-  Decoded times are non-decreasing within every block, and block starts never decrease (§2a).
+  Decoded times are non-decreasing within every block, and block starts never decrease (§4).
 - **Edits are stable.** Changing a sample leaves every other sample's q unchanged unless the step
   changes, which happens only when the range crosses a power of two: the grid is absolute, so a
   new minimum doesn't move it. (With the grid scaled to the range, a new max re-rounds every
@@ -618,7 +620,7 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   whose time span the ranges don't meet is carried over as `update` carries it, without being
   decoded. A block wholly inside the ranges is encoded from the new samples alone. A block
   straddling a range edge is decoded, keeps its samples outside the ranges and is re-encoded with
-  the new ones. The kept samples are already points of the absolute grid (§3.3), so on the same
+  the new ones. The kept samples are already points of the absolute grid (§5.4), so on the same
   or a finer step they come back bit for bit, however the merged block's min and max moved. Only a
   coarser step rounds them again, once, without bias (ties to even); repeated coarsening adds a
   geometric series, so their error stays under one step of the coarsest grid the block has used.
@@ -627,7 +629,7 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
   result is byte-identical to `encode_time_blocks` of the resulting series when no block is
   left empty at the end.
 
-## 7. Conformance tests
+## 9. Conformance tests
 
 1. **Round trip:** decode(encode(x)) has max error ≤ 2^(e−1) for every block (≤ f·σ/2 on
    noise-floor blocks) and ≤ range / (2^min_quantize_bits − ½) always; the decoded min is within
@@ -635,8 +637,8 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 2. **Decimal:** values generated as `K / 10^d` with a range under 2^B steps decode
    bit-identical.
 3. **Fixed point:** y = decode(encode(x)) satisfies decode(encode(y)) = y,
-   and encode(y) is byte-identical from the second encode on (§6).
-4. **Bit order:** the test vector in §5.
+   and encode(y) is byte-identical from the second encode on (§8).
+4. **Bit order:** the test vector in §7.
 5. **Order independence:** a unit written with any `diff_orders` setting decodes with the same decoder.
 6. **Edge cases:** constant block (all q = 0, decodes to lo exactly, including non-integers and
    extreme magnitudes); range just below a power of two (exponent bump); a minimum exactly halfway
@@ -679,9 +681,9 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
    residuals reach 2^32 is long; equal timestamps,
    all-equal blocks, short last blocks, blocks of 0, 1 and 2 samples (a 2-sample block whose delta
    exceeds int64 maximum), leading empty blocks before negative ticks, ticks at both ends of
-   int64 and a block spanning more than half of it round-trip; the worked example in §5 matches byte for byte. The encoder rejects
+   int64 and a block spanning more than half of it round-trip; the worked example in §7 matches byte for byte. The encoder rejects
    decreasing times (within and across blocks), NaT, unsupported dtypes and units, and length
-   mismatches; the decoder rejects each corrupt time field listed in §5, and the long flag without the irregular one. `update` with times is
+   mismatches; the decoder rejects each corrupt time field listed in §7, and the long flag without the irregular one. `update` with times is
    byte-identical to encoding the edited series, and rejects missing, unexpected, mis-shaped,
    wrong-unit or out-of-order times.
 12. **Snapped grid** (`tests/test_grid.py`): the exponent rule picks at most one level finer than
@@ -697,17 +699,17 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 Background for the techniques above (informative; the sections above are normative).
 
 - Quantization: https://en.wikipedia.org/wiki/Quantization_(signal_processing)
-- Fixed polynomial predictors (§3.4–3.5, §4): the fixed predictors of
+- Fixed polynomial predictors (§5.5–5.6, §6): the fixed predictors of
   [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and FLAC,
   [RFC 9639 §9.2.5](https://www.rfc-editor.org/rfc/rfc9639#name-fixed-predictor-subframe).
-- Zigzag encoding of signed integers (§3.5):
+- Zigzag encoding of signed integers (§5.6):
   [Protocol Buffers encoding](https://protobuf.dev/programming-guides/encoding/#signed-ints).
-- Bit-shuffle (§5): [bitshuffle](https://github.com/kiyo-masui/bitshuffle); K. Masui et al.,
+- Bit-shuffle (§7): [bitshuffle](https://github.com/kiyo-masui/bitshuffle); K. Masui et al.,
   [arXiv:1503.00638](https://arxiv.org/abs/1503.00638).
-- Zstandard (§5): [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878).
-- Noise estimate (§3.1a): [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation)
+- Zstandard (§7): [RFC 8878](https://www.rfc-editor.org/rfc/rfc8878).
+- Noise estimate (§5.2): [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation)
   and [autocorrelation](https://en.wikipedia.org/wiki/Autocorrelation).
-- Decimal detection (§3.2) is related to ALP: A. Afroozeh, L. Kuffó, P. Boncz,
+- Decimal detection (§5.3) is related to ALP: A. Afroozeh, L. Kuffó, P. Boncz,
   [SIGMOD 2024](https://doi.org/10.1145/3626717).
-- IEEE 754 binary64 and correctly rounded division (§4):
+- IEEE 754 binary64 and correctly rounded division (§6):
   [double-precision floating-point format](https://en.wikipedia.org/wiki/Double-precision_floating-point_format).

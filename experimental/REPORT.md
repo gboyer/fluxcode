@@ -758,7 +758,7 @@ So the detector only asks one question: is every value on a multiple of 10^p?
   also came back bit-exact. fluxcode dropped the flag: decimals stored as float32 are on the
   decimal grid to within tolerance, so they now decode as the decimal itself, and casting the
   output back to float32 recovers the input. The flag cost a head bit and a decoder pass for
-  nothing a caller couldn't do ([docs/SPEC.md §6](../docs/SPEC.md#6-guarantees)). The float32 rows
+  nothing a caller couldn't do ([docs/SPEC.md §8](../docs/SPEC.md#8-guarantees)). The float32 rows
   below are the prototype's.
 - **Other steps** (ADC counts, 0.5, 2⁻⁴) fall back to the power-of-two grid.
 - **Cost:** 0.5 µs per block on continuous data, 0.9 µs on discretized data (original run).
@@ -912,7 +912,7 @@ orders 0–3, decimal detection:
 Below the noise, the codec was spending bits on random numbers: the near-random bit planes.
 The noise floor coarsens the step to at most f·σ on blocks that look like white measurement
 noise (`bench/fluxproto_noise_floor.py`; details in
-[docs/SPEC.md §3.1a](../docs/SPEC.md#31a-noise-floor-if-noise_floor_sigma--f-is-set-and-rng--0)). It's encoder-only, and the step stays a
+[docs/SPEC.md §5.2](../docs/SPEC.md#52-noise-floor)). It's encoder-only, and the step stays a
 power of two.
 
 **The detector.**
@@ -1076,17 +1076,17 @@ encode and 3 µs decode per block.
   decimal grid (like `sensor-0.1`) lossless, and the noise floor stops blocks of white noise from
   spending bits on it (§11).
 - **Deployment details:**
-  - partial blocks: padded by repeating the last sample, trimmed on decode (SPEC §2)
-  - NaN and ±inf: encoded exactly, at no cost to blocks without them (SPEC §2)
+  - partial blocks: every block records its own size, 0 to 65,535 samples (SPEC §2)
+  - NaN and ±inf: encoded exactly, at no cost to blocks without them (SPEC §3)
   - constant blocks: handled (range 0)
-  - a format version: every unit starts with a 16-byte header carrying the version, block length
-    and sample count, so units are self-describing (SPEC §5)
-  - endianness: specified little-endian (SPEC §5)
+  - a format version: every unit starts with an 8-byte header carrying the version, flags, block
+    count and sample count, and the body records every block's size, so units are self-describing (SPEC §7)
+  - endianness: specified little-endian (SPEC §7)
 - **Speed-ups.** With each unit encoded in one compiled call, the order picked on the first 250
   samples and bit-shuffled planes, encode takes about 3 µs per block on one thread ([docs/PERFORMANCE.md](../docs/PERFORMANCE.md)).
 - **The size estimate for a cap.** fluxcode's optional `target_bits_per_sample` estimates each
   block from the class entropy of its residuals rather than log2(std) + 2.05, which fails on
-  sparse residuals (SPEC §3.6).
+  sparse residuals (SPEC §5.7).
 
 **Still open:**
 

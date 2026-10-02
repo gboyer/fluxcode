@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""docs/SPEC.md §7 conformance tests, through the public API."""
+"""docs/SPEC.md §9 conformance tests, through the public API."""
 
 import numpy as np
 import pytest
@@ -34,7 +34,7 @@ IDS = [a[0] for a in ALL]
                          ids=["default", "no-noise", "16bit", "max10", "target6"])
 @pytest.mark.parametrize("name,x", ALL, ids=IDS)
 def test_round_trip_error_bound(name, x, params):
-    """§7.1: max error <= half the step used; <= range / (2^min_bits - 1/2) always. The decoded
+    """§9.1: max error <= half the step used; <= range / (2^min_bits - 1/2) always. The decoded
     minimum is the grid point nearest the minimum, so it's within half a step too."""
     units, lo, hi, mean = encode_series(x, params)
     y = decode_series(units)
@@ -59,8 +59,8 @@ def test_round_trip_error_bound(name, x, params):
 @pytest.mark.parametrize("d", [0, 1, 2, 3, 4])
 @pytest.mark.parametrize("f32", [False, True])
 def test_decimal_bit_exact(d, f32):
-    """§7.2: K / 10^d with a range under 2^16 steps decode bit-identical. Their float32 roundings
-    decode to the decimals themselves (spec §6: float32 rounding artifacts are intentionally lost),
+    """§9.2: K / 10^d with a range under 2^16 steps decode bit-identical. Their float32 roundings
+    decode to the decimals themselves (spec §8: float32 rounding artifacts are intentionally lost),
     and casting back to float32 recovers the input."""
     rng = np.random.default_rng(d)
     step = 300 if f32 else 3  # float32 rounding must sit within the block's 2^e / 4 tolerance
@@ -78,7 +78,7 @@ def test_decimal_bit_exact(d, f32):
 @pytest.mark.parametrize("params", [Params(), OFF], ids=["default", "no-noise"])
 @pytest.mark.parametrize("name,x", ALL, ids=IDS)
 def test_fixed_point(name, x, params):
-    """§7.3: y = decode(encode(x)) is a fixed point, and bytes are identical from the second encode."""
+    """§9.3: y = decode(encode(x)) is a fixed point, and bytes are identical from the second encode."""
     u1, _, _, _ = encode_series(x, params)
     y = decode_series(u1)
     u2, _, _, _ = encode_series(y, params)
@@ -91,7 +91,7 @@ def test_fixed_point(name, x, params):
 @pytest.mark.parametrize("orders", [{0}, {1}, {2}, {3}, {0, 1}, {2, 3}, {0, 1, 2, 3}])
 @pytest.mark.parametrize("name", ["random-walk", "chirp", "quadratic", "noisy-sine"])
 def test_order_independence(name, orders):
-    """§7.5: any orders setting decodes with the same decoder, to the same values (the grid doesn't
+    """§9.5: any orders setting decodes with the same decoder, to the same values (the grid doesn't
     depend on the order), and every block uses an allowed order."""
     x = minute(name, 21)
     ref_units, _, _, _ = encode_series(x)
@@ -267,7 +267,7 @@ def test_huge_range_noise_gates():
 
 
 def test_negative_zero_decodes_as_positive_zero():
-    """Documented exception to bit-exactness (spec §6): -0.0 comes back as +0.0 (equal, other sign bit)."""
+    """Documented exception to bit-exactness (spec §8): -0.0 comes back as +0.0 (equal, other sign bit)."""
     x = np.full(1000, -0.0)
     y = decode_series(encode_series(x)[0])
     assert (y == x).all() and not np.signbit(y).any()

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Timestamp compression in fluxcode's time axis (docs/SPEC.md §2a) -> report/time.html.
+"""Timestamp compression in fluxcode's time axis (docs/SPEC.md §4) -> report/time.html.
 
     uv run python make_time_report.py [--reps 30]
 
@@ -160,7 +160,7 @@ def write_report(examples, others, sweep, plain_bytes, plain_times, reps):
     chart = plot_shapes(examples)
     grid_bytes = examples[0][2]["bytes"]
     h = [f"""<p><a href="index.html">← codec comparison (index.html)</a> ·
-<a href="https://github.com/gboyer/fluxcode/blob/main/docs/SPEC.md#2a-time-axis">SPEC §2a: time axis</a></p>
+<a href="https://github.com/gboyer/fluxcode/blob/main/docs/SPEC.md#4-time-axis">SPEC §4: time axis</a></p>
 <p>fluxcode can store each sample's timestamp <b>exactly</b> next to its values. This page covers only that time
 axis: what the timestamps add to a one-minute unit (60 blocks of 1,000 samples, nominally 1 kHz, int64 ns ticks).
 Every number here is the unit with times minus the same unit without them. For scale, that unit's values alone take

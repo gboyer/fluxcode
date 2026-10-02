@@ -42,7 +42,7 @@ NOISE_MIN_LEN: int = 256
 = -2/3) from a random walk (-1/2): the estimate's standard error is about
 sqrt((1 - 3 rho^2 + 4 rho^4) / m) on m differences (0.044 at 256 samples, so -0.6 is 2.25 of them
 from -1/2). Random walks pass the gate 9% of the time at 64 samples, 0.8% at 256 and none at 1000,
-while white noise still passes 96% of the time at 256 (SPEC §3.1a)."""
+while white noise still passes 96% of the time at 256 (SPEC §5.2)."""
 
 PICK_LEN: int = 250
 """Number of initial samples evaluated to select the predictor difference order."""

@@ -185,7 +185,7 @@ The implementation is fully in numba, SIMD optimized, and tuned for ARM NEON.
 
 ## Guarantees
 
-From [docs/SPEC.md §6](docs/SPEC.md#6-guarantees), which states them exactly:
+From [docs/SPEC.md §8](docs/SPEC.md#8-guarantees), which states them exactly:
 
 - **Bounded error.** Every sample decodes within half the block's step, and never further than
   range / (2^`min_quantize_bits` − ½) (1.6% of the block's range at the default of 6), whatever

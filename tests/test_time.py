@@ -204,7 +204,7 @@ def test_byte_planes_and_nonfinite_with_times():
 
 
 def test_worked_example_layout():
-    """docs/SPEC.md §5's worked example: blocks of 8, 8 and 4 samples, block 1 irregular."""
+    """docs/SPEC.md §7's worked example: blocks of 8, 8 and 4 samples, block 1 irregular."""
     ticks = np.array([1000, 1010, 1020, 1030, 1040, 1050, 1060, 1070,
                       1080, 1090, 1100, 1130, 1140, 1150, 1160, 1170,
                       1180, 1190, 1200, 1210], np.int64)

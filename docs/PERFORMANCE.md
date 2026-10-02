@@ -101,11 +101,11 @@ about 31 µs for the bit-plane shuffle, and 9-88 µs of zstd per pass depending 
   4.28 µs/block against 3.53 for plain data (2026-09-25); with both plane passes it is within
   run-to-run noise (5.79-5.95 against 5.34-5.86; single thread,
   [bench/decimal_near_miss.py](../bench/decimal_near_miss.py), results in STRESS_RESULTS.md).
-  `decimal_detection=False` avoids it. The note is in the spec, §3.2.
+  `decimal_detection=False` avoids it. The note is in the spec, §5.3.
 
 ### Timestamps (`--times`)
 
-The same day with an exact timestamp per sample (datetime64[ns]; docs/SPEC.md §2a). Each tag gets
+The same day with an exact timestamp per sample (datetime64[ns]; docs/SPEC.md §4). Each tag gets
 one clock kind, from a pool like the values: `clock-mix` is 60% a perfect 1 kHz grid, 30% a grid
 with a few gaps (Poisson, mean 2 per minute, each 5 ms to 3 s) and 10% a noisy host clock
 (σ = 20 µs jitter at µs resolution). Full day, 4 threads, AC power:
