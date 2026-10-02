@@ -25,6 +25,10 @@ TimeLike = np.datetime64 | datetime.datetime | int
 DurationLike = np.timedelta64 | datetime.timedelta | int
 """A length of time: timedelta64 or timedelta, or an integer number of ticks."""
 
+RangesLike = tuple[TimeLike, TimeLike] | Iterable[tuple[TimeLike, TimeLike]] | np.ndarray
+"""Time ranges, each [start, end): one (start, end) pair, an iterable of pairs, or an array of
+shape (k, 2) of datetime64 or integer ticks."""
+
 _UNIT_NANOSECONDS: dict[str, Fraction] = {
     "W": Fraction(604_800 * 10**9),
     "D": Fraction(86_400 * 10**9),
@@ -93,7 +97,7 @@ def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -
     return ticks
 
 
-def to_ranges(update_ranges: object, time_unit: int) -> np.ndarray:
+def to_ranges(update_ranges: RangesLike, time_unit: int) -> np.ndarray:
     """Converts update ranges into sorted, disjoint [start, end) ranges of ticks.
 
     Args:
@@ -206,7 +210,7 @@ def update_time_blocks(
     params: Params,
     start_time: TimeLike,
     block_duration: DurationLike,
-    update_ranges: object,
+    update_ranges: RangesLike,
     time_unit: str | None,
 ) -> UpdatedUnit:
     """Implements fluxcode.update_time_blocks."""

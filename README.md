@@ -121,12 +121,12 @@ which set the step to 0.25σ.
   (b+1)·block_duration)`; blocks without samples are empty. `start_time` (`datetime64`, naive
   `datetime` or ticks) and `block_duration` (`timedelta64`, `timedelta` or ticks) aren't stored:
   keep them with the unit, e.g. the start in its storage key.
-- `update_time_blocks(unit, x, times, params, *, start_time, block_duration, update_ranges)`:
-  discards the unit's samples in `update_ranges` (`[start, end)` pairs: one pair, a list, or a
-  `(k, 2)` array) and puts the new samples, all timed within them, in their place. Blocks the
-  ranges don't meet are carried over without being decoded; blocks that straddle a range edge are
-  decoded, merged and re-encoded (their kept samples re-quantized, so error can add up over
-  repeated updates of the same block).
+- `encode(x, params, *, block_len=1000, blocks_per_unit=60, times=None, time_unit=None)` /
+  `decode(units)`: bulk versions. `encode` splits a long series (and its times, non-decreasing
+  across unit boundaries too) into units of `blocks_per_unit` blocks and returns
+  `(units, block_mins, block_maxs, block_means)`, one entry per unit; `decode` returns one
+  `DecodedUnit` per unit. A unit holds at most 65,535 blocks and 2^26 = 67,108,864 samples (the
+  bound decoders accept).
 - `decode_unit(unit)`: returns `DecodedUnit(values, times, block_sizes)`. `times` is `datetime64`
   in the encoded unit, or `None` for a unit encoded without times. The unit records everything
   needed.
@@ -135,12 +135,13 @@ which set the step to 0.25σ.
   blocks decode to identical values. `times` (a dict with the same keys) is required exactly when
   the unit has a time axis. The update functions return `UpdatedUnit(unit, indices, block_min,
   block_max, block_mean)`: the new unit and the statistics of the blocks they re-encoded.
-- `encode(x, params, *, block_len=1000, blocks_per_unit=60, times=None, time_unit=None)` /
-  `decode(units)`: bulk versions. `encode` splits a long series (and its times, non-decreasing
-  across unit boundaries too) into units of `blocks_per_unit` blocks and returns
-  `(units, block_mins, block_maxs, block_means)`, one entry per unit; `decode` returns one
-  `DecodedUnit` per unit. A unit holds at most 65,535 blocks and 2^26 = 67,108,864 samples (the
-  bound decoders accept).
+- `update_time_blocks(unit, x, times, params, *, start_time, block_duration, update_ranges,
+  time_unit=None)`: discards the unit's samples in `update_ranges` (`[start, end)` pairs: one pair, a list, or a
+  `(k, 2)` array) and puts the new samples, all timed within them, in their place. Blocks the
+  ranges don't meet are carried over without being decoded; blocks that straddle a range edge are
+  decoded, merged and re-encoded: their kept samples are grid points, so they come back bit for
+  bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
+  used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `planes="best"` (or `"bit"`, `"byte"`). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
@@ -275,6 +276,18 @@ uv run mypy fluxcode
 uv run ty check
 uv run python bench/bench_gb.py --gib 0.05   # a quick benchmark; the full run is 1 GiB
 ```
+
+Code layout (`fluxcode/`), from the public API down:
+
+- `_api.py`: the public functions (encode, decode, update); `_types.py`: `Params` and the result
+  tuples.
+- `_unit.py`: building and parsing units from flat sample arrays and block sizes;
+  `_time_blocks.py`: dividing timed samples into blocks of a fixed duration.
+- `_encoder.py`, `_decoder.py`: the per-block kernels (SPEC §5, §6); `_time.py`: the time axis
+  kernels (§4); `_noise.py`, `_nonfinite.py` and `_extreme_magnitudes.py`: the noise estimate,
+  NaN/inf blocks and extreme ranges, each off the common path.
+- `_format.py`: the header, field offsets and row types (§7); `_bitpacking.py`: writing and
+  reading the body's fields, and splicing bodies for `update`.
 
 The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
 defining each kernel, not the constants and helpers it inlines from other modules. After editing

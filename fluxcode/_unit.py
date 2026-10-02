@@ -8,7 +8,7 @@ in `_api` divide their input into blocks and call `encode`, `decode` or `splice`
 """
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import NamedTuple
 
 import numpy as np
@@ -16,7 +16,7 @@ import numpy.typing as npt
 import zstandard
 
 from . import _bitpacking, _decoder, _encoder, _format, _time
-from ._types import DecodedUnit, EncodedUnit, Params, PlaneMode, UpdatedUnit
+from ._types import DecodedUnit, EncodedUnit, Params, PlaneMode, UpdatedUnit, is_int
 
 ZSTD_LEVEL: int = 3
 """Zstandard compression level used for encoding units."""
@@ -189,6 +189,25 @@ class BlockStats(NamedTuple):
     block_mean: np.ndarray
 
 
+def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, int]:
+    """Packs encoder parameters into _encoder.encode_unit's arguments.
+
+    Returns:
+        A tuple of (min_bits, max_bits, orders_mask, noise_f, target, decimal, pick_len):
+        orders_mask has bit k set for each enabled order, and 0.0 turns the noise floor or
+        the target off.
+    """
+    return (
+        params.min_quantize_bits,
+        params.max_quantize_bits,
+        sum(1 << order for order in params.diff_orders),
+        float(params.noise_floor_sigma or 0.0),
+        float(params.target_bits_per_sample or 0.0),
+        bool(params.decimal_detection),
+        _encoder.PICK_LEN,
+    )
+
+
 def encode_rows(samples: np.ndarray, block_sizes: np.ndarray, params: Params) -> tuple[_format.UnitRows, BlockStats]:
     """Encodes blocks into their rows (without a time axis) and summary statistics.
 
@@ -216,7 +235,7 @@ def encode_rows(samples: np.ndarray, block_sizes: np.ndarray, params: Params) ->
     _encoder.encode_unit(
         samples,
         sample_offsets(block_sizes),
-        *params._kernel_args(),
+        *kernel_args(params),
         rows.block_flags,
         rows.grid_params,
         rows.value_anchors,
@@ -630,3 +649,50 @@ def splice(
         num_blocks, num_samples, params.planes, parsed.header.time_unit,
     )
     return UpdatedUnit(unit, indices, *stats)
+
+
+def update(
+    unit: bytes,
+    blocks: Mapping[int, npt.ArrayLike],
+    params: Params,
+    times: Mapping[int, npt.ArrayLike] | None,
+) -> UpdatedUnit:
+    """Validates update's arguments and splices the new blocks into the unit (see _api.update).
+
+    Raises:
+        ValueError: If the unit is corrupt, an index is invalid, or the times don't match the
+            unit's time axis or the blocks.
+        zstandard.ZstdError: If the zstd frame is corrupt.
+    """
+    parsed = decompress(unit)
+    if not isinstance(blocks, Mapping):
+        raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")  # noqa: TRY004
+    if not all(is_int(idx) and idx >= 0 for idx in blocks):
+        raise ValueError(f"block indices must be integers >= 0, got {sorted(map(repr, blocks))}")
+    indices = sorted(int(idx) for idx in blocks)
+    # Before anything is sized by the indices
+    if indices and indices[-1] >= _format.MAX_BLOCKS:
+        raise ValueError(f"a unit holds at most {_format.MAX_BLOCKS} blocks, got block index {indices[-1]}")
+    if parsed.has_time:
+        if times is None:
+            raise ValueError("the unit has a time axis: times are required")
+        if sorted(int(idx) for idx in times) != indices:
+            raise ValueError("times must have the same block indices as blocks")
+    elif times is not None:
+        raise ValueError("the unit has no time axis: times must be None")
+    by_index = {int(idx): block for idx, block in blocks.items()}
+    samples = [as_series(by_index[idx], allow_empty=True) for idx in indices]
+    sizes = as_block_sizes([block.shape[0] for block in samples]) if samples else np.zeros(0, np.int64)
+    ticks = None
+    if times is not None:
+        times_by_index = {int(idx): block_times for idx, block_times in times.items()}
+        block_ticks = [as_ticks(times_by_index[idx], None, parsed.header.time_unit)[0] for idx in indices]
+        for idx, block, tick_block in zip(indices, samples, block_ticks):
+            if tick_block.shape != block.shape:
+                raise ValueError(f"block {idx}: times must have the shape of its samples {block.shape}, got {tick_block.shape}")
+        ticks = np.concatenate(block_ticks) if block_ticks else np.zeros(0, np.int64)
+    if not indices:
+        return UpdatedUnit(unit, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
+    return splice(
+        parsed, np.array(indices, np.int64), np.concatenate(samples), sizes, ticks, params
+    )

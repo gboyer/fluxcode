@@ -9,8 +9,6 @@ from typing import Literal, NamedTuple
 
 import numpy as np
 
-from . import _encoder
-
 MIN_TARGET_BITS: float = 6.0
 """Minimum allowed per-unit bit target per sample."""
 
@@ -165,25 +163,6 @@ class Params:
             )
         if self.planes not in PLANE_MODES:
             raise ValueError(f"planes must be one of {', '.join(map(repr, PLANE_MODES))}, got {self.planes!r}")
-
-    def _kernel_args(self) -> tuple[int, int, int, float, float, bool, int]:
-        """Packs encoder configuration into kernel arguments.
-
-        Returns:
-            A tuple of (min_bits, max_bits, orders_mask, noise_f, target,
-            decimal, pick_len) suitable for numba kernels.
-        """
-        # Convert diff_orders set to a bitmask (bit k set if order k enabled)
-        orders_mask = sum(1 << order for order in self.diff_orders)
-        return (
-            self.min_quantize_bits,
-            self.max_quantize_bits,
-            orders_mask,
-            float(self.noise_floor_sigma or 0.0),
-            float(self.target_bits_per_sample or 0.0),
-            bool(self.decimal_detection),
-            _encoder.PICK_LEN,
-        )
 
 
 def is_int(val: object) -> bool:
