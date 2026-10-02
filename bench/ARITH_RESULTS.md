@@ -58,3 +58,23 @@ Per signal it ranges from 6-11% (linear, square wave: planes are almost entirely
 (sin-9.87hz, chirp). Replacing zstd by zero runs (0.37x encode, 0.19x decode of zstd's time) would
 cut total encode by about 18% (bit) / 30% (default) and decode by about 19% / 22%: at most a
 1.2-1.4x speedup of the whole call, for ~20% larger units.
+
+# Two more RLE variants (`bench/rle_variants.py`)
+
+Token = protobuf varint of `len << KB | kind`. *zero/FF*: kind 0 raw (bytes follow), 1 zeros, 2 0xFF,
+runs of 3+ split out. *any-byte*: PackBits-like, kind 0 raw, 1 = `len` copies of the next byte, runs
+of 4+ of any byte split out. All relative to zstd 3 on the same planes (total over 14 signals;
+round trips checked):
+
+| | size | encode | decode |
+|---|---|---|---|
+| alternating raw/zero | 1.22 | 0.36 | 0.18 |
+| zero/FF | 1.17 | 0.49 | 0.21 |
+| any-byte | 1.19 | 0.58 | 0.26 |
+
+zero/FF fixes the all-ones planes (linear 192x -> 6x, though that is 78 vs ~490 bytes per 240 KB, so
+the ratio is a tiny denominator) and costs about a third more encode time. any-byte catches nothing
+more than zero/FF (it spends a byte per run on the fill value, and quadratic/square-wave planes are
+periodic with periods beyond one byte, which no RLE sees) and is slower. **zero/FF is the one to
+keep**: all signals still faster than zstd except quadratic encode (0.93x of zstd's time); worst size
+ratios are the periodic signals (quadratic 9x, square wave 5x), small in absolute bytes.
