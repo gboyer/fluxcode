@@ -191,21 +191,21 @@ shapes, and [experimental/report/time.html](../experimental/report/time.html) sh
 
 | timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
 |---|---|---|---|---|---|
-| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +20 µs (+6%) | +11 µs (+10%) |
-| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +40 µs (+13%) | +17 µs (+15%) |
-| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +308 µs (+100%) | +142 µs (+128%) |
-| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +112 µs (+36%) | +62 µs (+56%) |
-| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +209 µs (+68%) | +111 µs (+100%) |
-| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +181 µs (+59%) | +86 µs (+77%) |
-| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +427 µs (+138%) | +177 µs (+159%) |
-| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +297 µs (+96%) | +132 µs (+119%) |
-| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +417 µs (+135%) | +169 µs (+152%) |
-| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +545 µs (+176%) | +192 µs (+173%) |
-| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +644 µs (+208%) | +211 µs (+190%) |
-| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +198 µs (+64%) | +95 µs (+86%) |
+| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +18 µs (+6%) | +13 µs (+11%) |
+| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +20 µs (+6%) | +17 µs (+14%) |
+| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +301 µs (+94%) | +134 µs (+113%) |
+| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +76 µs (+24%) | +55 µs (+46%) |
+| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +196 µs (+61%) | +121 µs (+102%) |
+| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +168 µs (+52%) | +98 µs (+82%) |
+| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +376 µs (+117%) | +195 µs (+164%) |
+| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +290 µs (+90%) | +138 µs (+116%) |
+| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +401 µs (+125%) | +179 µs (+150%) |
+| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +440 µs (+137%) | +207 µs (+174%) |
+| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +609 µs (+190%) | +246 µs (+207%) |
+| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +175 µs (+55%) | +102 µs (+86%) |
 
-For scale, the same unit's values take 17,976 bytes, 309 µs to encode (default effort, with both
-layouts compressed, which compresses the time fields twice too) and 111 µs to decode; the percentages are of
+For scale, the same unit's values take 17,976 bytes, 321 µs to encode (default effort, with both
+layouts compressed, which compresses the time fields twice too) and 119 µs to decode; the percentages are of
 those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-02).
 Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
 grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:

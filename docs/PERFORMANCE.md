@@ -182,16 +182,28 @@ table: [bench/UPDATE_RESULTS.md](../bench/UPDATE_RESULTS.md)):
 
 | operation | vs encode |
 |---|---|
-| `update` of 1 of 60 blocks (with or without times) | −13% to −16% (−33 to −52 µs) |
+| `update` of 1 of 60 blocks (with or without times) | −10% to −18% (−33 to −43 µs) |
 | `update` appending a 61st block | −2% to −6% |
-| `update_time_blocks`, 2 s straddling 3 of 60 one-second blocks | −25% to −26% |
-| `update_time_blocks`, 2 s straddling 3 of 3,600 blocks of 10 samples | −25% to −34% (−370 to −400 µs) |
+| `update_time_blocks`, 2 s straddling 3 of 60 one-second blocks | −30% to −37% (−170 to −182 µs) |
+| `update_time_blocks`, 2 s straddling 3 of 3,600 blocks of 10 samples | −28% to −38% (−333 to −391 µs) |
+| `update_time_blocks`, one sample in 1 of the 3,600 blocks | −30% to −41% |
+| `update_time_blocks`, one sample (replaced) in each of the 3,600 blocks | +38% to +80% (+536 to +697 µs) |
 
 An update decompresses the old unit, encodes only the new blocks, and copies every carried block's
 bytes into the new body (`_bitpacking.splice_body`), so it skips the kernels and the shuffle for
-the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode does, and builds
-the body in the other plane mode by converting the carried blocks one by one. With `planes="bit"`
-a one-block update was −40% against encode (on battery).
+the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode does. The bodies
+are built in byte planes, which are what the carried blocks are copied between (a bit-plane unit's
+residual region is converted once, by one transpose, before the copy), and the bit-plane body for
+the second candidate is derived from the byte-plane one by one more transpose of the whole region
+(`_bitpacking.to_bit_planes`): block groups line up across the region, so no block is converted
+on its own. The same holds for `write_unit` when a unit is encoded (3,600 blocks of 10: 195 µs in
+bit planes; 52 µs in byte planes plus the 24 µs transpose).
+In `update_time_blocks` the decoded and new samples are merged in one numba pass over both (they are
+sorted): which old samples go, where the new ones land, the changed blocks and their sizes, so the
+Python code around it does no per-block or per-sample work. Likewise `splice` checks the block
+order with array operations and one batched call for the last ticks of carried neighbours. Before
+that pass the 60-block straddle spent 150 µs of 540 in two `searchsorted` calls, and one sample in
+each of 3,600 blocks cost 4.5 ms against 1.6 ms to encode (now 1.9 ms against 1.4).
 The 3,600-block rows depend on zstd: their bit-plane body is 248 KB, just under 256 KB, where
 libzstd picks the level-3 parameters for smaller inputs, which compress it in 348 µs instead of
 148 (full details in UPDATE_RESULTS.md).
