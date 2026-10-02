@@ -300,16 +300,69 @@ def compress(rows: _format.UnitRows, num_samples: int, planes: PlaneMode, time_u
     )
 
 
+FLUSH_RETRY_BYTES: int = 16_384
+"""A unit whose block-flushed frame is smaller than this is also compressed in one block run, and
+the smaller kept: per-plane tables cost tens of bytes that very compressible units can't repay."""
+
+BYTE_PLANES_MAX_HIGH_SHARE: float = 0.05
+"""planes="heuristic" picks byte planes when fewer than this share of the residuals reach 256."""
+
+
+def compress_body(body: np.ndarray, cuts: list[int]) -> bytes:
+    """Compresses a unit body into one zstd frame, ending a block at each cut.
+
+    Every zstd block has its own literal Huffman table, so cutting the body between its
+    columns and planes codes each with its own statistics (about 2% smaller for typical
+    units). The frame is an ordinary one that records the content size.
+
+    Args:
+        body: 1D uint8 array of the uncompressed body.
+        cuts: Strictly increasing body offsets where a block ends.
+
+    Returns:
+        The frame.
+    """
+    compressor = zstd()[0].compressobj(size=body.shape[0])
+    view = body.data
+    parts = []
+    previous = 0
+    for cut in cuts:
+        if previous < cut < body.shape[0]:
+            parts.append(compressor.compress(view[previous:cut]))
+            parts.append(compressor.flush(zstandard.COMPRESSOBJ_FLUSH_BLOCK))
+            previous = cut
+    parts.append(compressor.compress(view[previous:]))
+    parts.append(compressor.flush())
+    return b"".join(parts)
+
+
+def _frame(body: np.ndarray, num_blocks: int, byte_planes: bool, has_time: bool) -> bytes:
+    """The zstd frame of a body: block-flushed at the columns and planes, and also in one block
+    run when the flushed frame comes out small (see FLUSH_RETRY_BYTES)."""
+    _, offsets = _format.read_layout(body, num_blocks)
+    flushed = compress_body(body, _format.flush_points(body, num_blocks, offsets, has_time, byte_planes))
+    if len(flushed) < FLUSH_RETRY_BYTES:
+        single = zstd()[0].compress(body.data)
+        return single if len(single) < len(flushed) else flushed
+    return flushed
+
+
 def _pack(
     write_body: Callable[[bool], np.ndarray], num_blocks: int, num_samples: int, planes: PlaneMode, time_unit: int
 ) -> bytes:
     """The unit of the body write_body(byte_planes) builds, in the plane mode planes selects
-    ("best": both, and the smaller)."""
+    ("best": both, and the smaller; "heuristic": the layout the residuals' high byte suggests)."""
+    has_time = time_unit != 0
 
-    def build(byte_planes: bool) -> bytes:
+    def build(byte_planes: bool, body: np.ndarray | None = None) -> bytes:
         header = _format.pack_header(num_blocks, num_samples, byte_planes, time_unit)
-        return header + zstd()[0].compress(write_body(byte_planes).data)
+        return header + _frame(write_body(byte_planes) if body is None else body, num_blocks, byte_planes, has_time)
 
+    if planes == "heuristic":
+        bit_body = write_body(False)
+        _, offsets = _format.read_layout(bit_body, num_blocks)
+        share = _bitpacking.high_byte_share(bit_body, num_blocks, int(offsets.group_offsets[-1]), has_time)
+        return build(True) if share < BYTE_PLANES_MAX_HIGH_SHARE else build(False, bit_body)
     if planes != "best":
         return build(planes == "byte")
     bit_unit, byte_unit = build(False), build(True)

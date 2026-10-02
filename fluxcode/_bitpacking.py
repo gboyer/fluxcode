@@ -88,6 +88,32 @@ def planes_view(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time
     return raw_unit[start_offset:end_offset].reshape(16, num_groups)
 
 
+@njit
+def high_byte_share(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> float:
+    """The fraction of a unit's bit-plane bits (samples plus padding) whose residual reaches 256,
+    i.e. is set in any of bit planes 8 to 15.
+
+    Args:
+        raw_unit: 1D uint8 array of a body written with bit planes.
+        num_blocks: Total number of blocks.
+        num_groups: Bytes per plane: the groups of all blocks.
+        has_time: Whether the unit has a time axis.
+
+    Returns:
+        The share, 0.0 for a unit without plane bytes.
+    """
+    planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
+    count = 0
+    for group_idx in range(num_groups):
+        bits = 0
+        for plane_idx in range(8, 16):
+            bits |= int(planes[plane_idx, group_idx])
+        while bits:
+            count += bits & 1
+            bits >>= 1
+    return count / (8 * num_groups) if num_groups else 0.0
+
+
 @njit(inline="always")
 def byte_planes_view(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
     """Provides a 2D view into the residual field as 2 byte planes (flags bit 0).

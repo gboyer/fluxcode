@@ -12,10 +12,11 @@ import numpy as np
 MIN_TARGET_BITS: float = 6.0
 """Minimum allowed per-unit bit target per sample."""
 
-PlaneMode = Literal["best", "bit", "byte"]
-"""Residual layout before zstd: bit planes, byte planes, or whichever compresses smaller."""
+PlaneMode = Literal["best", "heuristic", "bit", "byte"]
+"""Residual layout before zstd: bit planes, byte planes, whichever compresses smaller, or one
+chosen from the residuals without compressing both."""
 
-PLANE_MODES: tuple[PlaneMode, ...] = ("best", "bit", "byte")
+PLANE_MODES: tuple[PlaneMode, ...] = ("best", "heuristic", "bit", "byte")
 """The accepted values of Params.planes."""
 
 TimeUnit = Literal["s", "ms", "us", "ns"]
@@ -116,7 +117,9 @@ class Params:
             falling back to power-of-two grids.
         planes: How the residuals are laid out before zstd: "bit" (16 bit planes), "byte"
             (2 byte planes), or "best" (the default): compress the unit both ways and keep
-            the smaller, ties going to bit planes. "best" doubles the zstd work of encoding;
+            the smaller, ties going to bit planes; "heuristic": byte planes when fewer than 5% of
+            the unit's residuals reach 256 (the high byte is nearly constant), else bit planes,
+            with one compression instead of two. "best" doubles the zstd work of encoding;
             byte planes win on periodic signals and noisy sines (4-18% smaller), bit planes on
             small or aperiodic residuals (random walks, chirps), and the choice is per unit.
     """

@@ -232,6 +232,75 @@ bits/sample against today's best of bit and byte planes):
 - A per-sample binary arithmetic coder would also cost about 1 M decisions per unit: not viable as
   a speed play.
 
+## The heuristic and block flushing together (`table.py`, `combine.py`, `api_bench.py`)
+
+Nibble planes are left out: they need a format change, and best of 3 needs a third encode.
+
+From a per-unit table of real unit sizes (header included) for bit and byte planes under four
+framings, sizes against today's `"best"` (two compressions, one block run); flush = a block ends
+after the columns and after every residual plane:
+
+| policy | compressions | fit | held out | report |
+|---|---|---|---|---|
+| today: best of bit/byte | 2 | 0 | 0 | 0 |
+| heuristic (`mean(u > 255)` < 5% → byte) | 1 | +1.5% | +1.4% | +1.2% |
+| heuristic + flush every plane | 1 | **−0.05%** | **−0.06%** | **−0.84%** |
+| heuristic + flush every 4 planes | 1 | +0.3% | +0.2% | −0.5% |
+| best of bit/byte + flush every plane | 2 | −1.9% | −1.8% | −2.0% |
+| oracle over all 8 layout × framing combinations | 8 | −2.0% | −1.9% | −2.1% |
+
+- Flush and the heuristic add up: **the heuristic plus flushing matches today's size with one
+  compression instead of two**. Flushing helps the heuristic more than it helps best-of-two,
+  because with a table per plane bit planes stop being the poor layout (flushed bit planes alone
+  are +1.8%, +1.2%, −0.5%).
+- The best threshold for the heuristic is the same with flushing (5%: the scan is flat from 1% to
+  5% and rises above 7.5%).
+- Flushing helps big units and hurts tiny ones. By unit size (fit set): under 1 KB flushing every
+  plane costs 8.5% in total (median +12 bytes; better on 11% of units), 1–10 KB −0.5%, 10–30 KB
+  +0.7% *saved*, 30–60 KB +1.2%, over 60 KB +2.6% saved.
+- Two cheap guards fix the tiny units: (1) end a block after a plane only if more than 1/16 of its
+  bytes are non-zero (the high planes of small residuals add a block header and table for nothing):
+  −3.25% instead of −2.86% on bit planes, and the mean per-unit penalty falls from +3.4% to +0.7%;
+  (2) if the flushed frame comes out under 16 KB, also compress in one block run and keep the
+  smaller: worst unit +2.9% instead of +136%, total another −0.05%.
+
+### Integration in the encoder (prototype on this branch, `fluxcode/`)
+
+Everything goes through `_unit._pack`, the one place a body becomes a unit (used by `encode` and
+by `update`). Changes, about 90 lines and no format change:
+
+- `_unit.compress_body(body, cuts)`: one zstd frame via the streaming API, ending a block at each
+  cut (`COMPRESSOBJ_FLUSH_BLOCK`), content size recorded. `_unit._frame` calls it, with the
+  small-unit retry.
+- `_format.flush_points(raw_unit, ...)`: the cut offsets, from the layout the body already
+  carries (after the columns, after each dense residual plane). Time residual and code planes stay in
+  the last block.
+- `PlaneMode` gains `"heuristic"`; `_pack` writes the bit body once, computes the share of
+  residuals reaching 256 from planes 8–15 (`_bitpacking.high_byte_share`, one pass over 8 plane
+  bytes per group) and rewrites the body as byte planes only if it is below 5%.
+- Decoders are untouched; `tests/golden.json` is regenerated (the bytes change), a new
+  `tests/test_flush.py` checks that the frame is ordinary (one-shot decodable, content size), that
+  cuts follow the planes, the retry guarantee and the heuristic's choices. Flushing applies to every
+  plane mode.
+
+Through the public API (one thread, 4.8 M samples of the report's signals, 24 M of random
+families; times are best of 3 over the whole set, so coarse):
+
+| planes | report: bits/sample | ns/sample | random: bits/sample | ns/sample |
+|---|---|---|---|---|
+| today, `best` | 5.174 | 9 | 4.009 | 8 |
+| today, `bit` | 5.291 | 6 | 4.203 | 5 |
+| flush, `heuristic` | 5.128 (−0.9%) | 9 | 4.015 (+0.1%) | 8 |
+| flush, `bit` | 5.119 (−1.1%) | 7 | 4.071 (+1.6%) | 7 |
+| flush, `best` | 5.065 (−2.1%) | 12 | 3.927 (−2.0%) | 11 |
+
+Flushing is not free: about +65 µs per unit for the cuts and +20 µs for the small-unit retry on a
+320 µs encode, so `heuristic` plus flushing matches `best` in size **and in encode time** (the
+second compression it saves roughly equals the flush overhead). Decode time is unchanged. Without
+flushing, `heuristic` is about 30% faster than `best` and 1.5% larger. The flush overhead is mostly
+per-block work inside zstd (one table per block) plus about 2 µs of Python call overhead per cut; it
+would shrink in a C implementation.
+
 ## Takeaways for the format and the tuning notes
 
 - A one-pass `planes` choice from the share of residuals above 255 is a defensible fast option
@@ -251,6 +320,9 @@ uv run python plane_layout/corpus.py --n 2000 --seed 1 --out corpus.npz   # ~25 
 uv run python plane_layout/corpus.py --n 1000 --seed 2 --out test.npz
 uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
+uv run python plane_layout/table.py       # per-unit table for the combinations (~3 min), then combine.py
+uv run python plane_layout/combine.py
+PYTHONPATH=<repo> uv run python plane_layout/api_bench.py   # public-API size and speed of each planes mode
 uv run python plane_layout/combos.py      # best of 2 / 3 layouts x three framings (~5 min)
 uv run python plane_layout/flush_blocks.py  # one frame with a block per plane: real units, decoder unchanged
 uv run python plane_layout/sections.py    # separate frames with timestamps / non-finite codes (~1 min)
