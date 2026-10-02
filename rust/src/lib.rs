@@ -12,11 +12,65 @@
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use zstd_safe::zstd_sys::ZSTD_EndDirective::{ZSTD_e_continue, ZSTD_e_end, ZSTD_e_flush};
+use zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer};
 
 const BLOCK_FLAG_NONFINITE: u8 = 0x08;
 // BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR
 const METADATA_BYTES_PER_BLOCK: usize = 1 + 2 + 2 + 8;
 const HEADER_BYTES: usize = 8;
+const FORMAT_VERSION: u8 = 1;
+const UNIT_FLAG_BYTE_PLANES: u8 = 1;
+const FLUSH_MIN_DENSITY: usize = 16;
+const BYTE_PLANES_BIT: u32 = 7;
+const BYTE_PLANES_MAX_SHARE: f64 = 0.01;
+
+/// A unit's rows and the offsets of each block in the samples, residual groups and code groups.
+struct Rows<'a> {
+    flags: &'a [u8],
+    sizes: &'a [i64],
+    params: &'a [i64],
+    anchors: &'a [i64],
+    residuals: &'a [i16],
+    codes: &'a [u8],
+    so: Vec<usize>,
+    go: Vec<usize>,
+    co: Vec<usize>,
+}
+
+impl<'a> Rows<'a> {
+    /// The rows with their offsets (`_format._fill_layout`), or an error if the fields disagree.
+    fn new(
+        flags: &'a [u8], sizes: &'a [i64], params: &'a [i64], anchors: &'a [i64], residuals: &'a [i16],
+        codes: &'a [u8],
+    ) -> Result<Self, String> {
+        let n = flags.len();
+        let mismatch = || "rows don't match the layout".to_string();
+        if n > u16::MAX as usize || sizes.len() != n || params.len() != n || anchors.len() != n {
+            return Err(mismatch());
+        }
+        let (mut so, mut go, mut co) = (vec![0usize; n + 1], vec![0usize; n + 1], vec![0usize; n + 1]);
+        for b in 0..n {
+            if !(0..=u16::MAX as i64).contains(&sizes[b]) {
+                return Err(mismatch());
+            }
+            let size = sizes[b] as usize;
+            let groups = size.div_ceil(8);
+            so[b + 1] = so[b] + size;
+            go[b + 1] = go[b] + groups;
+            co[b + 1] = co[b] + if flags[b] & BLOCK_FLAG_NONFINITE != 0 { groups } else { 0 };
+        }
+        if residuals.len() != so[n] || (co[n] > 0 && codes.len() != so[n]) {
+            return Err(mismatch());
+        }
+        Ok(Rows { flags, sizes, params, anchors, residuals, codes, so, go, co })
+    }
+}
+
+#[inline(always)]
+fn zigzag(r: i16) -> u16 {
+    ((r << 1) ^ (r >> 15)) as u16
+}
 
 #[inline(always)]
 fn transpose8(mut x: u64) -> u64 {
@@ -28,41 +82,15 @@ fn transpose8(mut x: u64) -> u64 {
     x ^ d ^ (d << 28)
 }
 
-// ---- compress: rows -> unit bytes (layout choice, body packing, flushed zstd frame) ----
-
-use zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer};
-
-const FLUSH_MIN_DENSITY: usize = 16;
-const BYTE_PLANES_BIT: u32 = 7;
-const BYTE_PLANES_MAX_SHARE: f64 = 0.01;
-const FORMAT_VERSION: u8 = 1;
-const UNIT_FLAG_BYTE_PLANES: u8 = 1;
-
-struct Rows<'a> {
-    flags: &'a [u8],
-    sizes: &'a [i64],
-    params: &'a [i64],
-    anchors: &'a [i64],
-    residuals: &'a [i16],
-    codes: &'a [u8],
-    so: Vec<i64>,
-    go: Vec<i64>,
-    co: Vec<i64>,
-}
-
-#[inline(always)]
-fn zigzag(r: i16) -> u16 {
-    ((r << 1) ^ (r >> 15)) as u16
-}
-
-/// The uncompressed body of a unit without a time axis (bit_planes: 16 bit planes or 2 byte planes).
-fn write_body(r: &Rows, byte_planes: bool) -> Vec<u8> {
+/// The uncompressed body of a unit without a time axis, in the byte-plane layout: the metadata columns,
+/// the zigzagged residuals as a low and a high byte plane (each block padded with zeros to whole groups
+/// of 8), then the non-finite code planes.
+fn write_body(r: &Rows) -> Vec<u8> {
     let n = r.flags.len();
-    let ng = r.go[n] as usize;
-    let ncg = r.co[n] as usize;
+    let ng = r.go[n];
+    let ncg = r.co[n];
     let res_start = METADATA_BYTES_PER_BLOCK * n;
-    let code_start = res_start + 16 * ng;
-    let mut raw = vec![0u8; code_start + 2 * ncg];
+    let mut raw = vec![0u8; res_start + 16 * ng + 2 * ncg];
     let (params, anchors) = ((1 + 2) * n, (1 + 2 + 2) * n);
     for b in 0..n {
         raw[b] = r.flags[b];
@@ -75,54 +103,19 @@ fn write_body(r: &Rows, byte_planes: bool) -> Vec<u8> {
         }
     }
     let (res, codes_raw) = raw[res_start..].split_at_mut(16 * ng);
-    let max_groups = (0..n).map(|b| (r.go[b + 1] - r.go[b]) as usize).max().unwrap_or(0);
-    let (mut lowb, mut highb) = (vec![0u8; 8 * max_groups], vec![0u8; 8 * max_groups]);
+    let (low, high) = res.split_at_mut(8 * ng);
+    let (p0, p1) = codes_raw.split_at_mut(ncg);
     for b in 0..n {
-        let (s0, len) = (r.so[b] as usize, r.sizes[b] as usize);
-        let block = &r.residuals[s0..s0 + len];
-        let (g0, g1) = (r.go[b] as usize, r.go[b + 1] as usize);
-        if byte_planes {
-            let (low, high) = res.split_at_mut(8 * ng);
-            let s = 8 * g0;
-            let (low, high) = (&mut low[s..s + len], &mut high[s..s + len]);
-            for ((&v, l), h) in block.iter().zip(low).zip(high) {
-                let z = zigzag(v);
-                *l = z as u8;
-                *h = (z >> 8) as u8;
-            }
-        } else {
-            // zigzag into whole 8-byte groups (the padding stays zero), then transpose each group
-            let ngb = g1 - g0;
-            lowb[..8 * ngb].fill(0);
-            highb[..8 * ngb].fill(0);
-            for ((&v, l), h) in block.iter().zip(lowb.iter_mut()).zip(highb.iter_mut()) {
-                let z = zigzag(v);
-                *l = z as u8;
-                *h = (z >> 8) as u8;
-            }
-            let mut planes: Vec<&mut [u8]> = Vec::with_capacity(16);
-            let mut rest: &mut [u8] = res;
-            let mut consumed = 0;
-            for k in 0..16 {
-                let skip = k * ng + g0 - consumed;
-                let (_, tail) = rest.split_at_mut(skip);
-                let (mine, tail) = tail.split_at_mut(ngb);
-                planes.push(mine);
-                rest = tail;
-                consumed = k * ng + g0 + ngb;
-            }
-            for (g, (lw, hw)) in lowb[..8 * ngb].chunks_exact(8).zip(highb[..8 * ngb].chunks_exact(8)).enumerate() {
-                let lo = transpose8(u64::from_le_bytes(lw.try_into().unwrap())).to_le_bytes();
-                let hi = transpose8(u64::from_le_bytes(hw.try_into().unwrap())).to_le_bytes();
-                for k in 0..8 {
-                    planes[k][g] = lo[k];
-                    planes[8 + k][g] = hi[k];
-                }
-            }
+        let (s0, len) = (r.so[b], r.sizes[b] as usize);
+        let s = 8 * r.go[b];
+        let (low, high) = (&mut low[s..s + len], &mut high[s..s + len]);
+        for ((&v, l), h) in r.residuals[s0..s0 + len].iter().zip(low).zip(high) {
+            let z = zigzag(v);
+            *l = z as u8;
+            *h = (z >> 8) as u8;
         }
         if r.flags[b] & BLOCK_FLAG_NONFINITE != 0 {
-            let c0 = r.co[b] as usize;
-            let (p0, p1) = codes_raw.split_at_mut(ncg);
+            let c0 = r.co[b];
             for (g, chunk) in r.codes[s0..s0 + len].chunks(8).enumerate() {
                 let (mut b0, mut b1) = (0u8, 0u8);
                 for (k, &c) in chunk.iter().enumerate() {
@@ -132,6 +125,24 @@ fn write_body(r: &Rows, byte_planes: bool) -> Vec<u8> {
                 p0[c0 + g] = b0;
                 p1[c0 + g] = b1;
             }
+        }
+    }
+    raw
+}
+
+/// The bit-plane layout of a byte-plane body: its residual region with every group of 8 bytes transposed
+/// into one byte of each of the 16 bit planes. The rest of the body is the same.
+fn to_bit_planes(byte_body: &[u8], n: usize, ng: usize) -> Vec<u8> {
+    let start = METADATA_BYTES_PER_BLOCK * n;
+    let mut raw = byte_body.to_vec();
+    let (low, high) = byte_body[start..start + 16 * ng].split_at(8 * ng);
+    let planes = &mut raw[start..start + 16 * ng];
+    for (g, (lw, hw)) in low.chunks_exact(8).zip(high.chunks_exact(8)).enumerate() {
+        let lo = transpose8(u64::from_le_bytes(lw.try_into().unwrap())).to_le_bytes();
+        let hi = transpose8(u64::from_le_bytes(hw.try_into().unwrap())).to_le_bytes();
+        for k in 0..8 {
+            planes[k * ng + g] = lo[k];
+            planes[(8 + k) * ng + g] = hi[k];
         }
     }
     raw
@@ -149,6 +160,7 @@ fn wide_share_byte_planes(raw: &[u8], n: usize, ng: usize) -> f64 {
     count as f64 / (8 * ng) as f64
 }
 
+/// Where zstd blocks end: after the metadata and after each residual plane that is dense enough.
 fn flush_points(raw: &[u8], n: usize, ng: usize, byte_planes: bool) -> Vec<usize> {
     if ng == 0 {
         return vec![];
@@ -158,7 +170,11 @@ fn flush_points(raw: &[u8], n: usize, ng: usize, byte_planes: bool) -> Vec<usize
     let mut points = vec![start];
     for p in 0..planes {
         let ps = start + p * plane_bytes;
-        let nz = raw[ps..ps + plane_bytes].chunks(4096).map(|c| c.iter().map(|&v| (v != 0) as u32).sum::<u32>() as usize).sum::<usize>();
+        // counted in chunks of 4096 so that each inner sum fits u32 lanes, which the compiler vectorizes
+        let nz = raw[ps..ps + plane_bytes]
+            .chunks(4096)
+            .map(|c| c.iter().map(|&v| (v != 0) as u32).sum::<u32>() as usize)
+            .sum::<usize>();
         if nz * FLUSH_MIN_DENSITY > plane_bytes {
             points.push(ps + plane_bytes);
         }
@@ -172,109 +188,90 @@ thread_local! {
     static CCTX: std::cell::RefCell<CCtx<'static>> = std::cell::RefCell::new(CCtx::create());
 }
 
-fn compress_flushed(body: &[u8], cuts: &[usize], level: i32) -> Result<Vec<u8>, String> {
-    CCTX.with(|c| compress_flushed_with(&mut c.borrow_mut(), body, cuts, level))
-}
-
-fn compress_flushed_with(cctx: &mut CCtx<'static>, body: &[u8], cuts: &[usize], level: i32) -> Result<Vec<u8>, String> {
-    let e = |c: usize| zstd_safe::get_error_name(c).to_string();
-    cctx.reset(zstd_safe::ResetDirective::SessionOnly).map_err(e)?;
-    cctx.set_parameter(CParameter::CompressionLevel(level)).map_err(e)?;
-    cctx.set_parameter(CParameter::ChecksumFlag(false)).map_err(e)?;
-    cctx.set_parameter(CParameter::ContentSizeFlag(true)).map_err(e)?;
-    cctx.set_pledged_src_size(Some(body.len() as u64)).map_err(e)?;
-    let mut out: Vec<u8> = Vec::with_capacity(zstd_safe::compress_bound(body.len()) + 64 * (cuts.len() + 2));
-    let mut run = |input: &[u8], op: zstd_safe::zstd_sys::ZSTD_EndDirective| -> Result<(), String> {
-        let mut inb = InBuffer::around(input);
-        loop {
-            if out.len() == out.capacity() {
-                out.reserve(1 << 16);
+/// `header` followed by the zstd frame of `body`, ended after each of the `cuts` (with none, a single
+/// block-ending call, which is what python-zstandard's `compress` does).
+fn compress_with_header(header: &[u8], body: &[u8], cuts: &[usize], level: i32) -> Result<Vec<u8>, String> {
+    CCTX.with(|c| {
+        let cctx = &mut *c.borrow_mut();
+        let e = |c: usize| zstd_safe::get_error_name(c).to_string();
+        cctx.reset(zstd_safe::ResetDirective::SessionOnly).map_err(e)?;
+        cctx.set_parameter(CParameter::CompressionLevel(level)).map_err(e)?;
+        cctx.set_parameter(CParameter::ChecksumFlag(false)).map_err(e)?;
+        cctx.set_parameter(CParameter::ContentSizeFlag(true)).map_err(e)?;
+        cctx.set_pledged_src_size(Some(body.len() as u64)).map_err(e)?;
+        let mut out: Vec<u8> = Vec::with_capacity(header.len() + zstd_safe::compress_bound(body.len()) + 64 * (cuts.len() + 2));
+        out.extend_from_slice(header);
+        let mut run = |input: &[u8], op: zstd_safe::zstd_sys::ZSTD_EndDirective| -> Result<(), String> {
+            let mut inb = InBuffer::around(input);
+            loop {
+                // the capacity above covers the worst case, so this only guards against a stalled loop
+                if out.len() == out.capacity() {
+                    out.reserve(1 << 16);
+                }
+                let pos = out.len();
+                let remaining = cctx.compress_stream2(&mut OutBuffer::around_pos(&mut out, pos), &mut inb, op).map_err(e)?;
+                if inb.pos == input.len() && remaining == 0 {
+                    return Ok(());
+                }
             }
-            let pos = out.len();
-            let remaining = cctx.compress_stream2(&mut OutBuffer::around_pos(&mut out, pos), &mut inb, op).map_err(e)?;
-            if inb.pos == input.len() && remaining == 0 {
-                return Ok(());
+        };
+        let mut prev = 0;
+        for &cut in cuts {
+            if prev < cut && cut < body.len() {
+                run(&body[prev..cut], ZSTD_e_continue)?;
+                run(&[], ZSTD_e_flush)?;
+                prev = cut;
             }
         }
-    };
-    use zstd_safe::zstd_sys::ZSTD_EndDirective::*;
-    let mut prev = 0;
-    for &cut in cuts {
-        if prev < cut && cut < body.len() {
-            run(&body[prev..cut], ZSTD_e_continue)?;
-            run(&[], ZSTD_e_flush)?;
-            prev = cut;
-        }
-    }
-    run(&body[prev..], ZSTD_e_end)?;
-    Ok(out)
+        run(&body[prev..], ZSTD_e_end)?;
+        Ok(out)
+    })
 }
 
-/// The smallest frame of a body over the zstd levels (ties keep the earlier level).
-fn frame(body: &[u8], n: usize, ng: usize, byte_planes: bool, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+/// A unit as its header and the smallest frame of its body over the zstd levels (ties keep the earlier level).
+fn build(r: &Rows, body: &[u8], byte_planes: bool, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+    let (n, ng) = (r.flags.len(), r.go[r.flags.len()]);
+    let mut header = [0u8; HEADER_BYTES];
+    header[0] = FORMAT_VERSION;
+    header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
+    header[2..4].copy_from_slice(&(n as u16).to_le_bytes());
+    header[4..8].copy_from_slice(&(r.so[n] as u32).to_le_bytes());
     let cuts = if flush { flush_points(body, n, ng, byte_planes) } else { vec![] };
     let mut best: Option<Vec<u8>> = None;
     for &level in levels {
-        let f = if flush {
-            compress_flushed(body, &cuts, level)?
-        } else {
-            CCTX.with(|c| {
-                let cctx = &mut *c.borrow_mut();
-                let e = |c: usize| zstd_safe::get_error_name(c).to_string();
-                cctx.reset(zstd_safe::ResetDirective::SessionOnly).map_err(e)?;
-                cctx.set_parameter(CParameter::CompressionLevel(level)).map_err(e)?;
-                cctx.set_parameter(CParameter::ChecksumFlag(false)).map_err(e)?;
-                cctx.set_parameter(CParameter::ContentSizeFlag(true)).map_err(e)?;
-                let mut out: Vec<u8> = Vec::with_capacity(zstd_safe::compress_bound(body.len()));
-                cctx.compress2(&mut out, body).map_err(e)?;
-                Ok::<_, String>(out)
-            })?
-        };
-        if best.as_ref().map_or(true, |b| f.len() < b.len()) {
-            best = Some(f);
+        let unit = compress_with_header(&header, body, &cuts, level)?;
+        if best.as_ref().map_or(true, |b| unit.len() < b.len()) {
+            best = Some(unit);
         }
     }
     best.ok_or_else(|| "no zstd levels".to_string())
 }
 
-/// A unit as its 8 header bytes and its zstd frame.
-type Unit = ([u8; HEADER_BYTES], Vec<u8>);
-
-fn compress_unit_impl(r: &Rows, layout: &str, flush: bool, levels: &[i32]) -> Result<Unit, String> {
-    let n = r.flags.len();
-    let num_samples = r.so[n] as usize;
-    let ng = r.go[n] as usize;
-    let build = |body: &Vec<u8>, byte_planes: bool| -> Result<Unit, String> {
-        let mut header = [0u8; HEADER_BYTES];
-        header[0] = FORMAT_VERSION;
-        header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 };
-        header[2..4].copy_from_slice(&(n as u16).to_le_bytes());
-        header[4..8].copy_from_slice(&(num_samples as u32).to_le_bytes());
-        Ok((header, frame(body, n, ng, byte_planes, flush, levels)?))
-    };
+fn compress_unit_impl(r: &Rows, layout: &str, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+    let (n, ng) = (r.flags.len(), r.go[r.flags.len()]);
+    // the byte-plane body is the cheaper one to write; the bit-plane body is derived from it
+    let byte_body = write_body(r);
     match layout {
-        "bit" | "byte" => {
-            let bp = layout == "byte";
-            build(&write_body(r, bp), bp)
-        }
+        "byte" => build(r, &byte_body, true, flush, levels),
+        "bit" => build(r, &to_bit_planes(&byte_body, n, ng), false, flush, levels),
         "heuristic" => {
-            // the statistic is read from the byte-plane body, the cheaper one to write
-            let first = write_body(r, true);
-            if wide_share_byte_planes(&first, n, ng) < BYTE_PLANES_MAX_SHARE {
-                build(&first, true)
+            if wide_share_byte_planes(&byte_body, n, ng) < BYTE_PLANES_MAX_SHARE {
+                build(r, &byte_body, true, flush, levels)
             } else {
-                build(&write_body(r, false), false)
+                build(r, &to_bit_planes(&byte_body, n, ng), false, flush, levels)
             }
         }
-        _ => {
-            let (byte, bit) = (build(&write_body(r, true), true)?, build(&write_body(r, false), false)?);
-            Ok(if byte.1.len() <= bit.1.len() { byte } else { bit })
+        "best" => {
+            let byte = build(r, &byte_body, true, flush, levels)?;
+            let bit = build(r, &to_bit_planes(&byte_body, n, ng), false, flush, levels)?;
+            Ok(if byte.len() <= bit.len() { byte } else { bit })
         }
+        _ => Err(format!("unknown layout {layout:?}")),
     }
 }
 
 /// compress_unit(block_flags, block_sizes, grid_params, value_anchors, residuals, codes,
-///               layout, flush, zstd_levels, sample_offsets, group_offsets, code_offsets) -> bytes
+///               layout, flush, zstd_levels) -> bytes
 /// A unit without a time axis: header plus zstd frame, as _unit.compress builds it.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
@@ -289,36 +286,15 @@ fn compress_unit<'py>(
     layout: &str,
     flush: bool,
     zstd_levels: Vec<i32>,
-    sample_offsets: PyReadonlyArray1<i64>,
-    group_offsets: PyReadonlyArray1<i64>,
-    code_offsets: PyReadonlyArray1<i64>,
 ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
-    let rows = Rows {
-        flags: block_flags.as_slice()?,
-        sizes: block_sizes.as_slice()?,
-        params: grid_params.as_slice()?,
-        anchors: value_anchors.as_slice()?,
-        residuals: residuals.as_slice()?,
-        codes: codes.as_slice()?,
-        so: sample_offsets.as_slice()?.to_vec(),
-        go: group_offsets.as_slice()?.to_vec(),
-        co: code_offsets.as_slice()?.to_vec(),
-    };
-    let n = rows.flags.len();
-    if rows.sizes.len() != n || rows.params.len() != n || rows.anchors.len() != n || rows.so.len() != n + 1
-        || rows.go.len() != n + 1 || rows.co.len() != n + 1 || rows.residuals.len() != rows.so[n] as usize
-        || (rows.co[n] > 0 && rows.codes.len() != rows.so[n] as usize)
-    {
-        return Err(PyValueError::new_err("rows don't match the layout"));
-    }
+    let rows = Rows::new(
+        block_flags.as_slice()?, block_sizes.as_slice()?, grid_params.as_slice()?, value_anchors.as_slice()?,
+        residuals.as_slice()?, codes.as_slice()?,
+    )
+    .map_err(PyValueError::new_err)?;
     let unit = py.detach(|| compress_unit_impl(&rows, layout, flush, &zstd_levels)).map_err(PyValueError::new_err)?;
-    pyo3::types::PyBytes::new_with(py, HEADER_BYTES + unit.1.len(), |buf| {
-        buf[..HEADER_BYTES].copy_from_slice(&unit.0);
-        buf[HEADER_BYTES..].copy_from_slice(&unit.1);
-        Ok(())
-    })
+    Ok(pyo3::types::PyBytes::new(py, &unit))
 }
-
 
 /// The version of the libzstd this extension links, as (major, minor, release): the unit bytes match
 /// python-zstandard's only if its `ZSTD_VERSION` is the same.

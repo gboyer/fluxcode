@@ -342,14 +342,12 @@ def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit
         The unit bytes.
     """
     if _compress_unit is not None and rows.time_rows is None:
-        offsets = _format.layout(rows.block_flags, rows.block_sizes)
-        codes = rows.codes if offsets.code_offsets[-1] else np.zeros(0, np.uint8)
+        codes = rows.codes if (rows.block_flags & _format.BLOCK_FLAG_NONFINITE).any() else np.zeros(0, np.uint8)
         return _compress_unit(
             rows.block_flags, np.ascontiguousarray(rows.block_sizes, np.int64),
             np.ascontiguousarray(rows.grid_params, np.int64), np.ascontiguousarray(rows.value_anchors, np.int64),
             np.ascontiguousarray(rows.residuals, np.int16), np.ascontiguousarray(codes, np.uint8),
             effort.layout, effort.flush, list(effort.zstd_levels),
-            offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,
         )
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
     fields = (rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes)

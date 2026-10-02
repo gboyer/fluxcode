@@ -23,7 +23,7 @@ doesn't hold the GIL, and python-zstandard does inside a block flush.
 | decoder kernels (`decode_unit`, `check_unit`) | same signatures behind `FLUXCODE_DECODER=rust` | kernel 1.08-1.12x (1.24x `impulses`, 1.35x non-finite); end to end `decode_unit` 1.03-1.15x. [results](results/prototype_decoder.md) |
 | zstd decompress + layout + validation in one call | `decompress_body` | no change end to end: python-zstandard's decompress is already a thin C call and zstd's own time dominates (sin-4.12hz: 1.90 vs 1.97 ns/sample) |
 | encode analysis kernels (`encode_unit`) | stats, non-finite fill, noise floor, decimal detection, quantize, order pick, residuals, bit target | 0.91-1.04x of numba on finite data, 0.68x with non-finite values; units byte-identical, block means differ in the last bits. [results](results/prototype_encoder.md) |
-| compress stage (`compress_unit`) | layout choice, body packing, flush points, zstd frame, no GIL | 0.94-1.11x single thread; effort 5 (block flushes) at 8 threads 2.7-3.1x. [results](results/compress_bench.md) |
+| compress stage (`compress_unit`) | layout choice, body packing, flush points, zstd frame, no GIL | 0.98-1.16x single thread; effort 5 (block flushes) at 8 threads 2.6x. [results](results/compress_bench.md) |
 
 ### Why the frame build is the one that matters
 

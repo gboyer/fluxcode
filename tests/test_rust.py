@@ -89,11 +89,18 @@ def test_time_axis_units_use_the_python_path():
 def test_mismatched_rows_are_rejected():
     flags = np.zeros(2, np.uint8)
     sizes = np.array([3, 3], np.int64)
-    offsets = np.array([0, 3, 6], np.int64)
-    groups = np.array([0, 1, 2], np.int64)
     codes = np.zeros(0, np.uint8)
     with pytest.raises(ValueError, match="rows"):
         fluxcode_rs.compress_unit(
             flags, sizes, np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(5, np.int16), codes,
-            "heuristic", True, [3], offsets, groups, np.zeros(3, np.int64),
+            "heuristic", True, [3],
+        )
+
+
+def test_unknown_layout_is_rejected():
+    flags = np.zeros(1, np.uint8)
+    with pytest.raises(ValueError, match="layout"):
+        fluxcode_rs.compress_unit(
+            flags, np.array([3], np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros(3, np.int16),
+            np.zeros(0, np.uint8), "size", True, [3],
         )
