@@ -129,6 +129,47 @@ the low byte's groups and one for the high byte's.
   bit and byte planes under zstd 3 averages 3.92: zstd's gain over a memoryless model comes from
   matches and structure, though in 47% of units a memoryless model would already beat it.
 
+## Best of 2 / best of 3, and three ways to frame (`combos.py`, `flush_blocks.py`)
+
+A zstd *frame* is a complete, independent compressed stream (header, content size, blocks of at most
+128 KiB, no state shared with other frames); separate frames are separate compress calls. Inside one
+frame each *block* has its own literal Huffman table, and the streaming API can end a block early
+(`FLUSH_BLOCK`), so one frame can still give every plane its own table, with the window shared and
+no frame headers. Plane bytes only, bits/sample and size against today's best of pooled bit/byte
+planes (3.902 / 4.048 / 5.153 bits/sample on the three sets):
+
+| | pooled (today) | frames | blocks (one frame, flush per group) |
+|---|---|---|---|
+| bit, fit / held / report | +4.7 / +3.7 / +2.4% | +5.7 / +4.8 / +5.9% | +1.8 / +1.2 / −0.5% |
+| byte | +5.6 / +5.5 / +7.5% | +2.9 / +2.7 / +3.6% | +2.9 / +2.7 / +3.6% |
+| nibble | +8.3 / +7.7 / +8.1% | +1.0 / +0.7 / +2.1% | **+1.0 / +0.6 / +2.0%** |
+| best of bit/byte | 0 | −0.9 / −1.0 / −1.1% | **−1.9 / −1.7 / −2.0%** |
+| best of bit/nibble | +2.0 / +1.4 / +1.1% | −0.5 / −0.9 / 0.0% | −1.7 / −1.9 / −2.1% |
+| best of byte/nibble | +2.5 / +2.4 / +2.4% | −1.0 / −1.0 / −1.1% | −1.0 / −0.9 / −1.0% |
+| best of bit/byte/nibble | −0.8 / −0.8 / −0.5% | −2.1 / −2.1 / −1.9% | **−2.8 / −2.7 / −2.8%** |
+
+- Best of three pooled saves only 0.5–0.8% over best of two (the nibble pooled frame is bad).
+  With separate tables it is worth 2–3%, and best of three adds about 0.9 point over best of two.
+- Separate *frames* are worse than *blocks* for bit planes (16 frames pay 16 headers and tables, and
+  lose matches across planes): bit planes become the best layout in blocks, not in frames.
+- Trying every layout and framing (9 combinations) gains nothing over best of three layouts in
+  pooled/blocks (−2.9% either way).
+- **Blocks need no format change.** The body bytes and the one-frame container are identical, and a
+  standard decoder reads the frame as before. `flush_blocks.py` re-frames real units with a flush
+  after the columns and after each plane: `fluxcode.decode` returns identical values for every unit,
+  and the sizes (best of bit/byte per unit, header included, 3 minutes × 20 signals) are:
+
+| flush after | total size vs today |
+|---|---|
+| every plane | −1.7% |
+| every 4 planes | −1.4% |
+| every 8 planes (halves) | −1.2% |
+
+  Per signal it is −3.8% to +9.3%: random walks and noisy units gain 2–4%, while tiny units (a few
+  hundred bytes: linear, square wave, quadratic) lose 4–9% from the extra block headers and tables
+  (20–70 bytes) and the matches no longer crossing planes. An encoder could flush only when the body
+  is large, or compare both ways (a second compress).
+
 ## Separate frames and the rest of the body (`sections.py`)
 
 The body is the per-block columns, the 16 residual planes, the non-finite code planes (flagged
@@ -210,6 +251,8 @@ uv run python plane_layout/corpus.py --n 2000 --seed 1 --out corpus.npz   # ~25 
 uv run python plane_layout/corpus.py --n 1000 --seed 2 --out test.npz
 uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
+uv run python plane_layout/combos.py      # best of 2 / 3 layouts x three framings (~5 min)
+uv run python plane_layout/flush_blocks.py  # one frame with a block per plane: real units, decoder unchanged
 uv run python plane_layout/sections.py    # separate frames with timestamps / non-finite codes (~1 min)
 uv run python plane_layout/ctxmodel.py    # ideal cost of a context-modelled bit-plane coder
 uv run python plane_layout/layouts.py     # bit/byte/nibble/mixed layouts, pooled vs split (~3 min); --codecs for xz, bzip2, zstd 19
