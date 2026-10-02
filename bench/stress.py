@@ -358,11 +358,14 @@ def breakdown(wl, reps=200):
         sizes = np.full(BLOCKS, BLOCK)
         cz, dz = _compress.zstd()
         unit_rows, _ = _unit.encode_rows(x, sizes, p)
-        raw = _bitpacking.write_unit(*unit_rows[:6]).data  # as _unit.compress passes it
-        frame = cz.compress(raw)
+        offsets = _format.layout(unit_rows.block_flags, sizes)
+        num_groups = int(offsets.group_offsets[-1])
+        # As _compress.pack builds them: the byte-plane body, the bit-plane body derived from it
+        byte_body = _bitpacking.write_unit(*unit_rows[:6], byte_planes=True, offsets=offsets)
+        bit_body = _bitpacking.to_bit_planes(byte_body, BLOCKS, num_groups, False)
+        frame = cz.compress(bit_body.data)
         unit = _format.pack_header(BLOCKS, x.size) + frame
         out = np.empty(x.size)
-        offsets = _format.layout(unit_rows.block_flags, sizes)
         block_ids = np.arange(BLOCKS)
 
         def t(f, *args):
@@ -375,8 +378,10 @@ def breakdown(wl, reps=200):
             return 1e6 * best
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(unit) * 8 / x.size,
-                     t(_unit.encode_rows, x, sizes, p), t(_bitpacking.write_unit, *unit_rows[:6]),
-                     t(cz.compress, raw), t(fluxcode.encode_unit, x, p),
+                     t(_unit.encode_rows, x, sizes, p),
+                     t(lambda: _bitpacking.write_unit(*unit_rows[:6], byte_planes=True, offsets=offsets)),
+                     t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_groups, False),
+                     t(lambda: (cz.compress(byte_body.data), cz.compress(bit_body.data))), t(fluxcode.encode_unit, x, p),
                      t(dz.decompress, frame),
                      t(_decoder.decode_unit, rawd, offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,
                        block_ids, out, False, False),
@@ -445,8 +450,9 @@ def main():
 
     if a.breakdown:
         print("## Single thread, one unit, µs (best of 5 x 200)\n")
-        print("| kind | bits/sample | kernels | write_unit | zstd | encode_unit | unzstd | decode kernel | decode_unit |")
-        print("|---|---|---|---|---|---|---|---|---|")
+        print("| kind | bits/sample | kernels | write_unit | to_bit_planes | zstd (both layouts) | encode_unit | unzstd "
+              "| decode kernel | decode_unit |")
+        print("|---|---|---|---|---|---|---|---|---|---|")
         for r in breakdown(wl):
             print(f"| {r[0]} | {r[1]:.2f} | " + " | ".join(f"{v:.0f}" for v in r[2:]) + " |")
         print()
