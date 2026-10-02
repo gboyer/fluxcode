@@ -154,7 +154,7 @@ fn to_bit_planes(byte_body: &[u8], n: usize, ng: usize) -> Vec<u8> {
     // 8 groups at a time: bit-transpose each group's word, then transpose the 8x8 bytes of the 8 results
     // so that each plane takes the 8 bytes of its 8 groups in one store
     let batches = ng / 8;
-    for (i, (lw, hw)) in low.chunks_exact(64).zip(high.chunks_exact(64)).take(batches).enumerate() {
+    for (i, (lw, hw)) in low.chunks_exact(64).zip(high.chunks_exact(64)).enumerate() {
         let g = 8 * i;
         let mut lo: [u64; 8] = std::array::from_fn(|j| transpose8(word(&lw[8 * j..8 * j + 8])));
         let mut hi: [u64; 8] = std::array::from_fn(|j| transpose8(word(&hw[8 * j..8 * j + 8])));

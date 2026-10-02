@@ -23,7 +23,7 @@ doesn't hold the GIL, and python-zstandard does inside a block flush.
 | decoder kernels (`decode_unit`, `check_unit`) | same signatures behind `FLUXCODE_DECODER=rust` | kernel 1.08-1.12x (1.24x `impulses`, 1.35x non-finite); end to end `decode_unit` 1.03-1.15x. [results](results/prototype_decoder.md) |
 | zstd decompress + layout + validation in one call | `decompress_body` | no change end to end: python-zstandard's decompress is already a thin C call and zstd's own time dominates (sin-4.12hz: 1.90 vs 1.97 ns/sample) |
 | encode analysis kernels (`encode_unit`) | stats, non-finite fill, noise floor, decimal detection, quantize, order pick, residuals, bit target | 0.91-1.04x of numba on finite data, 0.68x with non-finite values; units byte-identical, block means differ in the last bits. [results](results/prototype_encoder.md) |
-| compress stage (`compress_unit`) | layout choice, body packing, flush points, zstd frame, no GIL | 0.98-1.16x single thread; effort 5 (block flushes) at 8 threads 2.6x. [results](results/compress_bench.md) |
+| compress stage (`compress_unit`) | layout choice, body packing, flush points, zstd frame, no GIL | 1.00-1.16x single thread; effort 5 (block flushes) at 8 threads 2.7x. [results](results/compress_bench.md) |
 
 ### Why the frame build is the one that matters
 
@@ -102,8 +102,22 @@ Measured on a laptop with 8 logical CPUs and synthetic data; the extension's win
 cd rust && uv run --with maturin maturin develop --release   # builds fluxcode_rs into the environment
 cd ../experimental
 uv run python rust_port/compress_bench.py                   # ~3 min, on AC power
+uv run python rust_port/unit_bench.py                       # compress_unit alone per signal, µs (a few % noise)
 uv run python rust_port/zstd_flush_gil.py                   # the flush scaling table above
 ```
+
+## Tried on `compress_unit` (2026-10-02, `unit_bench.py`)
+
+- Writing the byte-plane body costs 3-5 µs of a 120 KB unit; the rest is zstd, except the bit-plane layout,
+  which costs about 19 µs over it. Transposing 8 groups at once (bit transpose per word, then the 8x8 bytes of
+  eight words, one store per plane) took that from about 25 µs to 19; building the result without copying
+  the body first saves 2 µs. End to end the units are within the 5% noise of before.
+- Dropping candidates early (heuristic's layout first, give up once the flushed blocks exceed the best frame):
+  same units, effort 5-8 `best` on sin-4.12hz 225 -> 210 µs, effort 9 on sin-4.12hz 1874 -> 1575 and on
+  noisy-sine 909 -> 823 µs; no change on the others (their candidates are close in size).
+- zstd's block splitter forced on at level 3 without manual flushes: at most 1% smaller (sin, sensor), 0 on the
+  rest, and 50-160% slower. Not adopted.
+- Threads across units or layouts inside `encode`: not tried, since the target callers already run threads.
 
 ## Revisit if
 
