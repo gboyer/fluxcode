@@ -285,7 +285,8 @@ def test_units_are_self_describing(block_len, n_blocks, flagged):
     elif flagged:
         x[0] = np.inf
     unit, _, _, _ = fluxcode.encode_unit(x, block_len=block_len)
-    assert _format.unpack_header(unit)[::3] == (n_blocks, 0) and _format.unpack_header(unit)[1] == len(x)
+    header = _format.unpack_header(unit)  # byte_planes: planes="best" may pick either
+    assert (header.num_blocks, header.num_samples, header.time_unit) == (n_blocks, len(x), 0)
     y, _, sizes = fluxcode.decode_unit(unit)
     assert y.shape == x.shape
     assert sizes.tolist() == [block_len] * (n_blocks - 1) + [block_len - block_len // 2]
