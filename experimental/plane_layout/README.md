@@ -25,6 +25,12 @@ doesn't cover with matches. Three effects, from isolating the layouts on i.i.d. 
 So the width of the residuals decides, and the "does the high byte carry information" feature
 splits the last row from the middle one. The first row is the one the cheap features don't capture.
 
+Checked directly for the wide row: compressing the two byte planes *separately* and adding the
+sizes, instead of in one stream, saves 0.01 bit/sample at σ ≤ 64, 0.21 at σ = 128, 1.26 at σ = 512
+and 1.34 at σ = 2048, so the shared-table cost is real. At σ = 64 (5% of high bytes non-zero) the
+byte layout is already worse than bit planes without any pooling cost (8.61 against 8.53): splitting
+`u` into two bytes throws away the dependence between them.
+
 Beyond i.i.d. data, **exact repeats** matter. On a signal whose residual sequence repeats (a
 periodic signal sampled so the cycle recurs), zstd finds long matches in the byte layout at any lag,
 and in the bit layout only when the lag is a multiple of 8 samples. That is why byte planes win by
