@@ -25,15 +25,16 @@ mod compress;
 mod format;
 mod planes;
 
+use compress::Layout;
 use format::{Rows, Shape};
 
 /// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the extension.
 const INTERFACE_VERSION: u32 = 1;
 
-/// compress_unit(block_flags, block_sizes, grid_params, value_anchors, residuals, codes,
-///               layout, flush, zstd_levels) -> bytes
-/// A unit without a time axis: header plus zstd frame, as _compress.compress builds it.
+/// A unit without a time axis from its rows: header plus zstd frame, as `_compress.compress` builds it.
+/// `layout` is "byte", "bit", "heuristic" or "best" (`Effort.layout`).
 #[pyfunction]
+#[pyo3(signature = (block_flags, block_sizes, grid_params, value_anchors, residuals, codes, layout, flush, zstd_levels))]
 #[allow(clippy::too_many_arguments)]
 fn compress_unit<'py>(
     py: Python<'py>,
@@ -52,15 +53,16 @@ fn compress_unit<'py>(
         residuals.as_slice()?, codes.as_slice()?,
     )
     .map_err(PyValueError::new_err)?;
+    let layout = Layout::parse(layout).map_err(PyValueError::new_err)?;
     let unit = py.detach(|| compress::compress_unit(&rows, layout, flush, &zstd_levels)).map_err(PyValueError::new_err)?;
     Ok(PyBytes::new(py, &unit))
 }
 
-/// pack_unit(body, num_blocks, num_samples, num_groups, time_unit, layout, flush, zstd_levels) -> bytes
 /// The unit of an uncompressed body whose residuals are byte planes, with or without a time axis
-/// (time_unit 0 for none): header plus zstd frame, as _compress.pack builds it. num_groups is the
+/// (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_groups` is the
 /// groups of 8 residual bytes of all blocks.
 #[pyfunction]
+#[pyo3(signature = (body, num_blocks, num_samples, num_groups, time_unit, layout, flush, zstd_levels))]
 #[allow(clippy::too_many_arguments)]
 fn pack_unit<'py>(
     py: Python<'py>,
@@ -73,10 +75,11 @@ fn pack_unit<'py>(
     flush: bool,
     zstd_levels: Vec<i32>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    if num_blocks > u16::MAX as usize || num_samples > u32::MAX as usize || time_unit > 7 {
+    let shape = Shape { num_blocks, num_samples, num_groups, time_unit };
+    if !shape.fits_header() {
         return Err(PyValueError::new_err("unit shape doesn't fit the header"));
     }
-    let shape = Shape { n: num_blocks, num_samples, ng: num_groups, time_unit };
+    let layout = Layout::parse(layout).map_err(PyValueError::new_err)?;
     let body = body.as_slice()?;
     let unit = py.detach(|| compress::pack(&shape, body, layout, flush, &zstd_levels)).map_err(PyValueError::new_err)?;
     Ok(PyBytes::new(py, &unit))
@@ -92,8 +95,8 @@ fn simd_path() -> &'static str {
 /// python-zstandard's only if its `ZSTD_VERSION` is the same.
 #[pyfunction]
 fn zstd_version() -> (u32, u32, u32) {
-    let v = zstd_safe::version_number();
-    (v / 10000, v / 100 % 100, v % 100)
+    let version = zstd_safe::version_number();
+    (version / 10000, version / 100 % 100, version % 100)
 }
 
 #[pymodule]
