@@ -19,7 +19,8 @@ pub const BYTES_PER_SIZE: usize = 2;
 pub const BYTES_PER_PARAM: usize = 2;
 pub const BYTES_PER_ANCHOR: usize = 8;
 /// Bytes of the value columns (flags, size, grid parameter, anchor) per block.
-pub const METADATA_BYTES_PER_BLOCK: usize = BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR;
+pub const METADATA_BYTES_PER_BLOCK: usize =
+    BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR;
 /// Bytes of the three 8-byte time columns of a unit with a time axis, per block.
 pub const TIME_BYTES_PER_BLOCK: usize = 3 * 8;
 
@@ -67,7 +68,9 @@ impl Shape {
 
     /// Whether the counts fit the header's fields.
     pub fn fits_header(&self) -> bool {
-        self.num_blocks <= u16::MAX as usize && self.num_samples <= u32::MAX as usize && self.time_unit <= MAX_TIME_UNIT
+        self.num_blocks <= u16::MAX as usize
+            && self.num_samples <= u32::MAX as usize
+            && self.time_unit <= MAX_TIME_UNIT
     }
 
     pub fn residual_start(&self) -> usize {
@@ -78,7 +81,11 @@ impl Shape {
     pub fn header(&self, byte_planes: bool) -> [u8; HEADER_BYTES] {
         let mut header = [0u8; HEADER_BYTES];
         header[0] = FORMAT_VERSION;
-        header[1] = if byte_planes { UNIT_FLAG_BYTE_PLANES } else { 0 } | (self.time_unit << UNIT_FLAG_TIME_UNIT_SHIFT);
+        header[1] = if byte_planes {
+            UNIT_FLAG_BYTE_PLANES
+        } else {
+            0
+        } | (self.time_unit << UNIT_FLAG_TIME_UNIT_SHIFT);
         header[2..4].copy_from_slice(&(self.num_blocks as u16).to_le_bytes());
         header[4..8].copy_from_slice(&(self.num_samples as u32).to_le_bytes());
         header
@@ -87,7 +94,8 @@ impl Shape {
 
 /// A unit's rows and the offsets of each block in the samples, residual groups and code groups.
 ///
-/// Each offsets vector has `num_blocks + 1` entries: entry `b` is block `b`'s offset, and the last the total.
+/// Each offsets vector has `num_blocks + 1` entries: entry `b` is block `b`'s offset, and the last
+/// the total.
 pub struct Rows<'a> {
     pub shape: Shape,
     pub block_flags: &'a [u8],
@@ -105,8 +113,12 @@ impl<'a> Rows<'a> {
     /// The rows of a unit without a time axis with their offsets (`_format._fill_layout`), or an
     /// error if the fields disagree.
     pub fn new(
-        block_flags: &'a [u8], block_sizes: &'a [i64], grid_params: &'a [i64], value_anchors: &'a [i64],
-        residuals: &'a [i16], codes: &'a [u8],
+        block_flags: &'a [u8],
+        block_sizes: &'a [i64],
+        grid_params: &'a [i64],
+        value_anchors: &'a [i64],
+        residuals: &'a [i16],
+        codes: &'a [u8],
     ) -> Result<Self, String> {
         let num_blocks = block_flags.len();
         let mismatch = || "rows don't match the layout".to_string();
@@ -129,15 +141,29 @@ impl<'a> Rows<'a> {
             let has_codes = block_flags[block_idx] & BLOCK_FLAG_NONFINITE != 0;
             sample_offsets[block_idx + 1] = sample_offsets[block_idx] + size;
             group_offsets[block_idx + 1] = group_offsets[block_idx] + groups;
-            code_offsets[block_idx + 1] = code_offsets[block_idx] + if has_codes { groups } else { 0 };
+            code_offsets[block_idx + 1] =
+                code_offsets[block_idx] + if has_codes { groups } else { 0 };
         }
         let num_samples = sample_offsets[num_blocks];
         if residuals.len() != num_samples || codes.len() != num_samples {
             return Err(mismatch());
         }
-        let shape = Shape { num_blocks, num_samples, num_groups: group_offsets[num_blocks], time_unit: 0 };
+        let shape = Shape {
+            num_blocks,
+            num_samples,
+            num_groups: group_offsets[num_blocks],
+            time_unit: 0,
+        };
         Ok(Rows {
-            shape, block_flags, block_sizes, grid_params, value_anchors, residuals, codes, sample_offsets, group_offsets,
+            shape,
+            block_flags,
+            block_sizes,
+            grid_params,
+            value_anchors,
+            residuals,
+            codes,
+            sample_offsets,
+            group_offsets,
             code_offsets,
         })
     }

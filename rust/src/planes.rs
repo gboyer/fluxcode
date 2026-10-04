@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Garry Boyer
-//! The bit-plane transposition: the residual region of a byte-plane body (a low and a high byte plane of
-//! zigzagged residuals, in groups of 8) as the 16 bit planes of the other layout.
+//! The bit-plane transposition: the residual region of a byte-plane body (a low and a high byte
+//! plane of zigzagged residuals, in groups of 8) as the 16 bit planes of the other layout.
 //!
 //! ```text
-//! low plane:   group 0 = [b0 b1 b2 b3 b4 b5 b6 b7]  group 1 = [...]  ...   (8 residual bytes per group)
+//! low plane:   group 0 = [b0 b1 b2 b3 b4 b5 b6 b7]  group 1 = [...]  ...  (8 bytes per group)
 //! bit plane k: byte g  = bit k of b0..b7 of group g, with bit j taken from byte j
 //! ```
 //!
-//! Bit planes 0-7 come from the low plane's bytes, 8-15 from the high plane's. The scalar code transposes each
-//! group as a 64-bit word. NEON (aarch64) and SSE2 (x86_64, part of its baseline) do 16 groups at a time: the
-//! same bit transpose on two words per register, then the 8x8 bytes of the registers' words so that each plane
-//! takes 16 consecutive bytes in one store. Other targets use the scalar code. This module uses only std, so
-//! `rustc --test src/planes.rs` runs its tests.
+//! Bit planes 0-7 come from the low plane's bytes, 8-15 from the high plane's. The scalar code
+//! transposes each group as a 64-bit word. NEON (aarch64) and SSE2 (x86_64, part of its baseline)
+//! do 16 groups at a time: the same bit transpose on two words per register, then the 8x8 bytes of
+//! the registers' words so that each plane takes 16 consecutive bytes in one store. Other targets
+//! use the scalar code. This module uses only std, so `rustc --test src/planes.rs` runs its tests.
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
@@ -28,7 +28,8 @@ pub const PATH: &str = if cfg!(target_arch = "aarch64") {
     "scalar"
 };
 
-/// Transposes the bits of each group of 8 bytes held as a word (bit j of byte i becomes bit i of byte j).
+/// Transposes the bits of each group of 8 bytes held as a word (bit j of byte i becomes bit i of
+/// byte j).
 #[inline(always)]
 pub fn transpose8(mut word: u64) -> u64 {
     // swap the 1-bit, 2-bit and 4-bit sub-matrices (spaced 7, 14 and 28 bits apart)
@@ -40,10 +41,12 @@ pub fn transpose8(mut word: u64) -> u64 {
     word ^ delta ^ (delta << 28)
 }
 
-/// Transposes the 8x8 matrix of bytes whose rows are the words (byte j of word i becomes byte i of word j).
+/// Transposes the 8x8 matrix of bytes whose rows are the words (byte j of word i becomes byte i of
+/// word j).
 #[inline(always)]
 fn transpose_bytes(words: &mut [u64; 8]) {
-    /// Swaps the `shift`-bit blocks selected by `mask` between word `i` (high part) and word `j` (low part).
+    /// Swaps the `shift`-bit blocks selected by `mask` between word `i` (high part) and word `j`
+    /// (low part).
     #[inline(always)]
     fn swap(words: &mut [u64; 8], i: usize, j: usize, shift: u32, mask: u64) {
         let diff = ((words[i] >> shift) ^ words[j]) & mask;
@@ -68,18 +71,29 @@ fn transpose_bytes(words: &mut [u64; 8]) {
 }
 
 /// The groups from `first_group` on, 8 at a time and then one at a time.
-fn scalar(low_plane: &[u8], high_plane: &[u8], bit_planes: &mut [u8], num_groups: usize, first_group: usize) {
+fn scalar(
+    low_plane: &[u8],
+    high_plane: &[u8],
+    bit_planes: &mut [u8],
+    num_groups: usize,
+    first_group: usize,
+) {
     let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().unwrap());
-    let (low_plane, high_plane) = (&low_plane[8 * first_group..], &high_plane[8 * first_group..]);
+    let (low_plane, high_plane) = (
+        &low_plane[8 * first_group..],
+        &high_plane[8 * first_group..],
+    );
     let (low_batches, high_batches) = (low_plane.chunks_exact(64), high_plane.chunks_exact(64));
     let (low_rest, high_rest) = (low_batches.remainder(), high_batches.remainder());
     let rest_first_group = num_groups - low_rest.len() / 8;
-    // batches of 8 groups: transpose each group's bits, then the 8x8 bytes of the batch, so that each bit plane
-    // takes 8 consecutive bytes
+    // batches of 8 groups: transpose each group's bits, then the 8x8 bytes of the batch, so that
+    // each bit plane takes 8 consecutive bytes
     for (batch_idx, (low_batch, high_batch)) in low_batches.zip(high_batches).enumerate() {
         let group = first_group + 8 * batch_idx;
-        let mut low_words: [u64; 8] = std::array::from_fn(|j| transpose8(word(&low_batch[8 * j..8 * j + 8])));
-        let mut high_words: [u64; 8] = std::array::from_fn(|j| transpose8(word(&high_batch[8 * j..8 * j + 8])));
+        let mut low_words: [u64; 8] =
+            std::array::from_fn(|j| transpose8(word(&low_batch[8 * j..8 * j + 8])));
+        let mut high_words: [u64; 8] =
+            std::array::from_fn(|j| transpose8(word(&high_batch[8 * j..8 * j + 8])));
         transpose_bytes(&mut low_words);
         transpose_bytes(&mut high_words);
         for plane in 0..8 {
@@ -90,7 +104,11 @@ fn scalar(low_plane: &[u8], high_plane: &[u8], bit_planes: &mut [u8], num_groups
         }
     }
     // the remaining groups one at a time
-    for (rest_idx, (low_group, high_group)) in low_rest.chunks_exact(8).zip(high_rest.chunks_exact(8)).enumerate() {
+    for (rest_idx, (low_group, high_group)) in low_rest
+        .chunks_exact(8)
+        .zip(high_rest.chunks_exact(8))
+        .enumerate()
+    {
         let group = rest_first_group + rest_idx;
         let low_bytes = transpose8(word(low_group)).to_le_bytes();
         let high_bytes = transpose8(word(high_group)).to_le_bytes();
@@ -101,7 +119,8 @@ fn scalar(low_plane: &[u8], high_plane: &[u8], bit_planes: &mut [u8], num_groups
     }
 }
 
-/// The 8 bit planes of 16 groups (128 bytes of one byte plane): each plane's bytes for the 16 groups.
+/// The 8 bit planes of 16 groups (128 bytes of one byte plane): each plane's bytes for the 16
+/// groups.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn batch16(src: &[u8; 128]) -> [[u8; 16]; 8] {
@@ -109,11 +128,20 @@ fn batch16(src: &[u8; 128]) -> [[u8; 16]; 8] {
     #[inline(always)]
     unsafe fn transpose_bits(regs: uint8x16_t) -> uint8x16_t {
         let words = vreinterpretq_u64_u8(regs);
-        let delta = vandq_u64(veorq_u64(words, vshrq_n_u64::<7>(words)), vdupq_n_u64(0x00AA00AA00AA00AA));
+        let delta = vandq_u64(
+            veorq_u64(words, vshrq_n_u64::<7>(words)),
+            vdupq_n_u64(0x00AA00AA00AA00AA),
+        );
         let words = veorq_u64(veorq_u64(words, delta), vshlq_n_u64::<7>(delta));
-        let delta = vandq_u64(veorq_u64(words, vshrq_n_u64::<14>(words)), vdupq_n_u64(0x0000CCCC0000CCCC));
+        let delta = vandq_u64(
+            veorq_u64(words, vshrq_n_u64::<14>(words)),
+            vdupq_n_u64(0x0000CCCC0000CCCC),
+        );
         let words = veorq_u64(veorq_u64(words, delta), vshlq_n_u64::<14>(delta));
-        let delta = vandq_u64(veorq_u64(words, vshrq_n_u64::<28>(words)), vdupq_n_u64(0x00000000F0F0F0F0));
+        let delta = vandq_u64(
+            veorq_u64(words, vshrq_n_u64::<28>(words)),
+            vdupq_n_u64(0x00000000F0F0F0F0),
+        );
         vreinterpretq_u8_u64(veorq_u64(veorq_u64(words, delta), vshlq_n_u64::<28>(delta)))
     }
     unsafe {
@@ -125,16 +153,26 @@ fn batch16(src: &[u8; 128]) -> [[u8; 16]; 8] {
         }
         for (i, j) in [(0, 2), (1, 3), (4, 6), (5, 7)] {
             let (a, b) = (vreinterpretq_u16_u8(regs[i]), vreinterpretq_u16_u8(regs[j]));
-            (regs[i], regs[j]) = (vreinterpretq_u8_u16(vtrn1q_u16(a, b)), vreinterpretq_u8_u16(vtrn2q_u16(a, b)));
+            (regs[i], regs[j]) = (
+                vreinterpretq_u8_u16(vtrn1q_u16(a, b)),
+                vreinterpretq_u8_u16(vtrn2q_u16(a, b)),
+            );
         }
         for (i, j) in [(0, 4), (1, 5), (2, 6), (3, 7)] {
             let (a, b) = (vreinterpretq_u32_u8(regs[i]), vreinterpretq_u32_u8(regs[j]));
-            (regs[i], regs[j]) = (vreinterpretq_u8_u32(vtrn1q_u32(a, b)), vreinterpretq_u8_u32(vtrn2q_u32(a, b)));
+            (regs[i], regs[j]) = (
+                vreinterpretq_u8_u32(vtrn1q_u32(a, b)),
+                vreinterpretq_u8_u32(vtrn2q_u32(a, b)),
+            );
         }
-        // register k now holds byte k of the even groups (low half) and of the odd groups (high half)
+        // register k now holds byte k of the even groups (low half) and of the odd groups (high
+        // half)
         let mut planes = [[0u8; 16]; 8];
         for plane in 0..8 {
-            vst1q_u8(planes[plane].as_mut_ptr(), vzip1q_u8(regs[plane], vextq_u8::<8>(regs[plane], regs[plane])));
+            vst1q_u8(
+                planes[plane].as_mut_ptr(),
+                vzip1q_u8(regs[plane], vextq_u8::<8>(regs[plane], regs[plane])),
+            );
         }
         planes
     }
@@ -145,34 +183,50 @@ fn batch16(src: &[u8; 128]) -> [[u8; 16]; 8] {
 fn batch16(src: &[u8; 128]) -> [[u8; 16]; 8] {
     #[inline(always)]
     unsafe fn transpose_bits(regs: __m128i) -> __m128i {
-        let delta = _mm_and_si128(_mm_xor_si128(regs, _mm_srli_epi64::<7>(regs)), _mm_set1_epi64x(0x00AA00AA00AA00AA));
+        let delta = _mm_and_si128(
+            _mm_xor_si128(regs, _mm_srli_epi64::<7>(regs)),
+            _mm_set1_epi64x(0x00AA00AA00AA00AA),
+        );
         let regs = _mm_xor_si128(_mm_xor_si128(regs, delta), _mm_slli_epi64::<7>(delta));
-        let delta = _mm_and_si128(_mm_xor_si128(regs, _mm_srli_epi64::<14>(regs)), _mm_set1_epi64x(0x0000CCCC0000CCCC));
+        let delta = _mm_and_si128(
+            _mm_xor_si128(regs, _mm_srli_epi64::<14>(regs)),
+            _mm_set1_epi64x(0x0000CCCC0000CCCC),
+        );
         let regs = _mm_xor_si128(_mm_xor_si128(regs, delta), _mm_slli_epi64::<14>(delta));
-        let delta = _mm_and_si128(_mm_xor_si128(regs, _mm_srli_epi64::<28>(regs)), _mm_set1_epi64x(0x00000000F0F0F0F0));
+        let delta = _mm_and_si128(
+            _mm_xor_si128(regs, _mm_srli_epi64::<28>(regs)),
+            _mm_set1_epi64x(0x00000000F0F0F0F0),
+        );
         _mm_xor_si128(_mm_xor_si128(regs, delta), _mm_slli_epi64::<28>(delta))
     }
     unsafe {
         // register j holds groups 2j (low half) and 2j+1 (high half), their bits transposed
-        let regs: [__m128i; 8] =
-            std::array::from_fn(|j| transpose_bits(_mm_loadu_si128(src.as_ptr().add(16 * j) as *const __m128i)));
-        // The bytes of the groups form an 8x8 byte matrix per group; transposing it takes three rounds of
-        // unpacking, at 8, 16 and 32 bits, with the even and odd groups kept apart.
-        // Round 1 (8 bits): interleave the bytes of register pairs.
-        let even_bytes: [__m128i; 4] = std::array::from_fn(|j| _mm_unpacklo_epi8(regs[2 * j], regs[2 * j + 1])); // groups 4j, 4j+2
-        let odd_bytes: [__m128i; 4] = std::array::from_fn(|j| _mm_unpackhi_epi8(regs[2 * j], regs[2 * j + 1])); // groups 4j+1, 4j+3
-        // Round 2 (16 bits): [bytes 0-3 | bytes 4-7] of groups 0,2,4,6 (`..._first`) and of groups 8,10,12,14 (`..._second`).
+        let regs: [__m128i; 8] = std::array::from_fn(|j| {
+            transpose_bits(_mm_loadu_si128(src.as_ptr().add(16 * j) as *const __m128i))
+        });
+        // The bytes of the groups form an 8x8 byte matrix per group; transposing it takes three
+        // rounds of unpacking, at 8, 16 and 32 bits, with the even and odd groups kept apart.
+        //
+        // Round 1 (8 bits): interleave the bytes of register pairs. `even_bytes[j]` holds groups
+        // 4j and 4j+2, `odd_bytes[j]` groups 4j+1 and 4j+3.
+        let even_bytes: [__m128i; 4] =
+            std::array::from_fn(|j| _mm_unpacklo_epi8(regs[2 * j], regs[2 * j + 1]));
+        let odd_bytes: [__m128i; 4] =
+            std::array::from_fn(|j| _mm_unpackhi_epi8(regs[2 * j], regs[2 * j + 1]));
+        // Round 2 (16 bits): [bytes 0-3 | bytes 4-7] of groups 0,2,4,6 (`even_first`) and of
+        // groups 8,10,12,14 (`even_second`), and likewise for the odd groups.
         let even_first = unpack_pair_16(even_bytes[0], even_bytes[1]);
         let even_second = unpack_pair_16(even_bytes[2], even_bytes[3]);
         let odd_first = unpack_pair_16(odd_bytes[0], odd_bytes[1]);
         let odd_second = unpack_pair_16(odd_bytes[2], odd_bytes[3]);
         let mut planes = [[0u8; 16]; 8];
         for half in 0..2 {
-            // Round 3 (32 bits): of the even groups (and likewise the odd ones), `_01` holds bytes 4 * half
-            // and 4 * half + 1 of all 8 groups, `_23` bytes 4 * half + 2 and + 3
+            // Round 3 (32 bits): of the even groups (and likewise the odd ones), `_01` holds bytes
+            // 4 * half and 4 * half + 1 of all 8 groups, `_23` bytes 4 * half + 2 and + 3
             let (even_01, even_23) = unpack_pair_32(even_first[half], even_second[half]);
             let (odd_01, odd_23) = unpack_pair_32(odd_first[half], odd_second[half]);
-            // Final round (8 bits): interleave even and odd groups, giving 4 planes of 16 bytes each
+            // Final round (8 bits): interleave even and odd groups, giving 4 planes of 16 bytes
+            // each
             let four_planes = [
                 _mm_unpacklo_epi8(even_01, odd_01),
                 _mm_unpackhi_epi8(even_01, odd_01),
@@ -180,7 +234,10 @@ fn batch16(src: &[u8; 128]) -> [[u8; 16]; 8] {
                 _mm_unpackhi_epi8(even_23, odd_23),
             ];
             for (plane_idx, plane) in four_planes.into_iter().enumerate() {
-                _mm_storeu_si128(planes[4 * half + plane_idx].as_mut_ptr() as *mut __m128i, plane);
+                _mm_storeu_si128(
+                    planes[4 * half + plane_idx].as_mut_ptr() as *mut __m128i,
+                    plane,
+                );
             }
         }
         planes
@@ -204,13 +261,23 @@ unsafe fn unpack_pair_32(a: __m128i, b: __m128i) -> (__m128i, __m128i) {
 /// Fills the 16 bit planes (`bit_planes`, 16 * num_groups bytes) from the low and high byte planes
 /// (8 * num_groups bytes each). With `use_vector` false the scalar code does it all (for tests).
 pub fn pack_bit_planes(
-    low_plane: &[u8], high_plane: &[u8], bit_planes: &mut [u8], num_groups: usize, use_vector: bool,
+    low_plane: &[u8],
+    high_plane: &[u8],
+    bit_planes: &mut [u8],
+    num_groups: usize,
+    use_vector: bool,
 ) {
     let mut vectorized_groups = 0;
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     if use_vector {
-        for (low_batch, high_batch) in low_plane.chunks_exact(128).zip(high_plane.chunks_exact(128)) {
-            let (low_planes, high_planes) = (batch16(low_batch.try_into().unwrap()), batch16(high_batch.try_into().unwrap()));
+        for (low_batch, high_batch) in low_plane
+            .chunks_exact(128)
+            .zip(high_plane.chunks_exact(128))
+        {
+            let (low_planes, high_planes) = (
+                batch16(low_batch.try_into().unwrap()),
+                batch16(high_batch.try_into().unwrap()),
+            );
             for plane in 0..8 {
                 let first = plane * num_groups + vectorized_groups;
                 bit_planes[first..first + 16].copy_from_slice(&low_planes[plane]);
@@ -222,7 +289,13 @@ pub fn pack_bit_planes(
     }
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     let _ = use_vector;
-    scalar(low_plane, high_plane, bit_planes, num_groups, vectorized_groups);
+    scalar(
+        low_plane,
+        high_plane,
+        bit_planes,
+        num_groups,
+        vectorized_groups,
+    );
 }
 
 #[cfg(test)]
@@ -233,7 +306,9 @@ mod tests {
         let mut s = seed;
         (0..16 * ng)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (s >> 56) as u8
             })
             .collect()

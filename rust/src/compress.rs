@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Garry Boyer
-//! Compression policy (`fluxcode/_compress.py`): which residual layout to use, where zstd blocks end,
-//! and which candidate frame to keep.
+//! Compression policy (`fluxcode/_compress.py`): which residual layout to use, where zstd blocks
+//! end, and which candidate frame to keep.
 
 use crate::bitpacking::{to_bit_planes, wide_share_byte_planes, write_body};
 use crate::format::{Rows, Shape, BIT_PLANES, GROUP_SAMPLES};
@@ -12,8 +12,8 @@ pub const FLUSH_MIN_DENSITY: usize = 16;
 pub const BYTE_PLANES_BIT: u32 = 7;
 pub const BYTE_PLANES_MAX_SHARE: f64 = 0.01;
 
-/// Bytes counted per inner sum when measuring a plane's density: small enough that each sum fits u32 lanes,
-/// which the compiler vectorizes.
+/// Bytes counted per inner sum when measuring a plane's density: small enough that each sum fits
+/// u32 lanes, which the compiler vectorizes.
 const DENSITY_CHUNK_BYTES: usize = 4096;
 
 /// Which residual layout(s) to compress (`Effort.layout` in `_compress.py`).
@@ -48,7 +48,11 @@ fn flush_points(body: &[u8], shape: &Shape, byte_planes: bool) -> Vec<usize> {
         return vec![];
     }
     let start = shape.residual_start();
-    let (plane_bytes, num_planes) = if byte_planes { (GROUP_SAMPLES * num_groups, 2) } else { (num_groups, BIT_PLANES) };
+    let (plane_bytes, num_planes) = if byte_planes {
+        (GROUP_SAMPLES * num_groups, 2)
+    } else {
+        (num_groups, BIT_PLANES)
+    };
     let mut points = vec![start];
     for plane_idx in 0..num_planes {
         let plane_start = start + plane_idx * plane_bytes;
@@ -80,32 +84,49 @@ struct FrameWriter<'a> {
 }
 
 impl<'a> FrameWriter<'a> {
-    /// Starts a frame of `body_len` bytes at `level`, to be ended by `num_cuts` + 1 calls to `write` at most.
-    fn new(cctx: &'a mut CCtx<'static>, header: &[u8], body_len: usize, level: i32, num_cuts: usize) -> Result<Self, String> {
-        cctx.reset(zstd_safe::ResetDirective::SessionOnly).map_err(zstd_error)?;
-        cctx.set_parameter(CParameter::CompressionLevel(level)).map_err(zstd_error)?;
-        cctx.set_parameter(CParameter::ChecksumFlag(false)).map_err(zstd_error)?;
-        cctx.set_parameter(CParameter::ContentSizeFlag(true)).map_err(zstd_error)?;
-        cctx.set_pledged_src_size(Some(body_len as u64)).map_err(zstd_error)?;
+    /// Starts a frame of `body_len` bytes at `level`, to be ended by `num_cuts` + 1 calls to
+    /// `write` at most.
+    fn new(
+        cctx: &'a mut CCtx<'static>,
+        header: &[u8],
+        body_len: usize,
+        level: i32,
+        num_cuts: usize,
+    ) -> Result<Self, String> {
+        cctx.reset(zstd_safe::ResetDirective::SessionOnly)
+            .map_err(zstd_error)?;
+        cctx.set_parameter(CParameter::CompressionLevel(level))
+            .map_err(zstd_error)?;
+        cctx.set_parameter(CParameter::ChecksumFlag(false))
+            .map_err(zstd_error)?;
+        cctx.set_parameter(CParameter::ContentSizeFlag(true))
+            .map_err(zstd_error)?;
+        cctx.set_pledged_src_size(Some(body_len as u64))
+            .map_err(zstd_error)?;
         let capacity = header.len() + zstd_safe::compress_bound(body_len) + 64 * (num_cuts + 2);
         let mut out = Vec::with_capacity(capacity);
         out.extend_from_slice(header);
         Ok(FrameWriter { cctx, out })
     }
 
-    /// Compresses `input`, ending a block (`ZSTD_e_flush`) or the frame (`ZSTD_e_end`). Returns the length of
-    /// the output so far, header included.
+    /// Compresses `input`, ending a block (`ZSTD_e_flush`) or the frame (`ZSTD_e_end`). Returns the
+    /// length of the output so far, header included.
     fn write(&mut self, input: &[u8], directive: ZSTD_EndDirective) -> Result<usize, String> {
         let mut input_buffer = InBuffer::around(input);
         loop {
-            // the capacity from `new` covers the worst case, so this only guards against a stalled loop
+            // the capacity from `new` covers the worst case, so this only guards against a stalled
+            // loop
             if self.out.len() == self.out.capacity() {
                 self.out.reserve(1 << 16);
             }
             let position = self.out.len();
             let remaining = self
                 .cctx
-                .compress_stream2(&mut OutBuffer::around_pos(&mut self.out, position), &mut input_buffer, directive)
+                .compress_stream2(
+                    &mut OutBuffer::around_pos(&mut self.out, position),
+                    &mut input_buffer,
+                    directive,
+                )
                 .map_err(zstd_error)?;
             if input_buffer.pos == input.len() && remaining == 0 {
                 return Ok(self.out.len());
@@ -114,11 +135,16 @@ impl<'a> FrameWriter<'a> {
     }
 }
 
-/// `header` followed by the zstd frame of `body`, ended after each of the `cuts` (with none, a single
-/// block-ending call, which is what python-zstandard's `compress` does). With a `max_len`, gives up (None)
-/// as soon as the blocks written so far are longer than it: the frame can only grow.
+/// `header` followed by the zstd frame of `body`, ended after each of the `cuts` (with none, a
+/// single block-ending call, which is what python-zstandard's `compress` does). With a `max_len`,
+/// gives up (None) as soon as the blocks written so far are longer than it: the frame can only
+/// grow.
 fn compress_with_header(
-    header: &[u8], body: &[u8], cuts: &[usize], level: i32, max_len: Option<usize>,
+    header: &[u8],
+    body: &[u8],
+    cuts: &[usize],
+    level: i32,
+    max_len: Option<usize>,
 ) -> Result<Option<Vec<u8>>, String> {
     CCTX.with(|cell| {
         let mut cctx = cell.borrow_mut();
@@ -138,17 +164,26 @@ fn compress_with_header(
     })
 }
 
-/// A unit as its header and the smallest frame of the candidate bodies (byte planes or not) over the zstd
-/// levels. Ties go to byte planes, then to the earlier level, whatever the order the candidates are tried
-/// in; a candidate that can't beat the best so far is dropped as soon as its flushed blocks show it.
-/// All candidates are tried at a level before the next level, so the cheap level's frames set the limit
-/// for the expensive ones.
-fn smallest_unit(shape: &Shape, candidates: &[(bool, &[u8])], flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+/// A unit as its header and the smallest frame of the candidate bodies (byte planes or not) over
+/// the zstd levels. Ties go to byte planes, then to the earlier level, whatever the order the
+/// candidates are tried in; a candidate that can't beat the best so far is dropped as soon as its
+/// flushed blocks show it. All candidates are tried at a level before the next level, so the cheap
+/// level's frames set the limit for the expensive ones.
+fn smallest_unit(
+    shape: &Shape,
+    candidates: &[(bool, &[u8])],
+    flush: bool,
+    levels: &[i32],
+) -> Result<Vec<u8>, String> {
     // each candidate with its header and cuts
     let prepared: Vec<_> = candidates
         .iter()
         .map(|&(byte_planes, body)| {
-            let cuts = if flush { flush_points(body, shape, byte_planes) } else { vec![] };
+            let cuts = if flush {
+                flush_points(body, shape, byte_planes)
+            } else {
+                vec![]
+            };
             (byte_planes, body, shape.header(byte_planes), cuts)
         })
         .collect();
@@ -156,9 +191,19 @@ fn smallest_unit(shape: &Shape, candidates: &[(bool, &[u8])], flush: bool, level
     let mut best: Option<(Vec<u8>, usize)> = None;
     for (level_idx, &level) in levels.iter().enumerate() {
         for (byte_planes, body, header, cuts) in &prepared {
-            let rank = if *byte_planes { level_idx } else { levels.len() + level_idx };
+            let rank = if *byte_planes {
+                level_idx
+            } else {
+                levels.len() + level_idx
+            };
             // a frame of this length or less wins: a tie only against a worse rank
-            let max_len = best.as_ref().map(|(unit, best_rank)| if rank < *best_rank { unit.len() } else { unit.len() - 1 });
+            let max_len = best.as_ref().map(|(unit, best_rank)| {
+                if rank < *best_rank {
+                    unit.len()
+                } else {
+                    unit.len() - 1
+                }
+            });
             if let Some(unit) = compress_with_header(header, body, cuts, level, max_len)? {
                 if max_len.is_none_or(|max_len| unit.len() <= max_len) {
                     best = Some((unit, rank));
@@ -166,36 +211,58 @@ fn smallest_unit(shape: &Shape, candidates: &[(bool, &[u8])], flush: bool, level
             }
         }
     }
-    best.map(|(unit, _)| unit).ok_or_else(|| "no zstd levels".to_string())
+    best.map(|(unit, _)| unit)
+        .ok_or_else(|| "no zstd levels".to_string())
 }
 
-/// The unit of a byte-plane body (`_compress.pack`): the layout chosen and the frame built as `layout`,
-/// `flush` and `levels` (an `Effort`) say. The bit-plane body is derived from the byte-plane one.
-pub fn pack(shape: &Shape, byte_body: &[u8], layout: Layout, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+/// The unit of a byte-plane body (`_compress.pack`): the layout chosen and the frame built as
+/// `layout`, `flush` and `levels` (an `Effort`) say. The bit-plane body is derived from the
+/// byte-plane one.
+pub fn pack(
+    shape: &Shape,
+    byte_body: &[u8],
+    layout: Layout,
+    flush: bool,
+    levels: &[i32],
+) -> Result<Vec<u8>, String> {
     let (num_blocks, num_groups, has_time) = (shape.num_blocks, shape.num_groups, shape.has_time());
     if byte_body.len() < shape.residual_start() + BIT_PLANES * num_groups {
         return Err("body too short for its residual planes".to_string());
     }
-    let byte_planes_predicted =
-        || wide_share_byte_planes(byte_body, num_blocks, num_groups, has_time, BYTE_PLANES_BIT) < BYTE_PLANES_MAX_SHARE;
+    let byte_planes_predicted = || {
+        wide_share_byte_planes(byte_body, num_blocks, num_groups, has_time, BYTE_PLANES_BIT)
+            < BYTE_PLANES_MAX_SHARE
+    };
     let bit_body = || to_bit_planes(byte_body, num_blocks, num_groups, has_time);
     match layout {
         Layout::Byte => smallest_unit(shape, &[(true, byte_body)], flush, levels),
         Layout::Bit => smallest_unit(shape, &[(false, &bit_body())], flush, levels),
-        Layout::Heuristic if byte_planes_predicted() => smallest_unit(shape, &[(true, byte_body)], flush, levels),
+        Layout::Heuristic if byte_planes_predicted() => {
+            smallest_unit(shape, &[(true, byte_body)], flush, levels)
+        }
         Layout::Heuristic => smallest_unit(shape, &[(false, &bit_body())], flush, levels),
         Layout::Best => {
             let bit_body = bit_body();
             let (byte, bit) = ((true, byte_body), (false, bit_body.as_slice()));
-            // with flushes the heuristic's pick goes first, since the other is often dropped partway; without
-            // them nothing can be dropped and the order is free (so the statistic isn't computed)
-            let candidates = if flush && !byte_planes_predicted() { [bit, byte] } else { [byte, bit] };
+            // with flushes the heuristic's pick goes first, since the other is often dropped
+            // partway; without them nothing can be dropped and the order is free (so the statistic
+            // isn't computed)
+            let candidates = if flush && !byte_planes_predicted() {
+                [bit, byte]
+            } else {
+                [byte, bit]
+            };
             smallest_unit(shape, &candidates, flush, levels)
         }
     }
 }
 
 /// A unit without a time axis from its rows (`_compress.compress`).
-pub fn compress_unit(rows: &Rows, layout: Layout, flush: bool, levels: &[i32]) -> Result<Vec<u8>, String> {
+pub fn compress_unit(
+    rows: &Rows,
+    layout: Layout,
+    flush: bool,
+    levels: &[i32],
+) -> Result<Vec<u8>, String> {
     pack(&rows.shape, &write_body(rows), layout, flush, levels)
 }
