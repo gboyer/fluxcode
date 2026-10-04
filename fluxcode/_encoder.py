@@ -64,7 +64,6 @@ INT16_WRAP_OFFSET: int = 32768
 """Half-range offset (2^15) used for modular symmetric signed int16 wrapping."""
 
 
-
 @njit(nogil=True, cache=True, fastmath=True)
 def _min_max(samples: np.ndarray) -> tuple[float, float]:
     """Computes minimum and maximum over finite samples using four parallel chains.
@@ -126,10 +125,10 @@ def block_stats(samples: np.ndarray) -> tuple[float, float, float, int]:
         samples: 1D float64 array of samples.
 
     Returns:
-        A tuple of (lo, hi, mean, bad_index):
-            lo: Minimum value (or 0.0 if non-finite sample present).
-            hi: Maximum value (or 0.0 if non-finite sample present).
-            mean: Arithmetic mean of samples.
+        A tuple of (min_val, max_val, mean_val, bad_index):
+            min_val: Minimum value (0.0 if a non-finite sample is present).
+            max_val: Maximum value (0.0 if a non-finite sample is present).
+            mean_val: Arithmetic mean of samples (0.0 if a non-finite sample is present).
             bad_index: Index of first non-finite sample, or -1 if all are finite.
     """
     num_samples = samples.shape[0]
@@ -149,20 +148,20 @@ def block_stats(samples: np.ndarray) -> tuple[float, float, float, int]:
 
 @njit(nogil=True, cache=True)
 def exponent(range_span: float, bits: int) -> int:
-    """Determines the finest quantization exponent e yielding at most `bits` bits.
+    """Determines the finest quantization exponent yielding at most `bits` bits.
 
-    Guarantees that round(rng * 2^-e) < 2^bits.
+    Guarantees that round(range_span * 2^-exponent) < 2^bits.
 
     Args:
-        range_span: Span of finite values (hi - lo).
+        range_span: Span of the finite values (maximum - minimum).
         bits: Maximum bit width permitted across the range.
 
     Returns:
-        Integer exponent e. Returns 0 for non-positive ranges (constant blocks).
+        The exponent, or 0 for a non-positive range (a constant block).
     """
     if not range_span > 0:
         return 0
-    # Decompose range into mantissa in [0.5, 1.0) and exponent k
+    # Decompose the range into a mantissa in [0.5, 1.0) and an exponent
     _, scale_exp = math.frexp(range_span)
     target_exp = scale_exp - bits
     # Bump exponent if upper boundary rounds up to 2^bits
@@ -173,24 +172,39 @@ def exponent(range_span: float, bits: int) -> int:
 
 @njit(nogil=True, cache=True)
 def _unsnapped_exponent(lower_bound: float, upper_bound: float, bits: int) -> int:
-    """The finest exponent e with round((hi - lo) * 2^-e) < 2^bits, clamped to [E_MIN, E_MAX]
-    (the grid anchored at lo); range_exponent starts from it."""
+    """Finds the finest quantization exponent fitting a range into `bits` bits.
+
+    Computes the finest exponent with round((upper_bound - lower_bound) * 2^-exponent) <
+    2^bits, clamped to [E_MIN, E_MAX].
+
+    Args:
+        lower_bound: Minimum sample value in the block.
+        upper_bound: Maximum sample value in the block.
+        bits: Bit budget for the quantized range.
+
+    Returns:
+        Quantization exponent clamped to [E_MIN, E_MAX].
+    """
     range_span = upper_bound - lower_bound
     # Direct range calculation for ordinary ranges
     if range_span < xm.WIDE_RANGE:
         return max(exponent(range_span, bits), E_MIN)
-    # Use exact half-range calculation when hi - lo could overflow float64
+    # Use the half-range when upper_bound - lower_bound could overflow float64
     return min(exponent(xm.half_range(lower_bound, upper_bound), bits) + 1, E_MAX)
 
 
 @njit(inline="always")
 def grid_index(value: float, quant_exp: int) -> float:
-    """rint(value * 2^-e): the index of the nearest point of the absolute grid of step 2^e,
-    ties to even, as a float holding an integer.
+    """Computes the nearest grid point index on an absolute power-of-two grid.
 
-    value * 2^-e is exact (a power-of-two scale) wherever it matters: it can't overflow for a
-    sample of a block whose step is 2^e (the step is at least about 2^-69 of its magnitude),
-    and when it underflows, the index is 0 either way.
+    Calculates round-to-nearest-even of value * 2^-quant_exp as a float integer.
+
+    Args:
+        value: Float64 sample value.
+        quant_exp: Quantization exponent.
+
+    Returns:
+        Nearest grid point index as a float holding an integer value.
     """
     if quant_exp >= xm.E_TINY:
         return np.rint(value * math.ldexp(1.0, -quant_exp))
@@ -200,18 +214,21 @@ def grid_index(value: float, quant_exp: int) -> float:
 
 @njit(nogil=True, cache=True)
 def range_exponent(lower_bound: float, upper_bound: float, bits: int) -> int:
-    """The finest exponent e whose snapped grid fits: rint(hi * 2^-e) - rint(lo * 2^-e) <= L,
-    with L = 2^bits for bits < 16 and 65,535 for 16 (q is stored mod 2^16).
+    """Finds the finest exponent whose snapped grid fits the range in `bits` bits.
 
-    The grid points nearest lo and hi can sit up to half a step outside [lo, hi], so the
+    The grid fits if rint(upper_bound * 2^-exponent) - rint(lower_bound * 2^-exponent) <= L,
+    with L = 2^bits for bits < 16 and 65,535 for bits = 16 (quantized values are stored
+    mod 2^16).
+
+    The grid points nearest the bounds can sit up to half a step outside the range, so the
     snapped grid can need one more level than the range alone: the rule accounts for it. It
     is within one level of _unsnapped_exponent and never coarser, except at bits = 16 when
-    the snap would reach q = 65,536 (one level coarser then).
+    the snap would reach 65,536 (one level coarser then).
 
     Args:
-        lower_bound: Lower bound.
-        upper_bound: Upper bound.
-        bits: The bit budget B.
+        lower_bound: Minimum sample value in the block.
+        upper_bound: Maximum sample value in the block.
+        bits: Bit budget for the quantized range.
 
     Returns:
         Quantization exponent in [E_MIN, E_MAX] (0 for an empty range).
@@ -231,17 +248,18 @@ def range_exponent(lower_bound: float, upper_bound: float, bits: int) -> int:
 
 @njit(nogil=True, cache=True)
 def snap_anchor(lower_bound: float, upper_bound: float, quant_exp: int) -> tuple[float, float]:
-    """The anchor of a power-of-two block: the grid point nearest its minimum.
+    """Finds the anchor of a power-of-two block: the grid point nearest its minimum.
 
     Args:
-        lower_bound: Block minimum lo.
-        upper_bound: Block maximum hi.
-        quant_exp: Quantization exponent e.
+        lower_bound: Block minimum.
+        upper_bound: Block maximum.
+        quant_exp: Quantization exponent.
 
     Returns:
-        A tuple of (anchor, K): anchor = K * 2^e with K = rint(lo * 2^-e). The exceptions are
-        a constant block (e is only a placeholder there) and a snapped anchor that isn't
-        finite (near +-DBL_MAX): (lo, NaN), quantized relative to lo instead.
+        A tuple of (anchor, base_index): anchor = base_index * 2^quant_exp, with base_index =
+        rint(lower_bound * 2^-quant_exp). The exceptions are a constant block (quant_exp is
+        only a placeholder there) and a snapped anchor that isn't finite (near +-DBL_MAX):
+        (lower_bound, NaN), quantized relative to lower_bound instead.
     """
     if not upper_bound > lower_bound:
         return lower_bound, math.nan
@@ -254,14 +272,14 @@ def snap_anchor(lower_bound: float, upper_bound: float, quant_exp: int) -> tuple
 
 @njit(nogil=True, cache=True)
 def range_scale(lower_bound: float, upper_bound: float) -> int:
-    """Computes binary scale exponent k such that (hi - lo) in [2^(k-1), 2^k).
+    """Computes the binary scale exponent k with the range in [2^(k-1), 2^k).
 
     Args:
-        lower_bound: Lower bound.
-        upper_bound: Upper bound (hi > lo).
+        lower_bound: Minimum sample value in the block.
+        upper_bound: Maximum sample value in the block (above lower_bound).
 
     Returns:
-        Integer scale exponent k.
+        The scale exponent k.
     """
     range_span = upper_bound - lower_bound
     if range_span < xm.WIDE_RANGE:
@@ -287,16 +305,16 @@ def plan_step(
     conditions pass, and clamps to coarsest allowable step (min_bits).
 
     Args:
-        lower_bound: Lower bound of block.
-        upper_bound: Upper bound of block.
+        lower_bound: Minimum sample value in the block.
+        upper_bound: Maximum sample value in the block.
         noise_sigma: Estimated white-noise standard deviation.
         noise_rho: Lag-1 autocorrelation of second differences.
-        noise_factor: Noise floor multiplier f (0.0 to disable).
+        noise_factor: Noise floor multiplier (0.0 to disable).
         min_bits: Hard minimum precision bits.
         max_bits: Hard maximum precision bits.
 
     Returns:
-        Integer quantization exponent e.
+        The quantization exponent.
     """
     if not upper_bound > lower_bound:
         return 0
@@ -304,7 +322,7 @@ def plan_step(
     planned_exp = range_exponent(lower_bound, upper_bound, max_bits)
     # Check noise gate: white noise gives rho < -0.6
     if noise_factor > 0 and noise_rho < NOISE_RHO and noise_sigma > 0:
-        # Coarsen step up to f * sigma
+        # Coarsen the step up to noise_factor * noise_sigma
         planned_exp = max(planned_exp, math.floor(math.log2(noise_factor * noise_sigma)))
     # Clamp to coarsest allowed step at min_bits
     return min(planned_exp, range_exponent(lower_bound, upper_bound, min_bits))
@@ -318,10 +336,10 @@ def detect_decimal(
     pow2_step: float,
     out_quantized: np.ndarray,
 ) -> tuple[int, np.int64]:
-    """Finds coarsest decimal step 10^p > ps fitting all samples within tolerance.
+    """Finds the coarsest decimal step that fits all samples within tolerance.
 
-    Candidate steps must be coarser than power-of-two step ps and satisfy
-    |x[i] - round(x[i] * 10^-p) * 10^p| <= ps / 4 for all samples.
+    A candidate step 10^p must be coarser than pow2_step and, for every sample,
+    |sample - round(sample * 10^-p) * 10^p| <= pow2_step / 4.
 
     Args:
         samples: 1D float64 array of samples.
@@ -331,9 +349,10 @@ def detect_decimal(
         out_quantized: Output 1D int32 array populated with quantized grid offsets on success.
 
     Returns:
-        A tuple of (p, K0):
-            p: Decimal exponent in [-22, 22], or NO_DECIMAL if no grid matches.
-            K0: Grid index of lower_bound, floor(lo * 10^-p + 0.5) (0 if no grid matches).
+        A tuple of (decimal_exp, base_grid_offset):
+            decimal_exp: Decimal exponent p in [-22, 22], or NO_DECIMAL if no grid matches.
+            base_grid_offset: Grid index of lower_bound, floor(lower_bound * 10^-p + 0.5)
+                (0 if no grid matches).
     """
     # Tolerance is 1/4 of the power-of-two step size
     tolerance = 0.25 * pow2_step
@@ -342,13 +361,13 @@ def detect_decimal(
     range_span = upper_bound - lower_bound
     decimal_exp = min(math.floor(math.log10(range_span)), P_MAX)
     while decimal_exp >= P_MIN and 10.0 ** decimal_exp > pow2_step:
-        # Scale factor 10^-p (exact integer representation for p <= 0)
+        # Scale factor 10^-decimal_exp (an exact double for p <= 0)
         inv_decimal_step = 10.0 ** -decimal_exp
         # Stop if the scaled magnitude reaches 2^52 (finer candidates only get larger)
         if not max_abs_val * inv_decimal_step < FLOAT64_EXACT_INT_LIMIT:
             break
         scaled_tolerance = tolerance * inv_decimal_step
-        # Base grid point corresponding to lo
+        # Grid point of the block minimum
         base_grid_offset = np.int64(math.floor(lower_bound * inv_decimal_step + 0.5))
         grid_matches = True
         for sample_idx in range(samples.shape[0]):
@@ -370,7 +389,9 @@ def detect_decimal(
 def quantize(
     samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
 ) -> None:
-    """Quantizes samples onto the power-of-two grid anchored at lo: floor((x - lo) * 2^-e + 0.5).
+    """Quantizes samples onto the power-of-two grid anchored at the block minimum.
+
+    Each sample becomes floor((sample - lower_bound) * 2^-quant_exp + 0.5).
 
     Used only for the blocks snap_anchor exempts; others use quantize_grid.
 
@@ -380,8 +401,8 @@ def quantize(
         quant_exp: Quantization exponent.
         out_quantized: Output 1D int32 array receiving quantized integers.
     """
-    # Huge exponent: quantize at half-scale to prevent (x - lo) overflow. (The exempt blocks are
-    # constant, with e = 0, or near +-DBL_MAX: never a subnormal step.)
+    # Huge exponent: quantize at half-scale to prevent (sample - lower_bound) overflow. (The
+    # exempt blocks are constant, with exponent 0, or near +-DBL_MAX: never a subnormal step.)
     if quant_exp >= xm.E_HUGE:
         xm.quantize_huge(samples, lower_bound, quant_exp, out_quantized)
     else:
@@ -395,15 +416,17 @@ def quantize(
 
 @njit(nogil=True, cache=True)
 def quantize_grid(samples: np.ndarray, quant_exp: int, base_index: float, out_quantized: np.ndarray) -> None:
-    """Quantizes samples onto the absolute power-of-two grid: rint(x * 2^-e) - K.
+    """Quantizes samples onto the absolute power-of-two grid.
 
-    K = rint(lo * 2^-e) with the same rounding, so the minimum maps to 0 and every q >= 0.
-    The difference of two nearby integers held in floats is exact.
+    Each sample becomes rint(sample * 2^-quant_exp) - base_index, where base_index is
+    rint(minimum * 2^-quant_exp) with the same rounding: the minimum maps to 0 and every
+    quantized value is non-negative. The difference of two nearby integers held in floats
+    is exact.
 
     Args:
         samples: 1D float64 array of samples.
-        quant_exp: Quantization exponent e.
-        base_index: K, the anchor's grid index (snap_anchor).
+        quant_exp: Quantization exponent.
+        base_index: The anchor's grid index (snap_anchor).
         out_quantized: Output 1D int32 array receiving quantized integers.
     """
     if quant_exp >= xm.E_TINY:
@@ -423,6 +446,16 @@ def quantize_block(
 
     The grid is snapped (snap_anchor) unless the block is an exception, which is quantized
     relative to its minimum.
+
+    Args:
+        samples: 1D float64 array of sample values.
+        lower_bound: Minimum sample value in the block.
+        upper_bound: Maximum sample value in the block.
+        quant_exp: Quantization exponent.
+        out_quantized: Output 1D int32 array receiving quantized values.
+
+    Returns:
+        The power-of-two anchor value as a float64.
     """
     anchor, base_index = snap_anchor(lower_bound, upper_bound, quant_exp)
     if math.isnan(base_index):
@@ -434,11 +467,13 @@ def quantize_block(
 
 @njit(nogil=True, cache=True)
 def pick_order(quantized_samples: np.ndarray, num_samples: int, orders_mask: int) -> int:
-    """Selects predictor order (0-3) minimizing difference variance on q[:m].
+    """Selects the predictor order (0-3) minimizing difference variance.
+
+    The variance is measured over the first num_samples quantized samples.
 
     Args:
         quantized_samples: 1D int32 array of quantized integers.
-        num_samples: Number of samples evaluated (min(PICK_LEN, len(q))).
+        num_samples: Number of samples evaluated (at least 3; the caller limits it to PICK_LEN).
         orders_mask: Bitmask of allowable orders (bit k enables order k).
 
     Returns:
@@ -499,7 +534,7 @@ def pick_order(quantized_samples: np.ndarray, num_samples: int, orders_mask: int
         if not (orders_mask >> order_idx) & 1:
             continue
         valid_count = num_samples - order_idx
-        # Variance formula: (m * sum(d^2) - sum(d)^2) / m^2
+        # Variance of the differences: (n * sum(d^2) - sum(d)^2) / n^2, n = valid_count
         variance = (valid_count * float(sum_sq_diff_val) - float(sum_diff_val) ** 2) / (valid_count * valid_count)
         if variance < min_variance:
             best_order, min_variance = order_idx, variance
@@ -522,7 +557,10 @@ def _wrap16(diff_val: int) -> np.int16:
 
 @njit(nogil=True, cache=True)
 def residual(quantized_samples: np.ndarray, order: int, out_residuals: np.ndarray) -> None:
-    """Computes order-k differences mod 2^16 of q with k prepended zeros.
+    """Computes differences of the given order, mod 2^16, of the quantized samples.
+
+    The samples are preceded by zeros, so the first `order` residuals are partial
+    differences.
 
     Args:
         quantized_samples: 1D int32 array of quantized integers.
@@ -535,14 +573,14 @@ def residual(quantized_samples: np.ndarray, order: int, out_residuals: np.ndarra
         for sample_idx in range(num_samples):
             out_residuals[sample_idx] = _wrap16(quantized_samples[sample_idx])
     elif order == 1:
-        # First difference: q[i] - q[i-1]
+        # First difference: sample - previous sample
         slice_curr = quantized_samples[1:]
         slice_prev = quantized_samples[:num_samples - 1]
         out_slice = out_residuals[1:]
         for sample_idx in range(num_samples - 1):
             out_slice[sample_idx] = _wrap16(slice_curr[sample_idx] - slice_prev[sample_idx])
     elif order == 2:
-        # Second difference with prepended zeros: v[1] = q[1] - 2*q[0]
+        # Second difference with prepended zeros: residual 1 is sample 1 - 2 * sample 0
         out_residuals[1] = _wrap16(quantized_samples[1] - 2 * quantized_samples[0])
         slice_curr = quantized_samples[2:]
         slice_prev1 = quantized_samples[1:num_samples - 1]
@@ -605,7 +643,6 @@ def estimate_bits(residuals: np.ndarray) -> float:
     return total_entropy_bits
 
 
-
 @njit(nogil=True, cache=True)
 def encode_block(
     samples: np.ndarray,
@@ -632,8 +669,8 @@ def encode_block(
         out_residuals: Output 1D int16 array receiving residuals.
 
     Returns:
-        A tuple of (flags, param, decimal_base, anchor): decimal_base is the grid index K0
-        of lower_bound on a detected decimal grid (the block's anchor), 0 on the power-of-two
+        A tuple of (flags, param, decimal_base, anchor): decimal_base is the grid index of
+        lower_bound on a detected decimal grid (the block's anchor), 0 on the power-of-two
         grid; anchor is the power-of-two grid's anchor (unused on a decimal grid).
     """
     flags = 0
@@ -670,17 +707,16 @@ def _store_anchor(
     anchor: float,
     decimal_base: np.int64,
 ) -> None:
-    """Writes block b's anchor: the decimal grid index K0, or the float64 bits of the
-    power-of-two anchor.
+    """Writes a block's anchor: its decimal grid index, or the float64 bits of its power-of-two anchor.
 
     Args:
-        out_value_anchors: Output 1D int64 array of length N receiving anchors.
+        out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors.
         anchor_floats: out_value_anchors viewed as float64, made once per unit rather
             than per block.
         block_idx: Zero-based block index.
         flags: Block header byte; BLOCK_FLAG_DECIMAL selects the decimal anchor.
         anchor: The power-of-two grid's anchor, stored as float64 bits.
-        decimal_base: Grid index K0 of lo on a detected decimal grid.
+        decimal_base: Grid index of the block minimum on a detected decimal grid.
     """
     if flags & BLOCK_FLAG_DECIMAL:
         out_value_anchors[block_idx] = decimal_base
@@ -716,7 +752,7 @@ def allocate_target(
     total_weight = 0
     for block_idx in range(num_blocks):
         weight = block_weights[block_idx]
-        # Maximum bits block b can give up without exceeding coarsest_exponents
+        # Maximum bits block block_idx can give up without exceeding coarsest_exponents
         headroom = coarsest_exponents[block_idx] - current_exponents[block_idx]
         max_give = math.floor(max(estimated_bits[block_idx] - 1.0, 0.0) + 0.5)
         out_bit_reductions[block_idx] = min(max_give, headroom) if weight > 0 else 0
@@ -763,7 +799,28 @@ def _apply_target_reallocation(
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
 ) -> None:
-    """Re-encodes blocks selected by target allocation and rolls back if bits do not drop."""
+    """Re-encodes blocks selected by target allocation and rolls back if bits do not drop.
+
+    Args:
+        samples: 1D float64 array of all samples in the unit.
+        sample_offsets: 1D int64 array of sample offsets for each block.
+        bit_reductions: 1D int64 array of bit reduction increments per block.
+        block_exponents: 1D int64 array of current quantization exponents per block.
+        base_lower_bounds: 1D float64 array of lower bounds per block.
+        base_upper_bounds: 1D float64 array of upper bounds per block.
+        estimated_bits_per_block: 1D float64 array of estimated bits before coarsening.
+        decimal: Whether decimal detection is active.
+        orders_mask: Bitmask of allowable predictor difference orders.
+        pick_len: Sample count used for predictor order selection.
+        scratch_quantized: 1D int32 scratch buffer.
+        scratch_held: 1D float64 scratch buffer for imputed non-finite samples.
+        scratch_residuals: 1D int16 scratch buffer for rolling back residuals.
+        out_block_flags: In-out 1D uint8 array of block flags.
+        out_grid_params: In-out 1D int64 array of grid parameters.
+        out_value_anchors: In-out 1D int64 array of value anchors.
+        out_residuals: In-out 1D int16 array of residuals.
+        out_codes: In-out 1D uint8 array of non-finite sample codes.
+    """
     num_blocks = sample_offsets.shape[0] - 1
     anchor_floats = out_value_anchors.view(np.float64)
     for block_idx in range(num_blocks):
@@ -831,34 +888,34 @@ def encode_unit(
     out_block_maxima: np.ndarray,
     out_block_means: np.ndarray,
 ) -> None:
-    """Encodes all blocks of a unit and computes index column metadata.
+    """Encodes all blocks of a unit: their rows and summary statistics.
 
     Blocks of at most SHORT_BLOCK_LEN samples skip the analysis: they take the finest step
     (a decimal grid if one is detected, else the power-of-two grid) and order 0, and stay
-    outside the target. An empty block gets
-    zero flags, grid parameter and anchor, and NaN statistics.
+    outside the target. An empty block gets zero flags, grid parameter and anchor, and NaN
+    statistics.
 
     Args:
         samples: 1D float64 array of every sample of the unit.
-        sample_offsets: 1D int64 array of the blocks' sample offsets (N + 1).
+        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         min_bits: Hard lower bound on quantization bits.
         max_bits: Hard upper bound on quantization bits.
         orders_mask: Bitmask of allowable predictor difference orders.
-        noise_factor: Noise floor multiplier f (0.0 if disabled).
+        noise_factor: Noise floor multiplier (0.0 if disabled).
         target_bits: Target bits per sample (0.0 if disabled).
         decimal: Whether decimal detection is active.
         pick_len: Sample count used for predictor order selection.
-        out_block_flags: Output 1D uint8 array of length N receiving header bytes.
-        out_grid_params: Output 1D int64 array of length N receiving parameters.
-        out_value_anchors: Output 1D int64 array of length N receiving anchors (float64 bits of
+        out_block_flags: Output 1D uint8 array of length num_blocks receiving header bytes.
+        out_grid_params: Output 1D int64 array of length num_blocks receiving parameters.
+        out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors (float64 bits of
             the power-of-two anchor, the grid point nearest the block minimum, or the decimal
             grid index of the minimum).
         out_residuals: Output 1D int16 array of every sample receiving residuals.
         out_codes: Output 1D uint8 array of every sample receiving sample codes (only
-            flagged blocks' are written).
-        out_block_minima: Output 1D float64 array of length N receiving block minima.
-        out_block_maxima: Output 1D float64 array of length N receiving block maxima.
-        out_block_means: Output 1D float64 array of length N receiving block means.
+            flagged blocks' codes are written).
+        out_block_minima: Output 1D float64 array of length num_blocks receiving block minima.
+        out_block_maxima: Output 1D float64 array of length num_blocks receiving block maxima.
+        out_block_means: Output 1D float64 array of length num_blocks receiving block means.
     """
     num_blocks = sample_offsets.shape[0] - 1
     max_len = 0

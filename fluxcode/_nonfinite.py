@@ -41,11 +41,11 @@ def fill_nonfinite(
         out_codes: Output 1D uint8 array receiving 2-bit sample classification codes.
 
     Returns:
-        A tuple of (lo, hi, mean, cnt):
-            lo: Minimum finite value, or nan if no finite samples exist.
-            hi: Maximum finite value, or nan if no finite samples exist.
-            mean: Arithmetic mean of finite samples, or nan if none exist.
-            cnt: Number of finite samples found in samples.
+        A tuple of (min_val, max_val, mean_val, finite_count):
+            min_val: Minimum finite value, or nan if no finite samples exist.
+            max_val: Maximum finite value, or nan if no finite samples exist.
+            mean_val: Arithmetic mean of finite samples, or nan if none exist.
+            finite_count: Number of finite samples found in samples.
     """
     num_samples = samples.shape[0]
     first_finite_idx = -1
@@ -88,8 +88,8 @@ def fill_nonfinite(
 def _mean_by_division_coded(samples: np.ndarray, codes: np.ndarray, finite_count: int) -> float:
     """Computes mean over finite samples by division when direct sum overflows.
 
-    Filters samples by checking classification codes rather than isfinite(x[i])
-    to preserve loop performance.
+    Filters samples by checking classification codes rather than isfinite, which keeps
+    the loop fast.
 
     Args:
         samples: 1D float64 array of samples.
@@ -127,14 +127,17 @@ def noise_finite(
         codes: 1D uint8 array of 2-bit classification codes.
         scale_exp: Power-of-two scaling exponent that normalizes range to [0.5, 1.0).
         min_diffs: Minimum number of valid all-finite differences required to gate.
-        scratch_diffs: 1D float64 scratch array of length >= n - 2 for differences.
-        scratch_weights: 1D float64 scratch array of length >= n - 2 for triplet weights.
+        scratch_diffs: 1D float64 scratch array of at least len(held_samples) - 2 for
+            differences.
+        scratch_weights: 1D float64 scratch array of at least len(held_samples) - 2 for
+            triplet weights.
 
     Returns:
         A tuple of (sigma, rho):
             sigma: Estimated white-noise standard deviation in original units.
-            rho: Lag-1 autocorrelation of valid differences. Returns (0.0, 0.0)
-                if valid differences are fewer than min_diffs.
+            rho: Lag-1 autocorrelation of valid differences.
+            Both are 0.0 if there are fewer than min_diffs (and at least 2) valid
+            differences, or if their variance is negligible.
     """
     num_samples = held_samples.shape[0]
     num_diffs = num_samples - 2
@@ -220,7 +223,15 @@ def noise_finite(
 def _restore_group(
     code_planes: np.ndarray, plane_byte_offset: int, group_idx: int, num_valid: int, in_out_samples: np.ndarray
 ) -> None:
-    """Restores the non-finite samples among 8 * group_idx + (0..num_valid - 1)."""
+    """Restores non-finite samples for an 8-sample group from 2-bit code planes.
+
+    Args:
+        code_planes: 2D uint8 array of shape (2, code_groups) holding code planes.
+        plane_byte_offset: Starting byte offset of the block in code planes.
+        group_idx: Zero-based group index within the block.
+        num_valid: Number of valid samples in this group (1 to 8).
+        in_out_samples: In-out 1D float64 array modified in-place with non-finite values.
+    """
     plane0_byte = code_planes[0, plane_byte_offset + group_idx]
     plane1_byte = code_planes[1, plane_byte_offset + group_idx]
     # Fast path: skip 8-sample group if both plane bytes are zero (all finite)
@@ -229,11 +240,11 @@ def _restore_group(
             code = get_code(plane0_byte, plane1_byte, bit_idx)
             # Overwrite sample with canonical quiet NaN or signed infinity
             sample_offset = 8 * group_idx + bit_idx
-            if code == 1:
+            if code == CODE_NAN:
                 in_out_samples[sample_offset] = np.nan
-            elif code == 2:
+            elif code == CODE_POS_INF:
                 in_out_samples[sample_offset] = np.inf
-            elif code == 3:
+            elif code == CODE_NEG_INF:
                 in_out_samples[sample_offset] = -np.inf
 
 

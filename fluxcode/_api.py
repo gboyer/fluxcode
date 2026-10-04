@@ -45,7 +45,7 @@ DEFAULT_BLOCKS_PER_UNIT: int = 60
 # Encoding
 
 def encode_unit(
-    x: npt.ArrayLike,
+    samples: npt.ArrayLike,
     params: Params = DEFAULT_PARAMS,
     *,
     block_len: int = DEFAULT_BLOCK_LEN,
@@ -54,7 +54,7 @@ def encode_unit(
 ) -> EncodedUnit:
     """Encodes a time series into a single compressed unit (one storage row).
 
-    Divides x into blocks of block_len samples; the last block holds the rest and may be
+    Divides samples into blocks of block_len samples; the last block holds the rest and may be
     short. The unit records every block's size and its sample count, so decode_unit needs
     nothing else. Non-finite values (NaN, +inf, -inf) are encoded exactly (canonical quiet
     NaN).
@@ -64,7 +64,7 @@ def encode_unit(
     without NaT. Equal consecutive timestamps are allowed.
 
     Args:
-        x: 1D array-like of float64 samples.
+        samples: 1D array-like of float64 samples.
         params: Encoder configuration parameters.
         block_len: Samples per block, 1 to 65,535.
         times: Optional timestamps, one per sample: a datetime64[s|ms|us|ns] array (the
@@ -84,17 +84,17 @@ def encode_unit(
             to half a step away, the minimum included.
 
     Raises:
-        ValueError: If x is empty or needs more than 65,535 blocks or 2^26 samples, or the
-            times are invalid (see above) or don't match x in length.
+        ValueError: If samples is empty or needs more than 65,535 blocks or 2^26 samples, or the
+            times are invalid (see above) or don't match samples in length.
     """
-    series_arr = _args.as_series(x)
+    series_arr = _args.as_series(samples)
     sizes = _args.fixed_sizes(series_arr.shape[0], block_len)
     ticks, time_unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
     return _unit.encode(series_arr, sizes, params, ticks, time_unit_code)
 
 
 def encode_blocks(
-    x: npt.ArrayLike,
+    samples: npt.ArrayLike,
     block_sizes: npt.ArrayLike,
     params: Params = DEFAULT_PARAMS,
     *,
@@ -104,19 +104,18 @@ def encode_blocks(
     """Encodes a series divided into blocks of the given sizes into a single unit.
 
     The blocks are given as one flat array of samples and the size of each block (as in
-    Arrow list arrays): block b holds x[offsets[b]:offsets[b + 1]], with offsets the
+    Arrow list arrays): block b holds samples[offsets[b]:offsets[b + 1]], with offsets the
     cumulative sum of block_sizes from 0. Blocks of a list of arrays are
     encode_blocks(np.concatenate(blocks), [len(b) for b in blocks]).
 
     Each block can hold 0 to 65,535 samples. An empty block stores nothing and gets NaN
-    statistics. A block of at most 8 samples skips the analysis: it is stored at the finest
-    step (max_quantize_bits), without differences, on a decimal grid if its samples sit on one
-    (so decimal data stays exact) and otherwise on the power-of-two grid.
+    statistics. A block of at most 8 samples is stored at the finest step
+    (max_quantize_bits), so decimal data in it stays exact.
 
     Args:
-        x: 1D array-like of float64 samples, block after block.
+        samples: 1D array-like of float64 samples, block after block.
         block_sizes: 1D integer array-like of each block's sample count; they must add up to
-            len(x).
+            len(samples).
         params: Encoder configuration parameters.
         times: Optional timestamps, one per sample (see encode_unit).
         time_unit: Unit of integer times (see encode_unit).
@@ -126,20 +125,20 @@ def encode_blocks(
         (see encode_unit).
 
     Raises:
-        ValueError: If a block size is out of range, the sizes don't add up to len(x), the
+        ValueError: If a block size is out of range, the sizes don't add up to len(samples), the
             unit would hold more than 65,535 blocks or 2^26 samples, or the times are
-            invalid or don't match x in length.
+            invalid or don't match samples in length.
     """
-    series_arr = _args.as_series(x, allow_empty=True)
+    series_arr = _args.as_series(samples, allow_empty=True)
     sizes = _args.as_block_sizes(block_sizes)
     if int(sizes.sum()) != series_arr.shape[0]:
-        raise ValueError(f"block_sizes add up to {int(sizes.sum())}, not the {series_arr.shape[0]} samples of x")
+        raise ValueError(f"block_sizes add up to {int(sizes.sum())}, not the {series_arr.shape[0]} samples of input")
     ticks, time_unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
     return _unit.encode(series_arr, sizes, params, ticks, time_unit_code)
 
 
 def encode_time_blocks(
-    x: npt.ArrayLike,
+    samples: npt.ArrayLike,
     times: npt.ArrayLike,
     params: Params = DEFAULT_PARAMS,
     *,
@@ -157,7 +156,7 @@ def encode_time_blocks(
     ones to update_time_blocks.
 
     Args:
-        x: 1D array-like of float64 samples (may be empty).
+        samples: 1D array-like of float64 samples (may be empty).
         times: Their timestamps (see encode_unit): non-decreasing, at or after start_time.
         params: Encoder configuration parameters.
         start_time: Start of block 0: a datetime64, a naive datetime (or pandas Timestamp),
@@ -175,11 +174,11 @@ def encode_time_blocks(
             block would hold more than 65,535 samples, the unit more than 2^26, or the
             times or time arguments are invalid.
     """
-    return _time_blocks.encode_time_blocks(x, times, params, start_time, block_duration, time_unit)
+    return _time_blocks.encode_time_blocks(samples, times, params, start_time, block_duration, time_unit)
 
 
 def encode(
-    x: npt.ArrayLike,
+    samples: npt.ArrayLike,
     params: Params = DEFAULT_PARAMS,
     *,
     block_len: int = DEFAULT_BLOCK_LEN,
@@ -194,7 +193,7 @@ def encode(
     unit via encode_unit.
 
     Args:
-        x: 1D array-like of float64 samples.
+        samples: 1D array-like of float64 samples.
         params: Encoder configuration parameters.
         block_len: Samples per block, 1 to 65,535.
         blocks_per_unit: Blocks per unit (the last unit may hold fewer), at least 1.
@@ -209,10 +208,10 @@ def encode(
             block_means: List of 1D float64 arrays of block means.
 
     Raises:
-        ValueError: If x is empty, a unit would be too large, or the times are invalid or
-            don't match x in length.
+        ValueError: If samples is empty, a unit would be too large, or the times are invalid or
+            don't match samples in length.
     """
-    series_arr = _args.as_series(x)
+    series_arr = _args.as_series(samples)
     _args.check_chunking(block_len, blocks_per_unit)
     ticks, time_unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
     return _unit.encode_series(series_arr, block_len, blocks_per_unit, ticks, time_unit_code, params)
@@ -268,11 +267,10 @@ def update(
 ) -> UpdatedUnit:
     """Replaces or appends whole blocks within an existing unit.
 
-    Untouched blocks retain their exact residuals, grid parameters, value anchors,
-    non-finite codes and times: they are carried over without being decoded or
-    re-quantized. A new block can have any size (0 to 65,535), whatever the size of the
-    block it replaces. Blocks past the unit's end are appended; any it skips are appended
-    empty.
+    Untouched blocks are carried over exactly (values, non-finite values and times),
+    without being decoded or re-quantized. A new block can have any size (0 to 65,535),
+    whatever the size of the block it replaces. Blocks past the unit's end are appended;
+    any it skips are appended empty.
 
     Args:
         unit: Existing unit bytes.
@@ -301,7 +299,7 @@ def update(
 
 def update_time_blocks(
     unit: bytes,
-    x: npt.ArrayLike,
+    samples: npt.ArrayLike,
     times: npt.ArrayLike,
     params: Params = DEFAULT_PARAMS,
     *,
@@ -312,29 +310,26 @@ def update_time_blocks(
 ) -> UpdatedUnit:
     """Upserts samples into, and deletes time ranges from, a unit made by encode_time_blocks.
 
-    First every existing sample timed within delete_ranges is discarded. Then the samples of
-    x are added: an existing sample with the same timestamp as a new one is replaced, and new
-    samples sharing a timestamp are all kept (in their order). So with only x, it is an
-    upsert; with only delete_ranges, a deletion; with both, a range replacement (x may be
-    timed anywhere: samples in a deleted range are kept, as they're added after it). start_time
-    and block_duration must be the ones the unit was encoded with: they aren't stored in it,
-    so they can't be checked.
+    First every existing sample timed within delete_ranges is discarded. Then the new
+    samples are added: an existing sample with the same timestamp as a new one is replaced,
+    and new samples sharing a timestamp are all kept (in their order). So with only samples
+    it is an upsert, with only delete_ranges a deletion, and with both a range replacement
+    (new samples may be timed anywhere; those in a deleted range are kept, as they're added
+    after the deletion). start_time and block_duration must be the ones the unit was
+    encoded with: they aren't stored in it, so they can't be checked.
 
-    Blocks that no range meets and no new sample falls in are carried over untouched, without
-    being decoded or re-encoded. Blocks wholly inside the ranges are encoded from the new
-    samples alone. Other affected blocks are decoded, their surviving samples merged with the
-    new ones, and re-encoded. The kept samples are points of
-    the absolute power-of-two grid, so on the same or a finer step they come back bit for
-    bit; only a coarser step rounds them again (once, without bias). However often a block is
-    updated, their error stays under one step of the coarsest grid it has used (decimal data
-    on a decimal grid stays exact). The noise floor is computed again from the merged block,
-    as when encoding from scratch; its step can move one level when f * sigma sits at a power
-    of two, and finer is exact. Blocks are appended (empty ones to fill a gap) when new
-    samples are timed past the unit's end; blocks are never removed.
+    Blocks that no range meets and no new sample falls in are carried over untouched,
+    without being decoded or re-encoded. Other affected blocks are re-encoded from their
+    surviving samples and the new ones. A surviving sample comes back unchanged unless the
+    block's new quantization step is coarser than the one it was stored with. However often
+    a block is updated, a sample's error stays under one step of the coarsest quantization
+    the block has used (decimal data on a decimal grid stays exact). Blocks are appended
+    (empty ones to fill a gap) when new samples are timed past the unit's end; blocks are
+    never removed.
 
     Args:
         unit: Existing unit bytes, with a time axis.
-        x: 1D array-like of float64 samples (may be empty: then the update only deletes).
+        samples: 1D array-like of float64 samples (may be empty: then the update only deletes).
         times: Their timestamps, non-decreasing: datetime64 in the unit's time unit, or
             integer ticks in it.
         params: Encoder configuration parameters.
@@ -358,5 +353,5 @@ def update_time_blocks(
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
     return _time_blocks.update_time_blocks(
-        unit, x, times, params, start_time, block_duration, delete_ranges, time_unit
+        unit, samples, times, params, start_time, block_duration, delete_ranges, time_unit
     )

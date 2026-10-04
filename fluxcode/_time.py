@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Time axis kernels: per-block regularity, GCD and reference analysis, and exact reconstruction.
+"""Time axis kernels: per-block analysis of regularity, step and reference, and reconstruction.
 
 Timestamps are int64 ticks in the unit's time unit (seconds to nanoseconds), naive
 (no time zone). Within a block they must be non-decreasing. Every block stores a start,
 a step (the GCD of its time deltas) and a reference quotient; sample i > 0 has the
 quotient (time[i] - time[i-1]) / step, stored as the zigzagged residual
 quotient - reference (mod 2^64; 0 for sample 0). A block whose deltas are all equal is
-regular: every quotient equals the reference (1, or 0 when all times are equal), so it
-stores no residuals. Any other block is irregular and stores them.
+regular: every quotient equals the reference (1, or 0 when all times are equal; a single
+delta beyond the int64 maximum is the reference over a step of 1), so it stores no
+residuals. Any other block is irregular and stores them.
 """
 
 import enum
@@ -59,7 +60,15 @@ OVERFLOW: int = int(TimeStatus.OVERFLOW)
 
 @njit(inline="always")
 def _gcd(first: np.uint64, second: np.uint64) -> np.uint64:
-    """Greatest common divisor of two uint64 values (gcd(0, x) = x)."""
+    """Computes the greatest common divisor of two uint64 values.
+
+    Args:
+        first: First uint64 operand (gcd(0, second) = second).
+        second: Second uint64 operand.
+
+    Returns:
+        Greatest common divisor of first and second.
+    """
     while second != 0:
         first, second = second, first % second
     return first
@@ -67,11 +76,15 @@ def _gcd(first: np.uint64, second: np.uint64) -> np.uint64:
 
 @njit(inline="always")
 def _odd_inverse(odd: np.uint64) -> np.uint64:
-    """Multiplicative inverse of an odd number mod 2^64, by Newton's iteration.
+    """Computes the multiplicative inverse of an odd number mod 2^64 by Newton's iteration.
 
-    odd * odd = 1 mod 8, so odd is its own inverse to 3 bits; each step doubles the correct
-    bits (3, 6, 12, 24, 48, 96).
+    Args:
+        odd: An odd uint64 integer.
+
+    Returns:
+        The uint64 multiplicative inverse satisfying (odd * inverse) mod 2^64 == 1.
     """
+    # odd * odd = 1 mod 8, so odd is its own inverse to 3 bits; each step doubles the correct bits
     inverse = odd
     for _ in range(5):
         inverse *= np.uint64(2) - odd * inverse
@@ -80,13 +93,19 @@ def _odd_inverse(odd: np.uint64) -> np.uint64:
 
 @njit(inline="always")
 def _deltas_gcd(times: np.ndarray, num_deltas: int) -> np.uint64:
-    """GCD of the first num_deltas time deltas (0 if they are all 0).
+    """Computes the GCD of the first num_deltas consecutive time deltas.
 
-    Most deltas are multiples of the GCD so far, which skips the Euclid steps.
+    Args:
+        times: 1D int64 array of sample timestamps.
+        num_deltas: Number of consecutive deltas to evaluate.
+
+    Returns:
+        GCD of the examined deltas, or 0 if all examined deltas are 0.
     """
     step_gcd = np.uint64(0)
     for sample_idx in range(1, num_deltas + 1):
         delta = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
+        # Skip Euclidean division if delta is already a multiple of current GCD
         if step_gcd != 0 and delta % step_gcd == 0:
             continue
         step_gcd = _gcd(step_gcd, delta)
@@ -101,24 +120,30 @@ def _divide_deltas(
 ) -> tuple[bool, np.uint64, np.uint64]:
     """Divides every time delta by step (> 0), if step divides them all.
 
-    Exact division without a 64-bit divide: shift out the power of two, then multiply by the
-    odd part's inverse mod 2^64. That is exact for multiples of the odd part, and a delta is
-    one iff its shifted-out bits are 0 and the product is at most (2^64 - 1) // odd.
+    The minimum and total are meaningful only if the division is exact.
+
+    Args:
+        times: 1D int64 array of sample timestamps.
+        step: Non-zero positive step divisor candidate.
+        out_quotients: Output 1D uint64 array receiving quotient values starting at index 1.
 
     Returns:
-        A tuple of (divisible, minimum, total): whether step divides every delta, and the
-        minimum and sum of the quotients written to out_quotients[1:] (valid if divisible).
+        A tuple of (divisible, minimum, total):
+            divisible: True if step divides every delta exactly.
+            minimum: Minimum quotient observed across the block.
+            total: Sum of all quotients across the block.
     """
     minimum = np.uint64(0xFFFFFFFFFFFFFFFF)
     total = np.uint64(0)
     if step == 1:
-        # The deltas themselves (the common ns case): no multiply, always divisible
+        # Common nanosecond case: step is 1, deltas are directly the quotients
         for sample_idx in range(1, times.shape[0]):
             quotient = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
             out_quotients[sample_idx] = quotient
             minimum = min(minimum, quotient)
             total += quotient
         return True, minimum, total
+    # Fast exact division by odd inverse and bit shift
     shift = np.uint64(_trailing_zeros(step))
     odd = step >> shift
     inverse = _odd_inverse(odd)
@@ -133,23 +158,22 @@ def _divide_deltas(
         largest = max(largest, quotient)
         out_quotients[sample_idx] = quotient
         minimum = min(minimum, quotient)
-        # The quotients sum to (last time - first time) / step, below 2^64: no overflow
+        # Accumulate quotient total to compute block average
         total += quotient
     return bool(low_bits == 0 and largest <= multiple_limit), minimum, total
 
 
 @njit(inline="always")
 def _reference_quotient(quotients: np.ndarray, minimum: np.uint64, total: np.uint64) -> np.uint64:
-    """The reference that the block's quotients (from index 1, with the given minimum and
-    total) are stored relative to.
+    """Computes the reference quotient to center or anchor block residuals against.
 
-    The rounded mean suits quotients spread around a center (clock jitter); the minimum
-    suits skewed ones (gaps, events, deadband logging), which the mean would shift away
-    from most of them. Residuals from the mean are about 2 sigma once zigzagged; from the
-    minimum they are non-negative, so zigzag only moves them up one bit plane (a free,
-    all-zero plane 0), and their size is about sqrt(sigma^2 + (mean - min)^2). So the mean
-    wins when 3 sigma^2 < (mean - min)^2. The float statistics only choose between two
-    exact integer references, shifted by the first quotient to keep their precision.
+    Args:
+        quotients: 1D uint64 array of quotient values (with valid data at index 1 and above).
+        minimum: Minimum quotient in the block.
+        total: Sum of all quotients in the block.
+
+    Returns:
+        The selected uint64 reference quotient (either rounded mean or block minimum).
     """
     num_quotients = quotients.shape[0] - 1
     first = np.float64(quotients[1])

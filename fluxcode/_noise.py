@@ -35,9 +35,9 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
 
     Evaluates second differences of finite samples scaled by 2^-scale_exp (which
     brings the block's range into [0.5, 1.0)) to prevent intermediate overflow or
-    underflow. Computes a robust
-    standard deviation via iterated MAD with outlier clipping at 4 sigmas, then
-    determines the lag-1 autocorrelation of the clipped differences.
+    underflow. Computes a robust standard deviation via iterated MAD with outlier
+    clipping at CLIP_SIGMAS sigmas, then determines the lag-1 autocorrelation of the
+    clipped differences.
 
     Args:
         samples: 1D float64 array of finite samples.
@@ -66,7 +66,7 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
     diffs = np.empty(num_diffs)
     mean_diff = 0.0
     for diff_idx in range(num_diffs):
-        # Compute second difference: d[i] = x[i+2] - 2*x[i+1] + x[i]
+        # Second difference: samples[i + 2] - 2 * samples[i + 1] + samples[i]
         diff_val = (
             samples[diff_idx + 2] * scale_factor
             - 2.0 * (samples[diff_idx + 1] * scale_factor)
@@ -82,7 +82,7 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
         # Accumulate mean absolute deviation (MAD)
         mean_abs_dev += abs(diffs[diff_idx])
     mean_abs_dev /= num_diffs
-    # Iteratively re-estimate MAD by clipping values exceeding 4 robust sigmas
+    # Iteratively re-estimate MAD by clipping values beyond CLIP_SIGMAS robust sigmas
     for _ in range(CLIP_PASSES):
         clip_threshold = CLIP_SIGMAS * MAD_TO_SD * mean_abs_dev
         clipped_sum = 0.0
@@ -99,10 +99,10 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
     if not robust_std > 0:
         return 0.0, 0.0
     clip_threshold = CLIP_SIGMAS * robust_std
-    # Clip extreme difference spikes to +/- 4 sigmas
+    # Clip extreme difference spikes to +/- CLIP_SIGMAS sigmas
     for diff_idx in range(num_diffs):
         diffs[diff_idx] = min(max(diffs[diff_idx], -clip_threshold), clip_threshold)
-    # Autocorrelation denominator: sum_sq_diffs = sum(diffs[i]^2) for i = 0..m-1
+    # Autocorrelation denominator: the sum of the squared differences
     sum_sq_diffs = diffs[0] * diffs[0]
     lag1_cross_prod = 0.0
     # Offset views from index 0 allow SIMD vectorization without negative index checks

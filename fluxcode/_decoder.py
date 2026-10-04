@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Decoding kernels and unit validation for compressed series.
+"""Decoding kernels and validation of an uncompressed unit body.
 
-Fuses bit-plane unshuffling, zigzag reversal, modular prefix-sum integration,
-and grid dequantization (power-of-two or decimal) into a single pass per block.
-Restores non-finite values (canonical quiet NaN and signed infinities) when flagged.
+Decodes a block in a single pass: unshuffling the planes, reversing the zigzag,
+integrating the residuals (modular prefix sums) and dequantizing on the power-of-two or
+decimal grid. Restores non-finite values (canonical quiet NaN and signed infinities)
+when flagged.
 """
 
 import enum
@@ -62,8 +63,7 @@ BAD_ANCHOR: int = int(ValidationStatus.BAD_ANCHOR)
 """Validation status indicating a non-finite float anchor or an out-of-range decimal grid index."""
 
 MAX_DECIMAL_ANCHOR: int = 1 << 52
-"""Largest decimal grid index magnitude: K0 + q stays an exact double below 2^53."""
-
+"""Bound on the magnitude of a decimal grid index: the index plus q stays an exact double below 2^53."""
 
 
 @njit(nogil=True, cache=True)
@@ -84,8 +84,8 @@ def unzigzag(low_bytes: np.ndarray, high_bytes: np.ndarray, out_residuals: np.nd
 def integrate(residuals_in_out: np.ndarray, order: int) -> None:
     """Reconstructs quantized indices by integrating residuals mod 2^16 in-place.
 
-    Computes `order` iterative prefix sums modulo 65536 on v. For order 0,
-    masks elements to uint16 range.
+    Computes `order` successive prefix sums modulo 65536. For order 0, masks the
+    elements to the uint16 range.
 
     Args:
         residuals_in_out: In-out 1D int32 array containing residuals, modified in-place to hold
@@ -100,7 +100,7 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
     elif order == 1:
         sum_order1 = np.int32(0)
         for sample_idx in range(num_samples):
-            # First-order prefix sum: q[i] = (q[i-1] + v[i]) mod 2^16
+            # First-order prefix sum, mod 2^16
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
             residuals_in_out[sample_idx] = sum_order1
     elif order == 2:
@@ -127,9 +127,9 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
 def dequantize_pow2(
     quantized_samples: np.ndarray, lower_bound: float, quant_exp: int, out_samples: np.ndarray
 ) -> None:
-    """Reconstructs float64 samples on a power-of-two grid: lo + q * 2^e.
+    """Reconstructs float64 samples on a power-of-two grid: lower_bound + q * 2^quant_exp.
 
-    For exponents e >= E_WIDE (971), delegates to an overflow-safe routine that
+    For exponents at or above E_WIDE (971), delegates to an overflow-safe routine that
     evaluates at half-scale and clamps to DBL_MAX.
 
     Args:
@@ -145,7 +145,7 @@ def dequantize_pow2(
     # Compute power-of-two step size: 2^e
     step_size = math.ldexp(1.0, quant_exp)
     for sample_idx in range(quantized_samples.shape[0]):
-        # Reconstruct sample: lo + q * step
+        # Reconstruct the sample: lower_bound + q * step
         out_samples[sample_idx] = lower_bound + quantized_samples[sample_idx] * step_size
 
 
@@ -153,14 +153,15 @@ def dequantize_pow2(
 def dequantize_decimal(
     quantized_samples: np.ndarray, base_grid_offset: int, decimal_exp: int, out_samples: np.ndarray
 ) -> None:
-    """Reconstructs float64 samples on an exact decimal grid: (K0 + q) * 10^p.
+    """Reconstructs float64 samples on an exact decimal grid: (base_grid_offset + q) * 10^decimal_exp.
 
-    Ensures bit-identical results to decimal string parsing by dividing by
-    10^-p when p < 0 or multiplying by 10^p when p >= 0.
+    The result is the double nearest the decimal value, as decimal string parsing gives:
+    the integer is divided by 10^-decimal_exp when the exponent is negative and multiplied
+    by 10^decimal_exp otherwise (both powers of ten are exact doubles).
 
     Args:
         quantized_samples: 1D int32 array of quantized grid offsets.
-        base_grid_offset: Grid index K0 of the block minimum (the block's anchor).
+        base_grid_offset: Grid index of the block minimum (the block's anchor).
         decimal_exp: Decimal exponent in [-22, 22].
         out_samples: Output 1D float64 array receiving reconstructed samples.
     """
@@ -180,12 +181,11 @@ def dequantize_decimal(
 def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
     """Validates block flags, grid parameters and value anchors across all blocks in a unit.
 
-    Inspects each block to verify that reserved block flag bits (6-7) are zero, that the
-    irregular time bit (4) is set only in units with a time axis and the long time bit (5)
-    only with bit 4, that grid parameters
-    fall within permissible format limits, and that value anchors are finite floats
-    (power-of-two blocks) or grid indices below 2^52 (decimal). An empty block's flags,
-    grid parameter and anchor must be 0.
+    Checks, block by block, that the reserved flag bits (6-7) are zero, that the irregular
+    time bit (4) is set only in units with a time axis and the long time bit (5) only with
+    bit 4, that grid parameters fall within the format's limits, and that value anchors
+    are finite floats (power-of-two blocks) or grid indices below 2^52 (decimal). An empty
+    block's flags, grid parameter and anchor must be 0.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit bytes.
@@ -193,9 +193,9 @@ def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool)
         has_time: Whether the unit has a time axis.
 
     Returns:
-        A tuple of (status, b):
+        A tuple of (status, failing_block_idx):
             status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, or BAD_ANCHOR).
-            b: Zero-based index of the first failing block (0 if OK).
+            failing_block_idx: Zero-based index of the first failing block (0 if OK).
     """
     num_blocks = sample_offsets.shape[0] - 1
     anchor_bits = np.empty(1, np.int64)
@@ -246,12 +246,14 @@ def decode_unit(
 ) -> None:
     """Decodes the given blocks of an uncompressed body into the output array.
 
-    Fuses unshuffling, unzigzagging, integration, dequantization, and
-    non-finite sample restoration.
+    Each block is unshuffled, unzigzagged, integrated, dequantized and has its non-finite
+    samples restored.
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes (must pass check_unit).
-        sample_offsets, group_offsets, code_offsets: The unit's Layout offsets.
+        sample_offsets: 1D int64 array of sample offsets for each block.
+        group_offsets: 1D int64 array of 8-sample group offsets for each block.
+        code_offsets: 1D int64 array of non-finite code plane byte offsets for each block.
         block_ids: 1D int64 array of the blocks to decode.
         out_samples: Output 1D float64 array of every sample of the unit: each decoded
             block's samples are written at its sample offsets (others are left unmodified).

@@ -107,8 +107,11 @@ SHORT_BLOCK_LEN: int = 8
 
 
 class NonFiniteCode(enum.IntEnum):
-    """Two-bit sample classification codes for non-finite values. Kernels use the
-    plain-int CODE_* constants below: numba can't lower IntEnum members in all expressions."""
+    """Two-bit sample classification codes for non-finite values.
+
+    Kernels use the plain-int CODE_* constants below: numba can't lower IntEnum members in
+    all expressions.
+    """
 
     FINITE = 0
     NAN = 1
@@ -209,7 +212,17 @@ TIME_SHORT_PLANES: int = 32
 
 @njit(inline="always")
 def plane_groups(block_len: int) -> int:
-    """Bytes per bit plane per block: ceil(block_len / 8), the last group padded with zero bits."""
+    """Calculates the byte width required per bit plane for a given block length.
+
+    Each group holds 8 samples. Blocks whose length is not a multiple of 8 are
+    padded with zero bits in their trailing byte.
+
+    Args:
+        block_len: Number of samples in the block.
+
+    Returns:
+        Number of bytes per bit plane (ceil(block_len / 8)).
+    """
     return (block_len + 7) // 8
 
 
@@ -244,7 +257,17 @@ def _fill_layout(
     out_short_offsets: np.ndarray,
     out_long_offsets: np.ndarray,
 ) -> None:
-    """Accumulates the offsets of a Layout from the block flags and sizes."""
+    """Accumulates cumulative layout offsets from block flags and sizes.
+
+    Args:
+        block_flags: 1D uint8 array of per-block flags.
+        block_sizes: 1D int64 array of sample counts per block.
+        out_sample_offsets: Preallocated 1D int64 array for sample offsets.
+        out_group_offsets: Preallocated 1D int64 array for byte-plane group offsets.
+        out_code_offsets: Preallocated 1D int64 array for non-finite code plane offsets.
+        out_short_offsets: Preallocated 1D int64 array for short time residual offsets.
+        out_long_offsets: Preallocated 1D int64 array for long time residual offsets.
+    """
     out_sample_offsets[0] = out_group_offsets[0] = out_code_offsets[0] = 0
     out_short_offsets[0] = out_long_offsets[0] = 0
     for block_idx in range(block_sizes.shape[0]):
@@ -278,7 +301,13 @@ def layout(block_flags: np.ndarray, block_sizes: np.ndarray) -> Layout:
 
 @njit(nogil=True, cache=True)
 def _read_sizes(raw_unit: np.ndarray, num_blocks: int, out_block_sizes: np.ndarray) -> None:
-    """Reads the byte-planed uint16 block_sizes field of an uncompressed body."""
+    """Reads the byte-planed uint16 block_sizes field of an uncompressed body.
+
+    Args:
+        raw_unit: 1D uint8 array of uncompressed unit body bytes.
+        num_blocks: Total number of blocks in the unit.
+        out_block_sizes: Preallocated 1D int64 array to receive block sizes.
+    """
     sizes_start = block_sizes_start(num_blocks)
     for block_idx in range(num_blocks):
         out_block_sizes[block_idx] = np.int64(raw_unit[sizes_start + block_idx]) | (
@@ -287,11 +316,15 @@ def _read_sizes(raw_unit: np.ndarray, num_blocks: int, out_block_sizes: np.ndarr
 
 
 def read_layout(raw_unit: np.ndarray, num_blocks: int) -> tuple[np.ndarray, Layout]:
-    """Reads the block sizes of an uncompressed body (at least 3 * num_blocks bytes) and
-    computes their Layout from them and the block flags.
+    """Reads block sizes and computes the layout of an uncompressed body.
+
+    Args:
+        raw_unit: 1D uint8 array of uncompressed body bytes.
+        num_blocks: Total number of blocks in the unit.
 
     Returns:
-        A tuple of (block_sizes, layout): a 1D int64 array and the Layout.
+        A tuple of (block_sizes, layout): 1D int64 array of block sample counts
+        and the computed Layout offsets tuple.
     """
     block_sizes = np.empty(num_blocks, np.int64)
     _read_sizes(raw_unit, num_blocks, block_sizes)
@@ -321,11 +354,17 @@ def unit_size(num_blocks: int, offsets: Layout, has_time: bool = False) -> int:
 
 
 def unit_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple[int, int]:
-    """The smallest and largest body sizes a header's block and sample counts allow.
+    """Calculates lower and upper bounds on uncompressed body size.
 
-    The fewest plane bytes are ceil(num_samples / 8) per plane (every block a multiple of 8,
-    and no block flagged); the most add up to 7 padding samples per block (but no more than
-    one byte per sample), with every block flagged and long.
+    The fewest plane bytes occur when every block size is a multiple of 8 and no
+    block is flagged for non-finite values or irregular times. The maximum occurs
+    when every block has 7 padding samples and all blocks carry non-finite code
+    planes and 64-plane long time residuals.
+
+    Args:
+        num_blocks: Total number of blocks.
+        num_samples: Total number of samples across all blocks.
+        has_time: Whether the unit includes time axis columns and planes.
 
     Returns:
         A tuple of (smallest, largest) body sizes in bytes.
@@ -347,7 +386,7 @@ class UnitHeader(NamedTuple):
         num_blocks: Number of blocks.
         num_samples: Sample count of the unit (the sum of its block sizes).
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
-        time_unit: Time unit code (TimeUnit; 0 for a unit without a time axis).
+        time_unit: Time unit code (TimeUnitCode; 0 for a unit without a time axis).
     """
 
     num_blocks: int
@@ -363,7 +402,7 @@ def pack_header(num_blocks: int, num_samples: int, byte_planes: bool = False, ti
         num_blocks: Number of blocks.
         num_samples: Sample count of the unit.
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
-        time_unit: Time unit code (TimeUnit; 0 for no time axis).
+        time_unit: Time unit code (TimeUnitCode; 0 for no time axis).
 
     Returns:
         The header bytes.
@@ -405,62 +444,115 @@ def unpack_header(unit: bytes) -> UnitHeader:
 
 @njit(inline="always")
 def residual_start(num_blocks: int, has_time: bool) -> int:
-    """Offset of the residual planes: after the per-block columns (and the time columns)."""
+    """Calculates the byte offset of residual planes in an uncompressed body.
+
+    Residual planes begin immediately after the per-block value metadata columns
+    (and optional time columns).
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+        has_time: Whether the unit includes time axis columns.
+
+    Returns:
+        Offset in bytes where residual planes begin.
+    """
     return (METADATA_BYTES_PER_BLOCK + (TIME_BYTES_PER_BLOCK if has_time else 0)) * num_blocks
 
 
 @njit(inline="always")
 def block_sizes_start(num_blocks: int) -> int:
-    """Offset of the block_sizes field: after the block_flags field."""
+    """Calculates the byte offset of the block_sizes field.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+
+    Returns:
+        Offset in bytes where the block_sizes field begins.
+    """
     return BYTES_PER_FLAGS * num_blocks
 
 
 @njit(inline="always")
 def grid_params_start(num_blocks: int) -> int:
-    """Offset of the grid_params field: after the block_flags and block_sizes fields."""
+    """Calculates the byte offset of the grid_params field.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+
+    Returns:
+        Offset in bytes where the grid_params field begins.
+    """
     return (BYTES_PER_FLAGS + BYTES_PER_SIZE) * num_blocks
 
 
 @njit(inline="always")
 def value_anchor_start(num_blocks: int) -> int:
-    """Offset of the value_anchor field: after the grid_params field."""
+    """Calculates the byte offset of the value_anchor field.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+
+    Returns:
+        Offset in bytes where the value_anchor field begins.
+    """
     return (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM) * num_blocks
 
 
 @njit(inline="always")
 def time_start_start(num_blocks: int) -> int:
-    """Offset of the time_start field: after the value_anchor field."""
+    """Calculates the byte offset of the time_start field.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+
+    Returns:
+        Offset in bytes where the time_start field begins.
+    """
     return METADATA_BYTES_PER_BLOCK * num_blocks
 
 
 @njit(inline="always")
 def time_step_start(num_blocks: int) -> int:
-    """Offset of the time_step field: after the time_start field."""
+    """Calculates the byte offset of the time_step field.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+
+    Returns:
+        Offset in bytes where the time_step field begins.
+    """
     return (METADATA_BYTES_PER_BLOCK + BYTES_PER_TIME_COLUMN) * num_blocks
 
 
 @njit(inline="always")
 def time_ref_start(num_blocks: int) -> int:
-    """Offset of the time_ref field: after the time_step field."""
+    """Calculates the byte offset of the time_ref field.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+
+    Returns:
+        Offset in bytes where the time_ref field begins.
+    """
     return (METADATA_BYTES_PER_BLOCK + 2 * BYTES_PER_TIME_COLUMN) * num_blocks
 
 
 @njit(inline="always")
 def put_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
-    """Writes block b's int64 value into a byte-planed field.
+    """Writes a block's int64 value into a byte-planed field.
 
-    Distributes the 8 bytes of the value across 8 strides of length num_blocks.
+    Byte i of the value goes to the i-th run of num_blocks bytes of the field.
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes.
         field_start: Offset of the field (value_anchor_start or a time column's).
-        num_blocks: Total number of blocks N.
+        num_blocks: Total number of blocks.
         block_idx: Zero-based block index.
         value: Signed 64-bit integer to write.
     """
     value_bits = np.uint64(value)
     for byte_idx in range(8):
-        # Place byte k of block b at offset: field_start + k*N + b
+        # Byte byte_idx goes to field_start + byte_idx * num_blocks + block_idx
         raw_unit[field_start + byte_idx * num_blocks + block_idx] = np.uint8(
             (value_bits >> np.uint64(8 * byte_idx)) & np.uint64(0xFF)
         )
@@ -468,42 +560,71 @@ def put_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
 
 @njit(inline="always")
 def get_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
-    """Reads block b's int64 value from a byte-planed field.
+    """Reads a block's int64 value from a byte-planed field.
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes.
         field_start: Offset of the field (value_anchor_start or a time column's).
-        num_blocks: Total number of blocks N.
+        num_blocks: Total number of blocks.
         block_idx: Zero-based block index.
 
     Returns:
-        Reconstructed signed 64-bit integer.
+        The block's signed 64-bit integer.
     """
     value_bits = np.uint64(0)
     for byte_idx in range(8):
-        # Reassemble byte k from offset: field_start + k*N + b
+        # Byte byte_idx comes from field_start + byte_idx * num_blocks + block_idx
         value_bits |= np.uint64(raw_unit[field_start + byte_idx * num_blocks + block_idx]) << np.uint64(8 * byte_idx)
     return np.int64(value_bits)
 
 
 @njit(inline="always")
 def put_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
-    """Writes block b's int16 value into a byte-planed field: the low byte at field_start + b,
-    the high byte num_blocks later."""
+    """Writes a block's int16 value into a byte-planed field.
+
+    The low byte goes to the first run of num_blocks bytes of the field, the high byte to
+    the second.
+
+    Args:
+        raw_unit: 1D uint8 array of uncompressed body bytes.
+        field_start: Offset where the target field starts.
+        num_blocks: Total number of blocks in the unit.
+        block_idx: Zero-based block index.
+        value: Signed 16-bit integer value to write.
+    """
     raw_unit[field_start + block_idx] = np.uint8(value & 0xFF)
     raw_unit[field_start + num_blocks + block_idx] = np.uint8((value >> 8) & 0xFF)
 
 
 @njit(inline="always")
 def get_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
-    """Reads block b's int16 value from a byte-planed field, sign-extended to int64."""
+    """Reads a block's int16 value from a byte-planed field, sign-extended to int64.
+
+    Args:
+        raw_unit: 1D uint8 array of uncompressed body bytes.
+        field_start: Offset where the target field starts.
+        num_blocks: Total number of blocks in the unit.
+        block_idx: Zero-based block index.
+
+    Returns:
+        Sign-extended 64-bit integer value.
+    """
     value_bits = np.int64(raw_unit[field_start + block_idx]) | (np.int64(raw_unit[field_start + num_blocks + block_idx]) << 8)
     return value_bits - ((value_bits & 0x8000) << 1)
 
 
 @njit(inline="always")
 def code_planes_start(num_blocks: int, num_groups: int, has_time: bool) -> int:
-    """Offset of the nonfinite code planes: after the residual planes."""
+    """Calculates the byte offset of non-finite code planes.
+
+    Args:
+        num_blocks: Total number of blocks in the unit.
+        num_groups: Total group count across all blocks.
+        has_time: Whether the unit includes time axis columns.
+
+    Returns:
+        Offset in bytes where non-finite code planes begin.
+    """
     return residual_start(num_blocks, has_time) + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_groups
 
 
@@ -528,8 +649,16 @@ class TimeRows(NamedTuple):
 
 
 def allocate_time_rows(num_blocks: int, num_samples: int, zero_residuals: bool = False) -> TimeRows:
-    """Uninitialized time rows; zero_residuals zeroes the residuals (regular blocks' samples
-    are otherwise left as allocated)."""
+    """Allocates pre-sized arrays for time-axis rows.
+
+    Args:
+        num_blocks: Total number of blocks.
+        num_samples: Total number of samples across all blocks.
+        zero_residuals: If True, residual array is zero-initialized; otherwise left uninitialized.
+
+    Returns:
+        A TimeRows tuple containing allocated arrays.
+    """
     residuals = (np.zeros if zero_residuals else np.empty)(num_samples, np.uint64)
     return TimeRows(np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty(num_blocks, np.uint64), residuals)
 

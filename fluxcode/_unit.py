@@ -19,14 +19,27 @@ from ._types import DecodedUnit, EncodedSeries, EncodedUnit, Params, UpdatedUnit
 
 
 def sample_offsets(block_sizes: np.ndarray) -> np.ndarray:
-    """The blocks' sample offsets: 0, then the cumulative block sizes."""
+    """Computes sample offsets from block sizes.
+
+    Args:
+        block_sizes: 1D int64 array of sample counts per block.
+
+    Returns:
+        1D int64 array of cumulative sample offsets starting with 0.
+    """
     offsets = np.zeros(block_sizes.shape[0] + 1, np.int64)
     np.cumsum(block_sizes, out=offsets[1:])
     return offsets
 
 
 class BlockStats(NamedTuple):
-    """Per-block summary statistics returned by encoding."""
+    """Per-block summary statistics returned by encoding.
+
+    Attributes:
+        block_min: 1D float64 array of minimum finite values per block.
+        block_max: 1D float64 array of maximum finite values per block.
+        block_mean: 1D float64 array of finite means per block.
+    """
 
     block_min: np.ndarray
     block_max: np.ndarray
@@ -34,12 +47,15 @@ class BlockStats(NamedTuple):
 
 
 def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, int]:
-    """Packs encoder parameters into _encoder.encode_unit's arguments.
+    """Converts encoder parameters into the arguments of the encoding kernel.
+
+    Args:
+        params: Encoder configuration parameters.
 
     Returns:
-        A tuple of (min_bits, max_bits, orders_mask, noise_f, target, decimal, pick_len):
-        orders_mask has bit k set for each enabled order, and 0.0 turns the noise floor or
-        the target off.
+        A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, decimal,
+        pick_len): orders_mask has bit k set for each enabled order, 0.0 for noise_factor
+        or target_bits turns that feature off, and pick_len is the encoder's PICK_LEN.
     """
     return (
         params.min_quantize_bits,
@@ -61,7 +77,8 @@ def encode_rows(samples: np.ndarray, block_sizes: np.ndarray, params: Params) ->
         params: Encoder parameters.
 
     Returns:
-        A tuple of (rows, stats).
+        A tuple of (rows, stats): the blocks' UnitRows (without time rows) and their
+        BlockStats.
     """
     num_blocks = block_sizes.shape[0]
     num_samples = samples.shape[0]
@@ -143,8 +160,21 @@ def encode(
 def encode_series(
     samples: np.ndarray, block_len: int, blocks_per_unit: int, ticks: np.ndarray | None, time_unit: int, params: Params
 ) -> EncodedSeries:
-    """Encodes a series as a sequence of units of blocks_per_unit blocks of block_len samples
-    (the last block, and the last unit, may be shorter), each via encode.
+    """Encodes a series as a sequence of fixed-size compressed units.
+
+    Divides the input series into chunks of blocks_per_unit blocks of block_len samples,
+    encoding each chunk independently via encode.
+
+    Args:
+        samples: 1D float64 array of samples.
+        block_len: Samples per block.
+        blocks_per_unit: Blocks per unit.
+        ticks: Optional 1D int64 array of timestamps in time_unit ticks.
+        time_unit: Time unit code (0 without a time axis).
+        params: Encoder configuration parameters.
+
+    Returns:
+        EncodedSeries containing lists of unit byte strings and block summary statistics.
 
     Raises:
         ValueError: If a unit would be too large, or the times decrease anywhere.
@@ -153,12 +183,13 @@ def encode_series(
     num_blocks = -(-min(samples_per_unit, samples.shape[0]) // block_len)
     _args.check_unit_counts(num_blocks, min(samples_per_unit, samples.shape[0]))
     if ticks is not None:
-        # Each unit checks its own times: check the unit boundaries here
+        # Verify chronological order across unit boundaries
         unit_starts = np.arange(samples_per_unit, ticks.shape[0], samples_per_unit)
         decreases = unit_starts[ticks[unit_starts] < ticks[unit_starts - 1]]
         if decreases.shape[0]:
             raise _args.decrease_error(ticks, int(decreases[0]))
     parts = []
+    # Encode each chunk as an independent unit
     for idx in range(0, samples.shape[0], samples_per_unit):
         chunk = samples[idx:idx + samples_per_unit]
         parts.append(encode(
@@ -252,6 +283,9 @@ def read_time_rows(parsed: ParsedUnit, block_ids: np.ndarray | None = None) -> _
         block_ids: The blocks whose time residuals to unpack (every block if None; an empty
             array reads the columns only). Other blocks' residuals are left unwritten.
 
+    Returns:
+        The time rows.
+
     Raises:
         ValueError: If a block start time is int64 minimum or overflows int64, a long
             block's residuals fit in 32 bits, an empty block has nonzero time columns, or a
@@ -272,6 +306,13 @@ def expand_times(
     out_ticks: np.ndarray,
 ) -> None:
     """Reconstructs the ticks of the given blocks from their time rows into out_ticks.
+
+    Args:
+        block_flags: 1D uint8 array of block flags.
+        offsets: 1D int64 array of sample offsets for each block.
+        time_rows: Time rows containing start times, step, reference, and residuals.
+        block_ids: 1D int64 array of block indices to expand.
+        out_ticks: 1D int64 destination array where reconstructed ticks are written.
 
     Raises:
         ValueError: If a time step is negative (or zero on an irregular block), an
@@ -318,12 +359,26 @@ def decode_blocks(
 
 
 def time_dtype(time_unit: int) -> np.dtype:
-    """The datetime64 dtype of a time unit code."""
+    """Returns the datetime64 dtype of a time unit code.
+
+    Args:
+        time_unit: Integer code representing the time unit.
+
+    Returns:
+        NumPy datetime64 dtype matching the specified unit.
+    """
     return np.dtype(f"datetime64[{_format.TIME_UNIT_NAMES[time_unit]}]")
 
 
 def decode(unit: bytes) -> DecodedUnit:
-    """Decodes a unit into its samples, timestamps and block sizes (see decode_unit)."""
+    """Decodes a unit into its samples, timestamps and block sizes (see decode_unit).
+
+    Args:
+        unit: Compressed byte string of the encoded unit.
+
+    Returns:
+        DecodedUnit namedtuple containing values, optional times, and block sizes.
+    """
     parsed = decompress(unit)
     values, ticks = decode_blocks(parsed, np.arange(parsed.header.num_blocks, dtype=np.int64))
     times = None if ticks is None else ticks.view(time_dtype(parsed.header.time_unit))
@@ -331,8 +386,17 @@ def decode(unit: bytes) -> DecodedUnit:
 
 
 def read_rows(parsed: ParsedUnit, time_rows: _format.TimeRows | None = None) -> _format.UnitRows:
-    """Reads every block's rows (residuals and codes, without dequantizing) and time rows
-    (unless already read: time_rows)."""
+    """Reads every block's rows (residuals and codes, without dequantizing) and time rows.
+
+    Args:
+        parsed: Parsed unit container.
+        time_rows: Optional pre-read time rows; if None and the unit has time,
+            time rows are read from the unit.
+
+    Returns:
+        UnitRows namedtuple containing block flags, sizes, grid params, value anchors,
+        residuals, codes, and optional time rows.
+    """
     num_blocks, num_samples = parsed.header.num_blocks, parsed.header.num_samples
     offsets = parsed.layout
     rows = _format.UnitRows(
@@ -352,13 +416,18 @@ def read_rows(parsed: ParsedUnit, time_rows: _format.TimeRows | None = None) -> 
 
 
 def _last_ticks(parsed: ParsedUnit, time_rows: _format.TimeRows, block_ids: np.ndarray) -> np.ndarray:
-    """The last ticks of non-empty blocks of a parsed unit, unpacking and expanding those blocks only.
+    """Returns the last ticks of the given non-empty blocks of a parsed unit.
+
+    Only those blocks' time residuals are unpacked and expanded.
 
     Args:
         parsed: The unit.
         time_rows: Its time rows: the columns at least (the blocks' residuals are unpacked
             into them).
         block_ids: 1D int64 array of the blocks.
+
+    Returns:
+        1D int64 array containing the last tick value for each specified non-empty block.
     """
     if not block_ids.shape[0]:
         return np.zeros(0, np.int64)
@@ -436,6 +505,7 @@ def splice(
         ValueError: If the unit would be too large or its times would decrease.
     """
     num_old_blocks = parsed.header.num_blocks
+    # Determine the total number of blocks after applying updates
     num_blocks = max(num_old_blocks, int(indices[-1]) + 1) if indices.shape[0] else num_old_blocks
     _args.check_unit_counts(num_blocks, 0)
     # Appended blocks that indices skip become empty blocks; they hold no samples, so the
@@ -446,15 +516,20 @@ def splice(
         merged_sizes = np.zeros(merged.shape[0], np.int64)
         merged_sizes[np.searchsorted(merged, indices)] = block_sizes
         indices, block_sizes = merged, merged_sizes
+
+    # Assemble updated block sizes across the entire unit
     sizes = np.zeros(num_blocks, np.int64)
     sizes[:num_old_blocks] = parsed.block_sizes
     sizes[indices] = block_sizes
     num_samples = int(sizes.sum())
     _args.check_unit_counts(num_blocks, num_samples)
+
+    # Encode value residuals and codes for the replacement blocks
     new_rows, stats = encode_rows(samples, block_sizes, params)
     new_offsets = sample_offsets(block_sizes)
     old_starts = None
     if ticks is not None:
+        # Encode timestamp rows for the replacement blocks
         new_time_rows = encode_time_rows(ticks, block_sizes, new_rows.block_flags)
         new_rows = new_rows._replace(time_rows=new_time_rows)
         if old_time_rows is None:
@@ -468,14 +543,19 @@ def splice(
         new_last_ticks = np.zeros(num_blocks, np.int64)
         filled = block_sizes > 0
         new_last_ticks[indices[filled]] = ticks[new_offsets[1:][filled] - 1]
+        # Verify monotonic timestamp ordering across block boundaries
         _check_spliced_order(parsed, old_time_rows, sizes, starts, is_new, new_last_ticks)
+
     has_time = parsed.has_time
     old_body = parsed.raw_body
+    # Splicing copies byte planes, so convert a bit-plane body first
     if not parsed.header.byte_planes:
         old_body = _bitpacking.to_byte_planes(
             old_body, num_old_blocks, int(parsed.layout.group_offsets[-1]), has_time
         )
+    # Splice modified block rows directly into the binary body
     body, offsets = _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets)
+    # Repack and compress the spliced unit
     unit = _compress.pack(
         body, offsets, num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,
     )
@@ -490,6 +570,16 @@ def update(
     time_unit: str | None = None,
 ) -> UpdatedUnit:
     """Validates update's arguments and splices the new blocks into the unit (see _api.update).
+
+    Args:
+        unit: Compressed byte string of the original encoded unit.
+        blocks: Mapping from block index to new sample values.
+        params: Encoder parameters.
+        times: Optional mapping from block index to new timestamps.
+        time_unit: Optional time unit string specifying the expected timestamp resolution.
+
+    Returns:
+        UpdatedUnit containing the spliced unit bytes, updated indices, and compression statistics.
 
     Raises:
         ValueError: If the unit is corrupt, an index is invalid, or the times don't match the

@@ -3,10 +3,10 @@
 """Overflow-safe operations for subnormal and extreme float64 magnitudes.
 
 Provides specialized numerical routines for blocks spanning subnormal ranges,
-ranges near or exceeding 2^1023 (where `hi - lo` overflows float64), and sums
+ranges near or exceeding 2^1023 (where maximum - minimum overflows float64), and sums
 whose accumulated values exceed float64 capacity. Each routine gives the same
 result as the plain float64 formula wherever that formula doesn't overflow
-(the mean fallback approximately: it sums x / cnt).
+(the mean fallback approximately: it sums each sample divided by the count).
 """
 
 import math
@@ -15,17 +15,17 @@ import numpy as np
 from numba import njit
 
 WIDE_RANGE: float = 2.0 ** 1023
-"""Range at or above which hi - lo may overflow float64 (measured as hi/2 - lo/2 instead)."""
+"""Range at or above which maximum - minimum may overflow float64 (measured by halves instead)."""
 
 E_TINY: int = -1023
 """Exponent below which the inverse quantization step 2^-e overflows float64 (the encoder
 scales in two steps there)."""
 
 E_HUGE: int = 1008
-"""Exponent at or above which sample differences x - lo can overflow float64."""
+"""Exponent at or above which sample - minimum can overflow float64."""
 
 E_WIDE: int = 971
-"""Decoder exponent threshold where lo + q * 2^e can exceed DBL_MAX."""
+"""Decoder exponent at or above which minimum + q * 2^exponent can exceed DBL_MAX."""
 
 SCALE_LIMIT: int = 1000
 """Maximum exponent magnitude for single-step power-of-two scaling."""
@@ -36,20 +36,20 @@ DBL_MAX: float = float(np.finfo(np.float64).max)
 
 @njit(nogil=True, cache=True)
 def half_range(lower_bound: float, upper_bound: float) -> float:
-    """Computes (hi - lo) / 2 without intermediate overflow.
+    """Computes (upper_bound - lower_bound) / 2 without intermediate overflow.
 
     Halving is exact for any double that isn't subnormal. In a range this wide
-    (used only at or above 2^1023), a subnormal side is far below the other
-    side's ulp, so the result is (hi - lo) / 2 rounded once.
+    (used only at or above 2^1023), a subnormal bound is far below the other
+    bound's ulp, so the result is the exact half-range rounded once.
 
     Args:
         lower_bound: Lower bound of the range.
         upper_bound: Upper bound of the range.
 
     Returns:
-        Half of the range (hi - lo) / 2 as a finite float64.
+        Half of the range as a finite float64.
     """
-    # 0.5 * hi - 0.5 * lo never overflows
+    # 0.5 * upper_bound - 0.5 * lower_bound never overflows
     return 0.5 * upper_bound - 0.5 * lower_bound
 
 
@@ -104,8 +104,8 @@ def prescale(samples: np.ndarray, scale_exp: int) -> tuple[np.ndarray, float]:
         scale_exp: Total power-of-two exponent to scale by.
 
     Returns:
-        A tuple (scaled_samples, scale_factor_2) such that
-        scaled_samples * scale_factor_2 == samples * 2^-scale_exp.
+        A tuple (scaled_samples, second_factor) such that
+        scaled_samples * second_factor == samples * 2^-scale_exp.
     """
     # Clamp first stage to +/-1000 to keep scale factor normal
     first_exponent = -SCALE_LIMIT if scale_exp > 0 else SCALE_LIMIT
@@ -119,10 +119,11 @@ def prescale(samples: np.ndarray, scale_exp: int) -> tuple[np.ndarray, float]:
 def quantize_huge(
     samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
 ) -> None:
-    """Quantizes samples for wide exponents where x - lo can overflow float64.
+    """Quantizes samples for wide exponents where sample - lower_bound can overflow float64.
 
-    Evaluates the quantization formula at half-scale: (x/2 - lo/2) * 2^(1 - e),
-    which produces the exact same rounding as (x - lo) * 2^-e.
+    Evaluates the quantization formula at half-scale:
+    (sample / 2 - lower_bound / 2) * 2^(1 - quant_exp), which rounds exactly as
+    (sample - lower_bound) * 2^-quant_exp does.
 
     Args:
         samples: 1D float64 array of samples to quantize.
@@ -134,7 +135,7 @@ def quantize_huge(
     half_scale_factor = math.ldexp(1.0, 1 - quant_exp)
     half_lower_bound = 0.5 * lower_bound
     for sample_idx in range(samples.shape[0]):
-        # Evaluate difference at half scale: 0.5 * x[i] - 0.5 * lo
+        # Evaluate the difference at half scale, where it can't overflow
         scaled_diff = 0.5 * samples[sample_idx] - half_lower_bound
         out_quantized[sample_idx] = np.int32(math.floor(scaled_diff * half_scale_factor + 0.5))
 
@@ -143,10 +144,10 @@ def quantize_huge(
 def dequantize_pow2_wide(
     quantized_samples: np.ndarray, lower_bound: float, quant_exp: int, out_samples: np.ndarray
 ) -> None:
-    """Dequantizes samples for wide exponents where lo + q * 2^e can exceed DBL_MAX.
+    """Dequantizes samples for wide exponents where lower_bound + q * 2^quant_exp can exceed DBL_MAX.
 
-    Evaluates reconstruction at half-scale and clamps to DBL_MAX to prevent
-    rounding to infinity. Preserves lo exactly when q is zero.
+    Evaluates the reconstruction at half-scale and clamps to DBL_MAX to prevent
+    rounding to infinity. Preserves lower_bound exactly when q is zero.
 
     Args:
         quantized_samples: 1D int32 array of quantized integers.
@@ -161,5 +162,5 @@ def dequantize_pow2_wide(
         grid_offset = quantized_samples[sample_idx]
         # Reconstruct at half-scale and clamp to maximum finite double
         reconstructed_val = min(2.0 * (half_lower_bound + grid_offset * half_step_size), DBL_MAX)
-        # Preserve lo exactly when q == 0 (lo / 2 may round if lo is subnormal)
+        # Keep the lower bound exact when q == 0 (halving may round a subnormal)
         out_samples[sample_idx] = lower_bound if grid_offset == 0 else reconstructed_val

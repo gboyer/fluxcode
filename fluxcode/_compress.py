@@ -2,10 +2,10 @@
 # Copyright (c) 2026 Garry Boyer
 """Compression policy: how a unit's body becomes its zstd frame.
 
-Which residual layout to use, where zstd blocks end, which zstd levels to try and which candidate
-frame to keep are encoder choices, not format: any frame of the body decodes. The optional Rust
-extension (rust/src/compress.rs) makes the same choices without holding the GIL; the constants
-here are checked against its in tests/test_rust.py.
+Which residual layout to use, where zstd blocks end, which zstd levels to try and which
+candidate frame to keep are encoder choices, not format: any frame of the body decodes.
+The optional Rust extension (rust/src/compress.rs) makes the same choices without
+holding the GIL; the constants here are checked against its in tests/test_rust.py.
 """
 
 import importlib
@@ -21,12 +21,20 @@ import zstandard
 from . import _bitpacking, _format
 
 RUST_INTERFACE_VERSION: int = 1
-"""The interface of the extension this code calls (compress_unit, pack_unit and the policy constants);
-rust/src/lib.rs exports the same INTERFACE_VERSION, raised there and here together when it changes."""
+"""Version of the extension interface this code calls (compress_unit, pack_unit and the
+policy constants).
+
+rust/src/lib.rs exports the same INTERFACE_VERSION; the two are raised together when the
+interface changes.
+"""
 
 
 def _load_rust() -> ModuleType | None:
-    """The extension module, or None if it isn't installed or FLUXCODE_RUST=0."""
+    """Loads the optional Rust accelerator extension module if available.
+
+    Returns:
+        The loaded fluxcode_rs module, or None if unavailable or disabled.
+    """
     if os.environ.get("FLUXCODE_RUST") == "0":
         return None
     try:
@@ -47,9 +55,12 @@ def _load_rust() -> ModuleType | None:
 
 
 _rust: ModuleType | None = _load_rust()
-"""The optional Rust accelerator (the fluxcode[rust] extra): builds a unit's bytes from its rows or from
-a body without holding the GIL, which python-zstandard does inside a block flush. None if it isn't
-installed or FLUXCODE_RUST=0; units are the same either way (rust/README.md)."""
+"""The optional Rust accelerator (the fluxcode[rust] extra), or None.
+
+It builds a unit's bytes from its rows or from a body without holding the GIL, which
+python-zstandard does inside a block flush. It is None if the extension isn't installed
+or FLUXCODE_RUST=0; units are the same either way (rust/README.md).
+"""
 
 
 class Effort(NamedTuple):
@@ -81,21 +92,31 @@ EFFORTS: dict[int, Effort] = {
 
 BYTE_PLANES_BIT: int = 7
 BYTE_PLANES_MAX_SHARE: float = 0.01
-"""The heuristic layout picks byte planes when fewer than BYTE_PLANES_MAX_SHARE of the (zigzagged)
-residuals reach 2^BYTE_PLANES_BIT: narrow residuals, whose high byte is constant and whose low byte
-byte-wise literals model well. Wider ones, even within a byte, compress better as bit planes with
-a zstd block (and Huffman table) per plane (experimental/plane_layout, What was adopted)."""
+"""Threshold of the heuristic layout.
+
+It picks byte planes when fewer than BYTE_PLANES_MAX_SHARE of the (zigzagged) residuals
+reach 2^BYTE_PLANES_BIT: narrow residuals, whose high byte is constant and whose low byte
+byte-wise literals model well. Wider ones, even within a byte, compress better as bit
+planes with a zstd block (and Huffman table) per plane (experimental/plane_layout, What
+was adopted).
+"""
 
 FLUSH_MIN_DENSITY: int = 16
-"""A residual plane ends a zstd block only if more than 1 / FLUSH_MIN_DENSITY of its bytes are
-non-zero: a block costs tens of bytes of header and table, which a plane that is mostly zero
-(the high planes of small residuals) doesn't repay, and which also slows encoding."""
+"""Density threshold for ending a zstd block after a residual plane.
+
+A plane ends a block only if more than 1 / FLUSH_MIN_DENSITY of its bytes are non-zero: a
+block costs tens of bytes of header and table, which a plane that is mostly zero (the
+high planes of small residuals) doesn't repay, and which also slows encoding.
+"""
 
 _local = threading.local()
 
 
 def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecompressor]:
-    """Retrieves thread-local zstandard compressor (at level) and decompressor instances.
+    """Retrieves thread-local zstandard compressor and decompressor instances.
+
+    Args:
+        level: Zstandard compression level for the compressor.
 
     Returns:
         A tuple of (compressor, decompressor) dedicated to the current thread.
@@ -112,11 +133,13 @@ def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecomp
 def flush_points(
     raw_unit: np.ndarray, num_blocks: int, offsets: _format.Layout, has_time: bool, byte_planes: bool
 ) -> list[int]:
-    """Body offsets where the encoder ends a zstd block: after the per-block columns, and after
-    each residual plane (16 bit planes or 2 byte planes) that is dense enough to have statistics
-    of its own. Every zstd block carries its own literal Huffman table, so such a plane is coded
-    with the statistics of its own bytes (about 3% smaller than one block run for typical
-    units); the result is still one zstd frame, which any decoder reads unchanged.
+    """Finds the body offsets where the encoder ends a zstd block.
+
+    A block ends after the per-block columns, and after each residual plane (16 bit planes
+    or 2 byte planes) that is dense enough to have statistics of its own. Every zstd block
+    carries its own literal Huffman table, so such a plane is coded with the statistics of
+    its own bytes (about 3% smaller than one block run for typical units); the result is
+    still one zstd frame, which any decoder reads unchanged.
 
     Args:
         raw_unit: 1D uint8 array of the uncompressed body.
@@ -177,35 +200,54 @@ def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int, limit: int
 
 
 def _smallest_unit(
-    candidates: list[tuple[bool, np.ndarray]], num_blocks: int, num_samples: int, offsets: _format.Layout,
-    time_unit: int, effort: Effort,
+    candidates: list[tuple[bool, np.ndarray]],
+    num_blocks: int,
+    num_samples: int,
+    offsets: _format.Layout,
+    time_unit: int,
+    effort: Effort,
 ) -> bytes:
-    """The unit of the smallest frame of the candidate bodies (byte planes or not) over effort's zstd
-    levels. Ties go to byte planes (they decode faster: no bit transpose), then to the earlier level,
-    whatever the order the candidates are tried in; with flushes, a candidate that can't beat the best
-    so far is dropped as soon as its blocks show it. All candidates are tried at a level before the
-    next level, so the cheap level's frames set the limit for the expensive ones."""
+    """Compresses each candidate body at each zstd level and builds the smallest unit.
+
+    Ties favor byte planes (which decode faster without bit transposing), and
+    then lower compression levels.
+
+    Args:
+        candidates: List of (byte_planes, body) candidate tuples to evaluate.
+        num_blocks: Total number of blocks in the unit.
+        num_samples: Total number of samples across all blocks.
+        offsets: Layout offsets for the unit.
+        time_unit: Time unit code (0 for no time axis).
+        effort: Effort policy specifying compression levels and flush behavior.
+
+    Returns:
+        Serialized unit bytes containing header and compressed zstd frame.
+    """
     has_time = time_unit != 0
     levels = effort.zstd_levels
+    # Precompute flush points for candidates if block flushes are enabled
     cuts = {
         byte_planes: flush_points(body, num_blocks, offsets, has_time, byte_planes) if effort.flush else []
         for byte_planes, body in candidates
     }
     best: tuple[bytes, int, bool] | None = None
+    # Try cheap compression levels first to establish early-termination limits
     for level_idx, level in enumerate(levels):
         for byte_planes, body in candidates:
             rank = level_idx if byte_planes else len(levels) + level_idx
             frame: bytes | None
             if effort.flush:
-                # A frame of this length or less wins (a tie only against a worse rank)
+                # Early cutoff: abort if partial compressed output exceeds best frame so far
                 limit = None if best is None else len(best[0]) - (0 if rank < best[1] else 1)
                 frame = compress_body(body, cuts[byte_planes], level, limit)
             else:
                 frame = zstd(level)[0].compress(body.data)
+            # Track best frame by size, breaking ties with candidate rank
             if frame is not None and (best is None or len(frame) < len(best[0])
                                       or (len(frame) == len(best[0]) and rank < best[1])):
                 best = (frame, rank, byte_planes)
     assert best is not None
+    # Prepend 8-byte unit header to the winning compressed zstd frame
     return _format.pack_header(num_blocks, num_samples, best[2], time_unit) + best[0]
 
 
@@ -217,11 +259,22 @@ def pack(
     effort: Effort,
     time_unit: int,
 ) -> bytes:
-    """The unit of a byte-plane body (with its Layout), compressed as
-    effort says. The byte-plane body is the cheaper one to write: the bit-plane body is derived
-    from it by one transpose of the residual region, and only if it is wanted."""
+    """Compresses an uncompressed byte-plane body into complete unit bytes.
+
+    Args:
+        body: 1D uint8 array containing the uncompressed body, residuals as byte planes.
+        offsets: The unit's Layout.
+        num_blocks: Total number of blocks.
+        num_samples: Total number of samples across all blocks.
+        effort: Effort policy specifying layout strategy, flushes, and levels.
+        time_unit: Time unit code (0 for no time axis).
+
+    Returns:
+        Serialized unit bytes containing header and compressed zstd frame.
+    """
     has_time = time_unit != 0
     num_groups = int(offsets.group_offsets[-1])
+    # Fast path: delegate to Rust extension if available
     if _rust is not None:
         return _rust.pack_unit(  # type: ignore[no-any-return]
             body, num_blocks, num_samples, num_groups, time_unit, effort.layout, effort.flush,
@@ -229,19 +282,21 @@ def pack(
         )
 
     def byte_planes_predicted() -> bool:
+        """Predicts whether byte planes compress better than bit planes."""
         share = _bitpacking.wide_share(body, num_blocks, num_groups, has_time, True, BYTE_PLANES_BIT)
         return bool(share < BYTE_PLANES_MAX_SHARE)
 
     def bit_planes() -> np.ndarray:
+        """Returns the body with its residual region as bit planes."""
         return _bitpacking.to_bit_planes(body, num_blocks, num_groups, has_time)
 
+    # Build candidate layouts according to effort policy
     if effort.layout == "byte" or (effort.layout == "heuristic" and byte_planes_predicted()):
         candidates = [(True, body)]
     elif effort.layout in ("bit", "heuristic"):
         candidates = [(False, bit_planes())]
     else:
-        # With flushes the heuristic's pick goes first, since the other is often dropped partway;
-        # without them nothing can be dropped and the order is free (so the statistic isn't computed)
+        # Order candidates so the predicted winner runs first when flushes allow early cutoff
         bit_first = effort.flush and not byte_planes_predicted()
         candidates = [(False, bit_planes()), (True, body)] if bit_first else [(True, body), (False, bit_planes())]
     return _smallest_unit(candidates, num_blocks, num_samples, offsets, time_unit, effort)

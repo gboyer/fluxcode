@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Packing a unit's rows into body bytes and back: the residual bit planes and byte planes,
-the non-finite code planes and the time residual planes, plus the body writers and readers.
+"""Packs a unit's rows into body bytes and back.
+
+Covers the residual bit planes and byte planes, the non-finite code planes and the time
+residual planes, plus the body writers and readers.
 
 The body layout itself (field order, offsets, the Layout) is described in _format. Every
 block's bytes in each plane field start on a byte boundary, so a block packs and unpacks on
@@ -96,9 +98,11 @@ _POPCOUNT = np.array([byte.bit_count() for byte in range(256)], np.int64)
 def wide_share(
     raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, byte_planes: bool, bit_idx: int
 ) -> float:
-    """The fraction of a unit's residual slots (samples plus padding, 8 per group) whose zigzagged
-    residual reaches 2^bit_idx: a bit in any of bit planes bit_idx to 15, or the same bits of the low
-    and high bytes. Padding is zero, so both layouts give the same share.
+    """Measures the share of residual slots whose zigzagged residual reaches 2^bit_idx.
+
+    The slots are a unit's samples plus padding, 8 per group. A residual reaches 2^bit_idx
+    if any of its bits bit_idx to 15 is set. Padding is zero, so bit planes and byte planes
+    give the same share.
 
     Args:
         raw_unit: 1D uint8 array of a body.
@@ -277,28 +281,49 @@ def unshuffle_block(
 
 
 @njit(nogil=True, cache=True)
-def _bit_planes_into(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray) -> None:
-    """Writes the residual region of byte-plane body byte_body into out_body's as bit planes.
+def _bit_planes_into(
+    byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray
+) -> None:
+    """Writes the residual region of a byte-plane body into out_body as bit planes.
 
     Blocks start on a multiple of 8 residuals in the byte planes and are padded with zeros, so
     the groups of 8 bytes of all blocks line up across the region and one pass over it
-    converts every block."""
+    converts every block.
+
+    Args:
+        byte_body: 1D uint8 array of the uncompressed body stored as byte planes.
+        num_blocks: Total number of blocks.
+        num_groups: Total 8-sample groups across all blocks.
+        has_time: Whether the unit has a time axis.
+        out_body: Destination 1D uint8 body array receiving transposed bit planes.
+    """
     if num_groups:
         bplanes = byte_planes_view(byte_body, num_blocks, num_groups, has_time)
         shuffle_bytes(bplanes[0], bplanes[1], planes_view(out_body, num_blocks, num_groups, has_time), 0, num_groups)
 
 
 @njit(nogil=True, cache=True)
-def _byte_planes_into(bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray) -> None:
-    """Writes the residual region of bit-plane body bit_body into out_body's as byte planes
-    (_bit_planes_into reversed)."""
+def _byte_planes_into(
+    bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray
+) -> None:
+    """Writes the residual region of a bit-plane body into out_body as byte planes.
+
+    Args:
+        bit_body: 1D uint8 array of the uncompressed body stored as bit planes.
+        num_blocks: Total number of blocks.
+        num_groups: Total 8-sample groups across all blocks.
+        has_time: Whether the unit has a time axis.
+        out_body: Destination 1D uint8 body array receiving reconstructed byte planes.
+    """
     if num_groups:
         bplanes = byte_planes_view(out_body, num_blocks, num_groups, has_time)
         unshuffle_block(planes_view(bit_body, num_blocks, num_groups, has_time), 0, num_groups, bplanes[0], bplanes[1])
 
 
 def to_bit_planes(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
-    """The bit-plane body of a byte-plane body: its residual region transposed, the rest the same.
+    """Converts a byte-plane body into a bit-plane body.
+
+    Only the residual region changes; the rest of the body is copied as it is.
 
     Args:
         byte_body: 1D uint8 array of a body whose residuals are byte planes.
@@ -315,8 +340,19 @@ def to_bit_planes(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_t
 
 
 def to_byte_planes(bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
-    """The byte-plane body of a bit-plane body (to_bit_planes reversed). The residual slots past
-    a block's samples come out zero if they were zero in the bit planes."""
+    """Converts a bit-plane body into a byte-plane body.
+
+    The residual slots past a block's samples come out zero if they were zero in the bit planes.
+
+    Args:
+        bit_body: 1D uint8 array of body stored with bit planes.
+        num_blocks: Number of blocks.
+        num_groups: Total 8-sample groups across all blocks.
+        has_time: Whether the unit has a time axis.
+
+    Returns:
+        New 1D uint8 body array with residuals formatted as byte planes.
+    """
     byte_body = bit_body.copy()
     _byte_planes_into(bit_body, num_blocks, num_groups, has_time, byte_body)
     return byte_body
@@ -396,8 +432,17 @@ def time_planes_views(
 def _put_code_group(
     sample_codes: np.ndarray, group_idx: int, num_valid: int, code_planes: np.ndarray, plane_byte_offset: int
 ) -> None:
-    """Packs the codes of samples 8 * group_idx + (0..num_valid - 1) into one byte of each code
-    plane; bits past num_valid stay zero."""
+    """Packs the codes of an 8-sample group into one byte of each code plane.
+
+    Bits past num_valid stay zero.
+
+    Args:
+        sample_codes: 1D uint8 array of 2-bit sample codes.
+        group_idx: Zero-based group index within the block.
+        num_valid: Number of valid samples in this group (1 to 8).
+        code_planes: 2D uint8 array of shape (2, code_groups) holding code planes.
+        plane_byte_offset: Starting byte offset of the block in code planes.
+    """
     plane0_byte = 0
     plane1_byte = 0
     for bit_idx in range(num_valid):
@@ -429,12 +474,12 @@ def put_codes(sample_codes: np.ndarray, code_planes: np.ndarray, plane_byte_offs
 
 @njit(inline="always")
 def get_code(plane0_byte: int, plane1_byte: int, bit_idx: int) -> int:
-    """Extracts a 2-bit non-finite code for sample k from plane bytes.
+    """Extracts the 2-bit non-finite code of one sample of a group from its plane bytes.
 
     Args:
-        plane0_byte: Byte from code plane 0.
-        plane1_byte: Byte from code plane 1.
-        bit_idx: Bit position within the bytes (0..7).
+        plane0_byte: The group's byte of code plane 0.
+        plane1_byte: The group's byte of code plane 1.
+        bit_idx: The sample's position in the group (0..7).
 
     Returns:
         Integer code in 0..3.
@@ -447,7 +492,15 @@ def get_code(plane0_byte: int, plane1_byte: int, bit_idx: int) -> int:
 def _get_code_group(
     code_planes: np.ndarray, plane_byte_offset: int, group_idx: int, num_valid: int, out_codes: np.ndarray
 ) -> None:
-    """Unpacks the codes of samples 8 * group_idx + (0..num_valid - 1) from one byte of each code plane."""
+    """Unpacks codes of an 8-sample group from one byte of each code plane.
+
+    Args:
+        code_planes: 2D uint8 array of shape (2, code_groups) holding code planes.
+        plane_byte_offset: Starting byte offset of the block in code planes.
+        group_idx: Zero-based group index within the block.
+        num_valid: Number of valid samples in this group (1 to 8).
+        out_codes: Destination 1D uint8 array receiving unpacked codes.
+    """
     plane0_byte = code_planes[0, plane_byte_offset + group_idx]
     plane1_byte = code_planes[1, plane_byte_offset + group_idx]
     for bit_idx in range(num_valid):
@@ -474,19 +527,43 @@ def get_codes(code_planes: np.ndarray, plane_byte_offset: int, out_codes: np.nda
 
 
 @njit(inline="always")
-def _byte_word(v0: np.uint64, v1: np.uint64, v2: np.uint64, v3: np.uint64, v4: np.uint64, v5: np.uint64,
-               v6: np.uint64, v7: np.uint64, shift: np.uint64) -> np.uint64:
-    """Packs byte (shift / 8) of 8 values into one word: byte k of the word from value k."""
+def _byte_word(
+    val0: np.uint64,
+    val1: np.uint64,
+    val2: np.uint64,
+    val3: np.uint64,
+    val4: np.uint64,
+    val5: np.uint64,
+    val6: np.uint64,
+    val7: np.uint64,
+    shift: np.uint64,
+) -> np.uint64:
+    """Gathers one byte of each of eight uint64 values into one uint64 word.
+
+    Args:
+        val0: The first value; its byte becomes byte 0 of the word.
+        val1: The second value (byte 1 of the word).
+        val2: The third value (byte 2).
+        val3: The fourth value (byte 3).
+        val4: The fifth value (byte 4).
+        val5: The sixth value (byte 5).
+        val6: The seventh value (byte 6).
+        val7: The eighth value (byte 7).
+        shift: Bit position of the wanted byte in each value (8 * byte index).
+
+    Returns:
+        The word holding byte (shift / 8) of val0 to val7, in that order.
+    """
     mask = np.uint64(0xFF)
     return (
-        ((v0 >> shift) & mask)
-        | (((v1 >> shift) & mask) << np.uint64(8))
-        | (((v2 >> shift) & mask) << np.uint64(16))
-        | (((v3 >> shift) & mask) << np.uint64(24))
-        | (((v4 >> shift) & mask) << np.uint64(32))
-        | (((v5 >> shift) & mask) << np.uint64(40))
-        | (((v6 >> shift) & mask) << np.uint64(48))
-        | (((v7 >> shift) & mask) << np.uint64(56))
+        ((val0 >> shift) & mask)
+        | (((val1 >> shift) & mask) << np.uint64(8))
+        | (((val2 >> shift) & mask) << np.uint64(16))
+        | (((val3 >> shift) & mask) << np.uint64(24))
+        | (((val4 >> shift) & mask) << np.uint64(32))
+        | (((val5 >> shift) & mask) << np.uint64(40))
+        | (((val6 >> shift) & mask) << np.uint64(48))
+        | (((val7 >> shift) & mask) << np.uint64(56))
     )
 
 
@@ -500,9 +577,23 @@ def _level_planes(
     first_group: int,
     end_group: int,
 ) -> np.ndarray:
-    """The 8 bit planes of a block's byte level byte_idx: levels 0-3 are in the short planes
-    (from the block's offset among irregular blocks), 4-7 in the long planes (offset among
-    long blocks). The view holds the block's groups first_group to end_group."""
+    """Returns a view into the 8 bit planes corresponding to a block's byte level.
+
+    Levels 0-3 are in the short planes (from the block's offset among irregular blocks),
+    and 4-7 in the long planes (offset among long blocks).
+
+    Args:
+        short_planes: 2D uint8 array holding short time residual bit planes.
+        long_planes: 2D uint8 array holding long time residual bit planes.
+        short_offset: Starting group offset in short_planes.
+        long_offset: Starting group offset in long_planes.
+        byte_idx: Byte level index (0 to 7).
+        first_group: Starting group index.
+        end_group: Ending group index.
+
+    Returns:
+        2D uint8 array of shape (8, end_group - first_group) containing the bit planes.
+    """
     if byte_idx < 4:
         return short_planes[8 * byte_idx:8 * byte_idx + 8, short_offset + first_group:short_offset + end_group]
     level = byte_idx - 4
@@ -513,7 +604,15 @@ def _level_planes(
 def _put_time_group(
     values: np.ndarray, base: int, shift: np.uint64, level_planes: np.ndarray, group_idx: int
 ) -> None:
-    """Packs byte (shift / 8) of values[base:base + 8] into byte group_idx of 8 bit planes."""
+    """Packs selected byte of 8 time values into byte group_idx of 8 bit planes.
+
+    Args:
+        values: 1D uint64 array of time residuals.
+        base: Starting index of the 8-sample group.
+        shift: Bit shift offset (8 * byte_index).
+        level_planes: 2D uint8 array of the 8 bit planes for this byte level.
+        group_idx: Group index within level_planes.
+    """
     transposed_word = _transpose8(_byte_word(
         values[base], values[base + 1], values[base + 2], values[base + 3],
         values[base + 4], values[base + 5], values[base + 6], values[base + 7],
@@ -525,8 +624,14 @@ def _put_time_group(
 
 @njit(inline="always")
 def _get_time_group(level_planes: np.ndarray, group_idx: int, byte_idx: int, out_bytes: np.ndarray) -> None:
-    """Unpacks byte group_idx of 8 bit planes into byte byte_idx of the 8 uint64 samples viewed
-    as bytes by out_bytes."""
+    """Unpacks byte group_idx of 8 bit planes into byte byte_idx of 8 uint64 samples.
+
+    Args:
+        level_planes: 2D uint8 array of the 8 bit planes for this byte level.
+        group_idx: Group index within level_planes.
+        byte_idx: Byte position within each 64-bit integer (0 to 7).
+        out_bytes: 1D uint8 array view of the destination uint64 residuals.
+    """
     gathered_word = np.uint64(0)
     for bit_idx in range(8):
         gathered_word |= np.uint64(level_planes[bit_idx, group_idx]) << np.uint64(8 * bit_idx)
@@ -587,11 +692,26 @@ def shuffle_time_residuals(
 
 @njit(nogil=True, cache=True)
 def _time_tail_levels(
-    short_planes: np.ndarray, long_planes: np.ndarray, short_offset: int, long_offset: int, stride: int,
+    short_planes: np.ndarray,
+    long_planes: np.ndarray,
+    short_offset: int,
+    long_offset: int,
+    stride: int,
     num_valid: int,
 ) -> int:
-    """The number of byte levels up to the highest with a nonzero bit among the first num_valid
-    samples of a block's partial last group (its padding bits are ignored)."""
+    """Counts active byte levels in a block's partial last group.
+
+    Args:
+        short_planes: 2D uint8 array holding short planes.
+        long_planes: 2D uint8 array holding long planes.
+        short_offset: Starting group offset in short_planes.
+        long_offset: Starting group offset in long_planes, or -1 for a short block.
+        stride: Total groups allocated for this block.
+        num_valid: Number of valid samples in the partial group (1 to 7).
+
+    Returns:
+        Number of active byte levels up to the highest with a non-zero bit.
+    """
     valid_mask = (1 << num_valid) - 1
     num_levels = 8 if long_offset >= 0 else 4
     while num_levels > 0:
@@ -617,7 +737,18 @@ def _unshuffle_time_tail(
     out_time_residuals: np.ndarray,
     scratch_tail: np.ndarray,
 ) -> None:
-    """Unpacks the partial last group of a block's time residuals: its samples past n are padding."""
+    """Unpacks the partial last group of a block's time residuals.
+
+    Args:
+        short_planes: 2D uint8 array of short planes.
+        long_planes: 2D uint8 array of long planes.
+        short_offset: Starting group offset in short_planes.
+        long_offset: Starting group offset in long_planes.
+        stride: Total groups allocated for this block.
+        num_active_bytes: Number of active byte levels.
+        out_time_residuals: Destination 1D uint64 array receiving reconstructed residuals.
+        scratch_tail: 1D uint64 scratch buffer of length 8.
+    """
     scratch_tail[:] = 0
     tail_bytes = scratch_tail.view(np.uint8)
     for byte_idx in range(num_active_bytes):
@@ -779,7 +910,18 @@ irregular times (the encoder's only form is regular with step and reference 0)."
 
 @njit(nogil=True, cache=True)
 def _long_planes_zero(long_planes: np.ndarray, long_offset: int, num_samples: int) -> bool:
-    """Whether a long block's planes 32-63 are zero in its samples (padding bits ignored)."""
+    """Checks whether a long block's planes 32-63 are all zero across its valid samples.
+
+    Padding bits past num_samples are ignored.
+
+    Args:
+        long_planes: 2D uint8 array of planes 32-63.
+        long_offset: Starting group offset in long_planes.
+        num_samples: Total number of samples in the block.
+
+    Returns:
+        True if every bit of planes 32-63 is zero for the block's samples, False otherwise.
+    """
     num_groups = plane_groups(num_samples)
     tail_mask = np.uint8((1 << (num_samples % 8)) - 1) if num_samples % 8 else np.uint8(0xFF)
     for plane_idx in range(TIME_SHORT_PLANES):
@@ -803,8 +945,9 @@ def read_time_columns(
     out_time_steps: np.ndarray,
     out_time_refs: np.ndarray,
 ) -> tuple[int, int]:
-    """Deserializes the time_start, time_step and time_ref fields and validates the time axis,
-    without unpacking any time residual planes.
+    """Deserializes the time_start, time_step and time_ref fields and validates them.
+
+    The time residual planes aren't unpacked.
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes of a unit with a time axis.
@@ -911,11 +1054,25 @@ def read_time_rows(
     out_time_residuals: np.ndarray,
     block_ids: np.ndarray | None = None,
 ) -> tuple[int, int]:
-    """Deserializes the time fields: read_time_columns, then the time residuals of block_ids
-    (every block if None) unless the columns are invalid.
+    """Deserializes the time fields: read_time_columns, then the time residuals of block_ids.
+
+    Reads time residuals for block_ids (or every block if None), unless the columns are invalid.
+
+    Args:
+        raw_unit: 1D uint8 array of uncompressed body bytes.
+        sample_offsets: 1D int64 array of sample offsets.
+        group_offsets: 1D int64 array of group offsets.
+        code_offsets: 1D int64 array of code plane offsets.
+        short_offsets: 1D int64 array of short time plane offsets.
+        long_offsets: 1D int64 array of long time plane offsets.
+        out_time_starts: Destination 1D int64 array for block start times.
+        out_time_steps: Destination 1D int64 array for block time steps.
+        out_time_refs: Destination 1D uint64 array for block reference quotients.
+        out_time_residuals: Destination 1D uint64 array for zigzagged time residuals.
+        block_ids: Optional 1D int64 array specifying which blocks' residuals to unpack.
 
     Returns:
-        read_time_columns' (status, block_idx).
+        A tuple of (status, failing_block_idx) matching read_time_columns.
     """
     offsets = (sample_offsets, group_offsets, code_offsets, short_offsets, long_offsets)
     status = read_time_columns(raw_unit, *offsets, out_time_starts, out_time_steps, out_time_refs)
@@ -1010,7 +1167,8 @@ def read_rows(
 ) -> None:
     """Deserializes the value fields of a unit from an uncompressed body buffer.
 
-    The block flags and sizes are read directly (they give the Layout).
+    The block flags are read from the body (they say which blocks have code planes); the
+    block sizes come in through the Layout's offsets.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed body bytes.
@@ -1159,7 +1317,15 @@ def read_unit(
 
 @njit(inline="always")
 def _copy_bytes(dst: np.ndarray, dst_offset: int, src: np.ndarray, src_offset: int, num_bytes: int) -> None:
-    """Copies bytes between 1D arrays (sliced first, as in _copy_columns)."""
+    """Copies contiguous bytes between 1D arrays without boundary bounds check overhead.
+
+    Args:
+        dst: Destination 1D uint8 array.
+        dst_offset: Starting write offset in dst.
+        src: Source 1D uint8 array.
+        src_offset: Starting read offset in src.
+        num_bytes: Number of bytes to copy.
+    """
     dst_bytes = dst[dst_offset:dst_offset + num_bytes]
     src_bytes = src[src_offset:src_offset + num_bytes]
     for byte_idx in range(num_bytes):
@@ -1170,11 +1336,17 @@ def _copy_bytes(dst: np.ndarray, dst_offset: int, src: np.ndarray, src_offset: i
 def _copy_columns(dst: np.ndarray, dst_offset: int, src: np.ndarray, src_offset: int, num_columns: int) -> None:
     """Copies num_columns columns of every row of a 2D plane field.
 
-    Each row is sliced first and indexed from 0: numba's slice assignment between arrays,
-    and indexing with a runtime signed offset (its negative-index wraparound), both keep the
-    loop from vectorizing, at about 10x the cost.
+    Args:
+        dst: Destination 2D uint8 array.
+        dst_offset: Starting column offset in dst.
+        src: Source 2D uint8 array.
+        src_offset: Starting column offset in src.
+        num_columns: Number of columns to copy per row.
     """
     for row_idx in range(src.shape[0]):
+        # Slice each row first and index it from 0: numba's slice assignment between arrays,
+        # and indexing with a runtime signed offset (negative-index wraparound), both keep
+        # the loop from vectorizing, at about 10x the cost
         dst_row = dst[row_idx, dst_offset:dst_offset + num_columns]
         src_row = src[row_idx, src_offset:src_offset + num_columns]
         for column_idx in range(num_columns):
@@ -1210,8 +1382,12 @@ def _splice_body(
     long_offsets: np.ndarray,
     out_body: np.ndarray,
 ) -> None:
-    """Writes a byte-plane body whose blocks come from the new rows (new_ranks[b] >= 0) or are
-    old block b, whose bytes are copied (see splice_body)."""
+    """Writes the byte-plane body of splice_body, preallocated as out_body.
+
+    Block b is packed from the new rows if new_ranks[b] >= 0 (new_ranks[b] is its position
+    among them), and otherwise copied from old block b. The other arguments are those of
+    splice_body, then the merged unit's flags, sizes and Layout.
+    """
     num_blocks = block_flags.shape[0]
     old_num_blocks = old_sample_offsets.shape[0] - 1
     old_groups, groups = int(old_group_offsets[old_num_blocks]), int(group_offsets[num_blocks])
@@ -1348,8 +1524,12 @@ def _copy_planes(
     first_block: int,
     end_block: int,
 ) -> None:
-    """Copies the plane bytes of the carried blocks first_block to end_block: each field's
-    bytes of a run of blocks are consecutive in both bodies."""
+    """Copies the plane bytes of carried blocks first_block to end_block - 1.
+
+    Each field's bytes of a run of blocks are consecutive in both bodies, so each field is
+    one copy. The old_* and new arguments are the planes and offsets of the old and the new
+    body.
+    """
     num_groups = group_offsets[end_block] - group_offsets[first_block]
     _copy_columns(bplanes, 8 * group_offsets[first_block], old_bplanes, 8 * old_group_offsets[first_block],
                   8 * num_groups)
@@ -1369,10 +1549,9 @@ def splice_body(
     new_rows: UnitRows,
     new_sample_offsets: np.ndarray,
 ) -> tuple[np.ndarray, Layout]:
-    """Builds the byte-plane body of a unit with some blocks replaced or appended, copying the
-    others' bytes.
+    """Builds the byte-plane body of a unit with some blocks replaced or appended.
 
-    In every plane field a block's bytes start on a byte boundary, so a block carried over
+    The other blocks' bytes are copied. In every plane field a block's bytes start on a byte boundary, so a block carried over
     is copied from the old body as it is: no unpacking, and its padding bits stay as they
     were. The new blocks are packed from their rows. Without padding bits set in the old
     body, the result is write_unit (byte planes) of the merged rows.
@@ -1421,6 +1600,10 @@ def splice_body(
 
 def check_time_rows_status(status: int, block_idx: int) -> None:
     """Raises the error for a read_time_rows status other than TIME_ROWS_OK.
+
+    Args:
+        status: A TIME_ROWS_* status from read_time_rows.
+        block_idx: The block it reports, for the message.
 
     Raises:
         ValueError: If the status reports a corrupt time column.
