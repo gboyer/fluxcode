@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Can the small-frame retry (compressing a block-flushed frame again in one block run) be skipped
-by a rule decided before compressing? From table.py's per-group sizes (heuristic layout, flushed
+by a rule decided before compressing? From table.py's per-block-group sizes (heuristic layout, flushed
 after dense planes vs one block run), against always retrying under 16 KB:
 
 - flush only when the residual planes hold at least T non-zero bytes, else one run (one compression);

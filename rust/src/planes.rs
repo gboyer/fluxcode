@@ -28,8 +28,8 @@ pub const PATH: &str = if cfg!(target_arch = "aarch64") {
     "scalar"
 };
 
-/// Transposes the bits of the 8 bytes of each octet, held as a word (bit j of byte i becomes bit i of
-/// byte j).
+/// Transposes the bits of the 8 bytes of each octet, held as a word (bit j of byte i becomes bit i
+/// of byte j).
 #[inline(always)]
 pub fn transpose8(mut word: u64) -> u64 {
     // swap the 1-bit, 2-bit and 4-bit sub-matrices (spaced 7, 14 and 28 bits apart)

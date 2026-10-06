@@ -8,7 +8,8 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
 
 ## 1. Block groups and blocks
 
-- **A block group is one storage artifact** (e.g. a database row): blocks encoded and decoded together.
+- **A block group is one storage artifact** (e.g. a database row): blocks encoded and decoded
+  together.
   - Block groups are independent of each other.
   - A block group holds 0 to 65,535 blocks.
 - **A block holds 0 to 65,535 samples.** Each block's size is recorded in the block group.
@@ -47,7 +48,7 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
   - A block group without them has time unit 0 in its header and no time fields in its body.
   - It decodes with `times = None`.
 - **Ticks.** Timestamps are int64 ticks since 1970-01-01, in one of the Arrow and numpy datetime64
-  block groups, recorded in the header (§6):
+  units, recorded in the header (§6):
 
   | time unit | code | int64 range around 1970 |
   |---|---|---|
@@ -145,8 +146,8 @@ decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integ
     are 0 in a regular block (block flag bit 4 clear).
   - `time[i] = start + time_step · (quotient[1] + … + quotient[i])`. A regular block is therefore
     `time[i] = start + i · time_ref · time_step`.
-  - All arithmetic is exact in 64 bits. A decoder rejects a block group whose times would exceed int64
-    maximum (§6).
+  - All arithmetic is exact in 64 bits. A decoder rejects a block group whose times would exceed
+    int64 maximum (§6).
 
 ## 6. Block group format
 
@@ -291,7 +292,9 @@ has:
 **Worked example with a time axis** (`tests/test_time.py::test_worked_example_layout`):
 - 20 samples in blocks of 8, 8 and 4;
 - ns ticks (small, for readability);
-- bit planes (header flags bit 0 clear).
+- bit planes (header flags bit 0 clear). The test asks for them (`planes="bit"`): with the
+  reference encoder's default layout choice the all-zero residuals tie, and it picks byte planes
+  (header flags 0x09).
 
 ```
 times   block 0: 1000 1010 1020 1030 1040 1050 1060 1070   regular
@@ -323,8 +326,8 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 
 ## 7. Exactly representable values
 
-What a block group can hold bit for bit. Whether a given encoder finds that representation is up to the
-encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
+What a block group can hold bit for bit. Whether a given encoder finds that representation is up to
+the encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
 
 - **Power-of-two grids.** A block whose finite values are all a + q·2^e, with
   - a a finite float64,
@@ -350,8 +353,8 @@ A decoder conforms when:
 1. **Bit order:** it decodes the test vector of §6.5.
 2. **Any writer choice decodes:** a block group decodes the same whatever order, grid and anchor its
    writer picked, including any finite unsnapped anchor and any `time_ref`.
-3. **Self-describing block groups:** it needs only the block group, and returns exactly `num_samples` samples
-   and each block's size.
+3. **Self-describing block groups:** it needs only the block group, and returns exactly
+   `num_samples` samples and each block's size.
 4. **Validation:** it rejects each failure listed in §6.4.
 5. **Time axis:** it decodes the worked example of §6.5 byte for byte.
 

@@ -66,7 +66,7 @@ def rules():
         w = a[:, 9]
         before = (w * np.minimum(a[:, 0], a[:, 2])).sum()
         oracle = (w * np.minimum(a[:, 1], a[:, 3])).sum()
-        print(f"{name}: per-group better flushed layout {100 * (oracle / before - 1):+.2f}% against before")
+        print(f"{name}: per-block-group better flushed layout {100 * (oracle / before - 1):+.2f}% against before")
     for retry in (False, True):
         print(f"\nrule (byte planes iff share(u >= 2^k) < t), flushed{', other layout under 16 KB' if retry else ''}:")
         for k in (6, 7, 8):

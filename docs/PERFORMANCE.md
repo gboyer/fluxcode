@@ -7,18 +7,18 @@ slow it down. Raw output: [bench/STRESS_RESULTS.md](../bench/STRESS_RESULTS.md);
 harness: [bench/stress.py](../bench/stress.py).
 
 **Since these tables, `Params.planes` became `Params.effort`** (TUNING.md, Effort). `planes="best"`
-below is the old default, which is now effort 3–4 (the default, 4): the same block groups, byte for byte.
-`planes="bit"` is gone; effort 1 is the fast option (about a third faster, 1.5–2.5% larger). The
-tables below are from 2026-10-01; the 2026-10-02 reruns in `bench/` (gigabyte, day-scale, timestamps,
-updates, with the default effort) agree within 1–4%, with the same sizes.
+below is the old default, which is now effort 3–4 (the default, 4): the same block groups, byte for
+byte. `planes="bit"` is gone; effort 1 is the fast option (about a third faster, 1.5–2.5% larger).
+The tables below are from 2026-10-01; the 2026-10-02 reruns in `bench/` (gigabyte, day-scale,
+timestamps, updates, with the default effort) agree within 1–4%, with the same sizes.
 
-Most of the change from the previous tables is `planes="best"`: every block group is compressed twice,
-with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller and
-encode about 1.5x slower; `planes="bit"` skips the second pass. Variable block sizes alone (a
+Most of the change from the previous tables is `planes="best"`: every block group is compressed
+twice, with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller
+and encode about 1.5x slower; `planes="bit"` skips the second pass. Variable block sizes alone (a
 per-block `block_sizes` column, an 8-byte header, flat per-block offsets in every kernel) cost
-encode +1–3% (+2–6 µs per block group) and decode +2–4% (+2–5 µs), and block groups are 1–7 bytes smaller.
-Snapping the grid costs nothing measurable, nor does the int16 `grid_params` column, except on
-block groups of thousands of tiny blocks whose body drops below 256 KB, where libzstd switches
+encode +1–3% (+2–6 µs per block group) and decode +2–4% (+2–5 µs), and block groups are 1–7 bytes
+smaller. Snapping the grid costs nothing measurable, nor does the int16 `grid_params` column, except
+on block groups of thousands of tiny blocks whose body drops below 256 KB, where libzstd switches
 parameters (updates below).
 
 ## Summary
@@ -41,21 +41,22 @@ day, 1.5x the baseline. Performance is more than sufficient for this use case. W
 ## Method
 
 - **Workload.** `bench/stress.py` runs the full tag x block group grid through the public
-  `encode_group` / `decode_group`, one call per block group, with the summary statistics and zstd included.
-  Workers claim whole tags (a day each) from a shared counter. Threads (default) and processes
-  are both supported.
+  `encode_group` / `decode_group`, one call per block group, with the summary statistics and zstd
+  included. Workers claim whole tags (a day each) from a shared counter. Threads (default) and
+  processes are both supported.
 - **Data.** A preset sensor-fleet mix (`sensor-mix`): 35% analog process values (16-bit ADC), 25% held /
   deadband values on a 0.01 grid, 10% digital 0/1, 10% vibration stored as float32, 5% totalizers
   on a 0.001 grid, and 5% each of a 0.1-rounded sensor, a noisy sine and a random walk. The
   weights are a guess; `--data` takes any weighted list of the 25 kinds.
-- **Data reuse.** Generating 691 GB would take far longer than coding it, so each kind has a pool
-  of 32 distinct one-minute block groups (15 MB per kind, larger than the caches), cycled across tags.
-  fluxcode keeps no state between block groups, so the per-group work is what distinct data would cost.
+- **Data reuse.** Generating 691 GB would take far longer than coding it, so each kind has a pool of
+  32 distinct one-minute block groups (15 MB per kind, larger than the caches), cycled across tags.
+  fluxcode keeps no state between block groups, so the per-block-group work is what distinct data
+  would cost.
 - **NaN.** By default each tag gets 3 NaN minutes per day in 2 runs at random sample offsets, not
-  aligned to blocks or block groups (0.35% of block groups touched). `--sprinkle` scatters isolated NaNs
-  through every block group.
-- **Checks.** Every pool block group is decoded and verified before timing: non-finite positions exact,
-  and every finite error within the quantization bound.
+  aligned to blocks or block groups (0.35% of block groups touched). `--sprinkle` scatters isolated
+  NaNs through every block group.
+- **Checks.** Every pool block group is decoded and verified before timing: non-finite positions
+  exact, and every finite error within the quantization bound.
 - **Not measured.** Parsing the ingest format, storage I/O, and cold-cache reads of compressed
   data. The decode phase reads its compressed input from the pool, which is small and cache-hot.
 
@@ -103,9 +104,9 @@ about 31 µs for the bit-plane shuffle, and 8-87 µs of zstd per pass depending 
 - **NaN runs cost little.** Blocks that are entirely NaN are cheap; only the two
   partial blocks at the ends of each run take the non-finite path.
 - **Scattered NaNs are the worst case.** A tag with intermittent bad-quality samples sends every
-  affected block down the non-finite path. Before the `noise_finite` rewrite (branch-free
-  loops, scratch buffers allocated once per block group), the 1%-scattered case took 137 s; after it,
-  108 s with bit planes only (2026-09-25), and 158 s with both plane passes now.
+  affected block down the non-finite path. Before the `noise_finite` rewrite (branch-free loops,
+  scratch buffers allocated once per block group), the 1%-scattered case took 137 s; after it, 108 s
+  with bit planes only (2026-09-25), and 158 s with both plane passes now.
 - **Decimal detection near misses.** A block on a decimal grid except for one late sample makes
   each candidate exponent scan the whole block before failing. With bit planes only that cost
   4.28 µs/block against 3.53 for plain data (2026-09-25); with both plane passes it is within
@@ -145,9 +146,10 @@ Per clock kind, every tag on that clock (250 tags, the same session; percentages
 - **Noisy clocks dominate the mix.** The 10% of tags on a noisy clock add 7.1 bits/sample of real
   jitter entropy, most of the day's extra 7.8 GB, and each irregular block goes through the GCD,
   the reference, 32 residual planes and zstd.
-- **32 residual planes, 64 only for long blocks** (a residual of 2^32 or more: in ns ticks, a gap
-  of seconds). zstd scans zero bytes at about 9 GB/s, so the 32 dead planes per block cost 26-38 µs
-  of encode per irregular block group (the day: 101.1 s before, 92.5 s after, 2026-09-27), at the same size.
+- **32 residual planes, 64 only for long blocks** (a residual of 2^32 or more: in ns ticks, a gap of
+  seconds). zstd scans zero bytes at about 9 GB/s, so the 32 dead planes per block cost 26-38 µs of
+  encode per irregular block group (the day: 101.1 s before, 92.5 s after, 2026-09-27), at the same
+  size.
 - **The per-block reference** (the rounded mean or the minimum of the quotients) cut the day's
   timestamps from 9.14 to 7.73 GB (the noisy clocks from 12.16 to 10.86 bits/sample) at no
   measurable encode cost and about 2% on decode (alternating quarter-day runs, 3 each; 2026-09-27).
@@ -189,34 +191,34 @@ table: [bench/UPDATE_RESULTS.md](../bench/UPDATE_RESULTS.md)):
 | `update_time_blocks`, one sample in 1 of the 3,600 blocks | −30% to −41% |
 | `update_time_blocks`, one sample (replaced) in each of the 3,600 blocks | +38% to +80% (+536 to +697 µs) |
 
-An update decompresses the old block group, encodes only the new blocks, and copies every carried block's
-bytes into the new body (`_bitpacking.splice_body`), so it skips the kernels and the shuffle for
-the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode does. The bodies
-are built in byte planes, which are what the carried blocks are copied between (a bit-plane block group's
-residual region is converted once, by one transpose, before the copy), and the bit-plane body for
-the second candidate is derived from the byte-plane one by one more transpose of the whole region
-(`_bitpacking.to_bit_planes`): octets line up across the region, so no block is converted
-on its own. The same holds for `write_group` when a block group is encoded (3,600 blocks of 10: 195 µs in
-bit planes; 52 µs in byte planes plus the 24 µs transpose).
-In `update_time_blocks` the decoded and new samples are merged in one numba pass over both (they are
-sorted): which old samples go, where the new ones land, the changed blocks and their sizes, so the
-Python code around it does no per-block or per-sample work. Likewise `splice` checks the block
-order with array operations and one batched call for the last ticks of carried neighbours. Before
-that pass the 60-block straddle spent 150 µs of 540 in two `searchsorted` calls, and one sample in
-each of 3,600 blocks cost 4.5 ms against 1.6 ms to encode (now 1.9 ms against 1.4).
-The 3,600-block rows depend on zstd: their bit-plane body is 248 KB, just under 256 KB, where
-libzstd picks the level-3 parameters for smaller inputs, which compress it in 348 µs instead of
-148 (full details in UPDATE_RESULTS.md).
+An update decompresses the old block group, encodes only the new blocks, and copies every carried
+block's bytes into the new body (`_bitpacking.splice_body`), so it skips the kernels and the shuffle
+for the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode does. The
+bodies are built in byte planes, which are what the carried blocks are copied between (a bit-plane
+block group's residual region is converted once, by one transpose, before the copy), and the
+bit-plane body for the second candidate is derived from the byte-plane one by one more transpose of
+the whole region (`_bitpacking.to_bit_planes`): octets line up across the region, so no block is
+converted on its own. The same holds for `write_group` when a block group is encoded (3,600 blocks
+of 10: 195 µs in bit planes; 52 µs in byte planes plus the 24 µs transpose). In `update_time_blocks`
+the decoded and new samples are merged in one numba pass over both (they are sorted): which old
+samples go, where the new ones land, the changed blocks and their sizes, so the Python code around
+it does no per-block or per-sample work. Likewise `splice` checks the block order with array
+operations and one batched call for the last ticks of carried neighbours. Before that pass the
+60-block straddle spent 150 µs of 540 in two `searchsorted` calls, and one sample in each of 3,600
+blocks cost 4.5 ms against 1.6 ms to encode (now 1.9 ms against 1.4). The 3,600-block rows depend on
+zstd: their bit-plane body is 248 KB, just under 256 KB, where libzstd picks the level-3 parameters
+for smaller inputs, which compress it in 348 µs instead of 148 (full details in UPDATE_RESULTS.md).
 
 ## Implementation notes
 
 None of these change the format.
 
 **Structure**
-- **Compiled calls per block group, never per block.** The encoder stages for all blocks of a block group run
-  in one `@njit` call (`_encoder.encode_group`), and the serializer (`_bitpacking.write_group`) in a
-  second one, writing every field straight into one output buffer. Allocations are per block group and
-  small (the 120 KB block group buffer costs 0.2 µs). zstd contexts are reused, one per thread.
+- **Compiled calls per block group, never per block.** The encoder stages for all blocks of a block
+  group run in one `@njit` call (`_encoder.encode_group`), and the serializer
+  (`_bitpacking.write_group`) in a second one, writing every field straight into one output buffer.
+  Allocations are per block group and small (the 120 KB block group buffer costs 0.2 µs). zstd
+  contexts are reused, one per thread.
 - **Rare inputs stay off the common path.** Blocks holding NaN or ±inf are handled in
   `_nonfinite.py`. Subnormal ranges, ranges at or past 2^1023 and overflowing sums are handled in
   `_extreme_magnitudes.py`. Each is reached through one branch per block, so the clean path in
@@ -297,15 +299,15 @@ The cost is the transpose and the stores, which a fused encoder would still do; 
 separate memory pass to remove. An earlier estimate of ~15% of encode for fusion was wrong.
 
 **A faster shuffle.** Two variants that produce identical bytes were tried: storing one plane at a
-time (27.3 to 24.2 µs per block group, about 1.5% of encode), and also skipping the high-byte planes of
-blocks whose residuals are all small (21.5 µs on smooth data, but 28.3 to 32.4 µs on a random
+time (27.3 to 24.2 µs per block group, about 1.5% of encode), and also skipping the high-byte planes
+of blocks whose residuals are all small (21.5 µs on smooth data, but 28.3 to 32.4 µs on a random
 walk). At most ~3% of encode, with a regression on noisy data. Not worth the code.
 
 ## Reproducing
 
-    uv run python bench/stress.py --breakdown                   # full target, ~2 minutes
-    uv run python bench/stress.py --scale 0.25 --sprinkle 0.01  # an adversarial variant
-    uv run python bench/stress.py --times clock-mix             # with exact timestamps, ~3 minutes
-    uv run python bench/time_axis.py                            # timestamp cost per clock shape, one block group
-    uv run python bench/update.py                               # update / update_time_blocks vs encode
-    uv run python bench/stress.py --list                        # signal kinds and presets
+    uv run python bench/stress.py --breakdown                   # full target, ~2 minutes uv run
+    python bench/stress.py --scale 0.25 --sprinkle 0.01  # an adversarial variant uv run python
+    bench/stress.py --times clock-mix             # with exact timestamps, ~3 minutes uv run python
+    bench/time_axis.py                            # timestamp cost per clock shape, one block group
+    uv run python bench/update.py                               # update / update_time_blocks vs
+    encode uv run python bench/stress.py --list                        # signal kinds and presets

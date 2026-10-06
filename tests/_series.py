@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Helpers for tests and benchmarks that check per-block properties across a long series:
-encode() with its per-group index lists joined into flat per-block arrays, and back."""
+encode() with its per-block-group index lists joined into flat per-block arrays, and back."""
 
 from contextlib import contextmanager
 

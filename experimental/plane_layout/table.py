@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Per-group table for combining the layout heuristic with block flushing: the real compressed
+"""Per-block-group table for combining the layout heuristic with block flushing: the real compressed
 block group size (header included) of each layout (bit planes, byte planes) under each framing (one
 block run as today, a flush after every plane / every 4 planes / every 8 planes, and the encoder's
 rule: a flush after each plane with more than 1/16 of its bytes non-zero), plus the features a

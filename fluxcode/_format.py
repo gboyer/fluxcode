@@ -132,7 +132,7 @@ CODE_NEG_INF: int = int(NonFiniteCode.NEG_INF)
 """Two-bit code representing negative infinity (-inf, 11b)."""
 
 
-class TimeGroupCode(enum.IntEnum):
+class TimeUnitCode(enum.IntEnum):
     """Time unit codes stored in block group header flags bits 1-3 (0: no time axis)."""
 
     NONE = 0
@@ -143,15 +143,15 @@ class TimeGroupCode(enum.IntEnum):
 
 
 TIME_UNIT_NAMES: dict[int, str] = {
-    TimeGroupCode.SECONDS: "s",
-    TimeGroupCode.MILLISECONDS: "ms",
-    TimeGroupCode.MICROSECONDS: "us",
-    TimeGroupCode.NANOSECONDS: "ns",
+    TimeUnitCode.SECONDS: "s",
+    TimeUnitCode.MILLISECONDS: "ms",
+    TimeUnitCode.MICROSECONDS: "us",
+    TimeUnitCode.NANOSECONDS: "ns",
 }
-"""numpy datetime64 block group name of each time unit code."""
+"""numpy datetime64 unit name of each time unit code."""
 
 TIME_UNIT_CODES: dict[str, int] = {name: code for code, name in TIME_UNIT_NAMES.items()}
-"""Time unit code of each numpy datetime64 block group name."""
+"""Time unit code of each numpy datetime64 unit name."""
 
 
 E_MIN: int = -1074
@@ -386,7 +386,7 @@ class GroupHeader(NamedTuple):
         num_blocks: Number of blocks.
         num_samples: Sample count of the block group (the sum of its block sizes).
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
-        time_unit: Time unit code (TimeGroupCode; 0 for a block group without a time axis).
+        time_unit: Time unit code (TimeUnitCode; 0 for a block group without a time axis).
     """
 
     num_blocks: int
@@ -402,7 +402,7 @@ def pack_header(num_blocks: int, num_samples: int, byte_planes: bool = False, ti
         num_blocks: Number of blocks.
         num_samples: Sample count of the block group.
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
-        time_unit: Time unit code (TimeGroupCode; 0 for no time axis).
+        time_unit: Time unit code (TimeUnitCode; 0 for no time axis).
 
     Returns:
         The header bytes.
@@ -433,8 +433,8 @@ def unpack_header(group: bytes) -> GroupHeader:
     if flags & GROUP_FLAG_RESERVED:
         raise ValueError("block group header sets reserved bits (not supported by this version)")
     time_unit = (flags & GROUP_FLAG_TIME_UNIT_MASK) >> GROUP_FLAG_TIME_UNIT_SHIFT
-    if time_unit > TimeGroupCode.NANOSECONDS:
-        raise ValueError(f"block group header time unit {time_unit} is not supported (expected 0 to {int(TimeGroupCode.NANOSECONDS)})")
+    if time_unit > TimeUnitCode.NANOSECONDS:
+        raise ValueError(f"block group header time unit {time_unit} is not supported (expected 0 to {int(TimeUnitCode.NANOSECONDS)})")
     if num_samples > min(MAX_GROUP_SAMPLES, num_blocks * MAX_BLOCK_LEN):
         raise ValueError(
             f"block group sample count {num_samples} is over {MAX_GROUP_SAMPLES} or what {num_blocks} blocks can hold"

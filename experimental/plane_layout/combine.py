@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""The layout heuristic and block flushing together, from the per-group tables of table.py.
+"""The layout heuristic and block flushing together, from the per-block-group tables of table.py.
 
 Columns of `sizes`: bit planes under 5 framings [one block run, flush after every plane, every 4,
 every 8, dense planes (the encoder's rule)], then the same 5 for byte planes. Block group sizes include
@@ -79,4 +79,4 @@ if __name__ == "__main__":
             print(f"{lo:9.0f}-{hi_:9.0f} B {m.sum():6d} " + " ".join(
                 f"{1 - v[m].sum() / pooled[m].sum():+8.2%} saved, {np.mean(v[m] > pooled[m]):4.0%} worse" for v in cols.values()))
     print(f"{'worst group vs one run':>27s} " + " ".join(f"{(v / pooled).max() - 1:+26.1%}" for v in cols.values()))
-    print(f"{'mean per-group change':>27s} " + " ".join(f"{np.mean(v / pooled) - 1:+26.2%}" for v in cols.values()))
+    print(f"{'mean per-block-group change':>27s} " + " ".join(f"{np.mean(v / pooled) - 1:+26.2%}" for v in cols.values()))

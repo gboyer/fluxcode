@@ -8,7 +8,7 @@ B   fine grid (e16), q rounded to multiples of 2^k: identical reconstruction to 
 B'  as B with sign-magnitude instead of zigzag (u = |v| << 1 | sign), so zeroed low bits stay zero
 C   per-sample: samples near a second difference beyond 4 robust sigmas (spikes, edges; +/-2
     samples) keep full precision, the rest are truncated as in B' (and with zigzag)
-Orders 0-3 picked per block on the final q; 60-block groups, bit-shuffled, zstd-3 (the fluxcode
+Orders 0-3 picked per block on the final q; block groups of 60 blocks, bit-shuffled, zstd-3 (the fluxcode
 prototype's pipeline, tslab/flux/proto.py). Sizes leave out the block minima (8 bytes per block,
 the same in every variant).
 

@@ -31,14 +31,13 @@ High level properties:
 Encoding features to balance size, accuracy, and performance depending on data
 type:
 
-* **Noise floor**: For data with high frequency noise, you can optionally specify the
-  sigma multiplier that you want to preserve, and the quantization grid is reduced
-  accordingly. This helps compression for noisy data, but
-  preserves clean periodic data (unless the frequency approaches the sample rate).
-  By default, 0.25 sigmas for block groups without timestamps, and off for block groups with them: timed
-  data is often irregular (a historian's swinging-door archive, events), whose samples look
-  like white noise without being noise. It only applies to blocks of at least 256 samples, so a
-  fixed `block_len` under 256 never gets one.
+* **Noise floor**: For data with high frequency noise, you can optionally specify the sigma
+  multiplier that you want to preserve, and the quantization grid is reduced accordingly. This helps
+  compression for noisy data, but preserves clean periodic data (unless the frequency approaches the
+  sample rate). By default, 0.25 sigmas for block groups without timestamps, and off for block
+  groups with them: timed data is often irregular (a historian's swinging-door archive, events),
+  whose samples look like white noise without being noise. It only applies to blocks of at least 256
+  samples, so a fixed `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -113,19 +112,20 @@ assert sum(len(decoded.values) for decoded in fluxcode.decode(groups)) == 5 * x.
 This prints `5.77 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
 which set the step to 0.25σ.
 
-- `encode_group(x, params, *, block_len=1000, times=None, time_unit=None)`: one block group (an 8-byte
-  header and a zstd frame) of blocks of `block_len` samples (1 to 65,535; the last block holds the
-  rest). It also returns per-block min, max and mean (over finite samples) as summary statistics:
-  they come free with encoding, and decoding doesn't need them. `times` optionally stores one
-  timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or integer ticks with
+- `encode_group(x, params, *, block_len=1000, times=None, time_unit=None)`: one block group (an
+  8-byte header and a zstd frame) of blocks of `block_len` samples (1 to 65,535; the last block
+  holds the rest). It also returns per-block min, max and mean (over finite samples) as summary
+  statistics: they come free with encoding, and decoding doesn't need them. `times` optionally
+  stores one timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or integer ticks with
   `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and non-decreasing; equal
   timestamps are fine. A regular grid costs about 65 bytes per block group.
-- `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one block group of blocks of the
-  given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list arrays.
-  An empty block stores nothing (NaN statistics). Blocks of at most 8 samples skip the analysis:
-  they are stored at the finest step, without differences (decimal data still stays exact).
-- `encode_time_blocks(x, times, params, *, start_time, block_duration, time_unit=None)`: one block group
-  in which block b holds the samples timed in `[start_time + b·block_duration, start_time +
+- `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one block group of blocks
+  of the given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list
+  arrays. An empty block stores nothing (NaN statistics). Blocks of at most 8 samples skip the
+  analysis: they are stored at the finest step, without differences (decimal data still stays
+  exact).
+- `encode_time_blocks(x, times, params, *, start_time, block_duration, time_unit=None)`: one block
+  group in which block b holds the samples timed in `[start_time + b·block_duration, start_time +
   (b+1)·block_duration)`; blocks without samples are empty. `start_time` (`datetime64`, naive
   `datetime` or ticks) and `block_duration` (`timedelta64`, `timedelta` or ticks) aren't stored:
   keep them with the block group, e.g. the start in its storage key.
@@ -133,16 +133,17 @@ which set the step to 0.25σ.
   `decode(groups)`: bulk versions. `encode` splits a long series (and its times, non-decreasing
   across block group boundaries too) into block groups of `blocks_per_group` blocks and returns
   `(groups, block_mins, block_maxs, block_means)`, one entry per block group; `decode` returns one
-  `DecodedGroup` per block group. A block group holds at most 65,535 blocks and 2^26 = 67,108,864 samples (the
-  bound decoders accept).
+  `DecodedGroup` per block group. A block group holds at most 65,535 blocks and 2^26 = 67,108,864
+  samples (the bound decoders accept).
 - `decode_group(group)`: returns `DecodedGroup(values, times, block_sizes)`. `times` is `datetime64`
-  in the encoded block group, or `None` for a block group encoded without times. The block group records everything
-  needed.
+  in the encoded block group, or `None` for a block group encoded without times. The block group
+  records everything needed.
 - `update(group, blocks, params, *, times=None)`: replace or append whole blocks, given as a dict
   `{index: samples}` of any sizes (skipped indices past the end are appended empty); untouched
   blocks decode to identical values. `times` (a dict with the same keys) is required exactly when
-  the block group has a time axis. The update functions return `UpdatedGroup(group, indices, block_min,
-  block_max, block_mean)`: the new block group and the statistics of the blocks they re-encoded.
+  the block group has a time axis. The update functions return `UpdatedGroup(group, indices,
+  block_min, block_max, block_mean)`: the new block group and the statistics of the blocks they
+  re-encoded.
 - `update_time_blocks(group, x, times, params, *, start_time, block_duration, delete_ranges=None,
   time_unit=None)`: an upsert plus a range deletion. It first deletes the block group's samples in
   `delete_ranges` (`[start, end)` pairs: one pair, a list, or a `(k, 2)` array), then adds the new
@@ -180,11 +181,11 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
-the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range.
-The default effort compresses each block group with bit and with byte planes and keeps the smaller. The
-whole set at effort 1 is 4.83 bits/sample at 3.35 µs/block to encode, and at effort 5 4.66 at 5.76
-([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits`
-(see the [research report](experimental/report/index.html#scatter-kinds)).
+the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The default
+effort compresses each block group with bit and with byte planes and keeps the smaller. The whole
+set at effort 1 is 4.83 bits/sample at 3.35 µs/block to encode, and at effort 5 4.66 at 5.76
+([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits` (see
+the [research report](experimental/report/index.html#scatter-kinds)).
 
 Decoding runs at about 4.5 GB/s per core, and the kernels release the GIL:
 4 threads encode about 5 GB/s and decode about 15 GB/s (8 threads add little: 4 of the 8 cores
@@ -213,8 +214,8 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   stored as float32 upstream decode as the decimal itself.
 - **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet
   NaN; −0.0 decodes as +0.0), as do subnormal ranges and blocks spanning ±DBL_MAX.
-- **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so
-  they decode identically; without a size target, the updated block group is byte-identical to encoding
+- **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
+  decode identically; without a size target, the updated block group is byte-identical to encoding
   the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
 - **Timestamps decode exactly.**
 
@@ -237,12 +238,12 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
   Residuals wrap mod 2^16, so they always fit in 16 bits.
 - **[Zigzag](https://protobuf.dev/programming-guides/encoding/#signed-ints)** maps signed
   residuals to unsigned, so small magnitudes have leading zero bits.
-- **[Bit-shuffle](https://github.com/kiyo-masui/bitshuffle)** ([paper](https://arxiv.org/abs/1503.00638))
-  across the whole block group: bit plane j of every residual is stored together, so the high planes are
-  long runs of zeros.
-- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** compresses the whole block group as one frame
-  (zstd level 3, or 1 at `effort=1`; at `effort=9` the smaller of levels 3 and 9), from effort 5 with a
-  zstd block, and so its own Huffman table, per dense plane.
+- **[Bit-shuffle](https://github.com/kiyo-masui/bitshuffle)**
+  ([paper](https://arxiv.org/abs/1503.00638)) across the whole block group: bit plane j of every
+  residual is stored together, so the high planes are long runs of zeros.
+- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** compresses the whole block group as one
+  frame (zstd level 3, or 1 at `effort=1`; at `effort=9` the smaller of levels 3 and 9), from effort
+  5 with a zstd block, and so its own Huffman table, per dense plane.
 
 ## Documentation
 

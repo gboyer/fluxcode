@@ -296,7 +296,7 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
         block_flags, sizes, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
         np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
     )
-    header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeGroupCode.NANOSECONDS))
+    header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnitCode.NANOSECONDS))
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 

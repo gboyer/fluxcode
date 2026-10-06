@@ -10,7 +10,7 @@ from typing import Literal, NamedTuple
 import numpy as np
 
 MIN_TARGET_BITS: float = 6.0
-"""Minimum allowed per-group bit target per sample."""
+"""Minimum allowed per-block-group bit target per sample."""
 
 MIN_EFFORT: int = 1
 MAX_EFFORT: int = 9
@@ -63,7 +63,7 @@ class DecodedGroup(NamedTuple):
 
     Attributes:
         values: 1D float64 array of the block group's samples.
-        times: 1D datetime64 array of the samples' timestamps, in the block group they were
+        times: 1D datetime64 array of the samples' timestamps, in the unit they were
             encoded with (s, ms, us or ns); None for a block group encoded without times.
         block_sizes: 1D int64 array of the sample count of each block: block b holds
             values[offsets[b]:offsets[b + 1]], with offsets the cumulative sum from 0.
@@ -98,7 +98,7 @@ class Params:
     """Encoder configuration parameters.
 
     Controls quantization step limits, difference predictor orders, noise floor gating and
-    per-group soft bit targets. How a series is divided into blocks and block groups is an argument
+    per-block-group soft bit targets. How a series is divided into blocks and block groups is an argument
     of each encode function, not a parameter. Decoders do not require these parameters
     because block groups are self-describing.
 
@@ -114,7 +114,7 @@ class Params:
             a block group without times and off for a block group with times, which are often irregular (a
             historian's swinging-door archive, events): their samples don't oversample the
             signal, so they look like white noise without being noise.
-        target_bits_per_sample: Soft per-group cap on compressed bits per sample
+        target_bits_per_sample: Soft per-block-group cap on compressed bits per sample
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.

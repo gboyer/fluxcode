@@ -241,7 +241,7 @@ bits/sample against today's best of bit and byte planes):
 
 Nibble planes are left out: they need a format change, and best of 3 needs a third encode.
 
-From a per-group table of real block group sizes (header included, `table.py`; summarized by `combine.py`)
+From a per-block-group table of real block group sizes (header included, `table.py`; summarized by `combine.py`)
 for bit and byte planes under five framings, sizes against today's `"best"` (two compressions, one
 block run). Framings: a block ends after the columns and after **every plane**, every 4th or 8th
 plane, or after each **dense plane**: one with more than 1/16 of its bytes non-zero (the rule the
@@ -282,7 +282,7 @@ run and the smaller kept.
 | 30–60 KB | 736 | +1.2% saved | +1.2% saved | +1.2% saved |
 | over 60 KB | 243 | +2.6% saved | +2.7% saved | +2.7% saved |
 | worst block group | | +136% | +91% | +2.9% |
-| mean per-group change | | +1.70% | +0.57% | −1.23% |
+| mean per-block-group change | | +1.70% | +0.57% | −1.23% |
 
   Without the retry the tiny block groups are still worse (their frames are a few hundred bytes, so every
   block's header and table shows); the retry fixes them at a cost of one extra, cheap compression on
@@ -338,10 +338,10 @@ The prototype went into the encoder with these changes, each from a follow-up me
   fit this study's synthetic corpus, but on the day-scale stress test's sensor mix (analog ADC
   data, held values, counters: not in the corpus) it picked byte planes for analog noise of about
   33 steps, 11% larger than bit planes with per-plane blocks; the mix came out 4.5% larger than
-  the encoder before efforts. "Fewer than 1% reach 128" is within 0.1% of the per-group better
+  the encoder before efforts. "Fewer than 1% reach 128" is within 0.1% of the per-block-group better
   layout on the sensor mix and the report's signals, and better than the old rule on every set.
 - **No retries.** The prototype recompressed flushed frames under 16 KB in one block run, and a
-  first port also tried the other layout there (`small_frames.py`: per-group misses 8% → 1.3%).
+  first port also tried the other layout there (`small_frames.py`: per-block-group misses 8% → 1.3%).
   On the sensor mix, with many small block groups, those passes cost 14% of encode time for 0.02%:
   zstd's time follows the 120 KB input, not the small output. Both were dropped; `retry_rules.py`
   shows no cheaper rule replacing the one-run retry.
@@ -386,7 +386,7 @@ uv run python plane_layout/corpus.py --n 2000 --seed 1 --out corpus.npz   # ~25 
 uv run python plane_layout/corpus.py --n 1000 --seed 2 --out test.npz
 uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
-uv run python plane_layout/table.py       # per-group table for the combinations (~3 min), then combine.py
+uv run python plane_layout/table.py       # per-block-group table for the combinations (~3 min), then combine.py
 uv run python plane_layout/combine.py
 uv run python plane_layout/api_bench.py    # public-API size and speed of each effort (docs/TUNING.md; results/api_bench.txt)
 uv run python plane_layout/fleet.py        # layout rules and efforts on the stress test's sensor mix (~5 min; output in results/fleet.txt)

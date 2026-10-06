@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Interpretable per-group features of a residual array u (uint16, flat), for plane_layout/analyze.py."""
+"""Interpretable per-block-group features of a residual array u (uint16, flat), for plane_layout/analyze.py."""
 
 import numpy as np
 

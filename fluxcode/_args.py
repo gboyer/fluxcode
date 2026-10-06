@@ -73,7 +73,7 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
     Args:
         times: datetime64[s|ms|us|ns] array (the unit is taken from the dtype), or an
             integer array of ticks in time_unit.
-        time_unit: Block group of integer ticks ('s', 'ms', 'us' or 'ns'); None for datetime64.
+        time_unit: Unit of integer ticks ('s', 'ms', 'us' or 'ns'); None for datetime64.
         stored_unit: For update: the block group's time unit code, which datetime64 times must
             match and integer ticks are in (time_unit, if given, must match it too). 0 when
             encoding.
@@ -84,13 +84,13 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
 
     Raises:
         ValueError: If the dtype isn't datetime64[s|ms|us|ns] or integer, time_unit is
-            missing for integer ticks or given for datetime64, the block group doesn't match
+            missing for integer ticks or given for datetime64, the time unit doesn't match
             stored_unit, or an unsigned tick exceeds int64.
     """
     times_array = np.asarray(times)
     if times_array.dtype.kind == "M":
         if time_unit is not None:
-            raise ValueError("time_unit applies to integer times only: datetime64 times carry their own block group")
+            raise ValueError("time_unit applies to integer times only: datetime64 times carry their own unit")
         dtype_unit, unit_count = np.datetime_data(times_array.dtype)
         if unit_count != 1 or dtype_unit not in _format.TIME_UNIT_CODES:
             raise ValueError(f"times must be datetime64 in s, ms, us or ns, got {times_array.dtype}")
@@ -143,11 +143,11 @@ def time_unit_code(time_unit: str | None, stored_unit: int = 0) -> int:
 def series_ticks(
     times: npt.ArrayLike | None, time_unit: str | None, num_samples: int
 ) -> tuple[np.ndarray | None, int]:
-    """Converts timestamp input into a 1D int64 array of ticks and a block group code.
+    """Converts timestamp input into a 1D int64 array of ticks and a time unit code.
 
     Args:
         times: Array-like timestamps, or None if no timestamps are present.
-        time_unit: Block group string for integer timestamps; None for datetime64.
+        time_unit: Unit string for integer timestamps; None for datetime64.
         num_samples: Expected sample count matching the series length.
 
     Returns:

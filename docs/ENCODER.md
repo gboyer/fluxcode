@@ -4,8 +4,8 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 
 - **Scope:** its parameters, how it divides a series into blocks, the algorithm for one block, and
   the guarantees that follow.
-- **Not format rules:** any writer of valid block groups conforms. This encoder's choices (the step, the
-  anchor, the order, the time reference) are its own.
+- **Not format rules:** any writer of valid block groups conforms. This encoder's choices (the step,
+  the anchor, the order, the time reference) are its own.
 - **API:**
   - encoding: `encode_group`, `encode_blocks`, `encode_time_blocks`, bulk `encode`;
   - decoding: `decode_group`, bulk `decode`;
@@ -18,8 +18,8 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 
 ## 1. Parameters
 
-- **All parameters are encoder-only.** The block group is self-describing (SPEC.md §1): a decoder needs
-  only the block group.
+- **All parameters are encoder-only.** The block group is self-describing (SPEC.md §1): a decoder
+  needs only the block group.
 - Timestamps are data, not parameters (§4), and so is the division into blocks (§2).
 
 | parameter | values | default | effect |
@@ -29,7 +29,7 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 | `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders to choose from (§5.5) |
 | `decimal_detection` | on / off | on | try a decimal grid before the power-of-two grid (§5.3) |
 | `noise_floor_sigma` | default, off (0), or f > 0 | 0.25 without times, off with times | the noise floor (§5.2) |
-| `target_bits_per_sample` | off, or ≥ 6 | off | soft per-group size cap (§5.7) |
+| `target_bits_per_sample` | off, or ≥ 6 | off | soft per-block-group size cap (§5.7) |
 | `effort` | 1–9 | 4 | how the body is compressed (below) |
 
 - **`max_quantize_bits`:** a block's snapped power-of-two grid spans at most 2^max steps
@@ -52,7 +52,8 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 2. the noise floor raises it on gated blocks;
 3. it is clamped to e_coarse;
 4. decimal detection looks for a decimal grid coarser than that step;
-5. the target (if set and the block group is over budget) coarsens blocks further, never past e_coarse.
+5. the target (if set and the block group is over budget) coarsens blocks further, never past
+   e_coarse.
 
 With both the noise floor and the target on, each block takes the coarser step.
 
@@ -72,8 +73,8 @@ With both the noise floor and the target on, each block takes the coarser step.
 | 5–8 | best | flushed | 3 |
 | 9 | best | flushed | 3 and 9 |
 
-- **Heuristic layout:** byte planes if fewer than 1% of the block group's zigzagged residuals reach 128,
-  else bit planes. One compression.
+- **Heuristic layout:** byte planes if fewer than 1% of the block group's zigzagged residuals reach
+  128, else bit planes. One compression.
 - **Best layout:** both layouts, the smaller kept. Ties go to byte planes (they decode faster).
 - **Effort 9** compresses at both zstd levels and keeps the smaller (zstd 9 alone is larger on
   about a fifth of block groups).
@@ -90,8 +91,8 @@ With both the noise floor and the target on, each block takes the coarser step.
 Every block records its size (SPEC.md §1), so a series can be divided in whatever way suits it:
 - **Fixed size** (`encode_group`, `encode`): dense, regularly sampled data.
   - Blocks of `block_len` samples; the last block holds the rest.
-  - The bulk `encode` splits a long series into block groups of `blocks_per_group` blocks (60 of 1000 by
-    default: one channel-minute at 1 kHz).
+  - The bulk `encode` splits a long series into block groups of `blocks_per_group` blocks (60 of
+    1000 by default: one channel-minute at 1 kHz).
 - **Explicit sizes** (`encode_blocks`): one flat array of samples and each block's size.
 - **Fixed duration** (`encode_time_blocks`): block b holds the samples timed in
   `[start + b·duration, start + (b+1)·duration)`.
@@ -154,7 +155,7 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
     √(σ² + (mean − min)²).
 - **Cost.**
   - A regular series costs only its per-block start, step and reference: about 65 bytes per
-    60-block group.
+    block group of 60 blocks.
   - A gap costs only its own block.
   - Long blocks are rare: in ns ticks with a GCD of 1, a gap of about 2 s or more; in µs ticks
     or on any coarser grid, a gap of over half an hour.
@@ -260,7 +261,8 @@ e = min(e, e_coarse)                                                # min_quanti
   - So 256 is a chosen trade-off (about 1% false positives, 5% missed white noise), not a hard
     limit. Smaller blocks keep the B-bit step.
 - **Re-encoding decoded data** (a merging `update_time_blocks`) computes the noise floor again
-  from the merged block: kept samples, now decoded, plus the new ones. Nothing is reused.
+  from the merged block: kept samples, now decoded, plus the new ones. Nothing is reused, as when
+  encoding from scratch.
   - Quantizing adds white noise of variance s²/12 with s ≤ f·σ = σ/4, so σ can rise by at most
     √(1 + 1/192) − 1 ≈ 0.26%. The estimate also moves by a little either way.
   - The step 2^floor(log2(f·σ)) only changes when f·σ sits within that much of a power of two,
@@ -367,7 +369,7 @@ order = the k with the smallest v_k; ties go to the lower order
 
 The residuals of the order picked in §5.5, mod 2^16 and zigzagged, as specified in SPEC.md §4.
 
-### 5.7 Per-group target
+### 5.7 Per-block-group target
 
 Runs when `target_bits_per_sample` = t is set, after every block of the block group has been through
 §5.1–5.6.
@@ -437,22 +439,22 @@ N their total samples.
     power-of-two grid.
   - float32 rounding artifacts are intentionally lost: a decimal stored as float32 upstream
     decodes as the decimal itself.
-- **Decoded data is a fixed point:** decode(encode(y)) = y for any decoded y. The block group bytes are
-  identical from the second encode on.
+- **Decoded data is a fixed point:** decode(encode(y)) = y for any decoded y. The block group bytes
+  are identical from the second encode on.
 - **Edits are stable.** Changing a sample leaves every other sample's q unchanged unless the step
   changes.
   - The step changes only when the range crosses a power of two: the grid is absolute, so a new
     minimum doesn't move it.
   - Why absolute: with a grid scaled to the range, a new maximum re-rounds every sample (95% of
     untouched samples changed in testing).
-- **`update` leaves other blocks untouched.** It replaces or appends whole blocks of a block group, of any
-  size.
+- **`update` leaves other blocks untouched.** It replaces or appends whole blocks of a block group,
+  of any size.
   - The other blocks' flags, grid parameter, anchor, residuals, codes and time rows carry over
     unchanged: they are neither dequantized nor re-encoded, and decode to identical values.
   - Indices skipped past the block group's end are appended as empty blocks.
-  - With a time axis, `update` takes the new blocks' times (required exactly when the block group has
-    one). The updated series must be non-decreasing throughout, which it checks where a new block
-    meets its non-empty neighbours.
+  - With a time axis, `update` takes the new blocks' times (required exactly when the block group
+    has one). The updated series must be non-decreasing throughout, which it checks where a new
+    block meets its non-empty neighbours.
   - Without a target, the updated block group is byte-identical to encoding the updated series from
     scratch (every block is encoded independently).
 - **`update_time_blocks` is an upsert plus a range deletion, touching only the blocks it affects.**
@@ -499,9 +501,10 @@ N their total samples.
    - [1, 2] at B = 12 (4,096 steps, grid-aligned data exact) and B = 16 (32,768 steps);
    - the storage edge at B = 16: a snap that would need q = 65,536 goes one level coarser;
    - a block whose range exceeds 2^B decimal steps falls back to the power-of-two grid;
-   - fewer than 60 blocks; a short last block; block groups of different block counts and block sizes;
-   - blocks of every size from 0 to 9 and over 1000 in one block group; block groups with no blocks or only
-     empty ones;
+   - fewer than 60 blocks; a short last block; block groups of different block counts and block
+     sizes;
+   - blocks of every size from 0 to 9 and over 1000 in one block group; block groups with no blocks
+     or only empty ones;
    - blocks of up to 8 samples at the finest step and order 0, whatever the parameters, on a
      decimal grid (bit-exact) when one fits and decimal detection is on.
 5. **Update:**
@@ -533,11 +536,11 @@ N their total samples.
      wave;
    - it may fire on the float rounding noise of a smooth polynomial (the quadratic), with no
      effect, since that σ is far below the B-bit step;
-   - on all clean test signals the block group is byte-identical with the noise floor on (f = 0.01–1)
-     and off.
+   - on all clean test signals the block group is byte-identical with the noise floor on
+     (f = 0.01–1) and off.
 9. **Time axis:**
    - datetime64 in s, ms, µs and ns, and integer ticks with a time unit, round-trip exactly and in
-     their block group; block groups without times decode `times = None`;
+     their unit; block groups without times decode `times = None`;
    - regular series store no planes; a gap makes only its block irregular, with the GCD as its
      step;
    - jitter takes the rounded mean as its reference, and skewed deltas the minimum;
@@ -546,7 +549,7 @@ N their total samples.
      2 samples (a 2-sample block whose delta exceeds int64 maximum), leading empty blocks before
      negative ticks, ticks at both ends of int64, and a block spanning more than half of it;
    - the encoder rejects decreasing times (within and across blocks), NaT, unsupported dtypes and
-     block groups, and length mismatches;
+     units, and length mismatches;
    - `update` with times is byte-identical to encoding the edited series, and rejects missing,
      unexpected, mis-shaped, wrong-unit or out-of-order times.
 10. **Snapped grid** (`tests/test_grid.py`):

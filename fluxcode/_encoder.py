@@ -4,7 +4,7 @@
 
 Provides per-block analysis, noise floor gating, decimal detection, power-of-two
 quantization, predictor order selection, residual differentiation mod 2^16, and
-per-group bit target allocation. Composed per block group in `encode_group`.
+per-block-group bit target allocation. Composed per block group in `encode_group`.
 """
 
 import math
@@ -733,7 +733,7 @@ def allocate_target(
     target_bits: float,
     out_bit_reductions: np.ndarray,
 ) -> bool:
-    """Allocates bit reductions across blocks to meet a per-group bit target.
+    """Allocates bit reductions across blocks to meet a per-block-group bit target.
 
     Args:
         estimated_bits: 1D float64 array of per-block estimated bits per sample.
@@ -1031,7 +1031,7 @@ def encode_group(
             )
             estimated_bits_per_block[block_idx] = estimate_bits(block_residuals)
             block_weights[block_idx] = block_len
-    # Apply soft per-group bit target if enabled
+    # Apply soft per-block-group bit target if enabled
     if use_target:
         bit_reductions = np.zeros(num_blocks, np.int64)
         if allocate_target(

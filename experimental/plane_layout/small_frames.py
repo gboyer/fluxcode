@@ -11,7 +11,7 @@ flushed, and the share of residuals reaching 2^k. Against the better of the two 
   block groups the extra zstd passes cost 14% of encode time for 0.02%, after the rule moved to 128).
 
 "total" is the extra size over the better layout summed over block groups, "geo" the geometric mean of the
-per-group ratio. Same random families and seeds as corpus.py, plus the report's signals.
+per-block-group ratio. Same random families and seeds as corpus.py, plus the report's signals.
 
     uv run python plane_layout/small_frames.py      # ~20 s
 """

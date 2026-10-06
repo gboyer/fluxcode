@@ -11,9 +11,9 @@
 //!
 //! python-zstandard holds the GIL inside `flush(FLUSH_BLOCK)`, which is where the compression of
 //! the buffered data happens, so flushed frames don't scale with threads there. `compress_group`
-//! builds a block group without a time axis from its rows, and `pack_group` the block group of a body that Python
-//! built (a block group with a time axis, or a splice); the block group bytes are the same as the Python path's
-//! while both link the same libzstd (see `zstd_version`).
+//! builds a block group without a time axis from its rows, and `pack_group` the block group of a
+//! body that Python built (a block group with a time axis, or a splice); the block group bytes are
+//! the same as the Python path's while both link the same libzstd (see `zstd_version`).
 
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyValueError;
@@ -30,10 +30,10 @@ use format::{Rows, Shape};
 
 /// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the
 /// extension.
-const INTERFACE_VERSION: u32 = 1;
+const INTERFACE_VERSION: u32 = 2;
 
-/// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress` builds
-/// it. `layout` is "byte", "bit", "heuristic" or "best" (`Effort.layout`).
+/// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress`
+/// builds it. `layout` is "byte", "bit", "heuristic" or "best" (`Effort.layout`).
 #[pyfunction]
 #[pyo3(signature = (
     block_flags, block_sizes, grid_params, value_anchors, residuals, codes, layout, flush,
@@ -68,9 +68,9 @@ fn compress_group<'py>(
     Ok(PyBytes::new(py, &group))
 }
 
-/// The block group of an uncompressed body whose residuals are byte planes, with or without a time axis
-/// (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_octets` is
-/// the octets (8 residual bytes each) of all blocks.
+/// The block group of an uncompressed body whose residuals are byte planes, with or without a time
+/// axis (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_octets`
+/// is the octets (8 residual bytes each) of all blocks.
 #[pyfunction]
 #[pyo3(signature = (
     body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels
@@ -112,8 +112,8 @@ fn simd_path() -> &'static str {
     planes::PATH
 }
 
-/// The version of the libzstd this extension links, as (major, minor, release): the block group bytes
-/// match python-zstandard's only if its `ZSTD_VERSION` is the same.
+/// The version of the libzstd this extension links, as (major, minor, release): the block group
+/// bytes match python-zstandard's only if its `ZSTD_VERSION` is the same.
 #[pyfunction]
 fn zstd_version() -> (u32, u32, u32) {
     let version = zstd_safe::version_number();

@@ -369,7 +369,7 @@ def time_dtype(time_unit: int) -> np.dtype:
         time_unit: Integer code representing the time unit.
 
     Returns:
-        NumPy datetime64 dtype matching the specified block group.
+        NumPy datetime64 dtype matching the specified unit.
     """
     return np.dtype(f"datetime64[{_format.TIME_UNIT_NAMES[time_unit]}]")
 

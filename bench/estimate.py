@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""The per-group target's size estimate (class entropy of the residual, _encoder.estimate_bits)
+"""The per-block-group target's size estimate (class entropy of the residual, _encoder.estimate_bits)
 against the actual bit-shuffled zstd-3 size, per signal type, B = 16 (min = max = 16, noise
 floor off), and what the target then delivers.
 

@@ -16,7 +16,7 @@ kind (a perfect grid, a grid with a few gaps, or a noisy clock; tests/_signals.p
 from a pool the same way.
 
 Timed: encode_group per block group (index columns and zstd included), then decode_group per block group. The
-decode phase reads the encoded pool (plus pre-encoded NaN block groups), so it does the same per-group
+decode phase reads the encoded pool (plus pre-encoded NaN block groups), so it does the same per-block-group
 work as decoding the day. Workers claim whole tags (a day each) from a shared counter. A roundtrip check on every pool block group runs first.
 
     uv run python bench/stress.py                                  # full target, sensor-mix, 4 threads

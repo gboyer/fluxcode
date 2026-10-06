@@ -1,6 +1,6 @@
-sensor mix: per-group better flushed layout -2.26% against before
-random: per-group better flushed layout -2.15% against before
-report: per-group better flushed layout -2.07% against before
+sensor mix: per-block-group better flushed layout -2.26% against before
+random: per-block-group better flushed layout -2.15% against before
+report: per-block-group better flushed layout -2.07% against before
 
 rule (byte planes iff share(u >= 2^k) < t), flushed:
   k = 6, t = 0.005: sensor mix  +0.05%   random  +0.32%   report  -1.53%

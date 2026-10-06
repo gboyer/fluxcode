@@ -96,7 +96,7 @@ def update(group: bytes, block_min: np.ndarray, indices: np.ndarray, blocks: np.
   blocks (old values unchanged where not updated).
 - **Untouched blocks decode to identical values.** Their quantized residuals are carried over,
   not re-derived from floats.
-- **The per-group target** (§2.3), if set, is optimized over the updated blocks only, with a
+- **The per-block-group target** (§2.3), if set, is optimized over the updated blocks only, with a
   budget of `target × k`.
 
 Implementation (clarity first):
@@ -109,7 +109,7 @@ Implementation (clarity first):
 There's no byte-level splicing, even though each block touches 25 places in the block group (its head
 byte, 8 byte-planed parameter bytes and 16 plane slices). Parse and write are the same functions
 `encode` and `decode` use.
-- **Cost for a 60-block group:** decompress ~120 µs, unshuffle and reshuffle ~90 µs, compress
+- **Cost for a block group of 60 blocks:** decompress ~120 µs, unshuffle and reshuffle ~90 µs, compress
   ~210 µs, plus a full encode of the k new blocks.
 - **Hard limit:** `blocks_per_group` (an append past it raises; start a new block group).
 
@@ -122,7 +122,7 @@ class Params:
     max_quantize_bits: int = 16                 # hard: steps are never finer than this (min..16)
     diff_orders: frozenset[int] = frozenset({0, 1, 2, 3})   # one element: no order selection
     noise_floor_sigma: float | None = None      # f: step ≤ f·σ on blocks that look like white noise; None: 0.25 without times, off with them
-    target_bits_per_sample: float | None = None # soft per-group cap
+    target_bits_per_sample: float | None = None # soft per-block-group cap
     decimal_detection: bool = True
     block_len: int = 1000                       # multiple of 8
     blocks_per_group: int = 60
@@ -168,7 +168,7 @@ target set, block group over budget (§2.3):  e += k_b, clamped at e_coarse; dec
 - **With a target,** blocks the cap coarsens are quantized a second time, once. zstd never
   runs in the loop.
 
-### 2.3 Per-group target
+### 2.3 Per-block-group target
 
 A block's estimate h_b is the bit-length-class entropy of its provisional residuals (§9.2),
 computed after the provisional quantize, order pick and residual. When the block group's mean estimate
@@ -295,7 +295,7 @@ The design is kept ready without touching the fast path:
    parameters and order pick (then switch to the 250-sample pick).
 2. `encode` / `decode` / `decode_group`, the conformance tests, and a port of the benchmarks.
 3. `update`, with its tests.
-4. `target_bits_per_sample`: `estimate_bits`, the per-group allocation, and validating the
+4. `target_bits_per_sample`: `estimate_bits`, the per-block-group allocation, and validating the
    estimate on the synthetic sets.
 5. The spec updates of §7.
 

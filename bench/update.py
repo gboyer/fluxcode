@@ -109,7 +109,7 @@ def main():
     ap.add_argument("--reps", type=int, default=300)
     args = ap.parse_args()
     print(f"{platform.machine()} {platform.system()} {platform.release()}, Python {platform.python_version()}, "
-          f"numpy {np.__version__}; median of {args.reps} calls (100 for the 3,600-block group)\n")
+          f"numpy {np.__version__}; median of {args.reps} calls (100 for the block group of 3,600 blocks)\n")
     print("| signal | operation | encode from scratch | update | vs encode |")
     print("|---|---|---|---|---|")
     for name, x in [("random-walk", minute("random-walk", 1)), ("noisy-sine", minute("noisy-sine", 1)),

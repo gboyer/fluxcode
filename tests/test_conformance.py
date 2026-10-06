@@ -356,7 +356,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):
         assert not byte_planes[:, 8 * lay.octet_offsets[block_idx] + sizes[block_idx]:8 * lay.octet_offsets[block_idx + 1]].any()
-    byte_group = (_format.pack_header(num_blocks, n, True, int(_format.TimeGroupCode.NANOSECONDS))
+    byte_group = (_format.pack_header(num_blocks, n, True, int(_format.TimeUnitCode.NANOSECONDS))
                  + zstandard.ZstdCompressor().compress(byte_body.tobytes()))
     for encoded in (group, byte_group):
         decoded = fluxcode.decode_group(encoded)

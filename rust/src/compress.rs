@@ -164,8 +164,8 @@ fn compress_with_header(
     })
 }
 
-/// A block group as its header and the smallest frame of the candidate bodies (byte planes or not) over
-/// the zstd levels. Ties go to byte planes, then to the earlier level, whatever the order the
+/// A block group as its header and the smallest frame of the candidate bodies (byte planes or not)
+/// over the zstd levels. Ties go to byte planes, then to the earlier level, whatever the order the
 /// candidates are tried in; a candidate that can't beat the best so far is dropped as soon as its
 /// flushed blocks show it. All candidates are tried at a level before the next level, so the cheap
 /// level's frames set the limit for the expensive ones.
@@ -187,7 +187,8 @@ fn smallest_group(
             (byte_planes, body, shape.header(byte_planes), cuts)
         })
         .collect();
-    // the best block group so far and its rank (byte planes first, each by level), which decides ties
+    // the best block group so far and its rank (byte planes first, each by level), which decides
+    // ties
     let mut best: Option<(Vec<u8>, usize)> = None;
     for (level_idx, &level) in levels.iter().enumerate() {
         for (byte_planes, body, header, cuts) in &prepared {
@@ -215,8 +216,8 @@ fn smallest_group(
         .ok_or_else(|| "no zstd levels".to_string())
 }
 
-/// The block group of a byte-plane body (`_compress.pack`): the layout chosen and the frame built as
-/// `layout`, `flush` and `levels` (an `Effort`) say. The bit-plane body is derived from the
+/// The block group of a byte-plane body (`_compress.pack`): the layout chosen and the frame built
+/// as `layout`, `flush` and `levels` (an `Effort`) say. The bit-plane body is derived from the
 /// byte-plane one.
 pub fn pack(
     shape: &Shape,

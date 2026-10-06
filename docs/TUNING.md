@@ -11,8 +11,8 @@ changes the decoded values. Efforts 3 and 4 are the encoder as it was before eff
 layouts compressed, the smaller kept, one block run, zstd 3), and the table below is against it.
 Measured 2026-10-02 through the public API, one thread, AC power
 (`experimental/plane_layout/api_bench.py`; times are best of 3 over the whole set). *Report*: the
-report's 20 signals, 4 minutes each (4.8 M samples); *random*: 400 one-minute block groups of 14 random
-signal families with random `max_quantize_bits` and noise floor (24 M samples).
+report's 20 signals, 4 minutes each (4.8 M samples); *random*: 400 one-minute block groups of 14
+random signal families with random `max_quantize_bits` and noise floor (24 M samples).
 
 Baseline (efforts 3–4): 5.174 and 4.009 bits/sample, encode 5.4 and 4.8 ns/sample, decode 1.7.
 
@@ -33,28 +33,29 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   per block, and one table for every plane fits none of them: the low byte is nearly uniform where
   the high one is peaked, and bit planes differ in density. Ending a block after each dense plane
   gives each its own table, 1.5–2% smaller, in the same frame (no format change). A plane with at
-  most 1/16 of its bytes non-zero doesn't repay a block's header and table, so it shares one.
-  **They cost threaded throughput**: python-zstandard holds the GIL inside the call that ends a
-  block (`flush(FLUSH_BLOCK)`; a one-shot compress releases it). On the day-scale stress test
-  with 4 threads, flushing made encoding 40% slower (146 s against 104 s for 1000 tags × a day, in
-  the same size), and the 8-thread gigabyte encode 32% slower; one thread is unaffected, and 4
-  processes scale normally. Calling libzstd's streaming API directly through cffi still scaled
-  only 1.8× on 4 threads, so the fix is a call that compresses a whole block group with its cuts without
-  the GIL: the optional Rust extension (`rust/`; `uv sync --extra rust` from a checkout, not on PyPI yet) does, and gives the
-  same block groups. With it, effort 5 on the day-scale test (4 threads) encodes at 5.98 GB/s against
-  3.62 without (the default, effort 4: 7.10 against 6.71); block groups with a time axis and `update` use it
-  for the compression of a body that Python built (`pack_group`). Without the extension, efforts 5 and up suit one thread per process, or
-  throughput that doesn't matter.
+  most 1/16 of its bytes non-zero doesn't repay a block's header and table, so it shares one. **They
+  cost threaded throughput**: python-zstandard holds the GIL inside the call that ends a block
+  (`flush(FLUSH_BLOCK)`; a one-shot compress releases it). On the day-scale stress test with 4
+  threads, flushing made encoding 40% slower (146 s against 104 s for 1000 tags × a day, in the same
+  size), and the 8-thread gigabyte encode 32% slower; one thread is unaffected, and 4 processes
+  scale normally. Calling libzstd's streaming API directly through cffi still scaled only 1.8× on 4
+  threads, so the fix is a call that compresses a whole block group with its cuts without the GIL:
+  the optional Rust extension (`rust/`; `uv sync --extra rust` from a checkout, not on PyPI yet)
+  does, and gives the same block groups. With it, effort 5 on the day-scale test (4 threads) encodes
+  at 5.98 GB/s against 3.62 without (the default, effort 4: 7.10 against 6.71); block groups with a
+  time axis and `update` use it for the compression of a body that Python built (`pack_group`).
+  Without the extension, efforts 5 and up suit one thread per process, or throughput that doesn't
+  matter.
 - **The heuristic layout** (efforts 1–2) compresses once instead of twice: byte planes when the
   residuals are narrow (the high byte is a constant and byte-wise literals model the low byte) and
   on exactly repeating structure; bit planes from about 7 bits of residual up. "Fewer than 1% of
-  residuals reach 128" is within 0.1% of picking the better layout per block group on the stress test's
-  sensor mix and the report's signals (the plane_layout study's first rule, "fewer than 5% reach
-  256", fit its synthetic corpus but picked byte planes for analog ADC noise, 11% too large). It
-  can't see repeats, so it misses on low-entropy repeating or quantized signals. Per input type
-  (`experimental/plane_layout/per_input.py`), effort 2 against the encoder before efforts:
-  within ±0.1 bits/sample on most, and these are the outliers, which both layouts bring back to
-  the old size or better:
+  residuals reach 128" is within 0.1% of picking the better layout per block group on the stress
+  test's sensor mix and the report's signals (the plane_layout study's first rule, "fewer than 5%
+  reach 256", fit its synthetic corpus but picked byte planes for analog ADC noise, 11% too large).
+  It can't see repeats, so it misses on low-entropy repeating or quantized signals. Per input type
+  (`experimental/plane_layout/per_input.py`), effort 2 against the encoder before efforts: within
+  ±0.1 bits/sample on most, and these are the outliers, which both layouts bring back to the old
+  size or better:
 
   | input | before | effort 2 |
   |---|---|---|
@@ -67,13 +68,13 @@ Where the gains come from (`experimental/plane_layout/README.md` has the full st
   High-entropy signals are not hurt, and are 0.1–0.5 bits/sample smaller with flushing (random
   walks, AR(1), sin-50.3hz, analog ADC data). **Effort 3–4 or higher for tags of held, counter or
   decimal-quantized values**, where the heuristic misses.
-- **No retries.** Compressing small frames again (in one block run, or with the other layout)
-  guards single small block groups, but zstd's time follows the 120 KB input, not the small output: on
-  the sensor mix, retries cost +32 µs per block group (+14%) for 0.02% with both layouts compressed.
-  A flushed frame can therefore be larger than one run on tiny block groups (up to +90% under 1 KB, tens
-  of bytes), which is why 5 against 4 is a smaller total, not a smaller block group every time.
-- **zstd 9 as well as 3** (effort 9). zstd 9 alone is larger than zstd 3 on 20–23% of block groups (up
-  to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against effort 5
+- **No retries.** Compressing small frames again (in one block run, or with the other layout) guards
+  single small block groups, but zstd's time follows the 120 KB input, not the small output: on the
+  sensor mix, retries cost +32 µs per block group (+14%) for 0.02% with both layouts compressed. A
+  flushed frame can therefore be larger than one run on tiny block groups (up to +90% under 1 KB,
+  tens of bytes), which is why 5 against 4 is a smaller total, not a smaller block group every time.
+- **zstd 9 as well as 3** (effort 9). zstd 9 alone is larger than zstd 3 on 20–23% of block groups
+  (up to +9%; zstd 7 up to +37%), which cancels most of its gain: −0.5% and −0.7% against effort 5
   alone, −0.8% and −1.2% keeping the smaller per block group. zstd 7 alone gained only 0.1–0.25% and
   was dropped.
 
@@ -85,12 +86,13 @@ better, or slower than compressing twice), and narrow-residual exceptions to the
 
 ## Bit planes and byte planes
 
-The header records the residual layout: 16 bit planes or 2 byte planes. On clean periodic signals whose cycles repeat across the block group, zstd finds long
-matches in the byte planes that the 8-sample octets of the bit planes break up: in the prototype on synthetic
-minute block groups, sines at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
+The header records the residual layout: 16 bit planes or 2 byte planes. On clean periodic signals
+whose cycles repeat across the block group, zstd finds long matches in the byte planes that the
+8-sample octets of the bit planes break up: in the prototype on synthetic minute block groups, sines
+at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
 
-Measured on 2026-10-01 (default params, B = 16, zstd level 3, 8 one-minute block groups per signal), the
-winner is consistent per signal kind: it wins on all 8 block groups, by a similar margin.
+Measured on 2026-10-01 (default params, B = 16, zstd level 3, 8 one-minute block groups per signal),
+the winner is consistent per signal kind: it wins on all 8 block groups, by a similar margin.
 
 | byte planes smaller | vs bit planes | bit planes smaller | byte planes vs bit |
 |---|---|---|---|
@@ -102,11 +104,11 @@ winner is consistent per signal kind: it wins on all 8 block groups, by a simila
 | noisy sines (4 variants) | −4% | random-walk, q0.001 | +9% |
 | | | gauss-spikes | +7% |
 
-Byte planes win on 11 of these 20 signals and bit planes on 9; over the whole set (dominated by
-the large random-walk block groups) byte planes alone are 5.3% bigger and the best of both 2.3% smaller.
+Byte planes win on 11 of these 20 signals and bit planes on 9; over the whole set (dominated by the
+large random-walk block groups) byte planes alone are 5.3% bigger and the best of both 2.3% smaller.
 Bit planes win where residuals are small, so the high planes are almost all zero, or where nothing
-repeats (more exactly: see Effort above). These measurements are from before block flushes,
-which favour bit planes.
+repeats (more exactly: see Effort above). These measurements are from before block flushes, which
+favour bit planes.
 
 With a single layout for everything, as the prototype compared them, bit planes were smaller over
 its continuous and discretized signal sets (6.08 against 6.71 and 8.14 against 8.66
@@ -128,11 +130,11 @@ compression time against level 3):
 | 12 | −1.8% | −3.7% | 13× | 1.11× |
 | 19 | −3.2% | −5.5% | 94× | 1.36× |
 
-Level 3 is the knee (zstd 1 is used only at effort 1, zstd 9 only at effort 9, alongside 3). Above it, compression time grows much faster than size falls, and the best
-of both planes at level 3 saves more than bit planes up to level 12. Level 1 saves only 10% of the
-zstd time and doubles the tiny linear and square block groups. The high levels pay off only on blocky or
-periodic signals (square −50%, sin-50.3hz −16% at 19); noisy and random-walk signals gain 1–3%
-even at 19.
+Level 3 is the knee (zstd 1 is used only at effort 1, zstd 9 only at effort 9, alongside 3). Above
+it, compression time grows much faster than size falls, and the best of both planes at level 3 saves
+more than bit planes up to level 12. Level 1 saves only 10% of the zstd time and doubles the tiny
+linear and square block groups. The high levels pay off only on blocky or periodic signals (square
+−50%, sin-50.3hz −16% at 19); noisy and random-walk signals gain 1–3% even at 19.
 
 ## Noise floor: measured behaviour
 
@@ -156,8 +158,8 @@ true noise σ, against the input and against the same signal generated without n
 - **Against the clean signal, f ≤ 0.25 is indistinguishable from storing the noise exactly**
   (within 0.2%). f = 0.5 costs under 1%, f = 1 costs 2.5–4%. Recommended range 0.1–0.5, default
   0.25 (indistinguishable from exact against the clean signal), to be tuned on your data.
-- **Off by default for block groups with times.** Timed data is often irregular, and irregular samples
-  don't oversample the signal: a swinging-door archive keeps only the points a straight line
+- **Off by default for block groups with times.** Timed data is often irregular, and irregular
+  samples don't oversample the signal: a swinging-door archive keeps only the points a straight line
   can't predict, so it looks like white noise to the gate. With f = 0.25 the gate coarsened such
   archives to up to 0.6 CompDev of error, against exact decimals with it off
   ([sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html)). Pass f explicitly to use the
@@ -210,12 +212,12 @@ shapes, and [experimental/report/time.html](../experimental/report/time.html) sh
 | deadband logging, ms grid | 60/60 | 55498 | 7.400 | +609 µs (+190%) | +246 µs (+207%) |
 | bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +175 µs (+55%) | +102 µs (+86%) |
 
-For scale, the same block group's values take 17,976 bytes, 321 µs to encode (default effort, with both
-layouts compressed, which compresses the time fields twice too) and 119 µs to decode; the percentages are of
-those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-02).
-Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect
-grid adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values:
-on 4 threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md](PERFORMANCE.md)).
+For scale, the same block group's values take 17,976 bytes, 321 µs to encode (default effort, with
+both layouts compressed, which compresses the time fields twice too) and 119 µs to decode; the
+percentages are of those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-02).
+Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect grid
+adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values: on 4
+threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md](PERFORMANCE.md)).
 
 **Design notes** (measured while designing, on the timestamps above):
 - The GCD matters: without it, µs or ms data stored in ns ticks costs 1.4–2.6× more (zstd alone
@@ -224,19 +226,19 @@ on 4 threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANC
   residual saves about 1 bit/sample on jitter around a fixed grid but loses on gaps, drift and
   events. Delta-of-deltas measured worse again with the reference below (for example 2,682 bytes
   against 1,489 for 1% dropped samples).
-- The per-block reference: bit planes of raw quotients around a center like 1000 waste about a
-  bit per sample, because a spread of ±60 flips planes 3–10 together (and crossing 1024 flips
-  more), and each plane is coded on its own. Residuals from the reference cut jitter by 4–16%,
-  dropped samples by half and a drifting clock by 80%, and cost about 15 bytes per block group with gaps
-  (the `time_ref` column). The mean alone lost 4–17% on skewed deltas, and the median matched
-  the mean-or-minimum choice at the cost of a selection per block; the variance rule matched a
-  per-block best of both on every shape measured.
-- 32 planes, with 64 for long blocks only: zstd scans a run of zero bytes at about 9 GB/s, so
-  64 planes per block spent 50–70 µs per irregular block group compressing the dead planes 32–63. Fewer
+- The per-block reference: bit planes of raw quotients around a center like 1000 waste about a bit
+  per sample, because a spread of ±60 flips planes 3–10 together (and crossing 1024 flips more), and
+  each plane is coded on its own. Residuals from the reference cut jitter by 4–16%, dropped samples
+  by half and a drifting clock by 80%, and cost about 15 bytes per block group with gaps (the
+  `time_ref` column). The mean alone lost 4–17% on skewed deltas, and the median matched the
+  mean-or-minimum choice at the cost of a selection per block; the variance rule matched a per-block
+  best of both on every shape measured.
+- 32 planes, with 64 for long blocks only: zstd scans a run of zero bytes at about 9 GB/s, so 64
+  planes per block spent 50–70 µs per irregular block group compressing the dead planes 32–63. Fewer
   planes lose size instead: this libzstd (1.5.7) compresses these bodies 1–3% better above 256 KB
   (splitting blocks where the statistics change), and a group-wide plane count or per-block widths
-  drop most bodies below it. At 32 planes a 60-block group stays at about 360 KB and its size is
-  unchanged; at 24 it drops to 300 KB and some shapes grew 1.6–1.8%.
+  drop most bodies below it. At 32 planes a block group of 60 blocks stays at about 360 KB and its
+  size is unchanged; at 24 it drops to 300 KB and some shapes grew 1.6–1.8%.
 - Bit planes and byte planes for the residuals are within a few percent either way; bit planes
   match the value residuals.
 - Block starts are stored as unsigned increases (monotonic by requirement), which costs 45

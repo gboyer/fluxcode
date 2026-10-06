@@ -29,9 +29,9 @@ fn put_byte_planed(
     }
 }
 
-/// The uncompressed body of a block group without a time axis, in the byte-plane layout: the metadata
-/// columns, the zigzagged residuals as a low and a high byte plane (each block padded with zeros to
-/// whole octets of 8 samples), then the non-finite code planes.
+/// The uncompressed body of a block group without a time axis, in the byte-plane layout: the
+/// metadata columns, the zigzagged residuals as a low and a high byte plane (each block padded with
+/// zeros to whole octets of 8 samples), then the non-finite code planes.
 pub fn write_body(rows: &Rows) -> Vec<u8> {
     let (num_blocks, num_octets) = (rows.shape.num_blocks, rows.shape.num_octets);
     let num_code_octets = rows.code_offsets[num_blocks];

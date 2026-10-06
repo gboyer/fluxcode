@@ -92,7 +92,8 @@ impl Shape {
     }
 }
 
-/// A block group's rows and the offsets of each block in the samples, residual octets and code octets.
+/// A block group's rows and the offsets of each block in the samples, residual octets and code
+/// octets.
 ///
 /// Each offsets vector has `num_blocks + 1` entries: entry `b` is block `b`'s offset, and the last
 /// the total.
@@ -110,8 +111,8 @@ pub struct Rows<'a> {
 }
 
 impl<'a> Rows<'a> {
-    /// The rows of a block group without a time axis with their offsets (`_format._fill_layout`), or an
-    /// error if the fields disagree.
+    /// The rows of a block group without a time axis with their offsets (`_format._fill_layout`),
+    /// or an error if the fields disagree.
     pub fn new(
         block_flags: &'a [u8],
         block_sizes: &'a [i64],
