@@ -4,7 +4,7 @@
 
 import numpy as np
 import pytest
-from _series import decode_series, encode_series, encode_unchecked, unit_rows
+from _series import decode_series, encode_series, encode_unchecked, group_rows
 from _signals import KINDS, minute
 
 from fluxcode import Params, _encoder
@@ -37,13 +37,13 @@ def test_bad_input(x, msg):
 def test_accepts_lists_and_float32():
     assert decode_series(encode_series([1.5, 2.5, 3.5])[0]).tolist() == [1.5, 2.5, 3.5]
     x = np.linspace(0, 1, 5000, dtype=np.float32)
-    units, _, _, _ = encode_series(x)
-    assert np.abs(decode_series(units) - x).max() < 1e-4
+    groups, _, _, _ = encode_series(x)
+    assert np.abs(decode_series(groups) - x).max() < 1e-4
 
 
 def exponents(x, params):
-    units, lo, hi, _ = encode_series(x, params)
-    rows = unit_rows(units[0])
+    groups, lo, hi, _ = encode_series(x, params)
+    rows = group_rows(groups[0])
     flags, param = rows.block_flags, rows.grid_params
     return flags, param, hi - lo
 
@@ -72,13 +72,13 @@ def test_target_caps_expensive_signals(kind):
     assert capped < 6.0 + 1.0  # soft: the estimate is within about a bit
 
 
-def test_target_leaves_cheap_units_alone():
+def test_target_leaves_cheap_groups_alone():
     x = minute("sin-4.12hz", 6)
     assert encode_series(x, Params(target_bits_per_sample=8.0))[0] == encode_series(x)[0]
 
 
 def test_target_equalizes_expensive_blocks():
-    """Mixed unit: the expensive blocks give up bits, the cheap ones aren't touched."""
+    """Mixed block group: the expensive blocks give up bits, the cheap ones aren't touched."""
     x = np.concatenate([minute("chirp", 7)[:30_000], minute("linear", 7)[:30_000]])
     base = exponents(x, Params())[1]
     capped = exponents(x, Params(target_bits_per_sample=6.0))[1]  # mean estimate ~6.5
@@ -86,7 +86,7 @@ def test_target_equalizes_expensive_blocks():
     np.testing.assert_array_equal(capped[30:], base[30:])
 
 
-def kernel_units(x, target):
+def kernel_groups(x, target):
     """Targets below what Params allows (0: no target)."""
     return encode_unchecked(x, target_bits_per_sample=target or None)
 
@@ -94,13 +94,13 @@ def kernel_units(x, target):
 def test_target_never_trades_a_decimal_grid_for_a_bigger_block():
     """Coarsening a 0.01-grid sine onto a power-of-two grid would grow it; the block keeps its grid."""
     x = np.round(minute("sin-4.12hz", 8), 2)
-    assert kernel_units(x, 2.0) == kernel_units(x, 0.0)
+    assert kernel_groups(x, 2.0) == kernel_groups(x, 0.0)
 
 
-def test_small_targets_can_grow_repeat_heavy_units():
+def test_small_targets_can_grow_repeat_heavy_groups():
     """Known limitation, pinned (why Params requires a target >= 6): the estimate reads the quadratic at
-    ~5.5 bits/sample where zstd gets ~0.2, so a target of 2 coarsens it into a larger unit. If this
-    starts failing, the target got smarter; revisit MIN_TARGET_BITS and the TODO in encode_unit."""
+    ~5.5 bits/sample where zstd gets ~0.2, so a target of 2 coarsens it into a larger block group. If this
+    starts failing, the target got smarter; revisit MIN_TARGET_BITS and the TODO in encode_group."""
     x = minute("quadratic", 9)
-    assert len(kernel_units(x, 2.0)) > len(kernel_units(x, 0.0))
-    assert kernel_units(x, 6.0) == kernel_units(x, 0.0)  # under budget at the minimum target
+    assert len(kernel_groups(x, 2.0)) > len(kernel_groups(x, 0.0))
+    assert kernel_groups(x, 6.0) == kernel_groups(x, 0.0)  # under budget at the minimum target

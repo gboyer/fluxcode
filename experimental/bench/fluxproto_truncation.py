@@ -8,7 +8,7 @@ B   fine grid (e16), q rounded to multiples of 2^k: identical reconstruction to 
 B'  as B with sign-magnitude instead of zigzag (u = |v| << 1 | sign), so zeroed low bits stay zero
 C   per-sample: samples near a second difference beyond 4 robust sigmas (spikes, edges; +/-2
     samples) keep full precision, the rest are truncated as in B' (and with zigzag)
-Orders 0-3 picked per block on the final q; 60-block units, bit-shuffled, zstd-3 (the fluxcode
+Orders 0-3 picked per block on the final q; 60-block groups, bit-shuffled, zstd-3 (the fluxcode
 prototype's pipeline, tslab/flux/proto.py). Sizes leave out the block minima (8 bytes per block,
 the same in every variant).
 
@@ -85,7 +85,7 @@ def residual_sm(q, order, u):
         u[i] = np.uint16(((min(a, 32767) << 1) | (1 if v < 0 else 0)) & 0xFFFF)
 
 
-def unit_bytes(Q, mapping):
+def group_bytes(Q, mapping):
     nb, n = Q.shape
     low, high = np.empty((nb, n), np.uint8), np.empty((nb, n), np.uint8)
     head = np.empty(nb, np.uint8)
@@ -137,11 +137,11 @@ def main():
                     if spikes.any():
                         es.append(np.abs(yC[spikes] - x[spikes]).max() / s)
                         ea.append(np.abs(yA[spikes] - x[spikes]).max() / s)
-                size["A"] += unit_bytes(QA, "zigzag")
-                size["B"] += unit_bytes(QB, "zigzag")
-                size["B'"] += unit_bytes(QB, "sm")
-                size["C"] += unit_bytes(QC, "sm")
-                size["Cz"] += unit_bytes(QC, "zigzag")
+                size["A"] += group_bytes(QA, "zigzag")
+                size["B"] += group_bytes(QB, "zigzag")
+                size["B'"] += group_bytes(QB, "sm")
+                size["C"] += group_bytes(QC, "sm")
+                size["Cz"] += group_bytes(QC, "zigzag")
             nbk = 60 * len(mins)
             bps = {k: 8 * v / (nbk * 1000) for k, v in size.items()}
             bp = bps["B'"]

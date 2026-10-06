@@ -5,7 +5,7 @@ ties to even, and e the finest step whose snapped grid fits (ENCODER §5.1, §5.
 
 import numpy as np
 import pytest
-from _series import unit_rows
+from _series import group_rows
 
 import fluxcode
 from fluxcode import Params, _encoder
@@ -18,14 +18,14 @@ DBL_MAX = float(np.finfo(np.float64).max)
 
 
 def encode_block(x, params=RAW):
-    """(unit, e, anchor) of x as one block."""
-    unit = fluxcode.encode_blocks(x, [len(x)], params).unit
-    rows = unit_rows(unit)
-    return unit, int(rows.grid_params[0]), float(rows.value_anchors.view(np.float64)[0])
+    """(group, e, anchor) of x as one block."""
+    group = fluxcode.encode_blocks(x, [len(x)], params).group
+    rows = group_rows(group)
+    return group, int(rows.grid_params[0]), float(rows.value_anchors.view(np.float64)[0])
 
 
-def decode(unit):
-    return fluxcode.decode_unit(unit).values
+def decode(group):
+    return fluxcode.decode_group(group).values
 
 
 @pytest.mark.parametrize("e", [-20, -10, -3, 0, 5])
@@ -37,13 +37,13 @@ def test_minimum_halfway_between_grid_points(e, base):
     lo = (base + 0.5) * step
     x = lo + np.random.default_rng(e + 100).uniform(0, 40_000, 1000) * step
     x[[0, -1]] = lo, lo + 40_000 * step
-    unit, got_e, anchor = encode_block(x)
+    group, got_e, anchor = encode_block(x)
     assert got_e == e
     assert anchor == np.rint(lo / step) * step  # ties to even
     q = np.empty(1000, np.int32)
     _encoder.quantize_grid(x, e, np.rint(lo / step), q)
     assert q[0] == 0 and q.min() == 0
-    y = decode(unit)
+    y = decode(group)
     assert np.abs(y - x).max() <= step / 2
     assert y[0] == anchor
 
@@ -57,9 +57,9 @@ def test_fencepost_power_of_two_range():
     k = np.random.default_rng(0).integers(0, 4097, 1000)
     k[:2] = 0, 4096
     x = 1 + k / 4096
-    unit, e, _ = encode_block(x, Params(max_quantize_bits=12, noise_floor_sigma=0, decimal_detection=False))
+    group, e, _ = encode_block(x, Params(max_quantize_bits=12, noise_floor_sigma=0, decimal_detection=False))
     assert e == -12
-    np.testing.assert_array_equal(decode(unit), x)
+    np.testing.assert_array_equal(decode(group), x)
 
 
 def test_storage_edge_at_16_bits():
@@ -70,9 +70,9 @@ def test_storage_edge_at_16_bits():
     assert _encoder.exponent(hi - lo, 16) == -10  # the unsnapped rule fits
     assert _encoder.range_exponent(lo, hi, 16) == -9
     x = np.linspace(lo, hi, 1000)
-    unit, e, _ = encode_block(x, Params(noise_floor_sigma=0, decimal_detection=False, min_quantize_bits=16))
+    group, e, _ = encode_block(x, Params(noise_floor_sigma=0, decimal_detection=False, min_quantize_bits=16))
     assert e == -9
-    assert np.abs(decode(unit) - x).max() <= 2.0 ** -10
+    assert np.abs(decode(group) - x).max() <= 2.0 ** -10
     rng = np.random.default_rng(1)
     q = np.empty(2, np.int32)
     for _ in range(20_000):
@@ -103,9 +103,9 @@ def test_range_exponent_is_never_coarser_than_unsnapped(bits):
 def test_constant_blocks_decode_exactly(value, size):
     """Range 0: e is only a placeholder, so the anchor is the value itself."""
     x = np.full(size, value)
-    unit, _, anchor = encode_block(x)
+    group, _, anchor = encode_block(x)
     assert anchor == value
-    np.testing.assert_array_equal(decode(unit), x)
+    np.testing.assert_array_equal(decode(group), x)
 
 
 def _blocks(rng):
@@ -129,12 +129,12 @@ def test_decoded_values_are_fixed_points(params):
     rng = np.random.default_rng(3)
     checked = 0
     for x in _blocks(rng):
-        unit, e, _ = encode_block(x, params)
-        y = decode(unit)
-        unit2, e2, _ = encode_block(y, params)
-        flags = unit_rows(unit2).block_flags[0]
+        group, e, _ = encode_block(x, params)
+        y = decode(group)
+        group2, e2, _ = encode_block(y, params)
+        flags = group_rows(group2).block_flags[0]
         if e2 == e or flags & BLOCK_FLAG_DECIMAL:
-            np.testing.assert_array_equal(decode(unit2), y)
+            np.testing.assert_array_equal(decode(group2), y)
             checked += 1
     assert checked >= 15
 
@@ -144,8 +144,8 @@ def test_no_tie_bias_when_coarsening():
     the coarser grid's points. Ties to even keep the mean; ties up would shift it by a quarter
     of the finer step."""
     x = np.cumsum(np.random.default_rng(5).normal(size=1000))
-    unit, e, _ = encode_block(x)
-    y = decode(unit)
+    group, e, _ = encode_block(x)
+    y = decode(group)
     coarse = e + 1
     q = np.empty(1000, np.int32)
     base = np.rint(y.min() / 2.0 ** coarse)
@@ -168,7 +168,7 @@ def test_straddling_updates_keep_a_bounded_error():
     rng = np.random.default_rng(9)
     t = START + np.arange(1000) * np.timedelta64(10, "ms")  # 100 samples per one-second block
     x = np.cumsum(rng.normal(size=1000))
-    unit = fluxcode.encode_time_blocks(x, t, RAW, start_time=START, block_duration=SECOND).unit
+    group = fluxcode.encode_time_blocks(x, t, RAW, start_time=START, block_duration=SECOND).group
     lo, hi = START + 5 * SECOND + np.timedelta64(500, "ms"), START + 6 * SECOND  # second half of block 5
     kept = (t >= START + 5 * SECOND) & (t < lo)
     replaced = (t >= lo) & (t < hi)
@@ -178,10 +178,10 @@ def test_straddling_updates_keep_a_bounded_error():
     for _ in range(200):
         center, spread = x[kept].mean(), np.ptp(x[kept])
         new = center + rng.uniform(-2, 2) * spread * rng.uniform(0.5, 2, replaced.sum())
-        unit = fluxcode.update_time_blocks(unit, new, t[replaced], RAW, delete_ranges=[(lo, hi)],
-                                           start_time=START, block_duration=SECOND).unit
-        e = int(unit_rows(unit).grid_params[5])
-        y = decode(unit)[kept]
+        group = fluxcode.update_time_blocks(group, new, t[replaced], RAW, delete_ranges=[(lo, hi)],
+                                           start_time=START, block_duration=SECOND).group
+        e = int(group_rows(group).grid_params[5])
+        y = decode(group)[kept]
         steps.append(2.0 ** e)
         assert np.abs(y - original).max() < max(steps)
         if previous is not None and previous[0] == e:

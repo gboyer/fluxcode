@@ -7,13 +7,13 @@
 Apple Silicon (arm64, 8 logical CPUs), `uv run python bench/rust_encoder.py`. Three Rust pieces, switched
 together by `FLUXCODE_ENCODER=rust` (the benchmark toggles them in-process):
 
-- compress: `compress_unit` (layout choice, body packing, flush points and the flushed zstd frame in one
-  GIL-free call, thread-local zstd context) for units without a time axis;
-- kernel: `encode_unit` (block statistics, non-finite imputation, noise floor, decimal detection,
+- compress: `compress_group` (layout choice, body packing, flush points and the flushed zstd frame in one
+  GIL-free call, thread-local zstd context) for block groups without a time axis;
+- kernel: `encode_group` (block statistics, non-finite imputation, noise floor, decimal detection,
   quantization, order choice, residuals, bit target), same arguments and outputs as the numba kernel;
 - full: both. The time-axis encoding (`_time`) and splice/update stay Python/numba.
 
-Equality: the units are byte-identical to the numba path at every effort 1-9 on every signal and on all 27
+Equality: the block groups are byte-identical to the numba path at every effort 1-9 on every signal and on all 27
 golden cases, and flags, params, anchors, residuals, codes, min and max match exactly in a 530-case
 differential test (edge cases included: subnormal, near +-DBL_MAX, non-finite, constant, decimal). Only
 the block means (and so the golden hash) differ in the last bits: numba sums with fastmath in an order LLVM
@@ -24,11 +24,11 @@ The kernel is at parity with numba (0.9-1.04x) on finite data and 0.68x on block
 float reductions on aarch64: explicit `wide` SIMD took the noise estimate from 2.7 to 2.2 ns/sample
 (numba 1.7).
 
-## Byte-identical units, every effort 1-9 x every signal (1 minute each), full Rust vs python
+## Byte-identical block groups, every effort 1-9 x every signal (1 minute each), full Rust vs python
 
 all identical
 
-## Kernel only (_encoder.encode_unit: analysis, quantize, residuals), single thread, best of 5
+## Kernel only (_encoder.encode_group: analysis, quantize, residuals), single thread, best of 5
 
 | signal | numba | rust | speedup |
 |---|---:|---:|---:|

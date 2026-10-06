@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """Can the bit-vs-byte plane choice be predicted without compressing both ways?
 
-Evaluates cheap rules against the real unit sizes in corpus.npz (the fitting set, seed 1),
+Evaluates cheap rules against the real block group sizes in corpus.npz (the fitting set, seed 1),
 test.npz (held out, seed 2) and standard.npz (the report's signals, default params), and prints
 the i.i.d.-residual table that explains the main effect. Build the sets with corpus.py first.
 
@@ -68,7 +68,7 @@ def rules_table():
     d, f = sets[0][1:]
     bit, byte = d["bit"].astype(float), d["byte"].astype(float)
     print("\nfit set by H(high byte), bits/sample: how often byte planes win, and what each layout loses to the oracle")
-    print(f"{'H(high)':>12s} {'units':>6s} {'byte wins':>10s} {'geo-mean byte/bit':>18s} {'bit loses':>10s} {'byte loses':>11s}")
+    print(f"{'H(high)':>12s} {'groups':>6s} {'byte wins':>10s} {'geo-mean byte/bit':>18s} {'bit loses':>10s} {'byte loses':>11s}")
     edges = [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5]
     best = np.minimum(bit, byte)
     for lo, hi in zip(edges[:-1], edges[1:]):
@@ -122,7 +122,7 @@ def timings():
             t = min(t, time.perf_counter() - t0)
         return t / len(us) * 1e6
 
-    print("\nper unit, microseconds (20 report units):")
+    print("\nper block group, microseconds (20 report block groups):")
     print(f"  zstd 3 on both layouts' plane bytes : {best(lambda: [(zc.compress(s[0].tobytes()), zc.compress(s[1].tobytes())) for s in streams]):7.0f}")
     print(f"  greedy LZ estimate of both layouts  : {best(lambda: [(model.lz_estimate(s[0]), model.lz_estimate(s[1])) for s in streams]):7.0f}")
     print(f"  H(high) from a histogram            : {best(lambda: [model.entropy_bits(np.bincount(u >> 8, minlength=256)) for u in us]):7.0f}")

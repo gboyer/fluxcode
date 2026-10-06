@@ -3,8 +3,8 @@
 """Bounded-error and decimal-exact compression of float64 time series.
 
 Provides lossy (bounded-error) and decimal-exact compression for 1D float64
-arrays. Data is organized into self-describing units of blocks, each block holding
-0 to 65,535 samples: a unit decodes on its own. Encoding also returns per-block summary
+arrays. Data is organized into self-describing block groups of blocks, each block holding
+0 to 65,535 samples: a block group decodes on its own. Encoding also returns per-block summary
 statistics (minimum, maximum, and mean of finite samples) for the caller to store if
 useful.
 
@@ -12,64 +12,64 @@ Typical usage:
 
     import fluxcode
 
-    # Encode a dense series into a single storage unit, in blocks of 1000 samples:
-    unit, block_min, block_max, block_mean = fluxcode.encode_unit(x)
+    # Encode a dense series into a single storage block group, in blocks of 1000 samples:
+    block group, block_min, block_max, block_mean = fluxcode.encode_group(x)
 
-    # Decode the unit (lossy: within the error bound, exact for decimal data):
-    x_rec, _, block_sizes = fluxcode.decode_unit(unit)
+    # Decode the block group (lossy: within the error bound, exact for decimal data):
+    x_rec, _, block_sizes = fluxcode.decode_group(group)
 
     # With timestamps (datetime64, or integer ticks with time_unit), stored exactly:
-    unit, *_ = fluxcode.encode_unit(x, times=t)
-    x_rec, t_rec, _ = fluxcode.decode_unit(unit)
+    block group, *_ = fluxcode.encode_group(x, times=t)
+    x_rec, t_rec, _ = fluxcode.decode_group(group)
 
     # Explicit blocks of any size (a flat array and each block's size):
-    unit, *_ = fluxcode.encode_blocks(x, block_sizes=[1000, 998, 0, 1003])
+    block group, *_ = fluxcode.encode_blocks(x, block_sizes=[1000, 998, 0, 1003])
 
     # Replace block 3 and append a block:
-    unit, indices, mins, maxs, means = fluxcode.update(unit, {3: block3, 4: block4})
+    block group, indices, mins, maxs, means = fluxcode.update(group, {3: block3, 4: block4})
 
     # An hour in one-minute blocks, then replace the data of a few minutes. New samples
     # replace existing ones with the same times; delete_ranges are deleted first (with
     # only samples it is an upsert, with only ranges a deletion):
     hour = dict(start_time=np.datetime64("2026-01-01T10:00"), block_duration=np.timedelta64(1, "m"))
-    unit, *_ = fluxcode.encode_time_blocks(x, t, **hour)
-    unit, *_ = fluxcode.update_time_blocks(unit, x_new, t_new, delete_ranges=(t0, t1), **hour)
+    block group, *_ = fluxcode.encode_time_blocks(x, t, **hour)
+    block group, *_ = fluxcode.update_time_blocks(group, x_new, t_new, delete_ranges=(t0, t1), **hour)
 """
 
 from ._api import (
     decode,
-    decode_unit,
+    decode_group,
     encode,
     encode_blocks,
+    encode_group,
     encode_time_blocks,
-    encode_unit,
     update,
     update_time_blocks,
 )
 from ._types import (
     DEFAULT_NOISE_FLOOR_SIGMA,
-    DecodedUnit,
+    DecodedGroup,
+    EncodedGroup,
     EncodedSeries,
-    EncodedUnit,
     Params,
     TimeUnit,
-    UpdatedUnit,
+    UpdatedGroup,
 )
 
 __all__ = [
     "DEFAULT_NOISE_FLOOR_SIGMA",
-    "DecodedUnit",
+    "DecodedGroup",
+    "EncodedGroup",
     "EncodedSeries",
-    "EncodedUnit",
     "Params",
     "TimeUnit",
-    "UpdatedUnit",
+    "UpdatedGroup",
     "decode",
-    "decode_unit",
+    "decode_group",
     "encode",
     "encode_blocks",
+    "encode_group",
     "encode_time_blocks",
-    "encode_unit",
     "update",
     "update_time_blocks",
 ]

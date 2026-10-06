@@ -1,20 +1,18 @@
 # fluxcode — format specification
 
-<!-- LARGER CHANGE (after finishing the doc changes): Rename "unit" everywhere to "block group" (in prose) or "group" (when a shorter name is needed for code). In science and engineering, "unit" is overloaded as units of measurement and units of large industrial facilities. -->
+The fluxcode block group format: float64 samples in blocks, with optional exact timestamps.
 
-The fluxcode unit format: float64 samples in blocks, with optional exact timestamps.
-
-- This document specifies the layout of a unit and how to decode it.
+- This document specifies the layout of a block group and how to decode it.
 - How the reference encoder (the `fluxcode` package) chooses what to write, its parameters and the
   error bounds it guarantees are in [ENCODER.md](ENCODER.md).
 
-## 1. Units and blocks
+## 1. Block groups and blocks
 
-- **A unit is one storage artifact** (e.g. a database row): blocks encoded and decoded together.
-  - Units are independent of each other.
-  - A unit holds 0 to 65,535 blocks.
-- **A block holds 0 to 65,535 samples.** Each block's size is recorded in the unit.
-- **Decoding needs only the unit.** No index column or length has to be kept beside it:
+- **A block group is one storage artifact** (e.g. a database row): blocks encoded and decoded together.
+  - Block groups are independent of each other.
+  - A block group holds 0 to 65,535 blocks.
+- **A block holds 0 to 65,535 samples.** Each block's size is recorded in the block group.
+- **Decoding needs only the block group.** No index column or length has to be kept beside it:
   - the header records the block count and the sample count;
   - the body records each block's size (§6) and its own anchor.
 - **Nothing is padded at the sample level:** a block decodes to exactly its samples.
@@ -46,10 +44,10 @@ The fluxcode unit format: float64 samples in blocks, with optional exact timesta
 ## 3. Time axis
 
 - **Timestamps are optional.**
-  - A unit without them has time unit 0 in its header and no time fields in its body.
+  - A block group without them has time unit 0 in its header and no time fields in its body.
   - It decodes with `times = None`.
 - **Ticks.** Timestamps are int64 ticks since 1970-01-01, in one of the Arrow and numpy datetime64
-  units, recorded in the header (§6):
+  block groups, recorded in the header (§6):
 
   | time unit | code | int64 range around 1970 |
   |---|---|---|
@@ -64,7 +62,7 @@ The fluxcode unit format: float64 samples in blocks, with optional exact timesta
 - **Timestamps are naive:** the format stores no time zone.
   - Store UTC: local time can repeat or skip an hour, which breaks the ordering rule.
 - **Ordering is built into the format.** Deltas within a block and increases between block starts
-  are unsigned, so any decoded unit has:
+  are unsigned, so any decoded block group has:
   - non-decreasing times within each block;
   - non-decreasing block starts.
 - **Per block** every block stores a start, a step and a reference (`time_start`, `time_step`,
@@ -147,12 +145,12 @@ decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integ
     are 0 in a regular block (block flag bit 4 clear).
   - `time[i] = start + time_step · (quotient[1] + … + quotient[i])`. A regular block is therefore
     `time[i] = start + i · time_ref · time_step`.
-  - All arithmetic is exact in 64 bits. A decoder rejects a unit whose times would exceed int64
+  - All arithmetic is exact in 64 bits. A decoder rejects a block group whose times would exceed int64
     maximum (§6).
 
-## 6. Unit format
+## 6. Block group format
 
-A unit is an 8-byte header followed by one zstd frame holding the body.
+A block group is an 8-byte header followed by one zstd frame holding the body.
 - The header is uncompressed, so a decoder can validate it before decompressing.
 - The frame may use any zstd level and block boundaries. It records its content size and has no
   checksum.
@@ -252,12 +250,12 @@ Every column is 0 for an empty block. Per field:
   - Then bit plane j = 32..63, then the long blocks in block order, then byte i.
   - Bit k of byte i is bit j of the residual of sample 8i + k.
   - A short block's residuals are below 2^32.
-- A unit with no flagged blocks has an empty `nonfinite_code_planes` field, and one with only
+- A block group with no flagged blocks has an empty `nonfinite_code_planes` field, and one with only
   regular blocks an empty `time_residual_planes` field.
 
 ### 6.4 Validation
 
-A decoder rejects a unit when any of these fail.
+A decoder rejects a block group when any of these fail.
 
 - **Header:**
   - version 1;
@@ -325,7 +323,7 @@ offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 
 ## 7. Exactly representable values
 
-What a unit can hold bit for bit. Whether a given encoder finds that representation is up to the
+What a block group can hold bit for bit. Whether a given encoder finds that representation is up to the
 encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
 
 - **Power-of-two grids.** A block whose finite values are all a + q·2^e, with
@@ -350,9 +348,9 @@ encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
 A decoder conforms when:
 
 1. **Bit order:** it decodes the test vector of §6.5.
-2. **Any writer choice decodes:** a unit decodes the same whatever order, grid and anchor its
+2. **Any writer choice decodes:** a block group decodes the same whatever order, grid and anchor its
    writer picked, including any finite unsnapped anchor and any `time_ref`.
-3. **Self-describing units:** it needs only the unit, and returns exactly `num_samples` samples
+3. **Self-describing block groups:** it needs only the block group, and returns exactly `num_samples` samples
    and each block's size.
 4. **Validation:** it rejects each failure listed in §6.4.
 5. **Time axis:** it decodes the worked example of §6.5 byte for byte.

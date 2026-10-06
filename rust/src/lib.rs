@@ -10,9 +10,9 @@
 //!   candidate choice.
 //!
 //! python-zstandard holds the GIL inside `flush(FLUSH_BLOCK)`, which is where the compression of
-//! the buffered data happens, so flushed frames don't scale with threads there. `compress_unit`
-//! builds a unit without a time axis from its rows, and `pack_unit` the unit of a body that Python
-//! built (a unit with a time axis, or a splice); the unit bytes are the same as the Python path's
+//! the buffered data happens, so flushed frames don't scale with threads there. `compress_group`
+//! builds a block group without a time axis from its rows, and `pack_group` the block group of a body that Python
+//! built (a block group with a time axis, or a splice); the block group bytes are the same as the Python path's
 //! while both link the same libzstd (see `zstd_version`).
 
 use numpy::PyReadonlyArray1;
@@ -32,7 +32,7 @@ use format::{Rows, Shape};
 /// extension.
 const INTERFACE_VERSION: u32 = 1;
 
-/// A unit without a time axis from its rows: header plus zstd frame, as `_compress.compress` builds
+/// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress` builds
 /// it. `layout` is "byte", "bit", "heuristic" or "best" (`Effort.layout`).
 #[pyfunction]
 #[pyo3(signature = (
@@ -40,7 +40,7 @@ const INTERFACE_VERSION: u32 = 1;
     zstd_levels
 ))]
 #[allow(clippy::too_many_arguments)]
-fn compress_unit<'py>(
+fn compress_group<'py>(
     py: Python<'py>,
     block_flags: PyReadonlyArray1<u8>,
     block_sizes: PyReadonlyArray1<i64>,
@@ -62,13 +62,13 @@ fn compress_unit<'py>(
     )
     .map_err(PyValueError::new_err)?;
     let layout = Layout::parse(layout).map_err(PyValueError::new_err)?;
-    let unit = py
-        .detach(|| compress::compress_unit(&rows, layout, flush, &zstd_levels))
+    let group = py
+        .detach(|| compress::compress_group(&rows, layout, flush, &zstd_levels))
         .map_err(PyValueError::new_err)?;
-    Ok(PyBytes::new(py, &unit))
+    Ok(PyBytes::new(py, &group))
 }
 
-/// The unit of an uncompressed body whose residuals are byte planes, with or without a time axis
+/// The block group of an uncompressed body whose residuals are byte planes, with or without a time axis
 /// (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_octets` is
 /// the octets (8 residual bytes each) of all blocks.
 #[pyfunction]
@@ -76,7 +76,7 @@ fn compress_unit<'py>(
     body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels
 ))]
 #[allow(clippy::too_many_arguments)]
-fn pack_unit<'py>(
+fn pack_group<'py>(
     py: Python<'py>,
     body: PyReadonlyArray1<u8>,
     num_blocks: usize,
@@ -94,14 +94,16 @@ fn pack_unit<'py>(
         time_unit,
     };
     if !shape.fits_header() {
-        return Err(PyValueError::new_err("unit shape doesn't fit the header"));
+        return Err(PyValueError::new_err(
+            "block group shape doesn't fit the header",
+        ));
     }
     let layout = Layout::parse(layout).map_err(PyValueError::new_err)?;
     let body = body.as_slice()?;
-    let unit = py
+    let group = py
         .detach(|| compress::pack(&shape, body, layout, flush, &zstd_levels))
         .map_err(PyValueError::new_err)?;
-    Ok(PyBytes::new(py, &unit))
+    Ok(PyBytes::new(py, &group))
 }
 
 /// Which bit-plane transposition runs: "neon", "sse2" or "scalar".
@@ -110,7 +112,7 @@ fn simd_path() -> &'static str {
     planes::PATH
 }
 
-/// The version of the libzstd this extension links, as (major, minor, release): the unit bytes
+/// The version of the libzstd this extension links, as (major, minor, release): the block group bytes
 /// match python-zstandard's only if its `ZSTD_VERSION` is the same.
 #[pyfunction]
 fn zstd_version() -> (u32, u32, u32) {
@@ -120,8 +122,8 @@ fn zstd_version() -> (u32, u32, u32) {
 
 #[pymodule]
 fn fluxcode_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(compress_unit, m)?)?;
-    m.add_function(wrap_pyfunction!(pack_unit, m)?)?;
+    m.add_function(wrap_pyfunction!(compress_group, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_group, m)?)?;
     m.add_function(wrap_pyfunction!(zstd_version, m)?)?;
     m.add_function(wrap_pyfunction!(simd_path, m)?)?;
     // fluxcode/_compress.py loads the extension only if its RUST_INTERFACE_VERSION is this

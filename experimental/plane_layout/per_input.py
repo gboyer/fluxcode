@@ -22,13 +22,13 @@ sys.path[:0] = [str(ROOT / "tests"), str(ROOT / "bench"), str(Path(__file__).res
 import fluxcode
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _compress, _unit
+from fluxcode import Params, _compress, _group
 from stress import FLEET, gen_minute
 
 SETTINGS = {"before": _compress.EFFORTS[4], "effort 2": _compress.EFFORTS[2], "effort 5": _compress.EFFORTS[5]}
 
 
-def groups():
+def input_sets():
     out = collections.defaultdict(list)
     for kind in FLEET:
         out["fleet " + kind] = [(gen_minute(kind, s), Params()) for s in range(6)]
@@ -57,8 +57,8 @@ def bits(items, settings):
 
 
 if __name__ == "__main__":
-    rows = [(name, len(items), *(bits(items, s) for s in SETTINGS.values())) for name, items in groups().items()]
+    rows = [(name, len(items), *(bits(items, s) for s in SETTINGS.values())) for name, items in input_sets().items()]
     rows.sort(key=lambda r: r[3] - r[2], reverse=True)
-    print(f"{'input':38s} {'units':>5s} " + " ".join(f"{k:>9s}" for k in SETTINGS) + "   2 - before   5 - before")
+    print(f"{'input':38s} {'groups':>5s} " + " ".join(f"{k:>9s}" for k in SETTINGS) + "   2 - before   5 - before")
     for name, n, before, e2, e5 in rows:
         print(f"{name:38s} {n:5d} {before:9.3f} {e2:9.3f} {e5:9.3f}   {e2 - before:+8.3f}   {e5 - before:+8.3f}")

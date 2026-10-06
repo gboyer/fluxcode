@@ -1,26 +1,26 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Helpers for tests and benchmarks that check per-block properties across a long series:
-encode() with its per-unit index lists joined into flat per-block arrays, and back."""
+encode() with its per-group index lists joined into flat per-block arrays, and back."""
 
 from contextlib import contextmanager
 
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _args, _compress, _encoder, _unit
+from fluxcode import Params, _api, _args, _compress, _encoder, _group
 
-PER_UNIT = _api.DEFAULT_BLOCKS_PER_UNIT  # the helpers assume the default unit size
+PER_GROUP = _api.DEFAULT_BLOCKS_PER_GROUP  # the helpers assume the default block group size
 
 
 def encode_series(x, params=Params()):
-    units, mins, maxs, means = fluxcode.encode(x, params)
-    return units, np.concatenate(mins), np.concatenate(maxs), np.concatenate(means)
+    groups, mins, maxs, means = fluxcode.encode(x, params)
+    return groups, np.concatenate(mins), np.concatenate(maxs), np.concatenate(means)
 
 
-def decode_series(units):
-    """decode() of encode_series' units, joined back into one series."""
-    return np.concatenate([decoded.values for decoded in fluxcode.decode(units)])
+def decode_series(groups):
+    """decode() of encode_series' block groups, joined back into one series."""
+    return np.concatenate([decoded.values for decoded in fluxcode.decode(groups)])
 
 
 @contextmanager
@@ -35,20 +35,20 @@ def planes(layout, flush=True, zstd_levels=(3,)):
         _compress.EFFORTS.update(saved)
 
 
-def unit_rows(unit):
-    """UnitRows (block_flags, block_sizes, grid_params, value_anchors, residuals, codes, time_rows) of a unit."""
-    return _unit.read_rows(_unit.decompress(unit))
+def group_rows(group):
+    """GroupRows (block_flags, block_sizes, grid_params, value_anchors, residuals, codes, time_rows) of a block group."""
+    return _group.read_rows(_group.decompress(group))
 
 
-def flags_params(units):
-    hp = [(unit_rows(u).block_flags, unit_rows(u).grid_params) for u in units]
+def flags_params(groups):
+    hp = [(group_rows(u).block_flags, group_rows(u).grid_params) for u in groups]
     return np.concatenate([h for h, _ in hp]), np.concatenate([p for _, p in hp])
 
 
 def gated(x, f=0.25):
     """Per block: did the noise floor coarsen the step? (Decimal detection off: p isn't an exponent.)"""
-    units, lo, hi, _ = encode_series(x, Params(noise_floor_sigma=f, decimal_detection=False))
-    _, param = flags_params(units)
+    groups, lo, hi, _ = encode_series(x, Params(noise_floor_sigma=f, decimal_detection=False))
+    _, param = flags_params(groups)
     fine = np.array([_encoder.range_exponent(a, b, 16) for a, b in zip(lo, hi)])
     return param > fine
 
@@ -62,6 +62,6 @@ def unchecked_params(**kw):
 
 
 def encode_unchecked(x, **kw):
-    """encode_unit's bytes for one unit under unchecked_params(**kw)."""
+    """encode_group's bytes for one block group under unchecked_params(**kw)."""
     x = np.asarray(x, np.float64)
-    return _unit.encode(x, _args.fixed_sizes(x.shape[0], _api.DEFAULT_BLOCK_LEN), unchecked_params(**kw)).unit
+    return _group.encode(x, _args.fixed_sizes(x.shape[0], _api.DEFAULT_BLOCK_LEN), unchecked_params(**kw)).group

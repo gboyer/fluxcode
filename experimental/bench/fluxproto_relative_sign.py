@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Does a relative-sign zigzag shrink the fluxcode prototype's units?
+"""Does a relative-sign zigzag shrink the fluxcode prototype's block groups?
 
 Relative-sign zigzag: negate each residual when the last nonzero residual was negative, then
 zigzag, so the sign bit (and zigzag's sign-copied low bits) record "same/opposite sign as before".
@@ -64,7 +64,7 @@ def unrelsign(R):
     return out
 
 
-def unit(head_param, U):
+def group(head_param, U):
     nb = U.shape[0]
     low, high = (U & 255).astype(np.uint8), (U >> 8).astype(np.uint8)
     planes = np.empty((16, nb, U.shape[1] // 8), np.uint8)
@@ -73,11 +73,11 @@ def unit(head_param, U):
 
 
 def main():
-    groups = [("continuous", load()), ("discretized", [m[:4] for m in load_discrete()])]
+    signal_sets = [("continuous", load()), ("discretized", [m[:4] for m in load_discrete()])]
     print("| signal | zigzag | relative-sign | change | zigzag, noise f=1 | relative-sign, noise f=1 | change | sign plane density (zigzag → relative) |")
     print("|---|---|---|---|---|---|---|---|")
     tot = {}
-    for g, mins in groups:
+    for g, mins in signal_sets:
         for kind in dict.fromkeys(m[0] for m in mins):
             row = []
             dens = None
@@ -93,8 +93,8 @@ def main():
                     U = (raw[9 * nb:9 * nb + nb * 1000].astype(np.uint16) | (raw[9 * nb + nb * 1000:].astype(np.uint16) << 8)).reshape(nb, 1000)
                     R = relsign(U)
                     assert np.array_equal(unrelsign(R), U)
-                    a += unit(raw[:9 * nb], U)
-                    b += unit(raw[:9 * nb], R)
+                    a += group(raw[:9 * nb], U)
+                    b += group(raw[:9 * nb], R)
                     d0 += np.mean(U & 1)
                     d1 += np.mean(R & 1)
                 cnt = sum(1 for m in mins if m[0] == kind)
@@ -106,7 +106,7 @@ def main():
             ch = lambda x, y: f"{100 * (y - x) / x:+.1f}%" if x > 0.02 else "—"
             print(f"| {kind} ({g}) | {row[0]:.2f} | {row[1]:.2f} | {ch(row[0], row[1])} | {row[2]:.2f} | {row[3]:.2f} | "
                   f"{ch(row[2], row[3])} | {dens[0]:.2f} → {dens[1]:.2f} |", flush=True)
-    for g, mins in groups:
+    for g, mins in signal_sets:
         nbk = 60000 * len(mins)
         a0, b0 = tot[g, 0.0]
         a1, b1 = tot[g, 1.0]

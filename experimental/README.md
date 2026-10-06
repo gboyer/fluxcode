@@ -21,17 +21,17 @@ uv sync          # Python 3.11 (pinned in .python-version); fluxcode comes from 
 
 ## The codecs
 
-Every codec is measured on one-minute units of 60 blocks of 1000 samples, and charged every byte
-its decoder needs (`tslab/common/unit.py`). Names list the stages in processing order, parameters
+Every codec is measured on one-minute block groups of 60 blocks of 1000 samples, and charged every byte
+its decoder needs (`tslab/common/group.py`). Names list the stages in processing order, parameters
 last: `[cw<bits>-|quant<bits>-|ratectl-]<predictor>-<coder or step mapping>[-<variant>][-<B>]`.
 `delta1` is a fixed first difference; `delta0123` picks the order per block from {0, 1, 2, 3};
 `cw<bits>` is constant width; `bfp` is block floating point.
 
 | module | codecs | what they are |
 |---|---|---|
-| `tslab/common/datasets.py` | — | every test signal: 12 kinds as continuous one-minute signals, discretized variants, noisy sets, and the report's units |
+| `tslab/common/datasets.py` | — | every test signal: 12 kinds as continuous one-minute signals, discretized variants, noisy sets, and the report's block groups |
 | `tslab/common/historian.py` | — | a swinging-door historian simulated: six process tags (a day of 1 s scans each), exception + swinging-door archiving, interpolated and held read-back |
-| `tslab/common/unit.py` | — | the unit harness: `Concat` and `SharedBackend` turn block codecs into unit codecs |
+| `tslab/common/group.py` | — | the block group harness: `Concat` and `SharedBackend` turn block codecs into block group codecs |
 | `tslab/common/bitio.py`, `intcode.py` | — | bit writer/reader; zigzag, varint, residuals and the order pick |
 | `tslab/classic/quant.py` | `quant8`, `quant8-delta1-deflate`, `quant6-delta1-deflate` | uniform quantization over the block's range, with and without delta + deflate |
 | `tslab/classic/dpcm.py` | `dpcm6-linear-deflate`, `-cubic-`, `-mulaw-`, `dpcm4-*-deflate` | closed-loop DPCM with companded step tables, then deflate |
@@ -41,14 +41,14 @@ last: `[cw<bits>-|quant<bits>-|ratectl-]<predictor>-<coder or step mapping>[-<va
 | `tslab/classic/gorilla.py` | `gorilla-xor` | Gorilla's lossless XOR float encoding |
 | `tslab/classic/dct.py` | `dct-top64` | keep the 64 largest DCT coefficients |
 | `tslab/entropy/ratectl.py` | `delta0123-rice`, `delta0123-zstd`, `delta0123-deflate`, `flac`, `best: …` | quantize → predict → entropy code with a searched step (rate control) |
-| `tslab/entropy/ratectl_codecs.py` | `ratectl-delta0123-zstd-4b`, `ratectl-flac-4b` | the rate-controlled pipelines as unit codecs for the matrix |
-| `tslab/entropy/delta_zstd.py` | `delta0123-zstd-B`, `delta12-zstd-8`, `delta0123-deflate-B-L*` | the one-shot encoder: step from the block's range, order by variance, zstd per unit |
+| `tslab/entropy/ratectl_codecs.py` | `ratectl-delta0123-zstd-4b`, `ratectl-flac-4b` | the rate-controlled pipelines as block group codecs for the matrix |
+| `tslab/entropy/delta_zstd.py` | `delta0123-zstd-B`, `delta12-zstd-8`, `delta0123-deflate-B-L*` | the one-shot encoder: step from the block's range, order by variance, zstd per block group |
 | `tslab/entropy/native.py` | `quant8`, `quant8-delta1-deflate`, `quant8-delta1-zstd`, DPCM | numba ports, byte-compatible with the Python references |
 | `tslab/constwidth/delta_linear.py`, `delta_sqrt.py` | `cw8-delta1-linear`, `cw8-delta1-sqrt` | closed-loop delta1 at 8 bits per sample, uniform or √-scaled steps |
 | `tslab/constwidth/delta_bfp.py` | `cw8-delta1-bfp-e2`, `cw8-delta1-bfp-e4`, `cw6-…`, `cw4-…` | closed-loop delta1 with a block-floating-point exponent per 16-sample frame |
 | `tslab/constwidth/delta_tree.py` | `cw-delta1-tree-N` | delta1 with hierarchical block floating point over the deltas |
 | `tslab/flux/proto.py` | `fluxproto-B[-nfF]` | the fluxcode prototype: power-of-two step, decimal detection, byte/bit/nibble planes, noise floor |
-| `tslab/flux/adapters.py` | `fluxcode-B[-fF]` | the real fluxcode package as a unit codec, and its sweeps |
+| `tslab/flux/adapters.py` | `fluxcode-B[-fF]` | the real fluxcode package as a block group codec, and its sweeps |
 
 ## The report
 
@@ -59,7 +59,7 @@ uv run python make_time_report.py   # report/time.html                   (~5 s)
 uv run python make_sdt_report.py    # report/sdt.html and its SVGs       (~4 min)
 ```
 
-`make_report.py` runs every codec on the report's units (`tslab.common.datasets.units()`: 12 kinds ×
+`make_report.py` runs every codec on the report's block groups (`tslab.common.datasets.groups()`: 12 kinds ×
 5 one-minute signals, 3,600 blocks), checks every decode against its error bound, and writes
 `report/index.html` with these sections, in this order:
 
@@ -79,7 +79,7 @@ in `report/` before writing. `make_rate_report.py` runs the rate-control experim
 `report/time.html`: only fluxcode's time axis (docs/SPEC.md §3), i.e. what exact timestamps cost for the
 common clock shapes (a perfect grid, a grid with a few gaps, a noisy clock) and some harder ones; its
 timings need a quiet machine. `make_sdt_report.py` writes `report/sdt.html`: fluxcode on what a
-swinging-door (SDT) historian archives, one unit per tag-day with exact timestamps (`tslab/common/historian.py`): size
+swinging-door (SDT) historian archives, one block group per tag-day with exact timestamps (`tslab/common/historian.py`): size
 per archived point against zstd and Gorilla, error against the archived points and the scans, a B sweep, block layouts,
 resampled exports, and SDT against storing every scan. `report/` is generated, and committed so it can be read without rerunning.
 

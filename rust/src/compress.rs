@@ -164,12 +164,12 @@ fn compress_with_header(
     })
 }
 
-/// A unit as its header and the smallest frame of the candidate bodies (byte planes or not) over
+/// A block group as its header and the smallest frame of the candidate bodies (byte planes or not) over
 /// the zstd levels. Ties go to byte planes, then to the earlier level, whatever the order the
 /// candidates are tried in; a candidate that can't beat the best so far is dropped as soon as its
 /// flushed blocks show it. All candidates are tried at a level before the next level, so the cheap
 /// level's frames set the limit for the expensive ones.
-fn smallest_unit(
+fn smallest_group(
     shape: &Shape,
     candidates: &[(bool, &[u8])],
     flush: bool,
@@ -187,7 +187,7 @@ fn smallest_unit(
             (byte_planes, body, shape.header(byte_planes), cuts)
         })
         .collect();
-    // the best unit so far and its rank (byte planes first, each by level), which decides ties
+    // the best block group so far and its rank (byte planes first, each by level), which decides ties
     let mut best: Option<(Vec<u8>, usize)> = None;
     for (level_idx, &level) in levels.iter().enumerate() {
         for (byte_planes, body, header, cuts) in &prepared {
@@ -197,25 +197,25 @@ fn smallest_unit(
                 levels.len() + level_idx
             };
             // a frame of this length or less wins: a tie only against a worse rank
-            let max_len = best.as_ref().map(|(unit, best_rank)| {
+            let max_len = best.as_ref().map(|(group, best_rank)| {
                 if rank < *best_rank {
-                    unit.len()
+                    group.len()
                 } else {
-                    unit.len() - 1
+                    group.len() - 1
                 }
             });
-            if let Some(unit) = compress_with_header(header, body, cuts, level, max_len)? {
-                if max_len.is_none_or(|max_len| unit.len() <= max_len) {
-                    best = Some((unit, rank));
+            if let Some(group) = compress_with_header(header, body, cuts, level, max_len)? {
+                if max_len.is_none_or(|max_len| group.len() <= max_len) {
+                    best = Some((group, rank));
                 }
             }
         }
     }
-    best.map(|(unit, _)| unit)
+    best.map(|(group, _)| group)
         .ok_or_else(|| "no zstd levels".to_string())
 }
 
-/// The unit of a byte-plane body (`_compress.pack`): the layout chosen and the frame built as
+/// The block group of a byte-plane body (`_compress.pack`): the layout chosen and the frame built as
 /// `layout`, `flush` and `levels` (an `Effort`) say. The bit-plane body is derived from the
 /// byte-plane one.
 pub fn pack(
@@ -235,12 +235,12 @@ pub fn pack(
     };
     let bit_body = || to_bit_planes(byte_body, num_blocks, num_octets, has_time);
     match layout {
-        Layout::Byte => smallest_unit(shape, &[(true, byte_body)], flush, levels),
-        Layout::Bit => smallest_unit(shape, &[(false, &bit_body())], flush, levels),
+        Layout::Byte => smallest_group(shape, &[(true, byte_body)], flush, levels),
+        Layout::Bit => smallest_group(shape, &[(false, &bit_body())], flush, levels),
         Layout::Heuristic if byte_planes_predicted() => {
-            smallest_unit(shape, &[(true, byte_body)], flush, levels)
+            smallest_group(shape, &[(true, byte_body)], flush, levels)
         }
-        Layout::Heuristic => smallest_unit(shape, &[(false, &bit_body())], flush, levels),
+        Layout::Heuristic => smallest_group(shape, &[(false, &bit_body())], flush, levels),
         Layout::Best => {
             let bit_body = bit_body();
             let (byte, bit) = ((true, byte_body), (false, bit_body.as_slice()));
@@ -252,13 +252,13 @@ pub fn pack(
             } else {
                 [byte, bit]
             };
-            smallest_unit(shape, &candidates, flush, levels)
+            smallest_group(shape, &candidates, flush, levels)
         }
     }
 }
 
-/// A unit without a time axis from its rows (`_compress.compress`).
-pub fn compress_unit(
+/// A block group without a time axis from its rows (`_compress.compress`).
+pub fn compress_group(
     rows: &Rows,
     layout: Layout,
     flush: bool,

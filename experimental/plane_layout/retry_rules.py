@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Can the small-frame retry (compressing a block-flushed frame again in one block run) be skipped
-by a rule decided before compressing? From table.py's per-unit sizes (heuristic layout, flushed
+by a rule decided before compressing? From table.py's per-group sizes (heuristic layout, flushed
 after dense planes vs one block run), against always retrying under 16 KB:
 
 - flush only when the residual planes hold at least T non-zero bytes, else one run (one compression);
@@ -24,8 +24,8 @@ if __name__ == "__main__":
         pooled, dense = np.where(byte, s[:, 5], s[:, 0]), np.where(byte, s[:, 9], s[:, 4])
         retried = np.minimum(pooled, dense)
         base = retried.sum()
-        stats = lambda c: f"total {100 * (c.sum() / base - 1):+.3f}%  worst unit {100 * (c / retried - 1).max():+6.1f}%"
-        print(f"\n{name} ({len(s)} units); never retry: {stats(dense)}")
+        stats = lambda c: f"total {100 * (c.sum() / base - 1):+.3f}%  worst block group {100 * (c / retried - 1).max():+6.1f}%"
+        print(f"\n{name} ({len(s)} block groups); never retry: {stats(dense)}")
         for limit in (0, 2000, 8000, 16000):
             print(f"  flush only from {limit:5d} non-zero plane bytes: "
                   f"{stats(np.where(d['nonzero_bytes'] >= limit, dense, pooled))}")
@@ -35,5 +35,5 @@ if __name__ == "__main__":
         for lo, hi in ((0, 1000), (1000, 4000), (4000, 16384), (16384, np.inf)):
             m = (dense >= lo) & (dense < hi)
             if m.any():
-                print(f"  flushed frame {lo}-{hi}: {m.sum()} units, one run smaller on {np.mean(pooled[m] < dense[m]):.0%}, "
+                print(f"  flushed frame {lo}-{hi}: {m.sum()} block groups, one run smaller on {np.mean(pooled[m] < dense[m]):.0%}, "
                       f"mean gain {100 * np.mean(1 - retried[m] / dense[m]):.2f}%")

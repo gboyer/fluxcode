@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Beyond bit and byte planes: store the 16 bits of each residual as groups of w neighbouring
+"""Beyond bit and byte planes: store the 16 bits of each residual as fields of w neighbouring
 bits (w = 1: bit planes, 2: crumbs, 4: nibbles, 8: bytes), mixed per layout, and compress each
 layout with zstd 3. Also the same bit/byte layouts through LZMA and bzip2 (bit-wise literal
 coding, a BWT), to see whether a different compressor changes which layout wins.
 
-A layout is a list of group widths from the least significant bits up, e.g. [8, 1, 1, 1, 1, 1, 1,
-1, 1] = the low byte as a byte plane, the high byte as 8 bit planes. A group of width w becomes
+A layout is a list of field widths from the least significant bits up, e.g. [8, 1, 1, 1, 1, 1, 1,
+1, 1] = the low byte as a byte plane, the high byte as 8 bit planes. A field of width w becomes
 one stream of w-bit symbols, packed 8 // w per byte (w = 8: one byte per sample). "pooled" puts
-all groups in one zstd frame (one Huffman table, as `planes=` does today); "split" compresses
-each group's stream in its own frame (frame header and table cost, no sharing).
+all fields in one zstd frame (one Huffman table, as `planes=` does today); "split" compresses
+each field's stream in its own frame (frame header and table cost, no sharing).
 
-Sizes are the plane bytes only (the rest of a unit is the same under every layout).
+Sizes are the plane bytes only (the rest of a block group is the same under every layout).
 
     uv run python plane_layout/layouts.py [--codecs]
 """
@@ -46,8 +46,8 @@ LAYOUTS = {
 }
 
 
-def group_streams(u, widths):
-    """The packed stream of each group of a layout."""
+def field_streams(u, widths):
+    """The packed stream of each field of a layout."""
     out, shift = [], 0
     for w in widths:
         sym = ((u >> shift) & ((1 << w) - 1)).astype(np.uint8)
@@ -63,18 +63,18 @@ def group_streams(u, widths):
 
 
 def pooled(u, widths):
-    return len(ZC.compress(np.concatenate(group_streams(u, widths)).tobytes()))
+    return len(ZC.compress(np.concatenate(field_streams(u, widths)).tobytes()))
 
 
 def split(u, widths):
-    """Each group's stream in its own zstd frame (its own Huffman table, no sharing)."""
-    return sum(len(ZC.compress(s.tobytes())) for s in group_streams(u, widths))
+    """Each field's stream in its own zstd frame (its own Huffman table, no sharing)."""
+    return sum(len(ZC.compress(s.tobytes())) for s in field_streams(u, widths))
 
 
 def halves(u, widths):
-    """One frame for the groups of the low byte of u, one for the groups of the high byte (groups
+    """One frame for the fields of the low byte of u, one for the fields of the high byte (fields
     never straddle bit 8 in the layouts used here)."""
-    streams, bits = group_streams(u, widths), np.cumsum(widths)
+    streams, bits = field_streams(u, widths), np.cumsum(widths)
     low = [s for s, b in zip(streams, bits) if b <= 8]
     high = [s for s, b in zip(streams, bits) if b > 8]
     return sum(len(ZC.compress(np.concatenate(part).tobytes())) for part in (low, high) if part)
@@ -97,14 +97,14 @@ def report(label, d, sizes):
     pair = np.minimum(sizes[("bit", "pooled")], sizes[("byte", "pooled")])
     allbest = np.minimum.reduce(list(sizes.values()))
     bps = lambda a: a.sum() * 8 / (60_000 * n)
-    print(f"\n{label}: {n} units, plane bytes compressed with zstd 3; bits/sample, and size vs the best-of-bit-and-byte oracle")
+    print(f"\n{label}: {n} block groups, plane bytes compressed with zstd 3; bits/sample, and size vs the best-of-bit-and-byte oracle")
     print(f"{'layout':44s} {'bits/sample':>11s} {'vs oracle(bit,byte)':>20s} {'wins':>6s}")
     for (k, mode), s in sorted(sizes.items(), key=lambda kv: kv[1].sum())[:12]:
         wins = np.mean(s <= allbest + 1e-9)
         print(f"{k + ' (' + mode + ')':44s} {bps(s):11.3f} {s.sum() / pair.sum() - 1:+19.2%} {wins:6.0%}")
     print(f"{'oracle(bit, byte), pooled (today)':44s} {bps(pair):11.3f} {0:+19.2%}")
     for m in ("split", "halves"):
-        o = np.minimum(sizes[("bit", m)], sizes[("byte", "split")])  # a two-group layout has one frame per group
+        o = np.minimum(sizes[("bit", m)], sizes[("byte", "split")])  # a two-field layout has one frame per field
         print(f"{'oracle(bit, byte), ' + m:44s} {bps(o):11.3f} {o.sum() / pair.sum() - 1:+19.2%}")
     print(f"{'oracle(all of the above)':44s} {bps(allbest):11.3f} {allbest.sum() / pair.sum() - 1:+19.2%}")
 
@@ -120,7 +120,7 @@ def codecs():
           "xz 6, lc=0 lp=0 pb=0": lambda b: lzma.compress(b, format=lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_LZMA2, "preset": 6, "lc": 0, "lp": 0, "pb": 0}]),
           "xz 6, lc=4 lp=0 pb=0": lambda b: lzma.compress(b, format=lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_LZMA2, "preset": 6, "lc": 4, "lp": 0, "pb": 0}]),
           "xz 6, lc=0 lp=3 pb=3": lambda b: lzma.compress(b, format=lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_LZMA2, "preset": 6, "lc": 0, "lp": 3, "pb": 3}])}
-    print("\nother compressors on the bit and byte layouts (200 fit units; bits/sample; ms per unit for both layouts)")
+    print("\nother compressors on the bit and byte layouts (200 fit block groups; bits/sample; ms per block group for both layouts)")
     print(f"{'codec':26s} {'bit':>7s} {'byte':>7s} {'byte/bit':>9s} {'oracle':>7s} {'ms':>7s}")
     for name, f in cs.items():
         t0 = time.perf_counter()

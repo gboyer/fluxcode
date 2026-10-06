@@ -3,7 +3,7 @@
 """How framing the residual planes separately (layouts.py) interacts with the rest of the body:
 the per-block columns, the non-finite code planes and the time residual planes.
 
-A unit body is: columns (flags, sizes, grid params, anchors, and with a time axis the time
+A block group body is: columns (flags, sizes, grid params, anchors, and with a time axis the time
 columns), the 16 residual planes, the non-finite code planes (flagged blocks only), the time
 residual planes (irregular blocks only). Today everything is one zstd frame. Here the same bytes
 are framed differently and compressed with zstd 3:
@@ -13,7 +13,7 @@ are framed differently and compressed with zstd 3:
   B         residuals as 4 nibble frames; columns, code planes and time residuals each in a frame
   C         residuals as 4 nibble frames; everything else pooled into the first nibble frame
 
-Sizes are compressed bytes per unit (no 8-byte header), averaged over 18 units per scenario.
+Sizes are compressed bytes per block group (no 8-byte header), averaged over 18 block groups per scenario.
 
     uv run python plane_layout/sections.py
 """
@@ -31,8 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fluxcode
 from _series import planes
 from _signals import CLOCKS, MINUTE, clock_minute, minute
-from fluxcode import _format, _unit
-from layouts import group_streams
+from fluxcode import _format, _group
+from layouts import field_streams
 
 ZC = zstandard.ZstdCompressor(level=3, write_checksum=False, write_content_size=True)
 KINDS = ["sin-9.87hz", "random-walk", "noisy-sine", "sensor-0.1", "chirp", "gauss-spikes"]
@@ -41,9 +41,9 @@ Z = lambda *parts: len(ZC.compress(b"".join(bytes(p) for p in parts)))
 
 def body(x, mode, times=None):
     with planes(mode, flush=False):
-        units, *_ = fluxcode.encode(x, times=times, time_unit=None if times is None else "ns")
-    (unit,) = units
-    return _unit.decompress(unit)
+        groups, *_ = fluxcode.encode(x, times=times, time_unit=None if times is None else "ns")
+    (group,) = groups
+    return _group.decompress(group)
 
 
 def sections(parsed):
@@ -85,7 +85,7 @@ def measure(rows):
         sb, sy = sections(pb), sections(py)
         u = (np.frombuffer(sy["residual"][:sy["n"]], np.uint8).astype(np.uint16)
              | (np.frombuffer(sy["residual"][sy["n"]:], np.uint8).astype(np.uint16) << 8))
-        nib = [s.tobytes() for s in group_streams(u, [4, 4, 4, 4])]
+        nib = [s.tobytes() for s in field_streams(u, [4, 4, 4, 4])]
         rest = (sy["columns"], sy["codes"], sy["timeres"])
         out["columns"] += Z(sy["columns"])
         out["residual (best of bit/byte)"] += min(Z(sb["residual"]), Z(sy["residual"]))
@@ -100,7 +100,7 @@ def measure(rows):
 
 if __name__ == "__main__":
     print(f"{'scenario':16s} | {'columns':>7s} {'resid.':>7s} {'codes':>6s} {'timeres':>7s} (each compressed alone) | "
-          f"{'today':>7s} | {'A':>7s} {'B':>7s} {'C':>7s}   bytes/unit; A/B/C vs today")
+          f"{'today':>7s} | {'A':>7s} {'B':>7s} {'C':>7s}   bytes/block group; A/B/C vs today")
     for name in ("plain", "grid", "grid+gaps", "noisy", "nan", "nan+noisy"):
         m = measure(scenario(name))
         print(f"{name:16s} | {m['columns']:7.0f} {m['residual (best of bit/byte)']:7.0f} {m['codes']:6.0f} {m['timeres']:7.0f} {'':26s}| "

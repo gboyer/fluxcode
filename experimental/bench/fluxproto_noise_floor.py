@@ -8,7 +8,7 @@ differences look like white noise (lag-1 autocorrelation < -0.6); sigma is a rob
 estimate. Scored against the input and against the clean signal (the same generator
 without its noise), in units of the true noise sigma and % of range. Then every signal at f = 1
 and 2, to check the clean ones are untouched, and the encode-time cost of the estimate.
-Sizes are whole units (block minima included).
+Sizes are whole block groups (block minima included).
 
 Data: tslab.common.datasets.noisy_sets(), load() and load_discrete().
 
@@ -52,7 +52,7 @@ def main():
         row = []
         for f in (0.0, 1.0, 2.0):
             c = fp.FluxProto(16, noise_f=f, **base)
-            b = sum(8 * len(c.encode_unit(m[1])[0]) for m in sub) / (60000 * len(sub))
+            b = sum(8 * len(c.encode_group(m[1])[0]) for m in sub) / (60000 * len(sub))
             row.append(b)
             tot[f] = tot.get(f, 0) + b * len(sub)
         print(f"| {kind} | {row[0]:.2f} | {row[1]:.2f} | {row[2]:.2f} |")
@@ -61,13 +61,13 @@ def main():
     # timing
     c0, c1 = fp.FluxProto(16, **base), fp.FluxProto(16, noise_f=1.0, **base)
     for c in (c0, c1):
-        c.encode_unit(allm[0][1])
+        c.encode_group(allm[0][1])
     best = {}
     for _ in range(5):
         for k, c in (("off", c0), ("f = 1", c1)):
             t0 = time.perf_counter()
             for m in allm:
-                c.encode_unit(m[1])
+                c.encode_group(m[1])
             best[k] = min(best.get(k, np.inf), time.perf_counter() - t0)
     print("\nencode µs/block: " + ", ".join(f"{k} {1e6 * v / (60 * n):.2f}" for k, v in best.items()))
 

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """Which ~8-bit format gives the lowest error: constant width, or entropy coded with a cap?
 
-Method: every codec encodes the same 7,200 continuous blocks as one-minute units; reports size, error
+Method: every codec encodes the same 7,200 continuous blocks as one-minute block groups; reports size, error
 percentiles, the largest block, and encode / decode time, then median error per signal type.
 
 - quant8, cw8-delta1-linear, cw8-delta1-sqrt: constant width, 1 byte per sample
@@ -11,8 +11,8 @@ percentiles, the largest block, and encode / decode time, then median error per 
 - cw-delta1-tree-7 / -4: constant width, 7- / 4-bit leaves + 1 bit per tree node
 - delta0123-zstd-16: 16-bit quantizer, order pick, zstd; the cap (estimated from the
   residual variance) lowers B only for blocks that would exceed 8 bits/sample
-Constant-width units are the block encodings back to back; "+ zstd per unit" compresses that unit
-with zstd-3. "each block its own unit" encodes every block as a one-block unit, for comparison.
+Constant-width block groups are the block encodings back to back; "+ zstd per block group" compresses that block group
+with zstd-3. "each block its own block group" encodes every block as a one-block group, for comparison.
 Sizes are everything the decoder reads, including each block's min and max.
 Single thread; µs per 1000-sample block, best of 3.
 
@@ -31,7 +31,7 @@ import numpy as np
 import zstandard
 
 from tslab.common.datasets import load
-from tslab.common.unit import Concat
+from tslab.common.group import Concat
 from tslab.constwidth import Delta1Bfp, Delta1Linear8, Delta1Sqrt8, Delta1Tree
 from tslab.entropy import native
 from tslab.entropy.delta_zstd import DeltaZstd
@@ -47,54 +47,54 @@ def best_of(f, reps=3):
 
 
 class Quant8Native:
-    """quant8 as a unit, via the numba port (same bytes as Concat(Quant8()))."""
+    """quant8 as a block group, via the numba port (same bytes as Concat(Quant8()))."""
 
     name = "quant8"
 
-    def encode_unit(self, X):
+    def encode_group(self, X):
         return native.quant8_encode(X), [{}] * len(X)
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         return native.quant8_decode(data, nb, n)
 
 
-class ZstdUnit:
-    """<codec> + zstd per unit: the codec's unit, compressed with zstd-3."""
+class ZstdGroup:
+    """<codec> + zstd per block group: the codec's block group, compressed with zstd-3."""
 
     def __init__(self, codec):
         self.c = codec
-        self.name = codec.name + " + zstd per unit"
+        self.name = codec.name + " + zstd per block group"
         self.zc = zstandard.ZstdCompressor(level=3, write_checksum=False)
         self.zd = zstandard.ZstdDecompressor()
 
-    def encode_unit(self, X):
-        data, infos = self.c.encode_unit(X)
+    def encode_group(self, X):
+        data, infos = self.c.encode_group(X)
         return self.zc.compress(data), infos
 
-    def decode_unit(self, data, nb, n):
-        return self.c.decode_unit(self.zd.decompress(data), nb, n)
+    def decode_group(self, data, nb, n):
+        return self.c.decode_group(self.zd.decompress(data), nb, n)
 
 
 class EachBlock:
-    """<codec> with every block its own one-block unit (a list of units per minute)."""
+    """<codec> with every block its own one-block group (a list of block groups per minute)."""
 
     def __init__(self, codec):
         self.c = codec
-        self.name = codec.name + " (each block its own unit)"
+        self.name = codec.name + " (each block its own block group)"
 
-    def encode_unit(self, X):
-        encs = [self.c.encode_unit(X[b:b + 1]) for b in range(len(X))]
+    def encode_group(self, X):
+        encs = [self.c.encode_group(X[b:b + 1]) for b in range(len(X))]
         return [d for d, _ in encs], [i for _, infos in encs for i in infos]
 
-    def decode_unit(self, data, nb, n):
-        return np.concatenate([self.c.decode_unit(d, 1, n) for d in data])
+    def decode_group(self, data, nb, n):
+        return np.concatenate([self.c.decode_group(d, 1, n) for d in data])
 
 
 def run(codec, mins):
     X0 = mins[0][1]
-    codec.decode_unit(codec.encode_unit(X0)[0], *X0.shape)  # compile / warm up
-    te, encs = best_of(lambda: [codec.encode_unit(X) for _, X, _, _ in mins])
-    td, outs = best_of(lambda: [codec.decode_unit(e, *X.shape) for (e, _), (_, X, _, _) in zip(encs, mins)])
+    codec.decode_group(codec.encode_group(X0)[0], *X0.shape)  # compile / warm up
+    te, encs = best_of(lambda: [codec.encode_group(X) for _, X, _, _ in mins])
+    td, outs = best_of(lambda: [codec.decode_group(e, *X.shape) for (e, _), (_, X, _, _) in zip(encs, mins)])
     nblocks = sum(len(X) for _, X, _, _ in mins)
     rmse, maxerr, per_kind, bps_block = [], [], {}, []
     for (kind, X, lo, hi), Y, (e, _) in zip(mins, outs, encs):
@@ -126,7 +126,7 @@ def main():
 
     codecs = [Quant8Native(), Concat(Delta1Linear8()), Concat(Delta1Sqrt8()),
               bfp(2), bfp(4), Concat(Delta1Tree(7, "aware")),
-              ZstdUnit(bfp(4)), EachBlock(DeltaZstd(16)), DeltaZstd(16),
+              ZstdGroup(bfp(4)), EachBlock(DeltaZstd(16)), DeltaZstd(16),
               bfp(4, 6), bfp(4, 4), Concat(Delta1Tree(4, "aware")),
               DeltaZstd(8)]
     res = {c.name: run(c, mins) for c in codecs}

@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Does compressing one-minute chunks (60 blocks per unit) beat compressing each block alone?
+"""Does compressing one-minute chunks (60 blocks per block group) beat compressing each block alone?
 
 Method: the same payloads (delta0123-zstd residual byte planes at B = 8 and 10, and quant8 delta
-bytes) go through zstd and deflate at several levels, either per block or one unit per minute.
+bytes) go through zstd and deflate at several levels, either per block or one block group per minute.
 Reports size, encode / decode time, and the cost of reading one block. Single thread.
 
 Storage model: per-block min/max/mean float64 live in Arrow columns (24 B/block,
 0.19 bits/sample, reported separately). The payload is either compressed per
-block, or the whole minute is one compressed unit: all 60 block headers (flags +
+block, or the whole minute is one compressed block group: all 60 block headers (flags +
 init varints) followed by all 60 blocks' residual byte planes.
 
 Test signals are continuous one-minute versions of each dataset type, so the 60
@@ -83,16 +83,16 @@ def measure(chunks, comp):
     out = {}
     for mode in ("per-block", "chunk"):
         if mode == "per-block":
-            units = [h + b for heads, bodies in chunks for h, b in zip(heads, bodies)]
+            groups = [h + b for heads, bodies in chunks for h, b in zip(heads, bodies)]
         else:
-            units = [b"".join(heads) + b"".join(bodies) for heads, bodies in chunks]
-        te = min(timeit(lambda: [c(u) for u in units]) for _ in range(3))
-        packed = [c(u) for u in units]
-        td = min(timeit(lambda: [d(p, len(u)) for p, u in zip(packed, units)]) for _ in range(3))
-        assert all(d(p, len(u)) == u for p, u in zip(packed, units))
+            groups = [b"".join(heads) + b"".join(bodies) for heads, bodies in chunks]
+        te = min(timeit(lambda: [c(u) for u in groups]) for _ in range(3))
+        packed = [c(u) for u in groups]
+        td = min(timeit(lambda: [d(p, len(u)) for p, u in zip(packed, groups)]) for _ in range(3))
+        assert all(d(p, len(u)) == u for p, u in zip(packed, groups))
         out[mode] = {"bps": 8 * sum(map(len, packed)) / samples, "enc": 1e6 * te / n_blocks,
                      "dec": 1e6 * td / n_blocks,
-                     "one_block": 1e6 * td / len(units)}  # cost to read one block = decode its unit
+                     "one_block": 1e6 * td / len(groups)}  # cost to read one block = decode its block group
     return name, out
 
 

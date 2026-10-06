@@ -1,10 +1,10 @@
 # fluxcode day-scale stress test (bench/stress.py, 2026-10-02, 4 threads, AC power)
 
 One run of each at d039350, on AC power with a 45 s pause before each step. The default (effort 4) produces
-the same units as at 5ee16fa, byte for byte: the day compresses to the same 39.88 GB, and the speeds are a little
+the same block groups as at 5ee16fa, byte for byte: the day compresses to the same 39.88 GB, and the speeds are a little
 better (encode 106.6 → 102.4 s, -4%; decode 38.5 → 38.1 s, -1%; with timestamps 141.5 → 130.7 s, -8%; the
 adversarial variants -2 to -7%). The Python path now writes the byte-plane body once and derives the
-bit planes with one transpose (a unit's `write_unit` is 5 µs
+bit planes with one transpose (a block group's `write_group` is 5 µs
 instead of 31, plus a 23 µs transpose for the second layout). The machine showed a load average of about 2 from other
 apps before the steps. These are the Python path (no Rust extension); the extension's effect on 4 threads is in
 `experimental/rust_port/results/stress_effort.md` and, for timestamps at effort 5, in the last table here.
@@ -13,14 +13,14 @@ apps before the steps. These are the Python path (no Rust extension); the extens
 
 Apple M3 Mac15,13, Darwin 25.6.0, Python 3.11.13, numpy 2.4.6
 
-data `sensor-mix`: 1000 tags x 1440 units x 60 x 1000 = 86.40e9 samples (691.2 GB float64); 4 threads; pool 32 units/kind
-NaN: 3 min/tag/day in 2 runs -> 5,011 units touched (0.35%), 0.208% of samples
+data `sensor-mix`: 1000 tags x 1440 block groups x 60 x 1000 = 86.40e9 samples (691.2 GB float64); 4 threads; pool 32 block groups/kind
+NaN: 3 min/tag/day in 2 runs -> 5,011 block groups touched (0.35%), 0.208% of samples
 tags per kind: analog 350, held 250, digital 100, vibration 100, counter 50, sensor-0.1 50, noisy-sine 50, random-walk 50
 (pool generated, roundtrip-checked (worst error 1.41e-02 of block range) and warmed in 2 s)
 
-## Single thread, one unit, µs (best of 5 x 200)
+## Single thread, one block group, µs (best of 5 x 200)
 
-| kind | bits/sample | kernels | write_unit | to_bit_planes | zstd (both layouts) | encode_unit | unzstd | decode kernel | decode_unit |
+| kind | bits/sample | kernels | write_group | to_bit_planes | zstd (both layouts) | encode_group | unzstd | decode kernel | decode_group |
 |---|---|---|---|---|---|---|---|---|---|
 | analog | 5.90 | 97 | 5 | 22 | 107 | 247 | 20 | 60 | 88 |
 | held | 0.26 | 96 | 5 | 23 | 39 | 172 | 25 | 67 | 91 |
@@ -74,8 +74,8 @@ second zstd pass in every block's cost, the near miss is within run-to-run noise
 
 Apple M3 Mac15,13, Darwin 25.6.0, Python 3.11.13, numpy 2.4.6
 
-data `sensor-mix`: 1000 tags x 1440 units x 60 x 1000 = 86.40e9 samples (691.2 GB float64); 4 threads; pool 32 units/kind
-NaN: 3 min/tag/day in 2 runs -> 5,011 units touched (0.35%), 0.208% of samples
+data `sensor-mix`: 1000 tags x 1440 block groups x 60 x 1000 = 86.40e9 samples (691.2 GB float64); 4 threads; pool 32 block groups/kind
+NaN: 3 min/tag/day in 2 runs -> 5,011 block groups touched (0.35%), 0.208% of samples
 tags per kind: analog 350, held 250, digital 100, vibration 100, counter 50, sensor-0.1 50, noisy-sine 50, random-walk 50
 timestamps (datetime64[ns], exact), tags per clock: grid 600, grid+gaps 300, noisy 100
 (pool generated, roundtrip-checked (worst error 1.41e-02 of block range) and warmed in 3 s)
@@ -110,11 +110,11 @@ decode GB/s per tenth of the phase: 12.6 12.5 12.9 12.5 12.9 12.9 12.9 13.1 12.4
 - grid+gaps 9.95 GB (3.68 bits/sample, ratio 17.4);
 - noisy 29.16 GB (10.80 bits/sample, ratio 5.9);
 
-### Time-axis units at effort 5 (block flushes), with and without the Rust extension
+### Time-axis block groups at effort 5 (block flushes), with and without the Rust extension
 
-`--scale 0.25 --times clock-mix --effort 5`, 4 threads, same session. Units with a time axis now go through
-the extension's `pack_unit` (the body is built in Python, the layout choice, flush points and zstd frame
-without the GIL), so the flushes scale: the units are the same bytes (11.65 GB, 4.32 bits/sample).
+`--scale 0.25 --times clock-mix --effort 5`, 4 threads, same session. Block groups with a time axis now go through
+the extension's `pack_group` (the body is built in Python, the layout choice, flush points and zstd frame
+without the GIL), so the flushes scale: the block groups are the same bytes (11.65 GB, 4.32 bits/sample).
 
 | path | encode | float64 GB/s | µs/block/worker | decode |
 |---|---|---|---|---|

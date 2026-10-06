@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Garry Boyer
-//! The unit format's constants, offsets and header, as in `fluxcode/_format.py`.
+//! The block group format's constants, offsets and header, as in `fluxcode/_format.py`.
 
 /// Block flags bit 3: the block has non-finite code planes.
 pub const BLOCK_FLAG_NONFINITE: u8 = 0x08;
 
-/// Unit header flags bit 0: the residual planes are byte planes.
-const UNIT_FLAG_BYTE_PLANES: u8 = 1;
-/// Position of the 3-bit time unit in the unit header flags (bits 1-3).
-const UNIT_FLAG_TIME_UNIT_SHIFT: u8 = 1;
+/// Block group header flags bit 0: the residual planes are byte planes.
+const GROUP_FLAG_BYTE_PLANES: u8 = 1;
+/// Position of the 3-bit time unit in the block group header flags (bits 1-3).
+const GROUP_FLAG_TIME_UNIT_SHIFT: u8 = 1;
 /// Largest time unit code the header's 3 bits hold.
 const MAX_TIME_UNIT: u8 = 7;
 const FORMAT_VERSION: u8 = 1;
@@ -21,7 +21,7 @@ pub const BYTES_PER_ANCHOR: usize = 8;
 /// Bytes of the value columns (flags, size, grid parameter, anchor) per block.
 pub const METADATA_BYTES_PER_BLOCK: usize =
     BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR;
-/// Bytes of the three 8-byte time columns of a unit with a time axis, per block.
+/// Bytes of the three 8-byte time columns of a block group with a time axis, per block.
 pub const TIME_BYTES_PER_BLOCK: usize = 3 * 8;
 
 /// Samples per octet: each plane holds one byte per octet.
@@ -77,22 +77,22 @@ impl Shape {
         residual_start(self.num_blocks, self.has_time())
     }
 
-    /// The 8 header bytes of a unit (`_format.pack_header`).
+    /// The 8 header bytes of a block group (`_format.pack_header`).
     pub fn header(&self, byte_planes: bool) -> [u8; HEADER_BYTES] {
         let mut header = [0u8; HEADER_BYTES];
         header[0] = FORMAT_VERSION;
         header[1] = if byte_planes {
-            UNIT_FLAG_BYTE_PLANES
+            GROUP_FLAG_BYTE_PLANES
         } else {
             0
-        } | (self.time_unit << UNIT_FLAG_TIME_UNIT_SHIFT);
+        } | (self.time_unit << GROUP_FLAG_TIME_UNIT_SHIFT);
         header[2..4].copy_from_slice(&(self.num_blocks as u16).to_le_bytes());
         header[4..8].copy_from_slice(&(self.num_samples as u32).to_le_bytes());
         header
     }
 }
 
-/// A unit's rows and the offsets of each block in the samples, residual octets and code octets.
+/// A block group's rows and the offsets of each block in the samples, residual octets and code octets.
 ///
 /// Each offsets vector has `num_blocks + 1` entries: entry `b` is block `b`'s offset, and the last
 /// the total.
@@ -110,7 +110,7 @@ pub struct Rows<'a> {
 }
 
 impl<'a> Rows<'a> {
-    /// The rows of a unit without a time axis with their offsets (`_format._fill_layout`), or an
+    /// The rows of a block group without a time axis with their offsets (`_format._fill_layout`), or an
     /// error if the fields disagree.
     pub fn new(
         block_flags: &'a [u8],

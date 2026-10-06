@@ -8,11 +8,11 @@ block it [quantizes](https://en.wikipedia.org/wiki/Quantization_(signal_processi
 power-of-two step with up to 2¹⁶ steps across the block's range, or to an exact decimal grid when
 every sample sits on one; coarsens the step to a fraction of the noise on blocks of white
 measurement noise; picks a fixed polynomial predictor (order 0–3); and zigzags, bit-shuffles and
-[zstd](https://www.rfc-editor.org/rfc/rfc8878)-compresses one-minute units of 60 blocks. Units are
+[zstd](https://www.rfc-editor.org/rfc/rfc8878)-compresses one-minute block groups of 60 blocks. Block groups are
 self-describing: no index column is needed to decode them. §11 is the investigation behind it;
 its format is specified in [docs/SPEC.md](../docs/SPEC.md).
 
-In this report's matrix (12 synthetic signal kinds, one-minute units, §1):
+In this report's matrix (12 synthetic signal kinds, one-minute block groups, §1):
 
 | codec | bits/sample, median over kinds | error, % of block range | notes |
 |---|---|---|---|
@@ -80,15 +80,15 @@ seconds of the same channel rather than repeats. The report's matrix uses 5 one-
 | noisy-sine | π² Hz sine + Gaussian noise σ = 5 |
 | sensor-0.1 | slow drift + √2 Hz wobble, rounded to 0.1 |
 
-**Evaluation unit.** Every codec encodes **one-minute units**: 60 blocks of 1000 samples. A unit's
+**Evaluation block group.** Every codec encodes **one-minute block groups**: 60 blocks of 1000 samples. A block group's
 size is every byte needed to decode it from those bytes alone. Nothing is charged for an external
 index unless the decoder reads one, and nothing it needs is left out. Anything that depends on a
 region's range stays per 1-second block, because dynamic range can change from second to second:
 quantizer ranges, constant-width grids, deviation as a % of range, DCT scaling. Only the framing
-and the scope of the entropy coder are per minute. §9 shows why the minute is the right unit: a
+and the scope of the entropy coder are per minute. §9 shows why the minute is the right block group: a
 back end such as zstd pays a fixed cost per call, and 60 blocks spread it out.
 
-The investigation first measured each 1-second block as its own compressed unit, on 12 single
+The investigation first measured each 1-second block as its own compressed block group, on 12 single
 blocks. Where the sections below keep those figures for their historical point, they're labeled
 "per-block (original evaluation)"; current comparisons and the recommendation use per-minute
 figures. Timings are Apple M3, one thread.
@@ -101,12 +101,12 @@ figures. Timings are Apple M3, one thread.
 - max |error|
 - where relevant, how far a peak moved (in samples)
 
-Each is summarized over a unit's blocks and over the seeds as the **median** and the **worst**
+Each is summarized over a block group's blocks and over the seeds as the **median** and the **worst**
 block. Size is reported in bits per sample (raw float64 is 64). Plots show a single second: one
 block chosen per signal kind to show its feature (the largest spike, an edge), decoded from its
-unit.
+block group.
 
-**Rigor.** Every codec writes real bytes and decodes each unit from only those bytes, so the byte
+**Rigor.** Every codec writes real bytes and decodes each block group from only those bytes, so the byte
 counts are real. Every lossless stage is verified to round-trip exactly. Every quantizer is checked
 against its |error| ≤ step/2 bound, per block.
 
@@ -114,7 +114,7 @@ against its |error| ≤ step/2 bound, per block.
 
 ## 2. The original codecs
 
-Bits/sample are whole one-minute units, median over the 12 kinds (range in brackets where it
+Bits/sample are whole one-minute block groups, median over the 12 kinds (range in brackets where it
 varies); RMSE is the median over each kind's blocks, as a range over kinds. The full matrix is in
 `report/index.html`.
 
@@ -150,7 +150,7 @@ integer-frequency data is no longer generated):
 | sin ~50 Hz | 93 B | 597 B |
 
 **Lesson:** synthetic benchmarks can flatter dictionary coders. The same concern applies to the
-one-minute units (§9): even at irrational frequencies, a minute of a clean sine gives zstd and
+one-minute block groups (§9): even at irrational frequencies, a minute of a clean sine gives zstd and
 deflate near-repeats across its blocks. quant8-delta1-deflate needs 0.56 bits/sample on the ~50 Hz
 sine per minute, against 4.8 per block.
 
@@ -240,11 +240,11 @@ is what the size-vs-error chart in `report/index.html` shows.
    - real [libFLAC](https://xiph.org/flac/format.html) (fitted [linear predictors](https://en.wikipedia.org/wiki/Linear_predictive_coding) on the same integers)
 
 **Rate control.** Bits per sample ≈ [entropy](https://en.wikipedia.org/wiki/Entropy_(information_theory))(residual) − log₂Δ, so Δ is the only knob; the entropy
-coder just measures the result. Two policies at a 4 bits/sample budget per unit, on "regime"
+coder just measures the result. Two policies at a 4 bits/sample budget per block group, on "regime"
 minutes: 5 consecutive seconds of each of the 12 kinds, every block rescaled to [0, 1], standing in
-for one sensor passing through different regimes (5 units, `make_rate_report.py`):
+for one sensor passing through different regimes (5 block groups, `make_rate_report.py`):
 
-| coder | shared Δ for the unit (cap 8 bits/sample): median / worst RMSE | fixed 4 bits/sample per block: median / worst RMSE |
+| coder | shared Δ for the block group (cap 8 bits/sample): median / worst RMSE | fixed 4 bits/sample per block: median / worst RMSE |
 |---|---|---|
 | delta0123-rice | 0.057% / 0.21% | 0.063% / 3.6% |
 | delta0123-zstd | 0.019% / 0.24% | 0.040% / 2.7% |
@@ -252,7 +252,7 @@ for one sensor passing through different regimes (5 units, `make_rate_report.py`
 | flac | 0.040% / 0.21% | 0.019% / 3.9% |
 | best: rice\|zstd\|flac (best of the three per block) | **0.0078%** / 0.21% | 0.0012% / 2.7% |
 
-(RMSE per block, % of the block's range; median and worst over the units' blocks.)
+(RMSE per block, % of the block's range; median and worst over the block groups' blocks.)
 
 - **A shared step equalizes error.** Giving every block the same Δ minimizes total squared error for
   a total budget, and it caps the worst block: 0.2% against 2.7–3.9% with each block forced to the
@@ -275,11 +275,11 @@ for one sensor passing through different regimes (5 units, `make_rate_report.py`
 
 ## 7. The one-shot encoder
 
-The search in §6 bisects Δ, re-encoding the whole unit at each step. The one-shot encoder
+The search in §6 bisects Δ, re-encoding the whole block group at each step. The one-shot encoder
 (`delta0123-zstd-B`, `tslab/entropy/delta_zstd.py`) fixes all parameters from data that's already
-available, so it compresses each unit once:
+available, so it compresses each block group once:
 
-- **Step** = (max − min) / (2^B − 1), using the block's own range, stored in the unit. Codes fit in B
+- **Step** = (max − min) / (2^B − 1), using the block's own range, stored in the block group. Codes fit in B
   bits, and min and max decode exactly.
 - **Predictor order** (the fixed polynomial predictors of [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and FLAC) = argmin over k of
   the variance of `diff(q, k)`, a cheap statistic with no compression.
@@ -289,7 +289,7 @@ available, so it compresses each unit once:
   B = 10 dropped further (noisy-sine: 0.056% median RMSE per block, 0.028% now).
 
 **The step decision.** Error is then constant relative to each block's own range, rather than in
-absolute units as with a shared Δ. That's more robust to occasional very noisy blocks (they don't
+absolute block groups as with a shared Δ. That's more robust to occasional very noisy blocks (they don't
 change other blocks), at the cost of spending bits on noise in quiet blocks (§11).
 
 **It comes close to the search.** On the regime minutes, delta0123-zstd-10 gives 3.84
@@ -326,7 +326,7 @@ picker was native, it saved almost no time (§8), so it's not worth it.
 
 **Versus the alternatives.** In bit gain (§5), delta0123-zstd-10 is the best of the classic set
 (7.9). At B = 8 it's not: per minute, quant8-delta1-deflate is smaller in the median (1.48 against
-1.86 bits/sample, the same samples' error), because raw deflate at level 9 over a whole unit finds
+1.86 bits/sample, the same samples' error), because raw deflate at level 9 over a whole block group finds
 long matches in the clean periodic and smooth kinds (sin-4.12hz: 0.48 against 1.22). The one-shot
 encoder is 7–12% smaller on the random walk, impulses and chirp. Per block (original evaluation)
 it was smaller on 6 of the 12 kinds, the busy ones (chirp: 660 against 928 bytes per block). 6-bit
@@ -371,8 +371,8 @@ evaluation; not re-measured). `bench/native_speed.py` now times the per-minute c
 
 ## 9. One-minute chunks
 
-**Why the minute.** This section is the evidence for the report's evaluation unit (§1). A store
-keeps one compressed unit per channel-minute: 60 block headers (each block's order, B, min and
+**Why the minute.** This section is the evidence for the report's evaluation block group (§1). A store
+keeps one compressed block group per channel-minute: 60 block headers (each block's order, B, min and
 max) followed by 60 blocks of residual planes, compressed together. The per-block min / max / mean
 can also sit in index columns beside it, but the decoder doesn't need them.
 
@@ -402,8 +402,8 @@ fastest of 5 runs):
   | impulses | 4.51 → 4.50 (0%) |
 
 **delta0123-zstd per minute** (`tslab/entropy/delta_zstd.py`, `bench/delta_zstd.py`): the whole
-per-block front end and header packing are compiled, and there's one compression call per unit.
-On 120 one-minute signals (7,200 blocks); sizes are whole units, each block's min and max
+per-block front end and header packing are compiled, and there's one compression call per block group.
+On 120 one-minute signals (7,200 blocks); sizes are whole block groups, each block's min and max
 included:
 
 | codec | bits/sample | median RMSE | encode µs/block | decode µs/block | 200 signals × 1 day, core-s |
@@ -550,7 +550,7 @@ block's min and max; single thread, µs per block:
 | **cw8-delta1-bfp-e4** | 8.41 | **0.0071%** | **0.067%** | **0.116%** | **0.196%** | 10.1 | 2.7 |
 | cw-delta1-tree-7 | 8.23 | 0.0121% | 0.095% | 0.351% | 1.554% | 77* | 18* |
 | *compressed, for comparison:* | | | | | | | |
-| cw8-delta1-bfp-e4 + zstd per unit | 4.36 | 0.0071% | 0.067% | 0.116% | 0.196% | 12.1 | 3.5 |
+| cw8-delta1-bfp-e4 + zstd per block group | 4.36 | 0.0071% | 0.067% | 0.116% | 0.196% | 12.1 | 3.5 |
 | delta0123-zstd-16 | 4.21 | 0.0037% | 0.057% | 0.234% | 0.394% | 7.4 | 2.4 |
 
 \*The tree delta code isn't optimized: numpy per tree level, plus a numba leaf loop.
@@ -570,7 +570,7 @@ block's min and max; single thread, µs per block:
   - **With entropy coding, delta0123-zstd-16 is half the size and 2× more precise typically.**
     It's much better on busy signals (the ~50 Hz sine: 0.007% vs 0.057%).
   - **Its capped B = 7 blocks double the worst-case max error** (0.394%).
-- **cw8-delta1-bfp-e4's bytes also compress well:** zstd per unit takes it to 4.36 bits/sample.
+- **cw8-delta1-bfp-e4's bytes also compress well:** zstd per block group takes it to 4.36 bits/sample.
   Once compressed, the two designs are about the same size.
 - **Encode can't vectorize within a block** for any of the delta codecs, because the closed loop
   makes each sample depend on the previous reconstruction. Decode is shifts or CLZ plus one running
@@ -590,7 +590,7 @@ about 1 µs to decode. Same 7,200 blocks:
 | cw4-delta1-bfp-e4 | 4.42 | 0.198% | 1.27% | 1.99% | 3.33% | 11.0 | 3.8 |
 | cw-delta1-tree-4 | 5.23 | 0.108% | 0.853% | 2.86% | 12.1% | 77* | 17* |
 | *compressed, for comparison:* | | | | | | | |
-| cw8-delta1-bfp-e4 + zstd per unit | 4.36 | 0.0071% | 0.067% | 0.116% | 0.196% | 12.1 | 3.5 |
+| cw8-delta1-bfp-e4 + zstd per block group | 4.36 | 0.0071% | 0.067% | 0.116% | 0.196% | 12.1 | 3.5 |
 | delta0123-zstd-8 | 2.49 | 0.113% | 0.123% | 0.234% | 0.394% | 5.6 | 1.9 |
 
 - **Each 2 bits removed costs about 5–6× in typical error** (4.6× and 6×), a little worse than the 4× that
@@ -657,8 +657,8 @@ prototype, fluxproto (`tslab/flux/proto.py`; benchmark `bench/fluxproto_sweep.py
 
 ### Continuous signals (7,200 blocks)
 
-Byte planes, no decimal detection (the first version). Sizes are whole units: the prototype stores
-each block's min in the unit, about 0.05 bits/sample.
+Byte planes, no decimal detection (the first version). Sizes are whole block groups: the prototype stores
+each block's min in the block group, about 0.05 bits/sample.
 
 | codec | bits/sample | median RMSE | worst RMSE | worst max err | encode µs | decode µs |
 |---|---|---|---|---|---|---|
@@ -926,7 +926,7 @@ power of two.
   on float rounding noise (σ ≈ 3.5e−11), far below the B-bit step, so it has no effect.
 
 **Results** (B = 16, orders 0–3, decimal detection, bit-shuffle, block minima stored; errors in
-units of the true noise σ):
+block groups of the true noise σ):
 
 | signal | f | bits/sample | RMS error vs input | RMS error vs clean signal |
 |---|---|---|---|---|
@@ -1030,11 +1030,11 @@ f = 0.25, which against the clean signal is indistinguishable from storing the n
 
 **Use fluxcode** (the package at the repository root; format in [docs/SPEC.md](../docs/SPEC.md)),
 with its defaults: B = 16 (`max_quantize_bits`), a floor of 6 bits (`min_quantize_bits`), orders
-0–3, decimal detection, bit-shuffled planes, zstd level 3, noise floor f = 0.25, one unit per
+0–3, decimal detection, bit-shuffled planes, zstd level 3, noise floor f = 0.25, one block group per
 channel-minute (60 blocks of 1000 samples).
 
 ```
-unit per minute:  16-byte header (version, block length, sample count)
+block group per minute:  16-byte header (version, block length, sample count)
                   || zstd( head[N] | param[N] | anchor[N] | bit planes 0..15 of zigzag(diff(q, order)) | nonfinite codes )
 decode:           q = cumsum^order(residual) mod 2^16 ; x = lo + q·2^e  (or (K0 + q)·10^p on a decimal grid)
 ```
@@ -1048,7 +1048,7 @@ decode:           q = cumsum^order(residual) mod 2^16 ; x = lo + q·2^e  (or (K0
   1.8–2.5× for 0.05–0.06σ of added RMS error, and leaves clean ones untouched.
 - **Edits are stable,** and `update` replaces blocks without touching the others.
 - **It's fast:** about 3.2 µs to encode and 1.9 µs to decode a block on one core
-  ([bench/RESULTS.md](../bench/RESULTS.md)), one compressed call per unit.
+  ([bench/RESULTS.md](../bench/RESULTS.md)), one compressed call per block group.
 - **It handles any float64:** NaN, ±inf, subnormal ranges and ±DBL_MAX spans.
 
 **The step before it: delta0123-zstd** (§7, §9). A range-scaled step of (max − min)/(2ᴮ − 1),
@@ -1056,7 +1056,7 @@ the same order pick, byte planes and one zstd call per minute. At B = 10 it's 2.
 the median at 0.028% RMSE. It's smaller than fluxcode in this matrix because the synthetic sines
 repeat across a minute in byte planes (§3); on the noisy, spiky, random-walk and chirp kinds the two
 are within a few percent at B = 10, or fluxcode is smaller. What fluxcode adds is what the
-matrix doesn't score: exact decimals, a noise floor, stable edits, self-describing units and
+matrix doesn't score: exact decimals, a noise floor, stable edits, self-describing block groups and
 non-finite values. If only 8-bit precision is needed and simplicity matters most, plain quant8 +
 delta mod 256 + zstd per minute (quant8-delta1-zstd) is about 3× faster than delta0123-zstd-8 at
 the same size (§9).
@@ -1079,10 +1079,10 @@ encode and 3 µs decode per block.
   - partial blocks: every block records its own size, 0 to 65,535 samples (SPEC §1)
   - NaN and ±inf: encoded exactly, at no cost to blocks without them (SPEC §2)
   - constant blocks: handled (range 0)
-  - a format version: every unit starts with an 8-byte header carrying the version, flags, block
-    count and sample count, and the body records every block's size, so units are self-describing (SPEC §6)
+  - a format version: every block group starts with an 8-byte header carrying the version, flags, block
+    count and sample count, and the body records every block's size, so block groups are self-describing (SPEC §6)
   - endianness: specified little-endian (SPEC §6)
-- **Speed-ups.** With each unit encoded in one compiled call, the order picked on the first 250
+- **Speed-ups.** With each block group encoded in one compiled call, the order picked on the first 250
   samples and bit-shuffled planes, encode takes about 3 µs per block on one thread ([docs/PERFORMANCE.md](../docs/PERFORMANCE.md)).
 - **The size estimate for a cap.** fluxcode's optional `target_bits_per_sample` estimates each
   block from the class entropy of its residuals rather than log2(std) + 2.05, which fails on
@@ -1103,7 +1103,7 @@ encode and 3 µs decode per block.
    would give 5–200× lower error on those signals (§6). Encoding stays vectorizable; decoding
    becomes a short recursive filter (fine in numba).
 4. **Streaming rate control** (a shared Δ adjusted by feedback), only if absolute-error targets
-   become more important than per-block relative error. fluxcode's target is a soft cap per unit,
+   become more important than per-block relative error. fluxcode's target is a soft cap per block group,
    not a controller.
 5. **Constant-width follow-ups** (§10), not pursued:
    - a 3-bit exponent for cw8-delta1-bfp (mean exponents are 1–9)
@@ -1121,7 +1121,7 @@ Everything runs from `experimental/` (see [README.md](README.md) for the full mo
 | path | what it holds |
 |---|---|
 | `notes/` | the original request and the design prompts, in order |
-| `tslab/common/` | `datasets.py` (every test signal: the 12 kinds as one-minute signals, the discretized sets, the report's units), `unit.py` (the unit codec harness), `bitio.py`, `intcode.py` (zigzag, varint, order pick) |
+| `tslab/common/` | `datasets.py` (every test signal: the 12 kinds as one-minute signals, the discretized sets, the report's block groups), `group.py` (the block group codec harness), `bitio.py`, `intcode.py` (zigzag, varint, order pick) |
 | `tslab/classic/` | quant8, quant*-delta1-deflate, companded DPCM, binary tree, piecewise linear / PCHIP, swinging door, Gorilla, DCT (§2, §4) |
 | `tslab/entropy/` | rate control and its coders (`ratectl.py`, §6), the matrix wrappers (`ratectl_codecs.py`), delta0123-zstd (`delta_zstd.py`, §7, §9), numba ports (`native.py`, §8) |
 | `tslab/constwidth/` | cw8-delta1-linear / -sqrt, cw*-delta1-bfp, cw-delta1-tree (§10) |

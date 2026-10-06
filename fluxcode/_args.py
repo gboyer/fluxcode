@@ -3,7 +3,7 @@
 """Validates and converts the public functions' arguments.
 
 This is the layer between the public API (_api) and the code that encodes, decodes and
-updates (_unit, _time_blocks). Samples become contiguous float64 arrays, times int64 ticks
+updates (_group, _time_blocks). Samples become contiguous float64 arrays, times int64 ticks
 with a time unit code, and block sizes int64 arrays.
 
 The argument errors of the public functions come from here, apart from the checks that
@@ -73,8 +73,8 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
     Args:
         times: datetime64[s|ms|us|ns] array (the unit is taken from the dtype), or an
             integer array of ticks in time_unit.
-        time_unit: Unit of integer ticks ('s', 'ms', 'us' or 'ns'); None for datetime64.
-        stored_unit: For update: the unit's time unit code, which datetime64 times must
+        time_unit: Block group of integer ticks ('s', 'ms', 'us' or 'ns'); None for datetime64.
+        stored_unit: For update: the block group's time unit code, which datetime64 times must
             match and integer ticks are in (time_unit, if given, must match it too). 0 when
             encoding.
 
@@ -84,13 +84,13 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
 
     Raises:
         ValueError: If the dtype isn't datetime64[s|ms|us|ns] or integer, time_unit is
-            missing for integer ticks or given for datetime64, the unit doesn't match
+            missing for integer ticks or given for datetime64, the block group doesn't match
             stored_unit, or an unsigned tick exceeds int64.
     """
     times_array = np.asarray(times)
     if times_array.dtype.kind == "M":
         if time_unit is not None:
-            raise ValueError("time_unit applies to integer times only: datetime64 times carry their own unit")
+            raise ValueError("time_unit applies to integer times only: datetime64 times carry their own block group")
         dtype_unit, unit_count = np.datetime_data(times_array.dtype)
         if unit_count != 1 or dtype_unit not in _format.TIME_UNIT_CODES:
             raise ValueError(f"times must be datetime64 in s, ms, us or ns, got {times_array.dtype}")
@@ -109,7 +109,7 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
         )
     if stored_unit and unit_code != stored_unit:
         raise ValueError(
-            f"times are in {_format.TIME_UNIT_NAMES[unit_code]} but the unit stores "
+            f"times are in {_format.TIME_UNIT_NAMES[unit_code]} but the block group stores "
             f"{_format.TIME_UNIT_NAMES[stored_unit]}"
         )
     return np.ascontiguousarray(ticks), unit_code
@@ -121,7 +121,7 @@ def time_unit_code(time_unit: str | None, stored_unit: int = 0) -> int:
     Args:
         time_unit: Name of the time unit ('s', 'ms', 'us', or 'ns'), or None to
             use stored_unit.
-        stored_unit: Time unit code stored in existing unit, used when time_unit is
+        stored_unit: Time unit code stored in existing block group, used when time_unit is
             None.
 
     Returns:
@@ -143,11 +143,11 @@ def time_unit_code(time_unit: str | None, stored_unit: int = 0) -> int:
 def series_ticks(
     times: npt.ArrayLike | None, time_unit: str | None, num_samples: int
 ) -> tuple[np.ndarray | None, int]:
-    """Converts timestamp input into a 1D int64 array of ticks and a unit code.
+    """Converts timestamp input into a 1D int64 array of ticks and a block group code.
 
     Args:
         times: Array-like timestamps, or None if no timestamps are present.
-        time_unit: Unit string for integer timestamps; None for datetime64.
+        time_unit: Block group string for integer timestamps; None for datetime64.
         num_samples: Expected sample count matching the series length.
 
     Returns:
@@ -190,12 +190,12 @@ def as_block_sizes(block_sizes: npt.ArrayLike) -> np.ndarray:
     return sizes
 
 
-def check_unit_counts(num_blocks: int, num_samples: int, block_sizes: np.ndarray | None = None) -> None:
+def check_group_counts(num_blocks: int, num_samples: int, block_sizes: np.ndarray | None = None) -> None:
     """Verifies that block and sample counts satisfy format limits.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
-        num_samples: Total number of samples in the unit.
+        num_blocks: Total number of blocks in the block group.
+        num_samples: Total number of samples in the block group.
         block_sizes: Optional 1D array of block sizes to check individual sizes.
 
     Raises:
@@ -205,9 +205,9 @@ def check_unit_counts(num_blocks: int, num_samples: int, block_sizes: np.ndarray
     if block_sizes is not None and block_sizes.shape[0] and int(block_sizes.max()) > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block holds at most {_format.MAX_BLOCK_LEN} samples, got {int(block_sizes.max())}")
     if num_blocks > _format.MAX_BLOCKS:
-        raise ValueError(f"a unit holds at most {_format.MAX_BLOCKS} blocks, got {num_blocks}")
-    if num_samples > _format.MAX_UNIT_SAMPLES:
-        raise ValueError(f"a unit holds at most {_format.MAX_UNIT_SAMPLES} samples, got {num_samples}")
+        raise ValueError(f"a block group holds at most {_format.MAX_BLOCKS} blocks, got {num_blocks}")
+    if num_samples > _format.MAX_GROUP_SAMPLES:
+        raise ValueError(f"a block group holds at most {_format.MAX_GROUP_SAMPLES} samples, got {num_samples}")
 
 
 def decrease_error(ticks: np.ndarray, sample_idx: int) -> ValueError:
@@ -364,36 +364,36 @@ def _scalar(value: object) -> object:
     return value[()] if isinstance(value, np.ndarray) else value
 
 
-def check_chunking(block_len: int, blocks_per_unit: int) -> None:
-    """Validates block and unit chunking parameters for multi-unit encoding.
+def check_chunking(block_len: int, blocks_per_group: int) -> None:
+    """Validates block and block group chunking parameters for multi-group encoding.
 
     Args:
         block_len: Target sample count per block.
-        blocks_per_unit: Target block count per unit.
+        blocks_per_group: Target block count per block group.
 
     Raises:
-        ValueError: If block_len is not from 1 to 65,535, or blocks_per_unit is below 1.
+        ValueError: If block_len is not from 1 to 65,535, or blocks_per_group is below 1.
     """
     fixed_sizes(0, block_len)
-    if not (is_int(blocks_per_unit) and blocks_per_unit >= 1):
-        raise ValueError(f"blocks_per_unit must be >= 1, got {blocks_per_unit!r}")
+    if not (is_int(blocks_per_group) and blocks_per_group >= 1):
+        raise ValueError(f"blocks_per_group must be >= 1, got {blocks_per_group!r}")
 
 
 def check_stored_time_unit(time_unit: str | None, stored_unit: int) -> None:
-    """Checks an optional user-provided time unit against the unit's time unit code.
+    """Checks an optional user-provided time unit against the block group's time unit code.
 
     Args:
         time_unit: Optional user-supplied time unit string (or None).
-        stored_unit: Stored time unit code from the existing unit header.
+        stored_unit: Stored time unit code from the existing block group header.
 
     Raises:
-        ValueError: If time_unit is invalid, the unit has no time axis, or
+        ValueError: If time_unit is invalid, the block group has no time axis, or
             time_unit does not match stored_unit.
     """
     if time_unit is not None and not stored_unit:
-        raise ValueError("the unit has no time axis: time_unit must be None")
+        raise ValueError("the block group has no time axis: time_unit must be None")
     if time_unit is not None and time_unit_code(time_unit) != stored_unit:
-        raise ValueError(f"time_unit is {time_unit} but the unit stores {_format.TIME_UNIT_NAMES[stored_unit]}")
+        raise ValueError(f"time_unit is {time_unit} but the block group stores {_format.TIME_UNIT_NAMES[stored_unit]}")
 
 
 def update_blocks(
@@ -401,12 +401,12 @@ def update_blocks(
     times: Mapping[int, npt.ArrayLike] | None,
     stored_unit: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-    """Validates update's blocks and times against the unit's time unit code.
+    """Validates update's blocks and times against the block group's time unit code.
 
     Args:
         blocks: Mapping of block indices to sample arrays for update.
         times: Optional mapping of block indices to timestamp arrays.
-        stored_unit: Stored time unit code in the unit (0 for no time axis).
+        stored_unit: Stored time unit code in the block group (0 for no time axis).
 
     Returns:
         A tuple of (indices, samples, block_sizes, ticks):
@@ -414,11 +414,11 @@ def update_blocks(
             samples: Flattened 1D float64 array of all replacement samples.
             block_sizes: 1D int64 array of each block's sample count.
             ticks: Flattened 1D int64 array of all replacement timestamp ticks
-                (or None if the unit has no time axis).
+                (or None if the block group has no time axis).
 
     Raises:
         ValueError: If an index is invalid, a block isn't 1-D or too large, or
-            the times don't match the unit's time axis or the blocks.
+            the times don't match the block group's time axis or the blocks.
     """
     if not isinstance(blocks, Mapping):
         raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")  # noqa: TRY004
@@ -427,15 +427,15 @@ def update_blocks(
     indices = sorted(int(idx) for idx in blocks)
     # Check upper limit before allocating arrays sized by the indices
     if indices and indices[-1] >= _format.MAX_BLOCKS:
-        raise ValueError(f"a unit holds at most {_format.MAX_BLOCKS} blocks, got block index {indices[-1]}")
-    # Verify timestamp consistency with unit time axis
+        raise ValueError(f"a block group holds at most {_format.MAX_BLOCKS} blocks, got block index {indices[-1]}")
+    # Verify timestamp consistency with block group time axis
     if stored_unit:
         if times is None:
-            raise ValueError("the unit has a time axis: times are required")
+            raise ValueError("the block group has a time axis: times are required")
         if sorted(int(idx) for idx in times) != indices:
             raise ValueError("times must have the same block indices as blocks")
     elif times is not None:
-        raise ValueError("the unit has no time axis: times must be None")
+        raise ValueError("the block group has no time axis: times must be None")
     # Convert and validate samples for each block
     by_index = {int(idx): block for idx, block in blocks.items()}
     samples = [as_series(by_index[idx], allow_empty=True) for idx in indices]
@@ -470,7 +470,7 @@ def time_blocks_update(
         block_duration: Fixed duration spanning each block.
         delete_ranges: Optional time intervals to delete before adding samples.
         time_unit: Optional time unit string, verified against stored_unit.
-        stored_unit: Stored time unit code from the existing unit header.
+        stored_unit: Stored time unit code from the existing block group header.
 
     Returns:
         A tuple of (samples_arr, ticks, start_tick, duration_ticks, ranges):
@@ -481,7 +481,7 @@ def time_blocks_update(
             ranges: 2D int64 array of sorted, disjoint [start, end) tick intervals.
 
     Raises:
-        ValueError: If time_unit isn't the unit's, or any argument is invalid.
+        ValueError: If time_unit isn't the block group's, or any argument is invalid.
     """
     check_stored_time_unit(time_unit, stored_unit)
     samples_arr = as_series(samples, allow_empty=True)

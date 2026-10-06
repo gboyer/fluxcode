@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """Size and speed through the public API at each distinct Params.effort, against the encoder
 before efforts (both layouts compressed, smaller kept, one block run, zstd 3), on the report's
-signals (20 kinds x 4 minutes) and 400 random-family units. One thread; times are best of 3 over
+signals (20 kinds x 4 minutes) and 400 random-family block groups. One thread; times are best of 3 over
 the whole set. The numbers in docs/TUNING.md (Effort) come from this script.
 
     uv run python plane_layout/api_bench.py
@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fluxcode
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _compress, _unit
+from fluxcode import Params, _compress, _group
 
 BEFORE = _compress.Effort("best", False, (3,))
 """The encoder before efforts: planes="best" without block flushes."""
@@ -55,12 +55,12 @@ def run(items, effort):
             enc()
             t_enc = min(t_enc, time.perf_counter() - t0)
             t0 = time.perf_counter()
-            for units in out:
-                fluxcode.decode(units)
+            for groups in out:
+                fluxcode.decode(groups)
             t_dec = min(t_dec, time.perf_counter() - t0)
     finally:
         _compress.EFFORTS[default] = saved
-    return sum(len(u) for units in out for u in units), t_enc, t_dec
+    return sum(len(u) for groups in out for u in groups), t_enc, t_dec
 
 
 if __name__ == "__main__":

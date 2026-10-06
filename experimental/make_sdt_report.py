@@ -6,7 +6,7 @@
 
 A historian that compresses with swinging-door trending (SDT) keeps only some of each tag's
 scans, at irregular times (tslab.common.historian). This page encodes those archives, one
-tag-day per unit with exact timestamps, and measures bytes per archived point (values and
+tag-day per block group with exact timestamps, and measures bytes per archived point (values and
 times), fluxcode's error against the archived points and against the scans the historian saw,
 the block layout, a B sweep (size vs accuracy) and a CompDev sweep against encoding every scan
 with fluxcode instead of SDT. Sizes and errors only, no timings.
@@ -55,13 +55,13 @@ DAY_START = np.datetime64(DAY_START_NS, "ns")
 def time_blocks(minutes):
     def encode(values, ticks, params):
         return fluxcode.encode_time_blocks(values, ticks.view("datetime64[ns]"), params, start_time=DAY_START,
-                                           block_duration=np.timedelta64(minutes, "m")).unit
+                                           block_duration=np.timedelta64(minutes, "m")).group
     return encode
 
 
 def point_blocks(size):
     def encode(values, ticks, params):
-        return fluxcode.encode_unit(values, params, block_len=size, times=ticks.view("datetime64[ns]")).unit
+        return fluxcode.encode_group(values, params, block_len=size, times=ticks.view("datetime64[ns]")).group
     return encode
 
 
@@ -97,13 +97,13 @@ def flux_measure(scans, idx, ticks, params, encode=ENCODE):
     """Bytes (all, and values only: the same blocks without times, at the same noise floor) and
     errors of one archive."""
     values = scans[idx]
-    unit = encode(values, ticks, params)
-    decoded = fluxcode.decode_unit(unit)
+    group = encode(values, ticks, params)
+    decoded = fluxcode.decode_group(group)
     assert np.array_equal(decoded.times.view(np.int64), ticks)
     same_floor = dataclasses.replace(params, noise_floor_sigma=params.noise_factor(timed=True))
-    values_only = fluxcode.encode_blocks(values, decoded.block_sizes, same_floor).unit
+    values_only = fluxcode.encode_blocks(values, decoded.block_sizes, same_floor).group
     trend = interp(idx, decoded.values, DAY_S)
-    return {"bytes": len(unit), "value_bytes": len(values_only), "point_err": np.abs(decoded.values - values).max(),
+    return {"bytes": len(group), "value_bytes": len(values_only), "point_err": np.abs(decoded.values - values).max(),
             "exact": np.count_nonzero(decoded.values == values), "trend_err": np.abs(trend - scans).max(),
             "trend_rms": np.sqrt(np.mean((trend - scans) ** 2))}
 
@@ -115,8 +115,8 @@ def every_scan(scans, budgets):
     ticks = (DAY_START_NS + np.arange(DAY_S, dtype=np.int64) * SECOND_NS).view("datetime64[ns]")
 
     def run(params):
-        unit = fluxcode.encode_unit(scans, params, times=ticks).unit
-        return len(unit), np.abs(fluxcode.decode_unit(unit).values - scans).max()
+        group = fluxcode.encode_group(scans, params, times=ticks).group
+        return len(group), np.abs(fluxcode.decode_group(group).values - scans).max()
 
     sweep = [(*run(Params(min_quantize_bits=1, max_quantize_bits=bits, noise_floor_sigma=0)), bits)
              for bits in range(1, 17)]
@@ -128,8 +128,8 @@ def resampled(read_back, idx, values):
     1000-scan blocks) and the max error against that read-back."""
     series = read_back(idx, values, DAY_S)
     ticks = (DAY_START_NS + np.arange(DAY_S, dtype=np.int64) * SECOND_NS).view("datetime64[ns]")
-    unit = fluxcode.encode_unit(series, DEFAULT, times=ticks).unit
-    return len(unit), np.abs(fluxcode.decode_unit(unit).values - series).max()
+    group = fluxcode.encode_group(series, DEFAULT, times=ticks).group
+    return len(group), np.abs(fluxcode.decode_group(group).values - series).max()
 
 
 READ_BACKS = (("interpolated", interp), ("held", hold))
@@ -305,7 +305,7 @@ def write_report(results):
 <p>Process historians that compress with <b>swinging-door trending</b> (SDT; PI's compression, and many others) scan each
 tag at a fixed rate, drop scans that are within an exception deadband (ExcDev) of the last reported one, and archive only
 the points that swinging door keeps: actual scans, at irregular times, such that straight lines between them stay
-close to every snapshot (nominally within CompDev; <a href="#tags">in practice up to twice that</a>). That is what an export of the archive gives you, and what this page encodes: one unit per tag
+close to every snapshot (nominally within CompDev; <a href="#tags">in practice up to twice that</a>). That is what an export of the archive gives you, and what this page encodes: one block group per tag
 and day, values and exact timestamps. The data are six simulated tags ({days} each, 1 s scans) chosen to cover what SDT
 archives look like: from 1 point in 2,000 scans (a valve) to nearly every scan (a noisy tag with a tight CompDev).</p>
 <p>Store the archived points themselves. A historian can also export a regular series (interpolated, or held as a
@@ -334,7 +334,7 @@ it (about 1.9 here); the exception filter adds the rest.</p>
     h.append(f"""<h2 id="size">Size</h2>
 <p>Bytes per archived point over all {days}, everything a decoder needs included. Raw is an int64 time and a float64 value
 (16 bytes). zstd and Gorilla are lossless: zstd-3 of the time deltas and the values as two int64/float64 columns; Gorilla
-with its own delta-of-delta timestamps (in seconds) and XOR values. fluxcode is one unit per tag-day in {LAYOUT}
+with its own delta-of-delta timestamps (in seconds) and XOR values. fluxcode is one block group per tag-day in {LAYOUT}
 (<a href="#layout">layout</a>), with exact times; its <i>values</i> and <i>times</i> columns split its bytes by
 encoding the same blocks without times.</p>
 <table><tr><th class='l'>tag</th><th>points per day</th><th>raw</th><th>zstd</th><th>Gorilla</th>
@@ -352,7 +352,7 @@ encoding the same blocks without times.</p>
                  f"<td>{total(o, 'bytes') / DAYS / 1000:.2f}</td></tr>")
     h.append("""</table><p class='muted'>Max error: the worst |decoded − archived| over the days, in CompDevs. Exact:
 the share of points that decode bit-exact. kB per day: fluxcode at the defaults, whose noise floor is off with times.
-The noise floor 0.25 column is the default for a unit without times, forced on here.</p>""")
+The noise floor 0.25 column is the default for a block group without times, forced on here.</p>""")
 
     h.append(f"""<h2 id="accuracy">Accuracy against the scans</h2>
 <p>What matters downstream is the trend: straight lines between the decoded points, compared with the scans the historian
@@ -395,13 +395,13 @@ stores its own anchors, sizes and time reference. Bytes per point at the default
         h.append(f"<tr><td>{tag}</td><td>{r['n'] / DAYS:,.0f}</td>" + "".join(
             f"<td{' class=best' if s == best else ''}>{per_point(s, r['n'])}</td>" for s in sizes) + "</tr>")
     h.append("""</table><p class='muted'>Time blocks come from <code>encode_time_blocks</code> (empty hours cost almost
-nothing); point blocks from <code>encode_unit(block_len=…)</code>. One block per day is 65,535 points at most, so the
+nothing); point blocks from <code>encode_group(block_len=…)</code>. One block per day is 65,535 points at most, so the
 densest tag gets two.</p>""")
 
     h.append("""<h2 id="timestamps">Timestamps</h2>
 <p>Scan-aligned times are whole seconds; with <i>source timestamps</i> each point keeps the device's time, a scan delayed
 by 0–200 ms at ms resolution (as OPC timestamps often are). The values are the same. Bytes per point for the times only
-(fluxcode defaults, the unit minus the same blocks without times), and Gorilla's whole size for comparison.</p>
+(fluxcode defaults, the block group minus the same blocks without times), and Gorilla's whole size for comparison.</p>
 <table><tr><th class='l'>tag</th><th>fluxcode times: scan-aligned</th><th>source timestamps</th>
 <th>Gorilla (all): scan-aligned</th><th>source timestamps</th></tr>""")
     for tag in TAGS:
@@ -431,7 +431,7 @@ day, mean over the {days}; errors are max |decoded − read-back| in CompDevs.</
 
     h.append(f"""<h2 id="no-sdt">SDT or every scan?</h2>
 <p>If the scans are still available (at the source, or before the historian compresses), fluxcode can store every one
-of them instead. Here every scan of the day is one unit (1000-scan blocks, the 1 s times included): at the defaults, and
+of them instead. Here every scan of the day is one block group (1000-scan blocks, the 1 s times included): at the defaults, and
 at the coarsest B (noise floor off) whose max error is within a budget: one CompDev (SDT's nominal tolerance), or the
 error SDT actually made that day (the same max error, a fair comparison). The SDT route is the archive with fluxcode
 (defaults), its error that of the trend. kB per day, mean over the {days}; errors are the worst max |decoded −
@@ -489,7 +489,7 @@ def findings(results):
                        for t in TAGS] for name, _ in READ_BACKS}
     return f"""<h2 id="findings">Findings</h2>
 <ul>
-<li><b>No noise floor on SDT archives,</b> which is the default for a unit with times. Swinging door keeps only the
+<li><b>No noise floor on SDT archives,</b> which is the default for a block group with times. Swinging door keeps only the
 points a straight line can't predict, so an archive looks like white noise to the noise-floor detector, which coarsens
 the step: with the noise floor at 0.25 (the default without times) fluxcode's own error reaches
 {floor_err[noisiest]:.2g} CompDevs on {noisiest} ({span([floor_err[t] for t in dense], "{:.2g}")} on the dense tags).

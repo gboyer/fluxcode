@@ -4,7 +4,7 @@
 
 Provides per-block analysis, noise floor gating, decimal detection, power-of-two
 quantization, predictor order selection, residual differentiation mod 2^16, and
-per-unit bit target allocation. Composed per unit in `encode_unit`.
+per-group bit target allocation. Composed per block group in `encode_group`.
 """
 
 import math
@@ -711,7 +711,7 @@ def _store_anchor(
 
     Args:
         out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors.
-        anchor_floats: out_value_anchors viewed as float64, made once per unit rather
+        anchor_floats: out_value_anchors viewed as float64, made once per block group rather
             than per block.
         block_idx: Zero-based block index.
         flags: Block header byte; BLOCK_FLAG_DECIMAL selects the decimal anchor.
@@ -733,7 +733,7 @@ def allocate_target(
     target_bits: float,
     out_bit_reductions: np.ndarray,
 ) -> bool:
-    """Allocates bit reductions across blocks to meet a per-unit bit target.
+    """Allocates bit reductions across blocks to meet a per-group bit target.
 
     Args:
         estimated_bits: 1D float64 array of per-block estimated bits per sample.
@@ -802,7 +802,7 @@ def _apply_target_reallocation(
     """Re-encodes blocks selected by target allocation and rolls back if bits do not drop.
 
     Args:
-        samples: 1D float64 array of all samples in the unit.
+        samples: 1D float64 array of all samples in the block group.
         sample_offsets: 1D int64 array of sample offsets for each block.
         bit_reductions: 1D int64 array of bit reduction increments per block.
         block_exponents: 1D int64 array of current quantization exponents per block.
@@ -869,7 +869,7 @@ def _apply_target_reallocation(
 
 
 @njit(nogil=True, cache=True)
-def encode_unit(
+def encode_group(
     samples: np.ndarray,
     sample_offsets: np.ndarray,
     min_bits: int,
@@ -888,7 +888,7 @@ def encode_unit(
     out_block_maxima: np.ndarray,
     out_block_means: np.ndarray,
 ) -> None:
-    """Encodes all blocks of a unit: their rows and summary statistics.
+    """Encodes all blocks of a block group: their rows and summary statistics.
 
     Blocks of at most SHORT_BLOCK_LEN samples skip the analysis: they take the finest step
     (a decimal grid if one is detected, else the power-of-two grid) and order 0, and stay
@@ -896,7 +896,7 @@ def encode_unit(
     statistics.
 
     Args:
-        samples: 1D float64 array of every sample of the unit.
+        samples: 1D float64 array of every sample of the block group.
         sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         min_bits: Hard lower bound on quantization bits.
         max_bits: Hard upper bound on quantization bits.
@@ -1031,7 +1031,7 @@ def encode_unit(
             )
             estimated_bits_per_block[block_idx] = estimate_bits(block_residuals)
             block_weights[block_idx] = block_len
-    # Apply soft per-unit bit target if enabled
+    # Apply soft per-group bit target if enabled
     if use_target:
         bit_reductions = np.zeros(num_blocks, np.int64)
         if allocate_target(

@@ -15,8 +15,8 @@ from tslab.classic.quant import deflate, inflate
 # decodes to D * g(k/K), where g is an odd "expander" that is flat near 0 (fine
 # steps for small changes) and steep near ±1 (coarse steps for big jumps). The
 # most negative code is unused so the curve stays symmetric and 0 is exact.
-#   fields: x[0] f64, D f64; body: the codes, deflated (per unit, see
-#   tslab.common.unit.SharedBackend). pack="byte" stores one signed byte per
+#   fields: x[0] f64, D f64; body: the codes, deflated (per block group, see
+#   tslab.common.group.SharedBackend). pack="byte" stores one signed byte per
 #   code; pack="nibble" (bits=4) stores two codes per byte.
 # ---------------------------------------------------------------------------
 

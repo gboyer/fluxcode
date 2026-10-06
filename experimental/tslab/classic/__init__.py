@@ -3,8 +3,8 @@
 """Classic codecs: the ones from the original request plus a few baselines.
 
 Each is a block codec: encode(x) -> (bytes, info) and decode(bytes, n) -> np.ndarray, or, for the
-deflate-backed ones, split / join around the compressor. CLASSIC_CODECS wraps them as unit codecs
-(tslab.common.unit): Concat for the ones without an entropy coder, SharedBackend for deflate.
+deflate-backed ones, split / join around the compressor. CLASSIC_CODECS wraps them as block group codecs
+(tslab.common.group): Concat for the ones without an entropy coder, SharedBackend for deflate.
 `info` carries extras for reporting (tree code frequencies, knots, ...).
 """
 
@@ -15,7 +15,7 @@ from tslab.classic.gorilla import Gorilla
 from tslab.classic.piecewise import PchipMinMax, PiecewiseLinearMinMax
 from tslab.classic.quant import Quant8, QuantDeltaDeflate
 from tslab.classic.swinging_door import SwingingDoor
-from tslab.common.unit import Concat, SharedBackend
+from tslab.common.group import Concat, SharedBackend
 
 __all__ = ["CLASSIC_CODECS", "BinaryTree", "CompandedDpcm", "DctTopK", "Gorilla", "PchipMinMax",
            "PiecewiseLinearMinMax", "Quant8", "QuantDeltaDeflate", "SwingingDoor", "cubic_expander", "mulaw_expander"]

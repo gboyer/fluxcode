@@ -5,7 +5,7 @@ single thread (plus optional thread scaling). Run on AC power with nothing else 
 quick look, pass --gib 0.05.
 
 Each signal type is one contiguous series of consecutive minutes (different seeds per minute;
-minute boundaries are block boundaries), so encode() splits it into units itself. Timings are
+minute boundaries are block boundaries), so encode() splits it into block groups itself. Timings are
 best of --reps full passes; the index (min/max/mean) and zstd are included, data generation isn't.
 
     uv run python bench/bench_gb.py [--gib 1.0] [--reps 3] [--threads 1,4,8]
@@ -92,17 +92,17 @@ def main():
         print("|---|---|---|---|---|---|---|---|")
         te_sum = td_sum = bits = 0.0
         for s, x in data.items():
-            te, (units, lo, hi, _) = best(lambda x=x, p=p: encode_series(x, p), a.reps)
-            td, ys = best(lambda units=units: fluxcode.decode(units), a.reps)  # one DecodedUnit per unit, as rows are read
+            te, (groups, lo, hi, _) = best(lambda x=x, p=p: encode_series(x, p), a.reps)
+            td, ys = best(lambda groups=groups: fluxcode.decode(groups), a.reps)  # one DecodedGroup per block group, as rows are read
             err = np.abs(np.concatenate([decoded.values for decoded in ys]) - x).reshape(-1, 1000).max(1)
             worst = 100 * (err / np.where(hi > lo, hi - lo, 1.0)).max()
             nb = len(lo)
-            b = 8 * sum(map(len, units))
+            b = 8 * sum(map(len, groups))
             te_sum, td_sum, bits = te_sum + te, td_sum + td, bits + b
             mb = 8 * len(x) / 1e6
             print(f"| {s} | {b / len(x):.2f} | {64 * len(x) / b:.1f} | {worst:.4f} | {mb / te:.0f} | {mb / td:.0f} | "
                   f"{1e6 * te / nb:.2f} | {1e6 * td / nb:.2f} |")
-            del units, lo, ys
+            del groups, lo, ys
         nb = total_bytes // 8000
         print(f"| **all ({total_bytes / 2 ** 30:.2f} GiB)** | {bits / (total_bytes / 8):.2f} | "
               f"{64 * total_bytes / 8 / bits:.1f} | | {total_bytes / 1e6 / te_sum:.0f} | {total_bytes / 1e6 / td_sum:.0f} | "

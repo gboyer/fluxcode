@@ -5,7 +5,7 @@
 A block on a decimal grid except for its last sample makes each candidate exponent scan the whole
 block before failing, instead of stopping at its first off-grid sample (docs/ENCODER.md §5.3).
 
-Method: single thread, `encode_unit` on one minute (60 blocks) of the `random-walk` signal
+Method: single thread, `encode_group` on one minute (60 blocks) of the `random-walk` signal
 (seed 7), best of 5 x 200 calls after a warm-up, reported in µs per block. The grids are that walk
 rounded to 0.01, and the walk x100 rounded to integers; "off-grid" adds 0.3 of a grid step to the
 last sample of every block. Prints a markdown table.
@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 from _signals import minute
 
-from fluxcode import Params, encode_unit
+from fluxcode import Params, encode_group
 
 BLOCK = 1000
 REPS, ROUNDS, WARMUP = 200, 5, 20
@@ -40,12 +40,12 @@ def off_grid(x, step):
 
 def us_per_block(x, params):
     for _ in range(WARMUP):
-        encode_unit(x, params)
+        encode_group(x, params)
     best = float("inf")
     for _ in range(ROUNDS):
         t0 = time.perf_counter()
         for _ in range(REPS):
-            encode_unit(x, params)
+            encode_group(x, params)
         best = min(best, (time.perf_counter() - t0) / REPS)
     return best / (x.size // BLOCK) * 1e6
 

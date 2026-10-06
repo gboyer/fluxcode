@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Per-unit table for combining the layout heuristic with block flushing: the real compressed
-unit size (header included) of each layout (bit planes, byte planes) under each framing (one
+"""Per-group table for combining the layout heuristic with block flushing: the real compressed
+block group size (header included) of each layout (bit planes, byte planes) under each framing (one
 block run as today, a flush after every plane / every 4 planes / every 8 planes, and the encoder's
 rule: a flush after each plane with more than 1/16 of its bytes non-zero), plus the features a
 one-pass rule could use. Same signals as corpus.py (same seeds) and the report's.
@@ -22,35 +22,35 @@ import fluxcode
 from corpus import configs, draw_signal, residuals
 from _series import planes as forced_layout
 from flush_blocks import reflush
-from fluxcode import Params, _compress, _format, _unit
+from fluxcode import Params, _compress, _format, _group
 
 EVERY = (1, 4, 8)
 
 
-def pooled(unit):
-    """Unit size with the body in one block run (what the unit-level encoder did before flushing)."""
-    body = _unit.decompress(unit).raw_body
+def pooled(group):
+    """Block group size with the body in one block run (what the group-level encoder did before flushing)."""
+    body = _group.decompress(group).raw_body
     return _format.HEADER_BYTES + len(_compress.zstd()[0].compress(body.data))
 
 
-def dense(unit):
-    """The unit re-framed with the encoder's rule (no small-unit retry)."""
-    parsed = _unit.decompress(unit)
+def dense(group):
+    """The block group re-framed with the encoder's rule (no small-group retry)."""
+    parsed = _group.decompress(group)
     cuts = _compress.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, parsed.header.byte_planes)
-    return unit[:_format.HEADER_BYTES] + _compress.compress_body(parsed.raw_body, cuts, 3)
+    return group[:_format.HEADER_BYTES] + _compress.compress_body(parsed.raw_body, cuts, 3)
 
 
 def row(x, mx=16, nf=0.25):
-    units = {}
+    groups = {}
     for m in ("bit", "byte"):
         with forced_layout(m, flush=False):
-            units[m] = fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf))[0][0]
-    sizes = {m: [pooled(units[m])] + [len(reflush(units[m], e)) for e in EVERY] + [len(dense(units[m]))] for m in units}
-    parsed = _unit.decompress(units["bit"])
+            groups[m] = fluxcode.encode(x, Params(max_quantize_bits=mx, noise_floor_sigma=nf))[0][0]
+    sizes = {m: [pooled(groups[m])] + [len(reflush(groups[m], e)) for e in EVERY] + [len(dense(groups[m]))] for m in groups}
+    parsed = _group.decompress(groups["bit"])
     start = _format.residual_start(parsed.header.num_blocks, parsed.has_time)
     g = int(parsed.layout.octet_offsets[-1])
     planes = parsed.raw_body[start:start + 16 * g]
-    u = residuals(units["byte"])
+    u = residuals(groups["byte"])
     return (sizes["bit"] + sizes["byte"], dict(hi_nz=float(np.mean(u > 255)), nonzero_bytes=int(np.count_nonzero(planes)),
             body=len(parsed.raw_body), raw_planes=16 * g))
 
@@ -59,7 +59,7 @@ def build(rows, name):
     sizes = np.array([r[0] for r in rows], float)
     feats = {k: np.array([r[1][k] for r in rows]) for k in rows[0][1]}
     np.savez(Path(__file__).with_name(name), sizes=sizes, **feats)
-    print(name, len(rows), "units")
+    print(name, len(rows), "block groups")
 
 
 if __name__ == "__main__":

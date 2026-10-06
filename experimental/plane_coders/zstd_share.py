@@ -22,7 +22,7 @@ import zstandard
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
 from _signals import KINDS, discrete_minute, minute
-from fluxcode import Params, _unit
+from fluxcode import Params, _group
 
 
 def best(f, reps):
@@ -51,16 +51,16 @@ def main():
                 x = np.concatenate([minute(sig, 7000 + j) for j in range(a.minutes)])
             else:
                 x = np.concatenate([discrete_minute(sig, 7000 + j) for j in range(a.minutes)])
-            units, *_ = fluxcode.encode(x, params)
-            bodies = [bytes(_unit.decompress(u).raw_body) for u in units]
-            frames = [u[8:] for u in units]
+            groups, *_ = fluxcode.encode(x, params)
+            bodies = [bytes(_group.decompress(u).raw_body) for u in groups]
+            frames = [u[8:] for u in groups]
             enc = best(lambda: fluxcode.encode(x, params), a.reps)
-            dec = best(lambda: fluxcode.decode(units), a.reps)
+            dec = best(lambda: fluxcode.decode(groups), a.reps)
             zcomp = best(lambda: [zc.compress(b) for b in bodies], a.reps)
             zdec = best(lambda: [zd.decompress(f) for f in frames], a.reps)
             if params.planes == "best":  # encode also compresses the other layout's body
-                units2, *_ = fluxcode.encode(x, Params(planes="byte" if units[0][1] & 1 == 0 else "bit"))
-                bodies2 = [bytes(_unit.decompress(u).raw_body) for u in units2]
+                groups2, *_ = fluxcode.encode(x, Params(planes="byte" if groups[0][1] & 1 == 0 else "bit"))
+                bodies2 = [bytes(_group.decompress(u).raw_body) for u in groups2]
                 zcomp += best(lambda: [zc.compress(b) for b in bodies2], a.reps)
             tot += [enc, zcomp, dec, zdec]
             print(f"{sig:20s} {enc:7.1f} {zcomp:7.1f} {zcomp / enc:6.0%} | {dec:7.1f} {zdec:7.1f} {zdec / dec:6.0%}")

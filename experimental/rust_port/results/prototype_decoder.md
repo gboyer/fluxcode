@@ -5,9 +5,9 @@
 > ran back to back in one process).
 
 Apple Silicon (arm64), single thread, `uv run python bench/rust_decoder.py`. Rust: rust/ (PyO3,
-release, fat LTO), selected with `FLUXCODE_DECODER=rust`: `decode_unit` and `check_unit` kernels, and
+release, fat LTO), selected with `FLUXCODE_DECODER=rust`: `decode_group` and `check_group` kernels, and
 `decompress_body` (zstd frame, layout, size checks and validation in one GIL-free call, used by
-`_unit.decompress`).
+`_group.decompress`).
 
 Where the time goes (decompression only, ns/sample): sin-4.12hz python-zstandard 1.90 vs
 `decompress_body` (zstd + layout + check) 1.97; random-walk 0.78 vs 0.84; linear 0.07 vs 0.12. The
@@ -32,7 +32,7 @@ the Rust call is the same speed (slightly slower: it zeroes the body buffer and 
 
 Total: numba 5.9 ms, rust 5.2 ms (1.13x)
 
-## End to end fluxcode.decode_unit (zstd included), effort 4
+## End to end fluxcode.decode_group (zstd included), effort 4
 
 | signal | numba | rust | speedup |
 |---|---:|---:|---:|

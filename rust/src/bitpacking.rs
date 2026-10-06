@@ -29,7 +29,7 @@ fn put_byte_planed(
     }
 }
 
-/// The uncompressed body of a unit without a time axis, in the byte-plane layout: the metadata
+/// The uncompressed body of a block group without a time axis, in the byte-plane layout: the metadata
 /// columns, the zigzagged residuals as a low and a high byte plane (each block padded with zeros to
 /// whole octets of 8 samples), then the non-finite code planes.
 pub fn write_body(rows: &Rows) -> Vec<u8> {

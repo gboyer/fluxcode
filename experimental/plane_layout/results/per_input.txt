@@ -1,4 +1,4 @@
-input                                  units    before  effort 2  effort 5   2 - before   5 - before
+input                                  block groups    before  effort 2  effort 5   2 - before   5 - before
 sensor-0.1                                 6     1.776     2.134     1.766     +0.358     -0.011
 random square P=50 quantized               3     2.407     2.729     2.399     +0.322     -0.008
 random triangle P=8 quantized              3     0.153     0.365     0.154     +0.212     +0.001

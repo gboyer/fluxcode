@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """The optional Rust accelerator (rust/) against the Python compress path, on main's efforts.
 
-1. Units from the two paths, every effort and signal: byte-identical (when both link the same libzstd).
+1. Block groups from the two paths, every effort and signal: byte-identical (when both link the same libzstd).
 2. Single-thread fluxcode.encode per signal at efforts 2, 4 (the default: best of both layouts, no block
    flush) and 5 (block flushes).
 3. Thread scaling at the same efforts: one minute-series per task, MiB/s of float64 input.
@@ -31,7 +31,7 @@ import zstandard
 from _signals import KINDS, discrete_minute, minute
 
 import fluxcode
-from fluxcode import Params, _unit
+from fluxcode import Params, _group
 
 EFFORTS = (2, 4, 5)
 SIGNALS = KINDS + ["sensor-0.1"]
@@ -52,7 +52,7 @@ def best(f, reps):
 
 
 def use(rust):
-    _unit._compress_unit = fluxcode_rs.compress_unit if rust else None
+    _group._compress_group = fluxcode_rs.compress_group if rust else None
 
 
 def power():
@@ -70,14 +70,14 @@ def main():
     data = {sig: series(sig, a.minutes) for sig in SIGNALS}
     print(f"power: {power()}; libzstd: rust {fluxcode_rs.zstd_version()}, python-zstandard {zstandard.ZSTD_VERSION}\n")
 
-    print("## Units byte-identical, every effort 1-9 x every signal (1 minute each)\n")
+    print("## Block groups byte-identical, every effort 1-9 x every signal (1 minute each)\n")
     bad = 0
     for effort in range(1, 10):
         for x in data.values():
             use(False)
-            ref = fluxcode.encode(x[:60_000], Params(effort=effort)).units
+            ref = fluxcode.encode(x[:60_000], Params(effort=effort)).groups
             use(True)
-            bad += ref != fluxcode.encode(x[:60_000], Params(effort=effort)).units
+            bad += ref != fluxcode.encode(x[:60_000], Params(effort=effort)).groups
     print("all identical\n" if not bad else f"{bad} MISMATCHES\n")
 
     for effort in EFFORTS:

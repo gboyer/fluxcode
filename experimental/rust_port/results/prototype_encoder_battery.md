@@ -10,15 +10,15 @@ one run are measured back to back in one process, so their ratios are meaningful
 before quoting absolute numbers or the thread scaling (which depends on the clock of every core).
 
 Changes since the previous run: bit-plane packing zigzags into low/high byte scratch and transposes u64
-loads (as numba does), the flush density count is a vectorizable sum, and the unit is copied once into
+loads (as numba does), the flush density count is a vectorizable sum, and the block group is copied once into
 its bytes object. Single-thread encode at effort 4 is now 0.96-1.04x of python on finite data (it was
 0.85-0.97x) for the compress stage; the kernel is unchanged.
 
-## Byte-identical units, every effort 1-9 x every signal (1 minute each), full Rust vs python
+## Byte-identical block groups, every effort 1-9 x every signal (1 minute each), full Rust vs python
 
 all identical
 
-## Kernel only (_encoder.encode_unit: analysis, quantize, residuals), single thread, best of 7
+## Kernel only (_encoder.encode_group: analysis, quantize, residuals), single thread, best of 7
 
 | signal | numba | rust | speedup |
 |---|---:|---:|---:|

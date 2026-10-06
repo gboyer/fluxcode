@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Decoding kernels and validation of an uncompressed unit body.
+"""Decoding kernels and validation of an uncompressed block group body.
 
 Decodes a block in a single pass: unshuffling the planes, reversing the zigzag,
 integrating the residuals (modular prefix sums) and dequantizing on the power-of-two or
@@ -42,7 +42,7 @@ from ._nonfinite import restore_nonfinite
 
 
 class ValidationStatus(enum.IntEnum):
-    """Header and parameter validation status for uncompressed units."""
+    """Header and parameter validation status for uncompressed block groups."""
 
     OK = 0
     BAD_FLAGS = 1
@@ -51,7 +51,7 @@ class ValidationStatus(enum.IntEnum):
 
 
 OK: int = int(ValidationStatus.OK)
-"""Validation status indicating unit headers and parameters are valid."""
+"""Validation status indicating block group headers and parameters are valid."""
 
 BAD_FLAGS: int = int(ValidationStatus.BAD_FLAGS)
 """Validation status indicating reserved or unsupported bits in a block header."""
@@ -178,19 +178,19 @@ def dequantize_decimal(
 
 
 @njit(nogil=True, cache=True)
-def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
-    """Validates block flags, grid parameters and value anchors across all blocks in a unit.
+def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
+    """Validates block flags, grid parameters and value anchors across all blocks in a block group.
 
     Checks, block by block, that the reserved flag bits (6-7) are zero, that the irregular
-    time bit (4) is set only in units with a time axis and the long time bit (5) only with
+    time bit (4) is set only in block groups with a time axis and the long time bit (5) only with
     bit 4, that grid parameters fall within the format's limits, and that value anchors
     are finite floats (power-of-two blocks) or grid indices below 2^52 (decimal). An empty
     block's flags, grid parameter and anchor must be 0.
 
     Args:
-        raw_unit: 1D uint8 array containing uncompressed unit bytes.
+        raw_group: 1D uint8 array containing uncompressed block group bytes.
         sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
-        has_time: Whether the unit has a time axis.
+        has_time: Whether the block group has a time axis.
 
     Returns:
         A tuple of (status, failing_block_idx):
@@ -201,9 +201,9 @@ def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool)
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
     for block_idx in range(num_blocks):
-        flags = raw_unit[block_idx]
-        param_val = int(get_int16(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
-        anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
+        flags = raw_group[block_idx]
+        param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
+        anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
             # An empty block stores nothing: its columns are 0
             if flags:
@@ -234,8 +234,8 @@ def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool)
 
 
 @njit(nogil=True, cache=True)
-def decode_unit(
-    raw_unit: np.ndarray,
+def decode_group(
+    raw_group: np.ndarray,
     sample_offsets: np.ndarray,
     octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
@@ -250,15 +250,15 @@ def decode_unit(
     samples restored.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed body bytes (must pass check_unit).
+        raw_group: 1D uint8 array of uncompressed body bytes (must pass check_group).
         sample_offsets: 1D int64 array of sample offsets for each block.
         octet_offsets: 1D int64 array of 8-sample octet offsets for each block.
         code_offsets: 1D int64 array of non-finite code plane byte offsets for each block.
         block_ids: 1D int64 array of the blocks to decode.
-        out_samples: Output 1D float64 array of every sample of the unit: each decoded
+        out_samples: Output 1D float64 array of every sample of the block group: each decoded
             block's samples are written at its sample offsets (others are left unmodified).
-        byte_planes: Whether the residuals are stored as byte planes (unit flags bit 0).
-        has_time: Whether the unit has a time axis (time columns before the residuals).
+        byte_planes: Whether the residuals are stored as byte planes (group flags bit 0).
+        has_time: Whether the block group has a time axis (time columns before the residuals).
     """
     num_blocks = sample_offsets.shape[0] - 1
     num_octets = int(octet_offsets[num_blocks])
@@ -271,18 +271,18 @@ def decode_unit(
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
     # Obtain views into residual and code bit planes
-    bit_planes = planes_view(raw_unit, num_blocks, num_octets, has_time)
-    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, num_octets, has_time)
-    code_planes = code_planes_view(raw_unit, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
+    bit_planes = planes_view(raw_group, num_blocks, num_octets, has_time)
+    byte_planes_2d = byte_planes_view(raw_group, num_blocks, num_octets, has_time)
+    code_planes = code_planes_view(raw_group, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in block_ids:
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         if block_len == 0:
             continue
-        flags = raw_unit[block_idx]
-        param_val = int(get_int16(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx))
+        flags = raw_group[block_idx]
+        param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
         # Anchor: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
-        anchor_bits[0] = get_int64(raw_unit, value_anchor_start(num_blocks), num_blocks, block_idx)
+        anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
         block_residuals = scratch_residuals[:block_len]
         block_out = out_samples[first_sample:first_sample + block_len]
         if byte_planes:

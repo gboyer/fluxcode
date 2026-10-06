@@ -1,6 +1,6 @@
 Now drawing from 'AC Power'
 
-## sensor mix (100 units, weighted as bench/stress.py)
+## sensor mix (100 block groups, weighted as bench/stress.py)
 
 | settings | size | 1 thr python / rust | 4 thr python / rust | 8 thr python / rust |
 |---|---:|---:|---:|---:|

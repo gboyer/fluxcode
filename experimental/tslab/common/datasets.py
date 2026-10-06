@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Every test signal used by the experiments: synthetic 1 kHz signals, one continuous minute
-(60 blocks of 1000 samples, one unit) at a time.
+(60 blocks of 1000 samples, one block group) at a time.
 
 - minute(kind, seed) / KINDS: one continuous minute of each signal type. Periodic signals use
   irrational frequencies so no cycle lands on a whole number of samples; integer Hz at 1 kHz
   repeats exactly and flatters dictionary coders like deflate.
-- units(): the report's set, REPORT_MINUTES minutes of each kind (3,600 blocks).
+- groups(): the report's set, REPORT_MINUTES minutes of each kind (3,600 blocks).
 - KIND_INFO: per kind, a description and the second (block) the report plots, with its zoom window.
 - peaks(kind, seed): sample indices of the spikes / impulses, for the peak-shift column.
 - load(): the 7,200-block set (10 minutes of each of the 12 kinds) used by the benchmarks.
@@ -90,8 +90,8 @@ KIND_INFO = {
 REPORT_MINUTES = 5  # minutes per kind in the report tables: the first 5 of load()'s seeds
 
 
-def units():
-    """The report's units: (kind, seed, X[60, 1000]) for REPORT_MINUTES minutes of each kind."""
+def groups():
+    """The report's block groups: (kind, seed, X[60, 1000]) for REPORT_MINUTES minutes of each kind."""
     return [(k, 1000 * i + j, minute(k, 1000 * i + j).reshape(PER_CHUNK, BLOCK))
             for i, k in enumerate(KINDS) for j in range(REPORT_MINUTES)]
 

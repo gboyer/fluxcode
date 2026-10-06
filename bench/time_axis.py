@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Cost of the time axis: bytes and encode/decode time a unit's timestamps add, per timestamp
-pattern, on one-minute units (60 blocks of 1000) of a 4.12 Hz sine. Single thread.
+"""Cost of the time axis: bytes and encode/decode time a block group's timestamps add, per timestamp
+pattern, on one-minute block groups (60 blocks of 1000) of a 4.12 Hz sine. Single thread.
 
     uv run python bench/time_axis.py [--reps 20]
 """
@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from _signals import MINUTE, clock_minute, minute
 
 import fluxcode
-from fluxcode import _format, _unit
+from fluxcode import _format, _group
 
 START_NS = 1_790_000_000_000_000_000  # 2026-09-21, in ns since 1970
 MS = 1_000_000
@@ -63,24 +63,24 @@ def main():
     parser.add_argument("--reps", type=int, default=20)
     args = parser.parse_args()
     values = minute("sin-4.12hz", 1)
-    plain_unit = fluxcode.encode_unit(values).unit
-    plain_encode = best(lambda: fluxcode.encode_unit(values), args.reps)
-    plain_decode = best(lambda: fluxcode.decode_unit(plain_unit), args.reps)
-    print(f"values only: {len(plain_unit)} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per unit\n")
+    plain_group = fluxcode.encode_group(values).group
+    plain_encode = best(lambda: fluxcode.encode_group(values), args.reps)
+    plain_decode = best(lambda: fluxcode.decode_group(plain_group), args.reps)
+    print(f"values only: {len(plain_group)} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per block group\n")
     print("| timestamps | irregular blocks | time bytes | time bits/sample | encode +µs | decode +µs |")
     print("|---|---|---|---|---|---|")
     for name, ticks in patterns(np.random.default_rng(0)):
         times = ticks.view("datetime64[ns]")
-        unit = fluxcode.encode_unit(values, times=times).unit
-        decoded = fluxcode.decode_unit(unit)
+        group = fluxcode.encode_group(values, times=times).group
+        decoded = fluxcode.decode_group(group)
         assert decoded.times is not None and np.array_equal(decoded.times, times)
         # The values mustn't depend on the time axis (fails on a stale numba cache: see README)
-        assert np.array_equal(decoded.values, fluxcode.decode_unit(plain_unit).values)
-        parsed = _unit.decompress(unit)
+        assert np.array_equal(decoded.values, fluxcode.decode_group(plain_group).values)
+        parsed = _group.decompress(group)
         num_irregular = int(np.count_nonzero(parsed.block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME))
-        extra_bytes = len(unit) - len(plain_unit)
-        encode_time = best(lambda times=times: fluxcode.encode_unit(values, times=times), args.reps) - plain_encode
-        decode_time = best(lambda unit=unit: fluxcode.decode_unit(unit), args.reps) - plain_decode
+        extra_bytes = len(group) - len(plain_group)
+        encode_time = best(lambda times=times: fluxcode.encode_group(values, times=times), args.reps) - plain_encode
+        decode_time = best(lambda group=group: fluxcode.decode_group(group), args.reps) - plain_decode
         print(f"| {name} | {num_irregular}/60 | {extra_bytes} | {8 * extra_bytes / MINUTE:.3f} | "
               f"{encode_time:.0f} | {decode_time:.0f} |")
 

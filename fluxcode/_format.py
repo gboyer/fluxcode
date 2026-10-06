@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Binary layout of units: the header, the field offsets, the Layout and the row types.
+"""Binary layout of block groups: the header, the field offsets, the Layout and the row types.
 
 The code that packs rows into body bytes and back (bit planes, byte planes, code planes, time
 residual planes) is in _bitpacking.
 
-A unit is an 8-byte header followed by one zstd frame holding the body. The header
+A block group is an 8-byte header followed by one zstd frame holding the body. The header
 (little-endian) is: format version (uint8, 1), flags (uint8; bit 0 selects byte planes for
 the residual planes, bits 1-3 hold the time unit, bits 4-7 are 0), the block count (uint16)
 and the sample count (uint32). Every block records its own size, 0 to 65,535 samples, and
@@ -73,7 +73,7 @@ BLOCK_FLAG_NONFINITE: int = 0x08
 """Block flags: non-finite code planes present (bit 3)."""
 
 BLOCK_FLAG_IRREGULAR_TIME: int = 0x10
-"""Block flags: irregular times, with time residual planes (bit 4); only valid in units with
+"""Block flags: irregular times, with time residual planes (bit 4); only valid in block groups with
 a time axis."""
 
 BLOCK_FLAG_LONG_TIME: int = 0x20
@@ -83,17 +83,17 @@ with BLOCK_FLAG_IRREGULAR_TIME."""
 BLOCK_FLAG_RESERVED: int = 0xC0
 """Block flags: reserved bits (6-7); decoders reject them."""
 
-UNIT_FLAG_BYTE_PLANES: int = 0x01
-"""Unit header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
+GROUP_FLAG_BYTE_PLANES: int = 0x01
+"""Block group header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
 
-UNIT_FLAG_TIME_UNIT_SHIFT: int = 1
-"""Position of the 3-bit time unit in the unit header flags (bits 1-3)."""
+GROUP_FLAG_TIME_UNIT_SHIFT: int = 1
+"""Position of the 3-bit time unit in the block group header flags (bits 1-3)."""
 
-UNIT_FLAG_TIME_UNIT_MASK: int = 0x0E
-"""Unit header flag bits holding the time unit."""
+GROUP_FLAG_TIME_UNIT_MASK: int = 0x0E
+"""Block group header flag bits holding the time unit."""
 
-UNIT_FLAG_RESERVED: int = 0xF0
-"""Reserved unit header flag bits (4-7); decoders must reject these."""
+GROUP_FLAG_RESERVED: int = 0xF0
+"""Reserved block group header flag bits (4-7); decoders must reject these."""
 
 MAX_BLOCK_LEN: int = 0xFFFF
 """Largest block size: the block_sizes field is uint16."""
@@ -132,8 +132,8 @@ CODE_NEG_INF: int = int(NonFiniteCode.NEG_INF)
 """Two-bit code representing negative infinity (-inf, 11b)."""
 
 
-class TimeUnitCode(enum.IntEnum):
-    """Time unit codes stored in unit header flags bits 1-3 (0: no time axis)."""
+class TimeGroupCode(enum.IntEnum):
+    """Time unit codes stored in block group header flags bits 1-3 (0: no time axis)."""
 
     NONE = 0
     SECONDS = 1
@@ -143,15 +143,15 @@ class TimeUnitCode(enum.IntEnum):
 
 
 TIME_UNIT_NAMES: dict[int, str] = {
-    TimeUnitCode.SECONDS: "s",
-    TimeUnitCode.MILLISECONDS: "ms",
-    TimeUnitCode.MICROSECONDS: "us",
-    TimeUnitCode.NANOSECONDS: "ns",
+    TimeGroupCode.SECONDS: "s",
+    TimeGroupCode.MILLISECONDS: "ms",
+    TimeGroupCode.MICROSECONDS: "us",
+    TimeGroupCode.NANOSECONDS: "ns",
 }
-"""numpy datetime64 unit name of each time unit code."""
+"""numpy datetime64 block group name of each time unit code."""
 
 TIME_UNIT_CODES: dict[str, int] = {name: code for code, name in TIME_UNIT_NAMES.items()}
-"""Time unit code of each numpy datetime64 unit name."""
+"""Time unit code of each numpy datetime64 block group name."""
 
 
 E_MIN: int = -1074
@@ -182,16 +182,16 @@ METADATA_BYTES_PER_BLOCK: int = BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PAR
 """Bytes of the value columns per block (flags, size, grid parameter, anchor: 13)."""
 
 FORMAT_VERSION: int = 1
-"""Unit format version recorded in the first header byte."""
+"""Block group format version recorded in the first header byte."""
 
-UNIT_HEADER = struct.Struct("<BBHI")
-"""Unit header: version, flags, block count and sample count."""
+GROUP_HEADER = struct.Struct("<BBHI")
+"""Block group header: version, flags, block count and sample count."""
 
-HEADER_BYTES: int = UNIT_HEADER.size
-"""Size of the unit header in bytes (8)."""
+HEADER_BYTES: int = GROUP_HEADER.size
+"""Size of the block group header in bytes (8)."""
 
-MAX_UNIT_SAMPLES: int = 1 << 26
-"""Largest sample count a unit may hold: a sanity bound (decoders reject larger headers before
+MAX_GROUP_SAMPLES: int = 1 << 26
+"""Largest sample count a block group may hold: a sanity bound (decoders reject larger headers before
 decompressing), not a format limit."""
 
 BYTES_PER_RESIDUAL_SAMPLE: int = 2
@@ -204,7 +204,7 @@ BYTES_PER_TIME_COLUMN: int = 8
 """Bytes of each time column (time_start, time_step, time_ref) per block."""
 
 TIME_BYTES_PER_BLOCK: int = 3 * BYTES_PER_TIME_COLUMN
-"""Bytes of the time columns per block in units with a time axis (24)."""
+"""Bytes of the time columns per block in block groups with a time axis (24)."""
 
 TIME_SHORT_PLANES: int = 32
 """Time residual bit planes stored for every irregular block; a long block stores as many again."""
@@ -227,7 +227,7 @@ def plane_octets(block_len: int) -> int:
 
 
 class Layout(NamedTuple):
-    """Where each block's data sits in a unit's flat arrays and plane fields.
+    """Where each block's data sits in a block group's flat arrays and plane fields.
 
     Every array has num_blocks + 1 entries: entry b is block b's offset, and the last entry
     the total.
@@ -300,46 +300,46 @@ def layout(block_flags: np.ndarray, block_sizes: np.ndarray) -> Layout:
 
 
 @njit(nogil=True, cache=True)
-def _read_sizes(raw_unit: np.ndarray, num_blocks: int, out_block_sizes: np.ndarray) -> None:
+def _read_sizes(raw_group: np.ndarray, num_blocks: int, out_block_sizes: np.ndarray) -> None:
     """Reads the byte-planed uint16 block_sizes field of an uncompressed body.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed unit body bytes.
-        num_blocks: Total number of blocks in the unit.
+        raw_group: 1D uint8 array of uncompressed block group body bytes.
+        num_blocks: Total number of blocks in the block group.
         out_block_sizes: Preallocated 1D int64 array to receive block sizes.
     """
     sizes_start = block_sizes_start(num_blocks)
     for block_idx in range(num_blocks):
-        out_block_sizes[block_idx] = np.int64(raw_unit[sizes_start + block_idx]) | (
-            np.int64(raw_unit[sizes_start + num_blocks + block_idx]) << 8
+        out_block_sizes[block_idx] = np.int64(raw_group[sizes_start + block_idx]) | (
+            np.int64(raw_group[sizes_start + num_blocks + block_idx]) << 8
         )
 
 
-def read_layout(raw_unit: np.ndarray, num_blocks: int) -> tuple[np.ndarray, Layout]:
+def read_layout(raw_group: np.ndarray, num_blocks: int) -> tuple[np.ndarray, Layout]:
     """Reads block sizes and computes the layout of an uncompressed body.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed body bytes.
-        num_blocks: Total number of blocks in the unit.
+        raw_group: 1D uint8 array of uncompressed body bytes.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         A tuple of (block_sizes, layout): 1D int64 array of block sample counts
         and the computed Layout offsets tuple.
     """
     block_sizes = np.empty(num_blocks, np.int64)
-    _read_sizes(raw_unit, num_blocks, block_sizes)
+    _read_sizes(raw_group, num_blocks, block_sizes)
     offsets = Layout(*(np.empty(num_blocks + 1, np.int64) for _ in Layout._fields))
-    _fill_layout(raw_unit[:num_blocks], block_sizes, *offsets)
+    _fill_layout(raw_group[:num_blocks], block_sizes, *offsets)
     return block_sizes, offsets
 
 
-def unit_size(num_blocks: int, offsets: Layout, has_time: bool = False) -> int:
-    """Calculates the size in bytes of a unit's uncompressed body.
+def group_size(num_blocks: int, offsets: Layout, has_time: bool = False) -> int:
+    """Calculates the size in bytes of a block group's uncompressed body.
 
     Args:
-        num_blocks: Number of blocks in the unit.
+        num_blocks: Number of blocks in the block group.
         offsets: The blocks' Layout.
-        has_time: Whether the unit has a time axis (time_start, time_step and time_ref fields).
+        has_time: Whether the block group has a time axis (time_start, time_step and time_ref fields).
 
     Returns:
         Size of the uncompressed body in bytes.
@@ -353,7 +353,7 @@ def unit_size(num_blocks: int, offsets: Layout, has_time: bool = False) -> int:
     return size
 
 
-def unit_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple[int, int]:
+def group_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple[int, int]:
     """Calculates lower and upper bounds on uncompressed body size.
 
     The fewest plane bytes occur when every block size is a multiple of 8 and no
@@ -364,7 +364,7 @@ def unit_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple
     Args:
         num_blocks: Total number of blocks.
         num_samples: Total number of samples across all blocks.
-        has_time: Whether the unit includes time axis columns and planes.
+        has_time: Whether the block group includes time axis columns and planes.
 
     Returns:
         A tuple of (smallest, largest) body sizes in bytes.
@@ -379,14 +379,14 @@ def unit_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple
     return smallest, columns + most_octets * plane_bytes_per_octet
 
 
-class UnitHeader(NamedTuple):
-    """The fields of a parsed unit header.
+class GroupHeader(NamedTuple):
+    """The fields of a parsed block group header.
 
     Attributes:
         num_blocks: Number of blocks.
-        num_samples: Sample count of the unit (the sum of its block sizes).
+        num_samples: Sample count of the block group (the sum of its block sizes).
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
-        time_unit: Time unit code (TimeUnitCode; 0 for a unit without a time axis).
+        time_unit: Time unit code (TimeGroupCode; 0 for a block group without a time axis).
     """
 
     num_blocks: int
@@ -396,26 +396,26 @@ class UnitHeader(NamedTuple):
 
 
 def pack_header(num_blocks: int, num_samples: int, byte_planes: bool = False, time_unit: int = 0) -> bytes:
-    """Builds the 8-byte unit header.
+    """Builds the 8-byte block group header.
 
     Args:
         num_blocks: Number of blocks.
-        num_samples: Sample count of the unit.
+        num_samples: Sample count of the block group.
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
-        time_unit: Time unit code (TimeUnitCode; 0 for no time axis).
+        time_unit: Time unit code (TimeGroupCode; 0 for no time axis).
 
     Returns:
         The header bytes.
     """
-    flags = (UNIT_FLAG_BYTE_PLANES if byte_planes else 0) | (time_unit << UNIT_FLAG_TIME_UNIT_SHIFT)
-    return UNIT_HEADER.pack(FORMAT_VERSION, flags, num_blocks, num_samples)
+    flags = (GROUP_FLAG_BYTE_PLANES if byte_planes else 0) | (time_unit << GROUP_FLAG_TIME_UNIT_SHIFT)
+    return GROUP_HEADER.pack(FORMAT_VERSION, flags, num_blocks, num_samples)
 
 
-def unpack_header(unit: bytes) -> UnitHeader:
-    """Parses and validates a unit header.
+def unpack_header(group: bytes) -> GroupHeader:
+    """Parses and validates a block group header.
 
     Args:
-        unit: Unit bytes (header followed by the zstd frame).
+        group: Block group bytes (header followed by the zstd frame).
 
     Returns:
         The parsed header.
@@ -425,21 +425,21 @@ def unpack_header(unit: bytes) -> UnitHeader:
             reserved bits set, an unknown time unit, or describes an implausible sample
             count.
     """
-    if len(unit) < HEADER_BYTES:
-        raise ValueError(f"unit of {len(unit)} bytes is shorter than its {HEADER_BYTES}-byte header")
-    version, flags, num_blocks, num_samples = UNIT_HEADER.unpack_from(unit)
+    if len(group) < HEADER_BYTES:
+        raise ValueError(f"block group of {len(group)} bytes is shorter than its {HEADER_BYTES}-byte header")
+    version, flags, num_blocks, num_samples = GROUP_HEADER.unpack_from(group)
     if version != FORMAT_VERSION:
-        raise ValueError(f"unit format version {version} is not supported (expected {FORMAT_VERSION})")
-    if flags & UNIT_FLAG_RESERVED:
-        raise ValueError("unit header sets reserved bits (not supported by this version)")
-    time_unit = (flags & UNIT_FLAG_TIME_UNIT_MASK) >> UNIT_FLAG_TIME_UNIT_SHIFT
-    if time_unit > TimeUnitCode.NANOSECONDS:
-        raise ValueError(f"unit header time unit {time_unit} is not supported (expected 0 to {int(TimeUnitCode.NANOSECONDS)})")
-    if num_samples > min(MAX_UNIT_SAMPLES, num_blocks * MAX_BLOCK_LEN):
+        raise ValueError(f"block group format version {version} is not supported (expected {FORMAT_VERSION})")
+    if flags & GROUP_FLAG_RESERVED:
+        raise ValueError("block group header sets reserved bits (not supported by this version)")
+    time_unit = (flags & GROUP_FLAG_TIME_UNIT_MASK) >> GROUP_FLAG_TIME_UNIT_SHIFT
+    if time_unit > TimeGroupCode.NANOSECONDS:
+        raise ValueError(f"block group header time unit {time_unit} is not supported (expected 0 to {int(TimeGroupCode.NANOSECONDS)})")
+    if num_samples > min(MAX_GROUP_SAMPLES, num_blocks * MAX_BLOCK_LEN):
         raise ValueError(
-            f"unit sample count {num_samples} is over {MAX_UNIT_SAMPLES} or what {num_blocks} blocks can hold"
+            f"block group sample count {num_samples} is over {MAX_GROUP_SAMPLES} or what {num_blocks} blocks can hold"
         )
-    return UnitHeader(num_blocks, num_samples, bool(flags & UNIT_FLAG_BYTE_PLANES), time_unit)
+    return GroupHeader(num_blocks, num_samples, bool(flags & GROUP_FLAG_BYTE_PLANES), time_unit)
 
 
 @njit(inline="always")
@@ -450,8 +450,8 @@ def residual_start(num_blocks: int, has_time: bool) -> int:
     (and optional time columns).
 
     Args:
-        num_blocks: Total number of blocks in the unit.
-        has_time: Whether the unit includes time axis columns.
+        num_blocks: Total number of blocks in the block group.
+        has_time: Whether the block group includes time axis columns.
 
     Returns:
         Offset in bytes where residual planes begin.
@@ -464,7 +464,7 @@ def block_sizes_start(num_blocks: int) -> int:
     """Calculates the byte offset of the block_sizes field.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         Offset in bytes where the block_sizes field begins.
@@ -477,7 +477,7 @@ def grid_params_start(num_blocks: int) -> int:
     """Calculates the byte offset of the grid_params field.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         Offset in bytes where the grid_params field begins.
@@ -490,7 +490,7 @@ def value_anchor_start(num_blocks: int) -> int:
     """Calculates the byte offset of the value_anchor field.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         Offset in bytes where the value_anchor field begins.
@@ -503,7 +503,7 @@ def time_start_start(num_blocks: int) -> int:
     """Calculates the byte offset of the time_start field.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         Offset in bytes where the time_start field begins.
@@ -516,7 +516,7 @@ def time_step_start(num_blocks: int) -> int:
     """Calculates the byte offset of the time_step field.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         Offset in bytes where the time_step field begins.
@@ -529,7 +529,7 @@ def time_ref_start(num_blocks: int) -> int:
     """Calculates the byte offset of the time_ref field.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
 
     Returns:
         Offset in bytes where the time_ref field begins.
@@ -538,13 +538,13 @@ def time_ref_start(num_blocks: int) -> int:
 
 
 @njit(inline="always")
-def put_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
+def put_int64(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
     """Writes a block's int64 value into a byte-planed field.
 
     Byte i of the value goes to the i-th run of num_blocks bytes of the field.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed body bytes.
+        raw_group: 1D uint8 array of uncompressed body bytes.
         field_start: Offset of the field (value_anchor_start or a time column's).
         num_blocks: Total number of blocks.
         block_idx: Zero-based block index.
@@ -553,17 +553,17 @@ def put_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
     value_bits = np.uint64(value)
     for byte_idx in range(8):
         # Byte byte_idx goes to field_start + byte_idx * num_blocks + block_idx
-        raw_unit[field_start + byte_idx * num_blocks + block_idx] = np.uint8(
+        raw_group[field_start + byte_idx * num_blocks + block_idx] = np.uint8(
             (value_bits >> np.uint64(8 * byte_idx)) & np.uint64(0xFF)
         )
 
 
 @njit(inline="always")
-def get_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
+def get_int64(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
     """Reads a block's int64 value from a byte-planed field.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed body bytes.
+        raw_group: 1D uint8 array of uncompressed body bytes.
         field_start: Offset of the field (value_anchor_start or a time column's).
         num_blocks: Total number of blocks.
         block_idx: Zero-based block index.
@@ -574,42 +574,42 @@ def get_int64(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
     value_bits = np.uint64(0)
     for byte_idx in range(8):
         # Byte byte_idx comes from field_start + byte_idx * num_blocks + block_idx
-        value_bits |= np.uint64(raw_unit[field_start + byte_idx * num_blocks + block_idx]) << np.uint64(8 * byte_idx)
+        value_bits |= np.uint64(raw_group[field_start + byte_idx * num_blocks + block_idx]) << np.uint64(8 * byte_idx)
     return np.int64(value_bits)
 
 
 @njit(inline="always")
-def put_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
+def put_int16(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
     """Writes a block's int16 value into a byte-planed field.
 
     The low byte goes to the first run of num_blocks bytes of the field, the high byte to
     the second.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed body bytes.
+        raw_group: 1D uint8 array of uncompressed body bytes.
         field_start: Offset where the target field starts.
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
         block_idx: Zero-based block index.
         value: Signed 16-bit integer value to write.
     """
-    raw_unit[field_start + block_idx] = np.uint8(value & 0xFF)
-    raw_unit[field_start + num_blocks + block_idx] = np.uint8((value >> 8) & 0xFF)
+    raw_group[field_start + block_idx] = np.uint8(value & 0xFF)
+    raw_group[field_start + num_blocks + block_idx] = np.uint8((value >> 8) & 0xFF)
 
 
 @njit(inline="always")
-def get_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
+def get_int16(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
     """Reads a block's int16 value from a byte-planed field, sign-extended to int64.
 
     Args:
-        raw_unit: 1D uint8 array of uncompressed body bytes.
+        raw_group: 1D uint8 array of uncompressed body bytes.
         field_start: Offset where the target field starts.
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
         block_idx: Zero-based block index.
 
     Returns:
         Sign-extended 64-bit integer value.
     """
-    value_bits = np.int64(raw_unit[field_start + block_idx]) | (np.int64(raw_unit[field_start + num_blocks + block_idx]) << 8)
+    value_bits = np.int64(raw_group[field_start + block_idx]) | (np.int64(raw_group[field_start + num_blocks + block_idx]) << 8)
     return value_bits - ((value_bits & 0x8000) << 1)
 
 
@@ -618,9 +618,9 @@ def code_planes_start(num_blocks: int, num_octets: int, has_time: bool) -> int:
     """Calculates the byte offset of non-finite code planes.
 
     Args:
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
         num_octets: Total octet count across all blocks.
-        has_time: Whether the unit includes time axis columns.
+        has_time: Whether the block group includes time axis columns.
 
     Returns:
         Offset in bytes where non-finite code planes begin.
@@ -629,10 +629,10 @@ def code_planes_start(num_blocks: int, num_octets: int, has_time: bool) -> int:
 
 
 class TimeRows(NamedTuple):
-    """The time axis of a unit as per-block rows.
+    """The time axis of a block group as per-block rows.
 
     Attributes:
-        starts: 1D int64 array of block start times (absolute, in the unit's time unit; 0
+        starts: 1D int64 array of block start times (absolute, in the block group's time unit; 0
             for an empty block).
         steps: 1D int64 array of block time steps: the GCD of each block's time deltas.
         refs: 1D uint64 array of block reference quotients: sample i > 0's quotient
@@ -663,8 +663,8 @@ def allocate_time_rows(num_blocks: int, num_samples: int, zero_residuals: bool =
     return TimeRows(np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty(num_blocks, np.uint64), residuals)
 
 
-class UnitRows(NamedTuple):
-    """The deserialized per-block rows of a unit.
+class GroupRows(NamedTuple):
+    """The deserialized per-block rows of a block group.
 
     Attributes:
         block_flags: 1D uint8 array of block flags.
@@ -673,7 +673,7 @@ class UnitRows(NamedTuple):
         value_anchors: 1D int64 array of block value anchors.
         residuals: 1D int16 array of every sample's residual.
         codes: 1D uint8 array of every sample's code (zeros in unflagged blocks).
-        time_rows: The time axis rows, or None for a unit without a time axis.
+        time_rows: The time axis rows, or None for a block group without a time axis.
     """
 
     block_flags: np.ndarray

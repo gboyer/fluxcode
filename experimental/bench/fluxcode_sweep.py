@@ -5,7 +5,7 @@
 Method: the real fluxcode package in four versions (order 1 or orders 0-3, with or without decimal
 detection) at B = 9..16 on continuous and discretized minutes, and the discretized signals at
 B = 16 against the lossless ideal (the same pipeline told the quantum). Single thread; µs per
-1000-sample block, best of 3. Sizes are whole units (header, per-block anchors, zstd frame). Errors
+1000-sample block, best of 3. Sizes are whole block groups (header, per-block anchors, zstd frame). Errors
 are % of the block's range.
 
 Data: tslab.common.datasets.load() (7,200 continuous blocks) and load_discrete() (5,400 blocks of

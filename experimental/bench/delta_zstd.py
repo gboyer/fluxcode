@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""How fast and how small is delta0123-zstd, one compressed unit per minute (60 blocks)?
+"""How fast and how small is delta0123-zstd, one compressed block group per minute (60 blocks)?
 
 Method: verify delta0123-zstd (error <= step/2, exact min/max, delta orders equal to a plain numpy
 reference), then time it at B = 8 and 10 with zstd / deflate at several levels, against the
-quant8-delta1 unit references. Also lists the NEON vector operations in the compiled loops.
+quant8-delta1 block group references. Also lists the NEON vector operations in the compiled loops.
 
 Scale: 200 signals x 86,400 blocks/day. Timings are per 1000-sample block,
-best of 3, one thread. Sizes are whole units, including each block's min and max; the index
-columns a store keeps next to the units (min/max/mean) are computed once per block regardless
+best of 3, one thread. Sizes are whole block groups, including each block's min and max; the index
+columns a store keeps next to the block groups (min/max/mean) are computed once per block regardless
 of codec and timed separately.
 
 Data: tslab.common.datasets.load() (7,200 continuous blocks).
@@ -45,9 +45,9 @@ def best_of(f, reps=3):
 
 def run(codec, mins):
     for _, X, _, _ in mins[:2]:
-        codec.decode_unit(codec.encode_unit(X)[0], *X.shape)  # compile / warm up
-    te, blobs = best_of(lambda: [codec.encode_unit(X)[0] for _, X, _, _ in mins])
-    td, outs = best_of(lambda: [codec.decode_unit(b, *X.shape) for b, (_, X, _, _) in zip(blobs, mins)])
+        codec.decode_group(codec.encode_group(X)[0], *X.shape)  # compile / warm up
+    te, blobs = best_of(lambda: [codec.encode_group(X)[0] for _, X, _, _ in mins])
+    td, outs = best_of(lambda: [codec.decode_group(b, *X.shape) for b, (_, X, _, _) in zip(blobs, mins)])
     nblocks = sum(len(X) for _, X, _, _ in mins)
     rmse = []
     for (_, X, lo, hi), Y in zip(mins, outs):
@@ -61,8 +61,8 @@ def verify(codec, mins):
     """Error bound per block from its B, min/max exact, orders match a plain numpy argmin of the variance."""
     agree = total = 0
     for _, X, lo, hi in mins:
-        data, infos = codec.encode_unit(X)
-        Y = codec.decode_unit(data, *X.shape)
+        data, infos = codec.encode_group(X)
+        Y = codec.decode_group(data, *X.shape)
         for b, info in enumerate(infos):
             B, order = info["bits"], info["order"]
             step = (hi[b] - lo[b]) / ((1 << B) - 1)
@@ -109,7 +109,7 @@ def main():
         rows.append((codec.name, r))
 
     print(f"\nIndex stats (min/max/mean, numpy): {index_us:.2f} µs/block — same for every codec, not included below.")
-    print(f"Sizes are whole units (each block's min and max included). "
+    print(f"Sizes are whole block groups (each block's min and max included). "
           f"Scale: {SIGNALS} signals x {BLOCKS_PER_DAY:,} blocks = {SIGNALS * BLOCKS_PER_DAY / 1e6:.2f}M blocks/day.\n")
     print("| codec | bits/sample | median RMSE | encode µs/block | decode µs/block | "
           "200 signals x 1 day, encode core-s | 1:100 cores | 1:1000 cores |")
@@ -122,14 +122,14 @@ def main():
     X = mins[0][1]
     q = np.zeros(1000, np.int32)
     u = np.zeros(1000, np.uint32)
-    raw, _ = variants[1].raw_unit(X[:2])
+    raw, _ = variants[1].raw_group(X[:2])
     print("\nVector (NEON) arithmetic in compiled loops:")
     for name, fn, args in [
         ("_quantize", dz._quantize, (X[0], 0.0, 1.0, 8, q)),
         ("pick_order", pick_order, (q, 15)),
         ("_residual_zigzag", dz._residual_zigzag, (q, 2, u)),
         ("_write_planes", dz._write_planes, (u, 998, 2, np.zeros(4000, np.uint8), 0)),
-        ("_decode_unit", dz._decode_unit, (raw, np.empty((2, 1000)))),
+        ("_decode_group", dz._decode_group, (raw, np.empty((2, 1000)))),
     ]:
         ops = vector_ops(fn, *args)
         print(f"  {name:18s} {', '.join(ops) if ops else 'none (scalar)'}")

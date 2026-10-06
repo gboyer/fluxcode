@@ -1,6 +1,6 @@
 power: Now drawing from 'AC Power'; libzstd: rust (1, 5, 7), python-zstandard (1, 5, 7)
 
-## Units byte-identical, every effort 1-9 x every signal (1 minute each)
+## Block groups byte-identical, every effort 1-9 x every signal (1 minute each)
 
 all identical
 

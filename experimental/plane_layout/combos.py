@@ -3,9 +3,9 @@
 """Best-of-2 and best-of-3 over bit, byte and nibble planes, each framed three ways, zstd 3:
 
   pooled   all the layout's streams in one frame and one block run (today)
-  frames   each group's stream compressed on its own, as separate zstd frames
-  blocks   one frame, with a block boundary forced between groups (the streaming API's
-           FLUSH_BLOCK): each group gets its own literal Huffman table, the window is shared, and
+  frames   each field's stream compressed on its own, as separate zstd frames
+  blocks   one frame, with a block boundary forced between fields (the streaming API's
+           FLUSH_BLOCK): each field gets its own literal Huffman table, the window is shared, and
            a one-shot decoder reads it like any other frame (no section lengths needed)
 
 Sizes are the plane bytes only. "vs today" is against the best of pooled bit and pooled byte.
@@ -21,7 +21,7 @@ import numpy as np
 import zstandard
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from layouts import group_streams
+from layouts import field_streams
 
 HERE = Path(__file__).resolve().parent
 LAYOUTS = {"bit": [1] * 16, "byte": [8, 8], "nibble": [4] * 4}
@@ -55,7 +55,7 @@ def sizes(name):
     out = {(l, m): np.zeros(len(u)) for l in LAYOUTS for m in MODES}
     for i, x in enumerate(u):
         for l, w in LAYOUTS.items():
-            st = group_streams(x, w)
+            st = field_streams(x, w)
             for m, f in MODES.items():
                 out[(l, m)][i] = f(st)
     return out
@@ -65,7 +65,7 @@ def report(label, s):
     n = len(next(iter(s.values())))
     today = np.minimum(s[("bit", "pooled")], s[("byte", "pooled")])
     bps = lambda a: a.sum() * 8 / (60_000 * n)
-    print(f"\n{label} ({n} units): bits/sample and vs today (best of pooled bit/byte = {bps(today):.3f})")
+    print(f"\n{label} ({n} block groups): bits/sample and vs today (best of pooled bit/byte = {bps(today):.3f})")
     print(f"{'':30s} " + " ".join(f"{m:>16s}" for m in MODES))
     for l in LAYOUTS:
         print(f"{l:30s} " + " ".join(f"{bps(s[(l, m)]):7.3f} {s[(l, m)].sum() / today.sum() - 1:+7.1%}" for m in MODES))

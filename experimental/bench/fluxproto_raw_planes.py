@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """Does storing near-random bit planes raw (instead of through zstd) help the fluxcode prototype?
 
-Method: bit-shuffled fluxproto units with near-random planes stored raw instead of through zstd.
+Method: bit-shuffled fluxproto block groups with near-random planes stored raw instead of through zstd.
 
 A plane (all blocks of a minute, or one block's plane) is "near-random" if its density of
 ones p satisfies |p - 0.5| < t. Kept planes (+ header + a 1-bit-per-plane mask) go through
@@ -59,17 +59,17 @@ def split(planes, ones, t, per_block):
 
 
 def main():
-    groups = [("continuous", load()), ("discretized", [m[:4] for m in load_discrete()])]
+    signal_sets = [("continuous", load()), ("discretized", [m[:4] for m in load_discrete()])]
     codec = fp.FluxProto(16, step_detect=True, planes="bit")
     zc = zstandard.ZstdCompressor(level=3, write_checksum=False)
     zd = zstandard.ZstdDecompressor()
-    units = {g: [] for g, _ in groups}
-    for g, mins in groups:
+    groups = {g: [] for g, _ in signal_sets}
+    for g, mins in signal_sets:
         for kind, X, lo, hi in mins:
             raw = codec.raw(X, lo, hi)
             nb = len(X)
             hdr, planes = raw[:9 * nb], raw[9 * nb:].reshape(16, nb, 125)
-            units[g].append((kind, hdr, planes, plane_ones(planes, POP)))
+            groups[g].append((kind, hdr, planes, plane_ones(planes, POP)))
     configs = [("all planes through zstd (current)", None, False)]
     configs += [(f"minute-plane raw if |p-0.5|<{t}", t, False) for t in (0.01, 0.02, 0.05)]
     configs += [(f"block-plane raw if |p-0.5|<{t}", t, True) for t in (0.01, 0.02, 0.05, 0.1)]
@@ -78,10 +78,10 @@ def main():
     per_kind = {}
     for name, t, pb in configs:
         cells, nraw, nplanes, te, td = [], 0, 0, 0.0, 0.0
-        for g, _ in groups:
+        for g, _ in signal_sets:
             size = 0
             nblocks = 0
-            for kind, hdr, planes, ones in units[g]:
+            for kind, hdr, planes, ones in groups[g]:
                 if t is None:
                     enc = lambda: (zc.compress(np.concatenate([hdr, planes.ravel()]).tobytes()), b"")
                 else:
@@ -107,13 +107,13 @@ def main():
                 k = (kind, g)
                 per_kind.setdefault(k, {})[name] = per_kind.get(k, {}).get(name, 0) + len(z) + len(rb)
             cells.append(8 * size / (nblocks * 1000))
-        ntot = sum(16 * p.shape[1] for g, _ in groups for _, _, p, _ in units[g]) // 16
+        ntot = sum(16 * p.shape[1] for g, _ in signal_sets for _, _, p, _ in groups[g]) // 16
         print(f"| {name} | {cells[0]:.3f} | {cells[1]:.3f} | {100 * nraw / nplanes:.0f}% | "
               f"{1e6 * te / ntot:.2f} | {1e6 * td / ntot:.2f} |", flush=True)
     names = [c[0] for c in configs]
     print("\nPer signal, bits/sample: current vs block-plane raw at 0.02 and 0.05")
     for (kind, g), d in per_kind.items():
-        nbk = 60 * sum(1 for k, *_ in units[g] if k == kind)
+        nbk = 60 * sum(1 for k, *_ in groups[g] if k == kind)
         a, b, c = (8 * d[n] / (nbk * 1000) for n in (names[0], "block-plane raw if |p-0.5|<0.02", "block-plane raw if |p-0.5|<0.05"))
         print(f"  {kind} ({g}): {a:.2f} -> {b:.2f} / {c:.2f}")
 

@@ -1,11 +1,11 @@
 # Can we predict bit planes vs byte planes without compressing both?
 
-**Question.** `planes="best"` compresses every unit twice (bit planes, byte planes) and keeps the
+**Question.** `planes="best"` compresses every block group twice (bit planes, byte planes) and keeps the
 smaller, because nobody had a coherent account of which wins. Is there a cheap statistic of the
-residuals that predicts the winner, so a unit is compressed once?
+residuals that predicts the winner, so a block group is compressed once?
 
 **Short answer.** Partly. One statistic (how much information the residuals' high byte carries)
-explains most of the effect and costs almost nothing to compute. Using it alone gives units about
+explains most of the effect and costs almost nothing to compute. Using it alone gives block groups about
 1.2–1.5% larger than the encode-both oracle, against 2.3–4.6% for always using bit planes. The rest
 is exactly-repeating structure, and finding that costs more than zstd does.
 
@@ -39,15 +39,15 @@ byte layout is already worse than bit planes without any pooling cost (8.61 agai
 Beyond i.i.d. data, **exact repeats** matter. On a signal whose residual sequence repeats (a
 periodic signal sampled so the cycle recurs), zstd finds long matches in the byte layout at any lag,
 and in the bit layout only when the lag is a multiple of 8 samples. That is why byte planes win by
-2–10× on those units, and why they win on clean sines at all.
+2–10× on those block groups, and why they win on clean sines at all.
 
 ## What was measured
 
-`corpus.py` draws 3,000 one-minute units from 14 signal families with random parameters (sines at
+`corpus.py` draws 3,000 one-minute block groups from 14 signal families with random parameters (sines at
 random and integer periods, noisy sines at 0.3–3,000 SNR, random walks, AR(1) noise, square /
 sawtooth / triangle, steps, spikes, ramps, chirps, 40% quantized to decimal or binary quanta, and
-`max_quantize_bits` 8–16), encodes each with `planes="bit"` and `"byte"`, and keeps the real unit
-sizes and residuals. 2,000 units (seed 1) fit the thresholds, 1,000 (seed 2) are held out, and
+`max_quantize_bits` 8–16), encodes each with `planes="bit"` and `"byte"`, and keeps the real block group
+sizes and residuals. 2,000 block groups (seed 1) fit the thresholds, 1,000 (seed 2) are held out, and
 `standard.npz` is the report's own signals (`tests/_signals.py`, 8 minutes each, default params).
 Synthetic data only.
 
@@ -66,9 +66,9 @@ smaller layout):
 The oracle is 4.4% smaller than always-bit on the fit set.
 
 By the entropy of the high byte (fit set): below 0.25 bit/sample, byte planes win 63–75% of the
-units, by 7–43% in the geometric mean, and bit planes lose 6–12% against the oracle; above it,
+block groups, by 7–43% in the geometric mean, and bit planes lose 6–12% against the oracle; above it,
 byte planes win 11–38% and lose 4–10% when they're picked, and bit planes lose under 1%. The
-failures of the cheap rule are in the first group: units where byte planes are *not* better, either
+failures of the cheap rule are in the first category: block groups where byte planes are *not* better, either
 because the residuals are narrow noise (sensor-0.1: byte planes are 20% larger, `random-walk q2^-4` 17%) or because the planes are almost entirely constant, where bit planes cost nothing and byte
 planes don't (quadratic: byte planes are 4.6× larger).
 
@@ -79,20 +79,20 @@ planes don't (quadratic: byte planes are 4.6× larger).
   Smooth deterministic signals have low order-0 entropy too, and they are the ones byte planes
   win on.
 - **Searching for exact repeats** (best repeat fraction over lags 2–1500): a depth-3 tree on it
-  gained 0.1 point over the single threshold, and it costs 90 M compares per unit.
+  gained 0.1 point over the single threshold, and it costs 90 M compares per block group.
 - **The greedy LZ estimate** is the best predictor, but it is 7× slower than zstd on both layouts
-  (about 1,300 µs against 170 µs per unit): no use as a cheap predictor, only as a diagnosis.
-- Cheap features are cheap: `mean(u > 255)` is 28 µs per unit in numpy (about 10 µs in a numba
+  (about 1,300 µs against 170 µs per block group): no use as a cheap predictor, only as a diagnosis.
+- Cheap features are cheap: `mean(u > 255)` is 28 µs per block group in numpy (about 10 µs in a numba
   loop over the residuals the encoder has already computed). A second zstd pass is about 85 µs.
 
 ## Other layouts and other compressors (`layouts.py`)
 
 Plane bytes only, zstd 3, sizes against today's `"best"` (the best of bit and byte planes, one
-shared Huffman table), on the fit, held-out and report sets. A layout is a list of group widths:
+shared Huffman table), on the fit, held-out and report sets. A layout is a list of field widths:
 bit planes `[1]*16`, byte planes `[8, 8]`, nibble planes `[4]*4`, and mixes such as the low byte
 as a byte plane with the high byte as 8 bit planes. **pooled** = one zstd frame, as today;
-**split** = each group's stream in its own frame (own Huffman table); **halves** = one frame for
-the low byte's groups and one for the high byte's.
+**split** = each field's stream in its own frame (own Huffman table); **halves** = one frame for
+the low byte's fields and one for the high byte's.
 
 | layout | fit | held out | report |
 |---|---|---|---|
@@ -114,9 +114,9 @@ the low byte's groups and one for the high byte's.
   signals (+2.1% against +1.2%). Earlier work put nibbles halfway between bit and byte planes; that
   was with one pooled frame, where nibbles are 8.3% worse than the oracle.
 - **No fixed mix beats the oracle of the pair**, but the headroom is real: choosing among all
-  layouts per unit would save a further 3–3.5%. That needs an oracle over about 20 layouts, so only
+  layouts per block group would save a further 3–3.5%. That needs an oracle over about 20 layouts, so only
   a predictor could capture it; none of this has been tried.
-- **Other compressors** (200 fit units, bits/sample, both layouts, ms per unit for both):
+- **Other compressors** (200 fit block groups, bits/sample, both layouts, ms per block group for both):
 
 | codec | bit | byte | byte/bit | oracle | ms |
 |---|---|---|---|---|---|
@@ -132,7 +132,7 @@ the low byte's groups and one for the high byte's.
   Level 3's Huffman-only literal coding hurts byte planes most. xz is 300× slower for 9% less.
 - The order-0 entropy of the residuals averages 4.40 bits/sample on the fit set while the best of
   bit and byte planes under zstd 3 averages 3.92: zstd's gain over a memoryless model comes from
-  matches and structure, though in 47% of units a memoryless model would already beat it.
+  matches and structure, though in 47% of block groups a memoryless model would already beat it.
 
 ## Best of 2 / best of 3, and three ways to frame (`combos.py`, `flush_blocks.py`)
 
@@ -143,7 +143,7 @@ frame each *block* has its own literal Huffman table, and the streaming API can 
 no frame headers. Plane bytes only, bits/sample and size against today's best of pooled bit/byte
 planes (3.902 / 4.048 / 5.153 bits/sample on the three sets):
 
-| | pooled (today) | frames | blocks (one frame, flush per group) |
+| | pooled (today) | frames | blocks (one frame, flush per field) |
 |---|---|---|---|
 | bit, fit / held / report | +4.7 / +3.7 / +2.4% | +5.7 / +4.8 / +5.9% | +1.8 / +1.2 / −0.5% |
 | byte | +5.6 / +5.5 / +7.5% | +2.9 / +2.7 / +3.6% | +2.9 / +2.7 / +3.6% |
@@ -160,9 +160,9 @@ planes (3.902 / 4.048 / 5.153 bits/sample on the three sets):
 - Trying every layout and framing (9 combinations) gains nothing over best of three layouts in
   pooled/blocks (−2.9% either way).
 - **Blocks need no format change.** The body bytes and the one-frame container are identical, and a
-  standard decoder reads the frame as before. `flush_blocks.py` re-frames real units with a flush
-  after the columns and after each plane: `fluxcode.decode` returns identical values for every unit,
-  and the sizes (best of bit/byte per unit, header included, 3 minutes × 20 signals) are:
+  standard decoder reads the frame as before. `flush_blocks.py` re-frames real block groups with a flush
+  after the columns and after each plane: `fluxcode.decode` returns identical values for every block group,
+  and the sizes (best of bit/byte per block group, header included, 3 minutes × 20 signals) are:
 
 | flush after | total size vs today |
 |---|---|
@@ -170,7 +170,7 @@ planes (3.902 / 4.048 / 5.153 bits/sample on the three sets):
 | every 4 planes | −1.4% |
 | every 8 planes (halves) | −1.2% |
 
-  Per signal it is −3.8% to +9.3%: random walks and noisy units gain 2–4%, while tiny units (a few
+  Per signal it is −3.8% to +9.3%: random walks and noisy block groups gain 2–4%, while tiny block groups (a few
   hundred bytes: linear, square wave, quadratic) lose 4–9% from the extra block headers and tables
   (20–70 bytes) and the matches no longer crossing planes. An encoder could flush only when the body
   is large, or compare both ways (a second compress).
@@ -179,7 +179,7 @@ planes (3.902 / 4.048 / 5.153 bits/sample on the three sets):
 
 The body is the per-block columns, the 16 residual planes, the non-finite code planes (flagged
 blocks only) and the time residual planes (irregular blocks only), one zstd frame today. Mean
-compressed bytes per unit over 18 units per scenario (6 signals × 3 seeds), `today` = best of bit
+compressed bytes per block group over 18 block groups per scenario (6 signals × 3 seeds), `today` = best of bit
 and byte planes as one frame; **A** = residuals as 4 nibble frames plus one frame for the columns,
 code planes and time residuals; **B** = a frame each for the columns, the code planes and the time
 residuals; **C** = all of those pooled into the first nibble frame:
@@ -194,12 +194,12 @@ residuals; **C** = all of those pooled into the first nibble frame:
 | NaN/inf + noisy clock | 342 | 50,721 | 452 | 54,009 | 104,134 | +1.2% | +1.2% | +2.8% |
 
 (The first four columns are each section compressed alone.) The columns and code planes are tiny
-(0.1–0.5 KB per unit): putting them in one extra frame (A) or one each (B) makes no difference, and
+(0.1–0.5 KB per block group): putting them in one extra frame (A) or one each (B) makes no difference, and
 pooling them into a nibble frame (C) is slightly worse. So the extras don't constrain the idea; they
 go in one more frame. A format using several frames needs the frame lengths (zstd frames don't
 record their compressed size), a few bytes in the header.
 
-A **noisy clock's time residuals** (µs jitter on a ns clock, 32 planes) cost 54 KB per unit, more than
+A **noisy clock's time residuals** (µs jitter on a ns clock, 32 planes) cost 54 KB per block group, more than
 the values here: the same bit-vs-byte-vs-nibble question applies to them, and was not studied.
 
 ## How far could a context-modelled bit-plane coder go? (`ctxmodel.py`)
@@ -217,7 +217,7 @@ within 0.02–0.07 bits/sample of it, at every width (σ = 1…2048).
 
 So on noise, zstd with the right layout (nibble-split is the best fixed one) is within about 0.05–0.1
 bit of the limit most of the time, and loses 0.3–0.4 bit (4–5%) at a few widths where no layout
-fits. On the corpus the picture reverses (500 fit units, 160 report units, plane bytes only,
+fits. On the corpus the picture reverses (500 fit block groups, 160 report block groups, plane bytes only,
 bits/sample against today's best of bit and byte planes):
 
 | | fit | report |
@@ -225,23 +225,23 @@ bits/sample against today's best of bit and byte planes):
 | zstd 3, best of bit/byte (today) | 3.78 | 5.15 |
 | zstd 3, nibble split | +1.6% | +2.1% |
 | ideal: bit length from the previous 2 samples, 2 modelled mantissa bits | +25.7% | +14.6% |
-| best of the ideal model and zstd, per unit | −2.8% | −3.3% |
+| best of the ideal model and zstd, per block group | −2.8% | −3.3% |
 
-- The ideal model beats zstd on 34% (fit) and 46% (report) of units, but only wins by a few
+- The ideal model beats zstd on 34% (fit) and 46% (report) of block groups, but only wins by a few
   percent where it does (noisy sine, random walk, AR(1): 1.00–1.05× of zstd's size), and loses by
   1.4–160× on periodic and stepped signals (sawtooth 2.6×, sine 1.7×, steps 1.4×, integer-period
   sine 160×) where zstd's matches find exact repeats the model can't.
 - **Conclusion:** the plane coder's limit is the noise entropy, and zstd with a good layout is
   already near it on noise; the remaining headroom is in structure, which needs prediction or
-  matching, not a better bit-plane model. A hybrid choosing per unit would gain 3%, no more.
-- A per-sample binary arithmetic coder would also cost about 1 M decisions per unit: not viable as
+  matching, not a better bit-plane model. A hybrid choosing per block group would gain 3%, no more.
+- A per-sample binary arithmetic coder would also cost about 1 M decisions per block group: not viable as
   a speed play.
 
 ## The heuristic and block flushing together (`table.py`, `combine.py`, `api_bench.py`)
 
 Nibble planes are left out: they need a format change, and best of 3 needs a third encode.
 
-From a per-unit table of real unit sizes (header included, `table.py`; summarized by `combine.py`)
+From a per-group table of real block group sizes (header included, `table.py`; summarized by `combine.py`)
 for bit and byte planes under five framings, sizes against today's `"best"` (two compressions, one
 block run). Framings: a block ends after the columns and after **every plane**, every 4th or 8th
 plane, or after each **dense plane**: one with more than 1/16 of its bytes non-zero (the rule the
@@ -270,10 +270,10 @@ run and the smaller kept.
   heuristic, −2.17% against −1.93% for best-of-two), and it is cheaper: fewer blocks.
 - The heuristic's threshold is the same with this framing: byte iff fewer than 5% of residuals
   reach 256 (the scan is flat from 1% to 5%, and worse from 7.5%).
-- Flushing helps big units and hurts tiny ones (fit set, heuristic layout, total bytes saved against
-  one block run; 'worse' = share of units that grow):
+- Flushing helps big block groups and hurts tiny ones (fit set, heuristic layout, total bytes saved against
+  one block run; 'worse' = share of block groups that grow):
 
-| one-run unit size | units | every plane | dense planes | dense + retry |
+| one-run block group size | block groups | every plane | dense planes | dense + retry |
 |---|---|---|---|---|
 | under 1 KB | 349 | 8.5% bigger (86% worse) | 5.2% bigger (75% worse) | +0.6% saved (0% worse) |
 | 1–3 KB | 97 | 0.5% bigger | +0.9% saved | +3.3% saved |
@@ -281,27 +281,27 @@ run and the smaller kept.
 | 10–30 KB | 427 | +0.7% saved | +0.8% saved | +0.8% saved |
 | 30–60 KB | 736 | +1.2% saved | +1.2% saved | +1.2% saved |
 | over 60 KB | 243 | +2.6% saved | +2.7% saved | +2.7% saved |
-| worst unit | | +136% | +91% | +2.9% |
-| mean per-unit change | | +1.70% | +0.57% | −1.23% |
+| worst block group | | +136% | +91% | +2.9% |
+| mean per-group change | | +1.70% | +0.57% | −1.23% |
 
-  Without the retry the tiny units are still worse (their frames are a few hundred bytes, so every
+  Without the retry the tiny block groups are still worse (their frames are a few hundred bytes, so every
   block's header and table shows); the retry fixes them at a cost of one extra, cheap compression on
-  the 25–35% of units whose frame is small.
+  the 25–35% of block groups whose frame is small.
 
 ### Integration in the encoder (prototype, commit 93fe638)
 
-Everything goes through `_unit._pack`, the one place a body becomes a unit (used by `encode` and
+Everything goes through `_group._pack`, the one place a body becomes a block group (used by `encode` and
 by `update`). Changes, about 90 lines and no format change:
 
-- `_unit.compress_body(body, cuts)`: one zstd frame via the streaming API, ending a block at each
-  cut (`COMPRESSOBJ_FLUSH_BLOCK`), content size recorded. `_unit._frame` calls it, with the
-  small-unit retry.
-- `_format.flush_points(raw_unit, ...)`: the cut offsets, from the layout the body already
+- `_group.compress_body(body, cuts)`: one zstd frame via the streaming API, ending a block at each
+  cut (`COMPRESSOBJ_FLUSH_BLOCK`), content size recorded. `_group._frame` calls it, with the
+  small-group retry.
+- `_format.flush_points(raw_group, ...)`: the cut offsets, from the layout the body already
   carries (after the columns, after each dense residual plane). Time residual and code planes stay in
   the last block.
 - `PlaneMode` gains `"heuristic"`; `_pack` writes the bit body once, computes the share of
   residuals reaching 256 from planes 8–15 (`_bitpacking.high_byte_share`, one pass over 8 plane
-  bytes per group) and rewrites the body as byte planes only if it is below 5%.
+  bytes per octet) and rewrites the body as byte planes only if it is below 5%.
 - Decoders are untouched; `tests/golden.json` is regenerated (the bytes change), a new
   `tests/test_flush.py` checks that the frame is ordinary (one-shot decodable, content size), that
   cuts follow the planes, the retry guarantee and the heuristic's choices. Flushing applies to every
@@ -318,7 +318,7 @@ families; times are best of 3 over the whole set, so coarse):
 | flush, `bit` | 5.119 (−1.1%) | 7 | 4.071 (+1.6%) | 7 |
 | flush, `best` | 5.065 (−2.1%) | 12 | 3.927 (−2.0%) | 11 |
 
-Flushing is not free: about +65 µs per unit for the cuts and +20 µs for the small-unit retry on a
+Flushing is not free: about +65 µs per block group for the cuts and +20 µs for the small-group retry on a
 320 µs encode, so `heuristic` plus flushing matches `best` in size **and in encode time** (the
 second compression it saves roughly equals the flush overhead). Decode time is unchanged. Without
 flushing, `heuristic` is about 30% faster than `best` and 1.5% larger. The flush overhead is mostly
@@ -338,31 +338,31 @@ The prototype went into the encoder with these changes, each from a follow-up me
   fit this study's synthetic corpus, but on the day-scale stress test's sensor mix (analog ADC
   data, held values, counters: not in the corpus) it picked byte planes for analog noise of about
   33 steps, 11% larger than bit planes with per-plane blocks; the mix came out 4.5% larger than
-  the encoder before efforts. "Fewer than 1% reach 128" is within 0.1% of the per-unit better
+  the encoder before efforts. "Fewer than 1% reach 128" is within 0.1% of the per-group better
   layout on the sensor mix and the report's signals, and better than the old rule on every set.
 - **No retries.** The prototype recompressed flushed frames under 16 KB in one block run, and a
-  first port also tried the other layout there (`small_frames.py`: per-unit misses 8% → 1.3%).
-  On the sensor mix, with many small units, those passes cost 14% of encode time for 0.02%:
+  first port also tried the other layout there (`small_frames.py`: per-group misses 8% → 1.3%).
+  On the sensor mix, with many small block groups, those passes cost 14% of encode time for 0.02%:
   zstd's time follows the 120 KB input, not the small output. Both were dropped; `retry_rules.py`
   shows no cheaper rule replacing the one-run retry.
 - **Block flushes cost threaded throughput, so they are not the default** (the stress test: 4
-  threads, 1000 tags × a day). Flushing gives 1.5–2% smaller units with the
+  threads, 1000 tags × a day). Flushing gives 1.5–2% smaller block groups with the
   heuristic at the old encode speed on one thread, which is why the first port made it the default
   (effort 4: sensor mix +0.02%, −8% encode time). But python-zstandard holds the GIL in
   `flush(FLUSH_BLOCK)`: the day took 146 s instead of 104 s with threads (same size; 7.6 against
   4.7 GB/s on 4 processes versus 4 threads), and the 8-thread gigabyte encode was 32% slower.
   Every streaming API measured behaved the same (`compressobj`, `stream_writer`, `chunker`: 1.3–1.7×
   on 4 threads against 3.7× for a one-shot compress), and libzstd's `ZSTD_compressStream2` called
-  directly through cffi reached 1.8×. A fix needs a call that compresses a unit with its cuts
+  directly through cffi reached 1.8×. A fix needs a call that compresses a block group with its cuts
   without the GIL (a C extension or numba wrapper); until then efforts 3–4 are the old encoder
   and flushing starts at effort 5.
 - **The heuristic's misses** are low-entropy repeating or quantized signals (held values, sensor
   drift on a 0.1 grid, quantized periodic waves: up to +0.35 bits/sample, `per_input.py`), which
   both layouts fix; high-entropy signals are not hurt.
 - **zstd 9 only alongside zstd 3** (`zstd_levels.py`). zstd 9 alone is larger than zstd 3 on
-  22–30% of units (up to +9%), zstd 7 on 26–37% (up to +37%), which cancels most of their gain.
-  Keeping the smaller of zstd 3 and 9 never grows a unit; that is effort 9. zstd 7 was dropped.
-- **The heuristic reads whichever body is written first** (byte planes on encode, the unit's own
+  22–30% of block groups (up to +9%), zstd 7 on 26–37% (up to +37%), which cancels most of their gain.
+  Keeping the smaller of zstd 3 and 9 never grows a block group; that is effort 9. zstd 7 was dropped.
+- **The heuristic reads whichever body is written first** (byte planes on encode, the block group's own
   layout on update), 64 bits at a time: padding is zero, so the share is identical in both
   layouts, and update doesn't convert carried blocks just to measure it.
 
@@ -386,16 +386,16 @@ uv run python plane_layout/corpus.py --n 2000 --seed 1 --out corpus.npz   # ~25 
 uv run python plane_layout/corpus.py --n 1000 --seed 2 --out test.npz
 uv run python plane_layout/corpus.py --standard --out standard.npz
 uv run python plane_layout/analyze.py     # all the tables (the first run extracts features, ~2 min)
-uv run python plane_layout/table.py       # per-unit table for the combinations (~3 min), then combine.py
+uv run python plane_layout/table.py       # per-group table for the combinations (~3 min), then combine.py
 uv run python plane_layout/combine.py
 uv run python plane_layout/api_bench.py    # public-API size and speed of each effort (docs/TUNING.md; results/api_bench.txt)
 uv run python plane_layout/fleet.py        # layout rules and efforts on the stress test's sensor mix (~5 min; output in results/fleet.txt)
 uv run python plane_layout/per_input.py    # bits/sample per input type at efforts 2 and 5 against the default (~3 min; results/per_input.txt)
 uv run python plane_layout/small_frames.py # the first rule's misses: narrow-residual rules, other layout on small frames
 uv run python plane_layout/retry_rules.py  # rules to skip the one-run retry (needs table.py's output)
-uv run python plane_layout/zstd_levels.py  # zstd 7 / 9 alone vs alongside zstd 3, per unit (~3 min)
+uv run python plane_layout/zstd_levels.py  # zstd 7 / 9 alone vs alongside zstd 3, per block group (~3 min)
 uv run python plane_layout/combos.py      # best of 2 / 3 layouts x three framings (~5 min)
-uv run python plane_layout/flush_blocks.py  # one frame with a block per plane: real units, decoder unchanged
+uv run python plane_layout/flush_blocks.py  # one frame with a block per plane: real block groups, decoder unchanged
 uv run python plane_layout/sections.py    # separate frames with timestamps / non-finite codes (~1 min)
 uv run python plane_layout/ctxmodel.py    # ideal cost of a context-modelled bit-plane coder
 uv run python plane_layout/layouts.py     # bit/byte/nibble/mixed layouts, pooled vs split (~3 min); --codecs for xz, bzip2, zstd 19

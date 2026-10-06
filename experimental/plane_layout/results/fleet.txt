@@ -1,6 +1,6 @@
-sensor mix: per-unit better flushed layout -2.26% against before
-random: per-unit better flushed layout -2.15% against before
-report: per-unit better flushed layout -2.07% against before
+sensor mix: per-group better flushed layout -2.26% against before
+random: per-group better flushed layout -2.15% against before
+report: per-group better flushed layout -2.07% against before
 
 rule (byte planes iff share(u >= 2^k) < t), flushed:
   k = 6, t = 0.005: sensor mix  +0.05%   random  +0.32%   report  -1.53%
@@ -30,10 +30,10 @@ rule (byte planes iff share(u >= 2^k) < t), flushed, other layout under 16 KB:
   k = 8, t =  0.02: sensor mix  +0.94%   random  -0.66%   report  -2.06%
   k = 8, t =  0.05: sensor mix  +4.49%   random  -0.69%   report  -2.06%
 
-sensor mix, per unit (weighted), one thread:
-  effort before size  +0.00%   encode   236 µs/unit (   +0 µs,   +0%)
-  effort 1     size  +2.12%   encode   186 µs/unit (  -51 µs,  -21%)
-  effort 2     size  +1.90%   encode   190 µs/unit (  -47 µs,  -20%)
-  effort 3–4   size  +0.00%   encode   236 µs/unit (   -1 µs,   -0%)
-  effort 5–8   size  -2.30%   encode   288 µs/unit (  +52 µs,  +22%)
-  effort 9     size  -2.79%   encode  1023 µs/unit ( +786 µs, +333%)
+sensor mix, per block group (weighted), one thread:
+  effort before size  +0.00%   encode   236 µs/block group (   +0 µs,   +0%)
+  effort 1     size  +2.12%   encode   186 µs/block group (  -51 µs,  -21%)
+  effort 2     size  +1.90%   encode   190 µs/block group (  -47 µs,  -20%)
+  effort 3–4   size  +0.00%   encode   236 µs/block group (   -1 µs,   -0%)
+  effort 5–8   size  -2.30%   encode   288 µs/block group (  +52 µs,  +22%)
+  effort 9     size  -2.79%   encode  1023 µs/block group ( +786 µs, +333%)

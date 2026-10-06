@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Compression policy: how a unit's body becomes its zstd frame.
+"""Compression policy: how a block group's body becomes its zstd frame.
 
 Which residual layout to use, where zstd blocks end, which zstd levels to try and which
 candidate frame to keep are encoder choices, not format: any frame of the body decodes.
@@ -21,7 +21,7 @@ import zstandard
 from . import _bitpacking, _format
 
 RUST_INTERFACE_VERSION: int = 1
-"""Version of the extension interface this code calls (compress_unit, pack_unit and the
+"""Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 
 rust/src/lib.rs exports the same INTERFACE_VERSION; the two are raised together when the
@@ -57,14 +57,14 @@ def _load_rust() -> ModuleType | None:
 _rust: ModuleType | None = _load_rust()
 """The optional Rust accelerator (the fluxcode[rust] extra), or None.
 
-It builds a unit's bytes from its rows or from a body without holding the GIL, which
+It builds a block group's bytes from its rows or from a body without holding the GIL, which
 python-zstandard does inside a block flush. It is None if the extension isn't installed
-or FLUXCODE_RUST=0; units are the same either way (rust/README.md).
+or FLUXCODE_RUST=0; block groups are the same either way (rust/README.md).
 """
 
 
 class Effort(NamedTuple):
-    """How a unit is compressed at one Params.effort.
+    """How a block group is compressed at one Params.effort.
 
     Attributes:
         layout: "heuristic" (byte planes when few residuals reach 128, else bit planes, one
@@ -85,7 +85,7 @@ EFFORTS: dict[int, Effort] = {
     # Block flushes gain 1.5-2% but hold the GIL inside python-zstandard's flush(): 4 threads
     # encode 40% slower, so they start above the default (TUNING.md, Effort)
     **dict.fromkeys(range(5, 9), Effort("best", True, (3,))),
-    # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
+    # zstd 9 alone is larger than zstd 3 on about a fifth of block groups (up to 9%): keep both
     9: Effort("best", True, (3, 9)),
 }
 """Params.effort to Effort (ENCODER.md §1; the measured size and speed of each are in TUNING.md)."""
@@ -131,25 +131,25 @@ def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecomp
 
 
 def flush_points(
-    raw_unit: np.ndarray, num_blocks: int, offsets: _format.Layout, has_time: bool, byte_planes: bool
+    raw_group: np.ndarray, num_blocks: int, offsets: _format.Layout, has_time: bool, byte_planes: bool
 ) -> list[int]:
     """Finds the body offsets where the encoder ends a zstd block.
 
     A block ends after the per-block columns, and after each residual plane (16 bit planes
     or 2 byte planes) that is dense enough to have statistics of its own. Every zstd block
     carries its own literal Huffman table, so such a plane is coded with the statistics of
-    its own bytes (about 3% smaller than one block run for typical units); the result is
+    its own bytes (about 3% smaller than one block run for typical block groups); the result is
     still one zstd frame, which any decoder reads unchanged.
 
     Args:
-        raw_unit: 1D uint8 array of the uncompressed body.
+        raw_group: 1D uint8 array of the uncompressed body.
         num_blocks: Number of blocks.
         offsets: The blocks' Layout.
-        has_time: Whether the unit has a time axis.
+        has_time: Whether the block group has a time axis.
         byte_planes: Whether the residuals are stored as byte planes.
 
     Returns:
-        Strictly increasing offsets, empty for a unit with no residual plane bytes.
+        Strictly increasing offsets, empty for a block group with no residual plane bytes.
     """
     start = _format.residual_start(num_blocks, has_time)
     octets = int(offsets.octet_offsets[-1])
@@ -159,13 +159,13 @@ def flush_points(
     points = [start]
     for plane_idx in range(planes):
         plane_start = start + plane_idx * plane_bytes
-        if np.count_nonzero(raw_unit[plane_start:plane_start + plane_bytes]) * FLUSH_MIN_DENSITY > plane_bytes:
+        if np.count_nonzero(raw_group[plane_start:plane_start + plane_bytes]) * FLUSH_MIN_DENSITY > plane_bytes:
             points.append(plane_start + plane_bytes)
     return points
 
 
 def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int, limit: int | None = None) -> bytes | None:
-    """Compresses a unit body into one zstd frame, ending a block at each cut.
+    """Compresses a block group body into one zstd frame, ending a block at each cut.
 
     Every zstd block has its own literal Huffman table, so cutting the body between its
     columns and planes codes each with its own statistics. The frame is an ordinary one that
@@ -199,7 +199,7 @@ def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int, limit: int
     return b"".join(parts)
 
 
-def _smallest_unit(
+def _smallest_group(
     candidates: list[tuple[bool, np.ndarray]],
     num_blocks: int,
     num_samples: int,
@@ -207,21 +207,21 @@ def _smallest_unit(
     time_unit: int,
     effort: Effort,
 ) -> bytes:
-    """Compresses each candidate body at each zstd level and builds the smallest unit.
+    """Compresses each candidate body at each zstd level and builds the smallest block group.
 
     Ties favor byte planes (which decode faster without bit transposing), and
     then lower compression levels.
 
     Args:
         candidates: List of (byte_planes, body) candidate tuples to evaluate.
-        num_blocks: Total number of blocks in the unit.
+        num_blocks: Total number of blocks in the block group.
         num_samples: Total number of samples across all blocks.
-        offsets: Layout offsets for the unit.
+        offsets: Layout offsets for the block group.
         time_unit: Time unit code (0 for no time axis).
         effort: Effort policy specifying compression levels and flush behavior.
 
     Returns:
-        Serialized unit bytes containing header and compressed zstd frame.
+        Serialized block group bytes containing header and compressed zstd frame.
     """
     has_time = time_unit != 0
     levels = effort.zstd_levels
@@ -247,7 +247,7 @@ def _smallest_unit(
                                       or (len(frame) == len(best[0]) and rank < best[1])):
                 best = (frame, rank, byte_planes)
     assert best is not None
-    # Prepend 8-byte unit header to the winning compressed zstd frame
+    # Prepend 8-byte block group header to the winning compressed zstd frame
     return _format.pack_header(num_blocks, num_samples, best[2], time_unit) + best[0]
 
 
@@ -259,24 +259,24 @@ def pack(
     effort: Effort,
     time_unit: int,
 ) -> bytes:
-    """Compresses an uncompressed byte-plane body into complete unit bytes.
+    """Compresses an uncompressed byte-plane body into complete block group bytes.
 
     Args:
         body: 1D uint8 array containing the uncompressed body, residuals as byte planes.
-        offsets: The unit's Layout.
+        offsets: The block group's Layout.
         num_blocks: Total number of blocks.
         num_samples: Total number of samples across all blocks.
         effort: Effort policy specifying layout strategy, flushes, and levels.
         time_unit: Time unit code (0 for no time axis).
 
     Returns:
-        Serialized unit bytes containing header and compressed zstd frame.
+        Serialized block group bytes containing header and compressed zstd frame.
     """
     has_time = time_unit != 0
     num_octets = int(offsets.octet_offsets[-1])
     # Fast path: delegate to Rust extension if available
     if _rust is not None:
-        return _rust.pack_unit(  # type: ignore[no-any-return]
+        return _rust.pack_group(  # type: ignore[no-any-return]
             body, num_blocks, num_samples, num_octets, time_unit, effort.layout, effort.flush,
             list(effort.zstd_levels),
         )
@@ -299,30 +299,30 @@ def pack(
         # Order candidates so the predicted winner runs first when flushes allow early cutoff
         bit_first = effort.flush and not byte_planes_predicted()
         candidates = [(False, bit_planes()), (True, body)] if bit_first else [(True, body), (False, bit_planes())]
-    return _smallest_unit(candidates, num_blocks, num_samples, offsets, time_unit, effort)
+    return _smallest_group(candidates, num_blocks, num_samples, offsets, time_unit, effort)
 
 
-def compress(rows: _format.UnitRows, num_samples: int, effort: Effort, time_unit: int = 0) -> bytes:
-    """Serializes unit rows and builds the unit: header plus zstd frame of the body.
+def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_unit: int = 0) -> bytes:
+    """Serializes block group rows and builds the block group: header plus zstd frame of the body.
 
     Args:
-        rows: The unit's rows (time_rows None for a unit without a time axis).
+        rows: The block group's rows (time_rows None for a block group without a time axis).
         num_samples: Sample count recorded in the header (the sum of the block sizes).
         effort: How to compress (Params.effort).
         time_unit: Time unit code recorded in the header (0 without a time axis).
 
     Returns:
-        The unit bytes.
+        The block group bytes.
     """
     if _rust is not None and rows.time_rows is None:
-        return _rust.compress_unit(  # type: ignore[no-any-return]
+        return _rust.compress_group(  # type: ignore[no-any-return]
             rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
             effort.layout, effort.flush, list(effort.zstd_levels),
         )
     offsets = _format.layout(rows.block_flags, rows.block_sizes)
 
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
-    body = _bitpacking.write_unit(
+    body = _bitpacking.write_group(
         *(rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes),
         byte_planes=True, time_rows=rows.time_rows, offsets=offsets,
     )

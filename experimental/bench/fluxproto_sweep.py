@@ -10,7 +10,7 @@ Single thread; µs per 1000-sample block, best of 3.
 
 Data: tslab.common.datasets.load() (7,200 continuous blocks) and load_discrete() (5,400 blocks of
 signals on a fixed quantum, as real data often is).
-Sizes are whole units (block minima included; the lossless ideal stores them too). Errors are % of
+Sizes are whole block groups (block minima included; the lossless ideal stores them too). Errors are % of
 the block's range.
 
     uv run python -m bench.fluxproto_sweep
@@ -42,9 +42,9 @@ def best_of(f, reps=3):
 
 def run(codec, mins, idem=False):
     X0 = mins[0][1]
-    codec.decode_unit(codec.encode_unit(X0)[0], *X0.shape)  # compile / warm up
-    te, encs = best_of(lambda: [codec.encode_unit(m[1])[0] for m in mins])
-    td, outs = best_of(lambda: [codec.decode_unit(e, *m[1].shape) for e, m in zip(encs, mins)])
+    codec.decode_group(codec.encode_group(X0)[0], *X0.shape)  # compile / warm up
+    te, encs = best_of(lambda: [codec.encode_group(m[1])[0] for m in mins])
+    td, outs = best_of(lambda: [codec.decode_group(e, *m[1].shape) for e, m in zip(encs, mins)])
     nblocks = sum(len(m[1]) for m in mins)
     rmse, maxerr, same = [], [], 0
     for m, Y in zip(mins, outs):
@@ -76,7 +76,7 @@ def profile(mins):
     """Where fluxproto-16's encode time goes."""
     c = fp.FluxProto(16)
     nblocks = sum(len(m[1]) for m in mins)
-    t_all, _ = best_of(lambda: [c.encode_unit(m[1]) for m in mins])
+    t_all, _ = best_of(lambda: [c.encode_group(m[1]) for m in mins])
     t_raw, _ = best_of(lambda: [c.raw(m[1], m[2], m[3]) for m in mins])
     c1 = fp.FluxProto(16, orders=(1,))
     t_raw1, _ = best_of(lambda: [c1.raw(m[1], m[2], m[3]) for m in mins])
@@ -134,7 +134,7 @@ def exact_share(codec, mins):
     """Share of samples decoded to the identical float64."""
     same = total = 0
     for m in mins:
-        same += np.count_nonzero(codec.decode_unit(codec.encode_unit(m[1])[0], *m[1].shape) == m[1])
+        same += np.count_nonzero(codec.decode_group(codec.encode_group(m[1])[0], *m[1].shape) == m[1])
         total += m[1].size
     return same / total
 
@@ -186,12 +186,12 @@ def planes_compare(mins=None, dmins=None, rounds=5):
     td = dict(te)
     enc = {}
     for c in configs.values():
-        c.decode_unit(c.encode_unit(both[0][1])[0], 60, 1000)
+        c.decode_group(c.encode_group(both[0][1])[0], 60, 1000)
     for _ in range(rounds):
         for k, c in configs.items():
-            t, enc[k] = best_of(lambda: [c.encode_unit(m[1])[0] for m in both], 1)
+            t, enc[k] = best_of(lambda: [c.encode_group(m[1])[0] for m in both], 1)
             te[k] = min(te[k], t)
-            t, _ = best_of(lambda: [c.decode_unit(e, 60, 1000) for e in enc[k]], 1)
+            t, _ = best_of(lambda: [c.decode_group(e, 60, 1000) for e in enc[k]], 1)
             td[k] = min(td[k], t)
     print("\n## Byte planes vs bit-shuffle (orders 0-3, decimal detect, B = 16)\n")
     print("| layout | continuous bits/sample | discretized bits/sample | encode µs | decode µs |\n|---|---|---|---|---|")
@@ -251,7 +251,7 @@ def main():
             r = run(c, sub)
             cells.append(f"{r['bps']:.2f} ({r['rmse_med']:.4f}%)")
             if B == 16:  # does rounding the decoded values to the quantum give back the input?
-                lossless = all(np.array_equal(np.round(c.decode_unit(c.encode_unit(X)[0], *X.shape) / q) * q, X)
+                lossless = all(np.array_equal(np.round(c.decode_group(c.encode_group(X)[0], *X.shape) / q) * q, X)
                                for _, X, lo, hi, q in sub)
         print(f"| {name} | {qt:.4g} | {ideal_quantum(sub):.2f} | " + " | ".join(cells) + f" | {'yes' if lossless else 'no'} |",
               flush=True)

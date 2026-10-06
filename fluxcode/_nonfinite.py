@@ -134,7 +134,7 @@ def noise_finite(
 
     Returns:
         A tuple of (sigma, rho):
-            sigma: Estimated white-noise standard deviation in original units.
+            sigma: Estimated white-noise standard deviation in original block groups.
             rho: Lag-1 autocorrelation of valid differences.
             Both are 0.0 if there are fewer than min_diffs (and at least 2) valid
             differences, or if their variance is negligible.

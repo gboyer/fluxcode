@@ -10,24 +10,24 @@ from typing import Literal, NamedTuple
 import numpy as np
 
 MIN_TARGET_BITS: float = 6.0
-"""Minimum allowed per-unit bit target per sample."""
+"""Minimum allowed per-group bit target per sample."""
 
 MIN_EFFORT: int = 1
 MAX_EFFORT: int = 9
 """The range of Params.effort."""
 
 DEFAULT_NOISE_FLOOR_SIGMA: float = 0.25
-"""The noise floor that noise_floor_sigma=None gives a unit without times."""
+"""The noise floor that noise_floor_sigma=None gives a block group without times."""
 
 TimeUnit = Literal["s", "ms", "us", "ns"]
 """Resolution of integer timestamps: seconds, milliseconds, microseconds or nanoseconds."""
 
 
-class EncodedUnit(NamedTuple):
-    """The compressed bytes and per-block summary statistics of a single unit.
+class EncodedGroup(NamedTuple):
+    """The compressed bytes and per-block summary statistics of a single block group.
 
     Attributes:
-        unit: Self-describing unit bytes (header and zstd frame).
+        group: Self-describing block group bytes (header and zstd frame).
         block_min: 1D float64 array of minimum finite values per block.
         block_max: 1D float64 array of maximum finite values per block.
         block_mean: 1D float64 array of finite sample means per block.
@@ -36,35 +36,35 @@ class EncodedUnit(NamedTuple):
     a step away (min included), so allow that much if using them as hard bounds.
     """
 
-    unit: bytes
+    group: bytes
     block_min: np.ndarray
     block_max: np.ndarray
     block_mean: np.ndarray
 
 
 class EncodedSeries(NamedTuple):
-    """The sequence of compressed units and per-block summary statistics for a series.
+    """The sequence of compressed block groups and per-block summary statistics for a series.
 
     Attributes:
-        units: List of compressed unit byte strings.
+        groups: List of compressed block group byte strings.
         block_mins: List of 1D float64 arrays of block minima.
         block_maxs: List of 1D float64 arrays of block maxima.
         block_means: List of 1D float64 arrays of block means.
     """
 
-    units: list[bytes]
+    groups: list[bytes]
     block_mins: list[np.ndarray]
     block_maxs: list[np.ndarray]
     block_means: list[np.ndarray]
 
 
-class DecodedUnit(NamedTuple):
-    """The samples, timestamps and block sizes of a decoded unit.
+class DecodedGroup(NamedTuple):
+    """The samples, timestamps and block sizes of a decoded block group.
 
     Attributes:
-        values: 1D float64 array of the unit's samples.
-        times: 1D datetime64 array of the samples' timestamps, in the unit they were
-            encoded with (s, ms, us or ns); None for a unit encoded without times.
+        values: 1D float64 array of the block group's samples.
+        times: 1D datetime64 array of the samples' timestamps, in the block group they were
+            encoded with (s, ms, us or ns); None for a block group encoded without times.
         block_sizes: 1D int64 array of the sample count of each block: block b holds
             values[offsets[b]:offsets[b + 1]], with offsets the cumulative sum from 0.
     """
@@ -74,11 +74,11 @@ class DecodedUnit(NamedTuple):
     block_sizes: np.ndarray
 
 
-class UpdatedUnit(NamedTuple):
-    """The updated unit bytes and summary statistics of the blocks the update re-encoded.
+class UpdatedGroup(NamedTuple):
+    """The updated block group bytes and summary statistics of the blocks the update re-encoded.
 
     Attributes:
-        unit: New compressed unit bytes.
+        group: New compressed block group bytes.
         indices: 1D int64 array of the re-encoded blocks (replaced, emptied or appended), in
             increasing order. Every other block is unchanged.
         block_min: 1D float64 array of the minima of those blocks.
@@ -86,7 +86,7 @@ class UpdatedUnit(NamedTuple):
         block_mean: 1D float64 array of the means of those blocks.
     """
 
-    unit: bytes
+    group: bytes
     indices: np.ndarray
     block_min: np.ndarray
     block_max: np.ndarray
@@ -98,9 +98,9 @@ class Params:
     """Encoder configuration parameters.
 
     Controls quantization step limits, difference predictor orders, noise floor gating and
-    per-unit soft bit targets. How a series is divided into blocks and units is an argument
+    per-group soft bit targets. How a series is divided into blocks and block groups is an argument
     of each encode function, not a parameter. Decoders do not require these parameters
-    because units are self-describing.
+    because block groups are self-describing.
 
     Attributes:
         min_quantize_bits: Hard lower bound on precision (coarsest step across
@@ -111,15 +111,15 @@ class Params:
             difference orders evaluated by the encoder.
         noise_floor_sigma: Noise floor multiplier f: steps on white-noise blocks coarsen up
             to f * sigma; 0 turns it off. None (the default) is DEFAULT_NOISE_FLOOR_SIGMA for
-            a unit without times and off for a unit with times, which are often irregular (a
+            a block group without times and off for a block group with times, which are often irregular (a
             historian's swinging-door archive, events): their samples don't oversample the
             signal, so they look like white noise without being noise.
-        target_bits_per_sample: Soft per-unit cap on compressed bits per sample
+        target_bits_per_sample: Soft per-group cap on compressed bits per sample
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
-            the unit is compressed (the residual layout, zstd block boundaries and level),
+            the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
     """
 
@@ -133,10 +133,10 @@ class Params:
     effort: int = 4
 
     def noise_factor(self, timed: bool) -> float:
-        """The noise floor multiplier for a unit with or without times (0.0 when off).
+        """The noise floor multiplier for a block group with or without times (0.0 when off).
 
         Args:
-            timed: Whether the unit stores timestamps.
+            timed: Whether the block group stores timestamps.
 
         Returns:
             noise_floor_sigma, or for None DEFAULT_NOISE_FLOOR_SIGMA without times and 0.0

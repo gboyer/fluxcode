@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""A varied corpus of one-minute units with the true outcome of the bit-vs-byte choice, and the
-unit's residuals, for plane_layout/analyze.py.
+"""A varied corpus of one-minute block groups with the true outcome of the bit-vs-byte choice, and the
+block group's residuals, for plane_layout/analyze.py.
 
 Signals are drawn from families with random parameters (frequencies, noise levels, quanta,
-precision limits), so a predictor is tested on shapes it wasn't tuned on. Each unit is encoded
-with bit planes and with byte planes in one block run (the encoder before block flushes); the real unit sizes are the ground truth. The residuals
+precision limits), so a predictor is tested on shapes it wasn't tuned on. Each block group is encoded
+with bit planes and with byte planes in one block run (the encoder before block flushes); the real block group sizes are the ground truth. The residuals
 (uint16, as stored) come from the byte-plane body.
 
     uv run python plane_layout/corpus.py [--n 2000] [--seed 1] [--out corpus.npz]
@@ -23,14 +23,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
 from _series import planes
-from fluxcode import Params, _format, _unit
+from fluxcode import Params, _format, _group
 
 N = 60_000
 FS = 1000.0
 
 
 def lowpass(rng, phi):
-    """AR(1) noise with unit variance."""
+    """AR(1) noise with block group variance."""
     e = rng.normal(0, np.sqrt(1 - phi ** 2), N)
     out = np.empty(N)
     acc = rng.normal()
@@ -101,8 +101,8 @@ def configs(rng):
     return Params(max_quantize_bits=mx, noise_floor_sigma=nf), mx, nf
 
 
-def residuals(unit):
-    parsed = _unit.decompress(unit)
+def residuals(group):
+    parsed = _group.decompress(group)
     assert parsed.header.num_blocks * 1000 == parsed.header.num_samples == N and parsed.header.byte_planes
     start = _format.residual_start(parsed.header.num_blocks, parsed.has_time)
     body = parsed.raw_body
@@ -110,7 +110,7 @@ def residuals(unit):
 
 
 def record(x, mx=16, nf=0.25):
-    """(real bit-layout unit size, real byte-layout unit size, residuals) of one minute."""
+    """(real bit-layout block group size, real byte-layout block group size, residuals) of one minute."""
     params = Params(max_quantize_bits=mx, noise_floor_sigma=nf)
     with planes("bit", flush=False):
         (u_bit,), *_ = fluxcode.encode(x, params)
@@ -153,7 +153,7 @@ def main():
         data = {k: np.array(v) if k != "u" else np.stack(v) for k, v in cols.items()}
     np.savez_compressed(out, **data)
     bit, byte = np.array(data["bit"]), np.array(data["byte"])
-    print(f"{len(bit)} units; byte smaller on {(byte < bit).mean():.0%}; always-bit {bit.sum()}, always-byte {byte.sum()}, "
+    print(f"{len(bit)} block groups; byte smaller on {(byte < bit).mean():.0%}; always-bit {bit.sum()}, always-byte {byte.sum()}, "
           f"oracle {np.minimum(bit, byte).sum()} bytes -> {out}")
 
 

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """Time axis kernels: per-block analysis of regularity, step and reference, and reconstruction.
 
-Timestamps are int64 ticks in the unit's time unit (seconds to nanoseconds), naive
+Timestamps are int64 ticks in the block group's time unit (seconds to nanoseconds), naive
 (no time zone). Within a block they must be non-decreasing. Every block stores a start,
 a step (the GCD of its time deltas) and a reference quotient; sample i > 0 has the
 quotient (time[i] - time[i-1]) / step, stored as the zigzagged residual
@@ -178,7 +178,7 @@ def _reference_quotient(quotients: np.ndarray, minimum: np.uint64, total: np.uin
     num_quotients = quotients.shape[0] - 1
     first = np.float64(quotients[1])
     # Float sums in four fixed-order lanes: float addition doesn't reassociate, so one running
-    # sum is a serial chain, while fastmath would make the result (and so the unit bytes)
+    # sum is a serial chain, while fastmath would make the result (and so the block group bytes)
     # depend on the machine's vector width
     sum0 = sum1 = sum2 = sum3 = 0.0
     squares0 = squares1 = squares2 = squares3 = 0.0

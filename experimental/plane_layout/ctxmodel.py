@@ -23,7 +23,7 @@ from numba import njit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import model
-from layouts import group_streams
+from layouts import field_streams
 
 HERE = Path(__file__).resolve().parent
 ALPHA = 0.25
@@ -84,7 +84,7 @@ def evaluate(name, sample=None):
     rows = []
     for u in U:
         sb, sy = model.streams(u)
-        nib = group_streams(u, [4, 4, 4, 4])
+        nib = field_streams(u, [4, 4, 4, 4])
         z_bit, z_byte = len(zc.compress(sb.tobytes())), len(zc.compress(sy.tobytes()))
         z_nib = sum(len(zc.compress(s.tobytes())) for s in nib)
         rows.append([z_bit, z_byte, z_nib] + [cost(u, m, r) / 8 for m, r in CONFIGS.values()])
@@ -102,7 +102,7 @@ def report(label, names, r, by_family=False):
     n = len(r)
     bps = lambda a: a.sum() * 8 / (60_000 * n)
     pair = np.minimum(r[:, 0], r[:, 1])
-    print(f"\n{label}: {n} units; plane bytes only, bits/sample (zstd rows are today's layouts and nibble-split)")
+    print(f"\n{label}: {n} block groups; plane bytes only, bits/sample (zstd rows are today's layouts and nibble-split)")
     rowsout = [("zstd 3, bit planes", r[:, 0]), ("zstd 3, byte planes", r[:, 1]), ("zstd 3, best of bit/byte (today)", pair),
                ("zstd 3, nibble planes split", r[:, 2])]
     rowsout += [(f"ideal: {k}", r[:, 3 + j]) for j, k in enumerate(CONFIGS)]
@@ -111,7 +111,7 @@ def report(label, names, r, by_family=False):
     for k, a in rowsout:
         print(f"  {k:52s} {bps(a):7.3f} {a.sum() / pair.sum() - 1:+8.1%}")
     m = r[:, 6] < pair
-    print(f"  the ideal context model (previous 2 L, 2 modelled mantissa bits) beats today's zstd on {m.mean():.0%} of units")
+    print(f"  the ideal context model (previous 2 L, 2 modelled mantissa bits) beats today's zstd on {m.mean():.0%} of block groups")
     if by_family:
         print(f"\n  by family: ideal (previous 2 L, 2 modelled bits) / today's best zstd")
         for f in np.unique(names):

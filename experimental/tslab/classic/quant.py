@@ -55,7 +55,7 @@ def inflate(b):
 class QuantDeltaDeflate:
     """quant<bits>-delta1-deflate: uniform quantization to `bits`, one byte per sample holding
     the first difference of the codes mod 256, then raw deflate. Lossless on top of the
-    quantization. Block parts for tslab.common.unit.SharedBackend: fields max f64, min f64;
+    quantization. Block parts for tslab.common.group.SharedBackend: fields max f64, min f64;
     body = the n delta bytes."""
 
     field_bytes = (8, 8)

@@ -2,25 +2,25 @@
 # Copyright (c) 2026 Garry Boyer
 """Rate-controlled quantize -> predict -> entropy-code pipelines on one-minute windows.
 
-A window is one unit of 60 blocks of 1000 samples, each block rescaled to [0, 1] (make_rate_report.py
+A window is one block group of 60 blocks of 1000 samples, each block rescaled to [0, 1] (make_rate_report.py
 builds them from seconds of every signal kind, standing in for one sensor passing through different
-regimes). Because each block has unit range, absolute error = error as a fraction of FS.
+regimes). Because each block has block group range, absolute error = error as a fraction of FS.
 
-Unit format (every byte counted):
-  delta f64 | e u8 per block | coder unit (coder.encode_unit)
+Block group format (every byte counted):
+  delta f64 | e u8 per block | coder block group (coder.encode_group)
   Block step is delta_b = delta * 2**(e/8).
 Pipeline per block: q = round(x / delta_b) -> residual = diff(q, order) -> coder.
 The only lossy step is the rounding, so |err| <= delta_b / 2 always.
 
 Each coder has a block form, encode(q) -> payload / decode(payload, n) -> q, used to choose
-per-block options and by the per-block cap, and a unit form, encode_unit(Q) -> bytes /
-decode_unit(data, nb, n) -> Q, which is what gets stored and counted:
+per-block options and by the per-block cap, and a block group form, encode_group(Q) -> bytes /
+decode_group(data, nb, n) -> Q, which is what gets stored and counted:
   delta0123-rice      block payloads back to back, each preceded by its LEB128 length
-  delta0123-zstd/deflate  one compressor call per unit: per-block flags, then init varints,
+  delta0123-zstd/deflate  one compressor call per block group: per-block flags, then init varints,
                       then residual byte planes (order and width chosen per block by the
                       smallest standalone block)
   flac                per-block base varints, then one FLAC stream with one frame per block
-  best: ...           a coder id byte per block, then each coder's unit of its blocks, length first
+  best: ...           a coder id byte per block, then each coder's block group of its blocks, length first
 """
 
 import time
@@ -33,7 +33,7 @@ import zstandard
 from tslab.classic.quant import QuantDeltaDeflate
 from tslab.common.bitio import BitReader, BitWriter
 from tslab.common.intcode import ORDERS, from_residual, pack_init, read_varint, to_residual, unpack_init, unzigzag, varint, zigzag
-from tslab.common.unit import SharedBackend
+from tslab.common.group import SharedBackend
 
 BLOCK = 1000
 TARGET_BPS = 4.0
@@ -99,11 +99,11 @@ class RiceCoder:
                 u.append((qv << k) | r.read(k))
         return from_residual(init, unzigzag(np.array(u, dtype=np.int64)))
 
-    def encode_unit(self, Q):
+    def encode_group(self, Q):
         parts = [self.encode(q) for q in Q]
         return b"".join(varint(len(p)) + p for p in parts)
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         out, pos = [], 0
         for _ in range(nb):
             size, pos = read_varint(data, pos)
@@ -147,13 +147,13 @@ class ByteCoder:
         u = planes.reshape(w, -1).T.copy().view(f"<u{w}").ravel().astype(np.int64)
         return from_residual(init, unzigzag(u))
 
-    def encode_unit(self, Q):
+    def encode_group(self, Q):
         parts = [self._best(q) for q in Q]
         flags = bytes(h[0] for h, _ in parts)
         raw = flags + b"".join(h[1:] for h, _ in parts) + b"".join(p for _, p in parts)
         return self._c(raw)
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         raw = self._d(data, None)
         pos, inits = nb, []
         for b in range(nb):
@@ -204,17 +204,17 @@ class FlacCoder:
         return np.concatenate(out).ravel().astype(np.int64)
 
     def encode(self, q):
-        return self.encode_unit([q])
+        return self.encode_group([q])
 
     def decode(self, payload, n):
-        return self.decode_unit(payload, 1, n)[0]
+        return self.decode_group(payload, 1, n)[0]
 
-    def encode_unit(self, Q):
+    def encode_group(self, Q):
         bases = [int(q.min()) for q in Q]
         frames = b"".join(b for b, ns in self._stream(np.concatenate([q - b for q, b in zip(Q, bases)]), len(Q[0])) if ns)
         return b"".join(varint(b) for b in bases) + frames
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         bases, pos = [], 0
         for _ in range(nb):
             b, pos = read_varint(data, pos)
@@ -236,24 +236,24 @@ class BestOf:
     def decode(self, payload, n):
         return self.coders[payload[0]].decode(payload[1:], n)
 
-    def encode_unit(self, Q):
+    def encode_group(self, Q):
         ids = [min(range(len(self.coders)), key=lambda i: len(self.coders[i].encode(q))) for q in Q]
         out = bytes(ids)
         for i, c in enumerate(self.coders):
             sub = [q for q, j in zip(Q, ids) if j == i]
             if sub:
-                part = c.encode_unit(sub)
+                part = c.encode_group(sub)
                 out += varint(len(part)) + part
         return out
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         ids, pos = list(data[:nb]), nb
         out = [None] * nb
         for i, c in enumerate(self.coders):
             idx = [b for b in range(nb) if ids[b] == i]
             if idx:
                 size, pos = read_varint(data, pos)
-                for b, q in zip(idx, c.decode_unit(data[pos:pos + size], len(idx), n)):
+                for b, q in zip(idx, c.decode_group(data[pos:pos + size], len(idx), n)):
                     out[b] = q
                 pos += size
         return out
@@ -308,12 +308,12 @@ def block_bits(coder, xb, step):
     return 8 * (1 + len(coder.encode(q)))
 
 
-def unit_bits(coder, blocks, steps):
-    """Bits for the whole unit: delta f64 + one e byte per block + the coder's unit."""
+def group_bits(coder, blocks, steps):
+    """Bits for the whole block group: delta f64 + one e byte per block + the coder's block group."""
     Q = [quantize(xb, st) for xb, st in zip(blocks, steps)]
     if isinstance(coder, EntropyBound):
         return 64 + sum(8 + coder.bits(q) for q in Q)
-    return 64 + 8 * len(blocks) + 8 * len(coder.encode_unit(Q))
+    return 64 + 8 * len(blocks) + 8 * len(coder.encode_group(Q))
 
 
 def cap_exponent(coder, xb, delta, cap_bits):
@@ -335,8 +335,8 @@ def _steps(delta, es):
 
 
 def window_plan(coder, blocks):
-    """One delta for the whole unit; blocks above the cap (coded on their own) get their own coarser
-    step. Bisect log2(delta) so the unit averages TARGET_BPS, every byte included."""
+    """One delta for the whole block group; blocks above the cap (coded on their own) get their own coarser
+    step. Bisect log2(delta) so the block group averages TARGET_BPS, every byte included."""
     budget = TARGET_BPS * blocks.size
     cap = CAP_BPS * blocks.shape[1]
     es_at = {}
@@ -349,7 +349,7 @@ def window_plan(coder, blocks):
     lo, hi = -30.0, 0.0  # log2(delta); data are in [0, 1]
     for _ in range(30):
         mid = (lo + hi) / 2
-        if unit_bits(coder, blocks, _steps(2.0 ** mid, exps(mid))) <= budget:
+        if group_bits(coder, blocks, _steps(2.0 ** mid, exps(mid))) <= budget:
             hi = mid
         else:
             lo = mid
@@ -358,9 +358,9 @@ def window_plan(coder, blocks):
 
 def fixed_plan(coder, blocks):
     """Every block individually (coded on its own) at TARGET_BPS; same format (delta = finest block
-    step). Blocks that can't use their share leave it unspent, and the shared unit compresses better
-    than the blocks alone, so the unit lands under the budget."""
-    per_block = TARGET_BPS * blocks.shape[1] - 64 / len(blocks)  # share the unit header
+    step). Blocks that can't use their share leave it unspent, and the shared block group compresses better
+    than the blocks alone, so the block group lands under the budget."""
+    per_block = TARGET_BPS * blocks.shape[1] - 64 / len(blocks)  # share the block group header
     finest = []
     for xb in blocks:
         lo, hi = -30.0, 0.0
@@ -394,20 +394,20 @@ def error_row(xb, y, step):
 
 
 def evaluate(coder, blocks, planner):
-    """Plan, encode and decode one unit (blocks: [nb, n] in [0, 1]). Per-block rows carry the error
-    and the bits the block would take on its own (the unit's bits are only known as a whole)."""
+    """Plan, encode and decode one block group (blocks: [nb, n] in [0, 1]). Per-block rows carry the error
+    and the bits the block would take on its own (the block group's bits are only known as a whole)."""
     t0 = time.perf_counter()
     delta, es = planner(coder, blocks)
     steps = _steps(delta, es)
     Q = [quantize(xb, st) for xb, st in zip(blocks, steps)]
     if isinstance(coder, EntropyBound):
-        total_bits = unit_bits(coder, blocks, steps)
+        total_bits = group_bits(coder, blocks, steps)
     else:
-        data = coder.encode_unit(Q)
+        data = coder.encode_group(Q)
         total_bits = 64 + 8 * len(blocks) + 8 * len(data)
     enc_s = time.perf_counter() - t0
     if not isinstance(coder, EntropyBound):
-        Q2 = coder.decode_unit(data, len(blocks), blocks.shape[1])
+        Q2 = coder.decode_group(data, len(blocks), blocks.shape[1])
         assert all(np.array_equal(a, b) for a, b in zip(Q, Q2)), f"{coder.name}: lossless stage failed"
     rows = []
     for xb, e, st, q in zip(blocks, es, steps, Q):
@@ -424,18 +424,18 @@ def evaluate(coder, blocks, planner):
 
 
 def evaluate_delta_zstd(codec, blocks):
-    """delta0123-zstd (one-shot encoder, no rate search) on the same unit: its unit includes each
+    """delta0123-zstd (one-shot encoder, no rate search) on the same block group: its block group includes each
     block's min and max."""
-    codec.encode_unit(blocks[:1])  # compile outside the timing
+    codec.encode_group(blocks[:1])  # compile outside the timing
     t0 = time.perf_counter()
-    data, infos = codec.encode_unit(blocks)
+    data, infos = codec.encode_group(blocks)
     enc_s = time.perf_counter() - t0
-    Y = codec.decode_unit(data, *blocks.shape)
+    Y = codec.decode_group(data, *blocks.shape)
     rows = []
     for xb, y, info in zip(blocks, Y, infos):
         step = (xb.max() - xb.min()) / ((1 << info["bits"]) - 1)
         assert np.abs(y - xb).max() <= step / 2 * (1 + 1e-9)
-        alone = 8 * len(codec.encode_unit(xb[None])[0]) / len(xb)  # the block as a unit of its own
+        alone = 8 * len(codec.encode_group(xb[None])[0]) / len(xb)  # the block as a block group of its own
         rows.append({"e": int(info["bits"] < codec.bits), "bps": alone,
                      "order": f"B={info['bits']} order {info['order']}", **error_row(xb, y, step)})
     return {"delta": None, "bps": 8 * len(data) / blocks.size, "rows": rows, "us_per_block": 1e6 * enc_s / len(blocks)}
@@ -443,6 +443,6 @@ def evaluate_delta_zstd(codec, blocks):
 
 def baseline_quant8_deflate(blocks):
     c = SharedBackend(QuantDeltaDeflate(8))
-    data, _ = c.encode_unit(blocks)
-    Y = c.decode_unit(data, *blocks.shape)
+    data, _ = c.encode_group(blocks)
+    Y = c.decode_group(data, *blocks.shape)
     return {"bps": 8 * len(data) / blocks.size, "rows": [error_row(xb, y, None) for xb, y in zip(blocks, Y)]}

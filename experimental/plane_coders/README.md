@@ -10,8 +10,8 @@ which speeds the whole call up by roughly 1.2–1.3×, and it makes the planes 1
 larger. A custom format also costs complexity that a well-known codec doesn't. Not for the spec.
 
 - Data: the report's synthetic signals (`tests/_signals.py`), 2 minutes of each of 14 kinds, real
-  fluxcode units with `planes="bit"`. Only the residual planes field is coded (120,000 raw bytes
-  per 60,000-sample unit, 16 bits/sample); the rest of the body and the header aren't.
+  fluxcode block groups with `planes="bit"`. Only the residual planes field is coded (120,000 raw bytes
+  per 60,000-sample block group, 16 bits/sample); the rest of the body and the header aren't.
 - Timings: best of N, one thread, numba coders against python-zstandard, which has a little call
   overhead on ~100 µs jobs. Round trips are checked in every script.
 - Related, earlier: `bench/fluxproto_plane_models.py` costs per-plane probability models (ideal
@@ -28,7 +28,7 @@ All relative to zstd level 3 on the same plane bytes; totals over the 14 signals
 | raw / zero / 0xFF runs (`rle_variants.py`) | 1.17 | 0.49–0.53 | 0.21 |
 | PackBits-style, any repeated byte (`rle_variants.py`) | 1.19 | 0.58–0.64 | 0.26–0.28 |
 
-### Size in bits per sample (planes only, 60,000 samples per unit, raw = 16)
+### Size in bits per sample (planes only, 60,000 samples per block group, raw = 16)
 
 | signal | zstd 3 | alt-zero | zero/FF | any-byte | zero/FF − zstd |
 |---|---|---|---|---|---|
@@ -74,7 +74,7 @@ choice of coder.
   than zstd on every signal, but all-ones planes (linear: 192× zstd's size) and periodic planes
   defeat it.
 - **Raw / zero / 0xFF runs.** A token is a varint of `len << 2 | kind`; runs of 3+ zero or 0xFF
-  bytes are split out. Fixes the all-ones planes (linear 192× → 6×, 78 vs ~490 bytes per unit).
+  bytes are split out. Fixes the all-ones planes (linear 192× → 6×, 78 vs ~490 bytes per block group).
 - **PackBits-style.** `len << 1 | kind`, with a fill byte after a repeat token, runs of 4+ of any
   byte. Catches nothing more (the periodic planes have periods beyond one byte), spends a byte per
   run, and is slower.

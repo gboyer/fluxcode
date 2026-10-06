@@ -29,14 +29,14 @@ from _signals import KINDS, minute
 from stress import PRESETS, gen_minute
 
 import fluxcode
-from fluxcode import Params, _unit
+from fluxcode import Params, _group
 
 CANDIDATES = {
-    "heuristic, one run (effort 2)": _unit.Effort("heuristic", False, (3,)),
-    "best, one run (effort 4, default)": _unit.Effort("best", False, (3,)),
-    "heuristic, flushed": _unit.Effort("heuristic", True, (3,)),
-    "best, flushed (effort 5)": _unit.Effort("best", True, (3,)),
-    "best, flushed, zstd 3 + 9 (effort 9)": _unit.Effort("best", True, (3, 9)),
+    "heuristic, one run (effort 2)": _group.Effort("heuristic", False, (3,)),
+    "best, one run (effort 4, default)": _group.Effort("best", False, (3,)),
+    "heuristic, flushed": _group.Effort("heuristic", True, (3,)),
+    "best, flushed (effort 5)": _group.Effort("best", True, (3,)),
+    "best, flushed, zstd 3 + 9 (effort 9)": _group.Effort("best", True, (3, 9)),
 }
 BASE = "best, one run (effort 4, default)"
 
@@ -48,7 +48,7 @@ def power():
 
 
 def use(rust):
-    _unit._compress_unit = fluxcode_rs.compress_unit if rust else None
+    _group._compress_group = fluxcode_rs.compress_group if rust else None
 
 
 def best(f, reps):
@@ -71,7 +71,7 @@ def main():
         sys.exit(f"not on AC power: {power()}")
     mix = PRESETS["sensor-mix"]
     sets = {
-        "sensor mix (100 units, weighted as bench/stress.py)": [gen_minute(k, 100 + i) for k, w in mix.items() for i in range(w)],
+        "sensor mix (100 block groups, weighted as bench/stress.py)": [gen_minute(k, 100 + i) for k, w in mix.items() for i in range(w)],
         "report signals (15 kinds x 3)": [minute(k, 300 + i) for k in KINDS for i in range(3)],
     }
     print(f"{power()}\n")
@@ -84,7 +84,7 @@ def main():
         base_size = None
         rows = []
         for name, effort in CANDIDATES.items():
-            _unit.EFFORTS[default_effort] = effort
+            _group.EFFORTS[default_effort] = effort
             use(True)
             size = sum(len(fluxcode.encode(t)[0][0]) for t in tasks)
             if name == BASE:

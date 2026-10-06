@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
 from _series import planes as forced_layout
 from _signals import KINDS, MINUTE, discrete_minute, minute
-from fluxcode import _format, _unit
+from fluxcode import _format, _group
 
 PB = 16  # probability bits
 M = 1 << PB
@@ -200,11 +200,11 @@ def best(f, reps):
 
 
 def bit_planes(x):
-    """(units' 16 x G planes) for a series, from real fluxcode units."""
+    """(groups' 16 x G planes) for a series, from real fluxcode block groups."""
     with forced_layout("bit", flush=False):
-        units, *_ = fluxcode.encode(x)
-    for u in units:
-        parsed = _unit.decompress(u)
+        groups, *_ = fluxcode.encode(x)
+    for u in groups:
+        parsed = _group.decompress(u)
         nb = parsed.header.num_blocks
         sizes = parsed.block_sizes
         g = int(((sizes + 7) // 8).sum())

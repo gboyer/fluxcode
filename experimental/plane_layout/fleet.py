@@ -7,7 +7,7 @@ which the study's corpus lacked.
 1. Rules "byte planes iff fewer than t of the residuals reach 2^k", per-plane blocks, against the
    encoder before efforts, on the sensor mix, the random families (corpus.py, seed 1) and the
    report's signals; with and without recompressing frames under 16 KB with the other layout.
-2. Size and single-thread encode time per unit of each distinct effort on the sensor mix.
+2. Size and single-thread encode time per block group of each distinct effort on the sensor mix.
 
     uv run python plane_layout/fleet.py             # ~5 min
 """
@@ -23,10 +23,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "tests"), str(ROOT / "bench"), str(Path(__file__).resolve().parent)]
 import fluxcode
-from _series import planes, unit_rows
+from _series import planes, group_rows
 from _signals import DISCRETE, KINDS, discrete_minute, minute
 from corpus import configs, draw_signal
-from fluxcode import Params, _compress, _unit
+from fluxcode import Params, _compress, _group
 from stress import PRESETS, gen_minute
 
 MIX = PRESETS["sensor-mix"]
@@ -40,7 +40,7 @@ def row(x, params, weight):
         for flush in (False, True):
             with planes(layout, flush=flush):
                 sizes.append(len(fluxcode.encode(x, params)[0][0]))
-    r = unit_rows(fluxcode.encode(x, params)[0][0]).residuals.astype(np.int32)
+    r = group_rows(fluxcode.encode(x, params)[0][0]).residuals.astype(np.int32)
     u = ((r << 1) ^ (r >> 15)) & 0xFFFF
     return sizes + [float(np.mean(u >= 2 ** k)) for k in range(4, 9)] + [weight]
 
@@ -66,7 +66,7 @@ def rules():
         w = a[:, 9]
         before = (w * np.minimum(a[:, 0], a[:, 2])).sum()
         oracle = (w * np.minimum(a[:, 1], a[:, 3])).sum()
-        print(f"{name}: per-unit better flushed layout {100 * (oracle / before - 1):+.2f}% against before")
+        print(f"{name}: per-group better flushed layout {100 * (oracle / before - 1):+.2f}% against before")
     for retry in (False, True):
         print(f"\nrule (byte planes iff share(u >= 2^k) < t), flushed{', other layout under 16 KB' if retry else ''}:")
         for k in (6, 7, 8):
@@ -88,7 +88,7 @@ def efforts():
         distinct.setdefault(settings, []).append(effort)
     rows = [("before", BEFORE)] + [(f"{e[0]}–{e[-1]}" if len(e) > 1 else str(e[0]), s) for s, e in distinct.items()]
     saved = _compress.EFFORTS[4]
-    print("\nsensor mix, per unit (weighted), one thread:")
+    print("\nsensor mix, per block group (weighted), one thread:")
     base = None
     for name, settings in rows:
         _compress.EFFORTS[4] = settings
@@ -105,7 +105,7 @@ def efforts():
             elapsed += w * best / len(xs) * 1e6
         size, elapsed = size / sum(MIX.values()), elapsed / sum(MIX.values())
         base = base or (size, elapsed)
-        print(f"  effort {name:5s} size {100 * (size / base[0] - 1):+6.2f}%   encode {elapsed:5.0f} µs/unit "
+        print(f"  effort {name:5s} size {100 * (size / base[0] - 1):+6.2f}%   encode {elapsed:5.0f} µs/block group "
               f"({elapsed - base[1]:+5.0f} µs, {100 * (elapsed / base[1] - 1):+4.0f}%)")
     _compress.EFFORTS[4] = saved
 

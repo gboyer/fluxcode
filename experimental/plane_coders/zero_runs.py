@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Garry Boyer
 """Experiment: squash only runs of zero bytes. The stream alternates raw and zero runs (the first
 is raw, possibly of length 0), each introduced by its length as a protobuf-style varint (high bit
-= more bytes follow); raw runs are followed by their bytes. Compared with zstd level 3 on a unit's
-16 residual bit planes (real units). A zero run is only split out of a raw run when it is at
+= more bytes follow); raw runs are followed by their bytes. Compared with zstd level 3 on a block group's
+16 residual bit planes (real block groups). A zero run is only split out of a raw run when it is at
 least MIN_ZERO bytes (shorter ones cost more than they save), or when it ends the data.
 
     uv run python plane_coders/zero_runs.py [--minutes 2] [--reps 10]

@@ -20,10 +20,10 @@ doesn't hold the GIL, and python-zstandard does inside a block flush.
 
 | part | how | result |
 |---|---|---|
-| decoder kernels (`decode_unit`, `check_unit`) | same signatures behind `FLUXCODE_DECODER=rust` | kernel 1.08-1.12x (1.24x `impulses`, 1.35x non-finite); end to end `decode_unit` 1.03-1.15x. [results](results/prototype_decoder.md) |
+| decoder kernels (`decode_group`, `check_group`) | same signatures behind `FLUXCODE_DECODER=rust` | kernel 1.08-1.12x (1.24x `impulses`, 1.35x non-finite); end to end `decode_group` 1.03-1.15x. [results](results/prototype_decoder.md) |
 | zstd decompress + layout + validation in one call | `decompress_body` | no change end to end: python-zstandard's decompress is already a thin C call and zstd's own time dominates (sin-4.12hz: 1.90 vs 1.97 ns/sample) |
-| encode analysis kernels (`encode_unit`) | stats, non-finite fill, noise floor, decimal detection, quantize, order pick, residuals, bit target | 0.91-1.04x of numba on finite data, 0.68x with non-finite values; units byte-identical, block means differ in the last bits. [results](results/prototype_encoder.md) |
-| compress stage (`compress_unit`) | layout choice, body packing, flush points, zstd frame, no GIL | 1.00-1.16x single thread; effort 5 (block flushes) at 8 threads 2.7x. [results](results/compress_bench.md) |
+| encode analysis kernels (`encode_group`) | stats, non-finite fill, noise floor, decimal detection, quantize, order pick, residuals, bit target | 0.91-1.04x of numba on finite data, 0.68x with non-finite values; block groups byte-identical, block means differ in the last bits. [results](results/prototype_encoder.md) |
+| compress stage (`compress_group`) | layout choice, body packing, flush points, zstd frame, no GIL | 1.00-1.16x single thread; effort 5 (block flushes) at 8 threads 2.7x. [results](results/compress_bench.md) |
 
 ### Why the frame build is the one that matters
 
@@ -51,16 +51,16 @@ more hand-tuned SIMD for a second implementation to maintain.
 
 `fastmath` also means numba's sums (block sums and means, the noise estimate, `estimate_bits`) have an
 order LLVM picks. The Rust sums are fixed-lane and deterministic on every platform, but not bit-identical:
-the block means differ in the last bits (so the golden hash changes), and the units, flags, parameters,
+the block means differ in the last bits (so the golden hash changes), and the block groups, flags, parameters,
 anchors, residuals and codes matched exactly in a 530-case differential test and on all 27 golden cases.
 
 ## What was merged
 
-- `rust/`: only `compress_unit` (plus `zstd_version`), for units without a time axis. `splice`/`update` and
-  time-axis units keep the Python path. Depends on pyo3, numpy and zstd-safe (the libzstd it bundles is
+- `rust/`: only `compress_group` (plus `zstd_version`), for block groups without a time axis. `splice`/`update` and
+  time-axis block groups keep the Python path. Depends on pyo3, numpy and zstd-safe (the libzstd it bundles is
   1.5.7, as python-zstandard 0.25's).
-- `fluxcode._unit`: uses the extension if `fluxcode_rs` imports and `FLUXCODE_RUST` isn't `0`; otherwise
-  the existing path. **Same units either way** while both link the same libzstd (`tests/test_rust.py`
+- `fluxcode._group`: uses the extension if `fluxcode_rs` imports and `FLUXCODE_RUST` isn't `0`; otherwise
+  the existing path. **Same block groups either way** while both link the same libzstd (`tests/test_rust.py`
   checks byte equality across every effort when the versions match, and a round trip when they don't).
 - CI builds the extension and runs the suite with it and with `FLUXCODE_RUST=0`.
 - `Params.effort` is **unchanged**, so output doesn't depend on whether the extension is installed.
@@ -71,7 +71,7 @@ Three options were weighed after the extension was measured on main's efforts (A
 report signals, `effort_candidates.py`, `results/effort_candidates.md`; day-scale stress,
 `results/stress_effort.md`):
 
-- **(b) Optional, effort meanings unchanged. Chosen.** The unit bytes are the same with and without the
+- **(b) Optional, effort meanings unchanged. Chosen.** The block group bytes are the same with and without the
   extension (checked for every effort, signal and thread count), so the golden digests, the decoded values
   and reproducibility don't depend on what is installed. Efforts 5 and up flush blocks and scale across
   threads with the extension (day-scale test, 4 threads, effort 5: 5.98 against 3.62 GB/s, 1.65x; the
@@ -82,14 +82,14 @@ report signals, `effort_candidates.py`, `results/effort_candidates.md`; day-scal
   with block flushes** is smaller than today's default (best of both layouts, one block run) and faster at
   every thread count once the flush doesn't hold the GIL (sensor mix / report signals; 8 threads: 7261 /
   6348 MiB/s against 5506 / 4707, 32% / 35% faster, and 0.4% / 2.2% smaller; one thread 9% / 20% faster).
-  Not taken yet, because the extension covers only `compress` for units without a time axis: `splice` /
-  `update` and time-axis units still use python-zstandard, so the Python path can't be deleted and a build
+  Not taken yet, because the extension covers only `compress` for block groups without a time axis: `splice` /
+  `update` and time-axis block groups still use python-zstandard, so the Python path can't be deleted and a build
   requirement (a Rust toolchain from source, or wheels for every platform) would buy about 2% of size and
   a third of threaded throughput for default users, not simplicity. And a platform without a wheel would
   stop working.
 
 Revisit (a) when: abi3 wheels (`abi3-py310`: one per platform, not per Python version) are published for
-macOS, Linux and Windows, and `splice`/`update` and time-axis units run through the extension too (or are
+macOS, Linux and Windows, and `splice`/`update` and time-axis block groups run through the extension too (or are
 judged not to matter). Then the default can move to the heuristic with flushes, which beats today's on
 size and speed everywhere, with efforts above it as before.
 
@@ -102,16 +102,16 @@ Measured on a laptop with 8 logical CPUs and synthetic data; the extension's win
 cd rust && uv run --with maturin maturin develop --release   # builds fluxcode_rs into the environment
 cd ../experimental
 uv run python rust_port/compress_bench.py                   # ~3 min, on AC power
-uv run python rust_port/unit_bench.py                       # compress_unit alone per signal, µs (a few % noise)
+uv run python rust_port/group_bench.py                       # compress_group alone per signal, µs (a few % noise)
 uv run python rust_port/zstd_flush_gil.py                   # the flush scaling table above
 ```
 
-## Tried on `compress_unit` (2026-10-02, `unit_bench.py`)
+## Tried on `compress_group` (2026-10-02, `group_bench.py`)
 
-- Writing the byte-plane body costs 3-5 µs of a 120 KB unit; the rest is zstd, except the bit-plane layout,
+- Writing the byte-plane body costs 3-5 µs of a 120 KB block group; the rest is zstd, except the bit-plane layout,
   which costs about 19 µs over it. Transposing 8 octets at once (bit transpose per word, then the 8x8 bytes of
   eight words, one store per plane) took that from about 25 µs to 19; building the result without copying
-  the body first saves 2 µs. End to end the units are within the 5% noise of before.
+  the body first saves 2 µs. End to end the block groups are within the 5% noise of before.
 - NEON and SSE2 for the bit-plane transposition (`rust/src/planes.rs`, 16 octets per step; scalar elsewhere):
   `bit` -8 µs (sin -11%, linear -26%), default-effort `best` -9 µs (sin -4.5%, linear -24%), effort 5-9 about
   -4% on sin; A/B against the scalar build, twice each, same session. The transpose itself is now a small part
@@ -119,20 +119,20 @@ uv run python rust_port/zstd_flush_gil.py                   # the flush scaling 
   `rustc --test rust/src/planes.rs` checks every path against the definition; the SSE2 code was built and run
   in an x86_64 Linux container and is checked in CI on x86_64 and arm64 runners.
 - Dropping candidates early (heuristic's layout first, give up once the flushed blocks exceed the best frame):
-  same units, effort 5-8 `best` on sin-4.12hz 225 -> 210 µs, effort 9 on sin-4.12hz 1874 -> 1575 and on
+  same block groups, effort 5-8 `best` on sin-4.12hz 225 -> 210 µs, effort 9 on sin-4.12hz 1874 -> 1575 and on
   noisy-sine 909 -> 823 µs; no change on the others (their candidates are close in size).
 - Effort 9 trying every candidate at level 3 before any at level 9 (A/B against layout-major, same session):
-  non-finite unit +18% faster (2594 -> 2152 µs), linear +10% slower (104 -> 115 µs), the other signals within
+  non-finite block group +18% faster (2594 -> 2152 µs), linear +10% slower (104 -> 115 µs), the other signals within
   noise. Adopted; the output is the same.
 - A layout chosen separately for the low and high byte halves (the low byte plane holds the bits of bit
   planes 0-7): at most 0.2% smaller on sensor and random-walk, nothing elsewhere. Not worth a format change.
 - zstd's block splitter forced on at level 3 without manual flushes: at most 1% smaller (sin, sensor), 0 on the
   rest, and 50-160% slower. Not adopted.
-- Threads across units or layouts inside `encode`: not tried, since the target callers already run threads.
+- Threads across block groups or layouts inside `encode`: not tried, since the target callers already run threads.
 
 ## Revisit if
 
 - Cold start matters: numba's JIT warmup and import (`import fluxcode` is about 180 ms, mostly numba) were
   not measured against a Rust-only build, which a full port would remove. Not tried here.
 - numba stops being a dependency, or a platform can't run it.
-- Time-axis units or `splice`/`update` become a throughput bottleneck: the extension doesn't cover them yet.
+- Time-axis block groups or `splice`/`update` become a throughput bottleneck: the extension doesn't cover them yet.

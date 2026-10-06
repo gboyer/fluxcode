@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Golden bytes: SHA-256 of the unit and its index columns for fixed (signal, Params) cases. The
+"""Golden bytes: SHA-256 of the block group and its index columns for fixed (signal, Params) cases. The
 other tests check self-consistency (bounds, fixed point, update); this one catches any change to
 what the encoder chooses (noise gate, order pick, decimal grid, target) or to the layout.
 
@@ -46,8 +46,8 @@ VARIABLE_SIZES = [1000, 0, 3, 8, 9, 500, 1001, 0, 0, 2048, 1, 2, 777]
 
 
 def _encode_fixed(block_len=1000):
-    """encode_unit in blocks of block_len."""
-    return lambda x, params: fluxcode.encode_unit(x, params, block_len=block_len)
+    """encode_group in blocks of block_len."""
+    return lambda x, params: fluxcode.encode_group(x, params, block_len=block_len)
 
 
 def _encode_variable(x, params):
@@ -101,8 +101,8 @@ CASES = {
 
 def digest(name):
     make, params, encoder = CASES[name]
-    unit, lo, hi, mean = encoder(make(), params)
-    h = hashlib.sha256(unit)
+    group, lo, hi, mean = encoder(make(), params)
+    h = hashlib.sha256(group)
     for col in (lo, hi, mean):
         h.update(np.ascontiguousarray(col, np.float64).tobytes())
     return h.hexdigest()

@@ -1,6 +1,6 @@
-# fluxcode gigabyte benchmark (bench/bench_gb.py, 2026-10-02, AC power; decode is per unit, as rows are read)
+# fluxcode gigabyte benchmark (bench/bench_gb.py, 2026-10-02, AC power; decode is per block group, as rows are read)
 
-One complete run at d039350, replacing the tables at 5ee16fa. The units are byte for byte the same (the default
+One complete run at d039350, replacing the tables at 5ee16fa. The block groups are byte for byte the same (the default
 still 4.76 bits/sample, ratio 13.4; every section's size is unchanged), and encoding is a little faster because
 the Python path now writes the byte-plane body once and derives the bit planes with one transpose of the
 residual region, and drops a candidate frame as soon as its flushed blocks show it can't win (as the Rust

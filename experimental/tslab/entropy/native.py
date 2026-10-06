@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Single-threaded numba (native) versions of the fastest classic codecs, on whole units.
+"""Single-threaded numba (native) versions of the fastest classic codecs, on whole block groups.
 
-Each encoder is byte-compatible with its Python reference unit codec in tslab.classic (wrapped by
-tslab.common.unit), so the reference decoders can check it. Python work is limited to header packing
-and one zstd/zlib call per unit; everything per-sample runs in compiled loops, no threads.
+Each encoder is byte-compatible with its Python reference block group codec in tslab.classic (wrapped by
+tslab.common.group), so the reference decoders can check it. Python work is limited to header packing
+and one zstd/zlib call per block group; everything per-sample runs in compiled loops, no threads.
 (delta0123-zstd is compiled itself: tslab.entropy.delta_zstd.) _delta_zstd_front is the per-block
 delta0123-zstd front end used by bench/chunking.py.
 """
@@ -59,7 +59,7 @@ def _dequantize_u8(q, lo, hi, out):
 
 
 def quant8_encode(X):
-    """Unit in Concat(Quant8) format: per block max f64 | min f64 | codes."""
+    """Block group in Concat(Quant8) format: per block max f64 | min f64 | codes."""
     lo, hi = X.min(1), X.max(1)
     rows = np.empty((len(X), 16 + X.shape[1]), np.uint8)
     rows[:, :8] = np.frombuffer(_be_f64(hi), np.uint8).reshape(-1, 8)
@@ -101,7 +101,7 @@ def _undelta_dequantize(d, lo, hi, out):
 
 
 class Quant8Delta1:
-    """quant8-delta1-<compressor>[-L<level>]: the unit format of SharedBackend(QuantDeltaDeflate(8)),
+    """quant8-delta1-<compressor>[-L<level>]: the block group format of SharedBackend(QuantDeltaDeflate(8)),
     compress(max f64 x nb | min f64 x nb | delta bytes), with a choice of compressor and level. The
     level is in the name only when it isn't the default (zstd 3, deflate 9)."""
 
@@ -116,7 +116,7 @@ class Quant8Delta1:
         else:
             raise ValueError(compressor)
 
-    def encode_unit(self, X):
+    def encode_group(self, X):
         lo, hi = X.min(1), X.max(1)
         q = np.empty(X.shape, np.uint8)
         _quantize_u8(X, lo, hi, q)
@@ -124,7 +124,7 @@ class Quant8Delta1:
         _delta_u8(q, d)
         return self._c(_be_f64(hi) + _be_f64(lo) + d.tobytes()), [{}] * len(X)
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         raw = self._d(data)
         hi = np.frombuffer(raw, ">f8", nb)
         lo = np.frombuffer(raw, ">f8", nb, 8 * nb)
@@ -167,7 +167,7 @@ def _dpcm_decode(codes, x0, D, K, out):
 
 
 def dpcm_encode(X, bits):
-    """Unit in SharedBackend(CompandedDpcm, linear, byte packing) format:
+    """Block group in SharedBackend(CompandedDpcm, linear, byte packing) format:
     deflate(x0 f64 x nb | D f64 x nb | codes)."""
     K = (1 << (bits - 1)) - 1
     codes = np.empty((X.shape[0], X.shape[1] - 1), np.int8)

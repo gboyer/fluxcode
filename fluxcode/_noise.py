@@ -47,7 +47,7 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
     Returns:
         A tuple of (sigma, rho):
             sigma: Estimated white-noise standard deviation in original signal
-                units, or 0.0 if variance is negligible or underflows.
+                block groups, or 0.0 if variance is negligible or underflows.
             rho: Lag-1 autocorrelation of clipped second differences (typically
                 -2/3 for white noise, -1/2 for random walks, and positive for
                 smooth signals). Returns (0.0, 0.0) if fewer than 4 samples are
@@ -114,5 +114,5 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
     # Check for underflow where differences are below ~1e-154 of the range
     if not sum_sq_diffs > 0:
         return 0.0, 0.0
-    # Scale robust standard deviation back to signal units and divide by sqrt(6)
+    # Scale robust standard deviation back to signal block groups and divide by sqrt(6)
     return math.ldexp(robust_std, scale_exp) / SIGMA_GAIN, lag1_cross_prod / sum_sq_diffs

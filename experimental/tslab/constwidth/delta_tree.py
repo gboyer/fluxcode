@@ -31,7 +31,7 @@ import numpy as np
 from numba import njit
 
 from tslab.classic.bintree import tree_levels
-from tslab.common.unit import Concat
+from tslab.common.group import Concat
 
 MASK32 = (1 << 32) - 1
 HEADER = struct.calcsize(">ddIQ")  # 28 bytes
@@ -118,7 +118,7 @@ class Delta1Tree:
             prev_dir[1:] = np.where(last[:-1] >= 0, sgn[np.maximum(last[:-1], 0)], 1)
             same = (sgn == 0) | (sgn == prev_dir)
             cap_each = np.where(same, self.hi_code, -self.lo_code)
-            # Required scale per leaf; capacity becomes 1 per unit scale. (A half-step margin for
+            # Required scale per leaf; capacity becomes 1 per block group scale. (A half-step margin for
             # carried-in error was tried: fewer clipped leaves but coarser scales, worse overall.)
             d = -(-d // cap_each)
             cap = 1

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Encodes and updates units whose blocks are divided by time.
+"""Encodes and updates block groups whose blocks are divided by time.
 
-Block b of a unit holds the samples timed in
+Block b of a block group holds the samples timed in
 [start_time + b * block_duration, start_time + (b + 1) * block_duration).
 
 The start time and duration aren't stored: the caller keeps them (typically the start is
-part of the unit's storage key) and passes the same ones to update_time_blocks. Times, the
+part of the block group's storage key) and passes the same ones to update_time_blocks. Times, the
 start, the duration and delete ranges are all converted to int64 ticks in the times' unit.
 """
 
@@ -14,9 +14,9 @@ import numpy as np
 import numpy.typing as npt
 from numba import njit
 
-from . import _args, _format, _unit
+from . import _args, _format, _group
 from ._args import DurationLike, RangesLike, TimeLike
-from ._types import EncodedUnit, Params, UpdatedUnit
+from ._types import EncodedGroup, Params, UpdatedGroup
 
 
 def block_ids(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
@@ -41,7 +41,7 @@ def block_ids(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
     # Compute block indices as unsigned 64-bit integers to avoid overflow
     ids = (ticks.astype(np.uint64) - np.uint64(start % 2**64)) // np.uint64(duration)
     if ids.shape[0] and ids.max() >= _format.MAX_BLOCKS:
-        raise ValueError(f"times reach block {int(ids.max())}, past the last block a unit holds ({_format.MAX_BLOCKS - 1})")
+        raise ValueError(f"times reach block {int(ids.max())}, past the last block a block group holds ({_format.MAX_BLOCKS - 1})")
     return ids.astype(np.int64)
 
 
@@ -67,8 +67,8 @@ def encode_time_blocks(
     start_time: TimeLike,
     block_duration: DurationLike,
     time_unit: str | None,
-) -> EncodedUnit:
-    """Encodes a timed series into fixed-duration blocks in a single unit.
+) -> EncodedGroup:
+    """Encodes a timed series into fixed-duration blocks in a single block group.
 
     Args:
         samples: 1D array-like of series samples (may be empty).
@@ -79,7 +79,7 @@ def encode_time_blocks(
         time_unit: Optional time unit string for integer timestamps.
 
     Returns:
-        EncodedUnit tuple (unit, block_min, block_max, block_mean).
+        EncodedGroup tuple (group, block_min, block_max, block_mean).
 
     Raises:
         ValueError: If timestamps or time parameters are invalid.
@@ -89,7 +89,7 @@ def encode_time_blocks(
     assert ticks is not None
     start = _args.to_ticks(start_time, unit_code, "start_time")
     duration = _args.to_ticks(block_duration, unit_code, "block_duration", duration=True)
-    return _unit.encode(series_arr, chunk(ticks, start, duration), params, ticks, unit_code)
+    return _group.encode(series_arr, chunk(ticks, start, duration), params, ticks, unit_code)
 
 
 @njit(nogil=True, cache=True)
@@ -193,7 +193,7 @@ def _block_masks(ranges: np.ndarray, start: int, duration: int, num_blocks: int)
 
 
 def update_time_blocks(
-    unit: bytes,
+    group: bytes,
     samples: npt.ArrayLike,
     times: npt.ArrayLike,
     params: Params,
@@ -201,28 +201,28 @@ def update_time_blocks(
     block_duration: DurationLike,
     delete_ranges: RangesLike | None,
     time_unit: str | None,
-) -> UpdatedUnit:
-    """Applies point updates and range deletions to time-partitioned units.
+) -> UpdatedGroup:
+    """Applies point updates and range deletions to time-partitioned block groups.
 
     Args:
-        unit: Existing compressed unit bytes.
+        group: Existing compressed block group bytes.
         samples: Array-like of new samples (may be empty).
         times: Array-like of timestamps for the new samples.
         params: Encoder configuration parameters.
         start_time: Starting time anchor for block 0.
         block_duration: Duration of each block.
         delete_ranges: Optional time intervals to delete before adding samples.
-        time_unit: Optional time unit string, checked against unit header.
+        time_unit: Optional time unit string, checked against block group header.
 
     Returns:
-        UpdatedUnit tuple containing the updated unit and modified block statistics.
+        UpdatedGroup tuple containing the updated block group and modified block statistics.
 
     Raises:
-        ValueError: If unit lacks a time axis, arguments are invalid, or sizes overflow.
+        ValueError: If block group lacks a time axis, arguments are invalid, or sizes overflow.
     """
-    parsed = _unit.decompress(unit)
+    parsed = _group.decompress(group)
     if not parsed.has_time:
-        raise ValueError("the unit has no time axis: use update")
+        raise ValueError("the block group has no time axis: use update")
     # Validate series samples, timestamps, and deletion intervals
     series_samples, ticks, start, duration, ranges = _args.time_blocks_update(
         samples, times, start_time, block_duration, delete_ranges, time_unit, parsed.header.time_unit
@@ -236,12 +236,12 @@ def update_time_blocks(
     touched[new_ids[new_ids < num_old_blocks]] = True
     touched &= ~covered
     decoded = np.flatnonzero(touched)
-    time_rows = _unit.read_time_rows(parsed, decoded)
+    time_rows = _group.read_time_rows(parsed, decoded)
     old_sizes = parsed.block_sizes
     gathered_values, gathered_ticks = np.zeros(0), np.zeros(0, np.int64)
     gathered_blocks = np.zeros(0, np.int64)
     if decoded.shape[0]:
-        all_values, all_ticks = _unit.decode_blocks(parsed, decoded, time_rows)
+        all_values, all_ticks = _group.decode_blocks(parsed, decoded, time_rows)
         assert all_ticks is not None
         # Collect decoded samples into a single run in chronological order
         run_sizes = old_sizes[decoded]
@@ -267,12 +267,12 @@ def update_time_blocks(
     changed[covered_ids] |= old_sizes[covered_ids] > 0
     indices = np.flatnonzero(changed)
     if not indices.shape[0]:
-        return UpdatedUnit(unit, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
+        return UpdatedGroup(group, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
     sizes = sizes[indices]
     if sizes.max() > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
-    # Splice updated blocks into the unit while carrying unchanged blocks verbatim
-    return _unit.splice(
+    # Splice updated blocks into the block group while carrying unchanged blocks verbatim
+    return _group.splice(
         parsed,
         indices,
         merged_values[:num_merged],

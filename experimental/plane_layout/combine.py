@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""The layout heuristic and block flushing together, from the per-unit tables of table.py.
+"""The layout heuristic and block flushing together, from the per-group tables of table.py.
 
 Columns of `sizes`: bit planes under 5 framings [one block run, flush after every plane, every 4,
-every 8, dense planes (the encoder's rule)], then the same 5 for byte planes. Unit sizes include
-the 8-byte header. "retry" = the encoder's guard: a flushed unit whose frame is under 16 KB is also
+every 8, dense planes (the encoder's rule)], then the same 5 for byte planes. Block group sizes include
+the 8-byte header. "retry" = the encoder's guard: a flushed block group whose frame is under 16 KB is also
 compressed in one block run and the smaller kept.
 
     uv run python plane_layout/combine.py
@@ -66,17 +66,17 @@ if __name__ == "__main__":
         cells = [f"{pick(s, heur(s, t), DENSE, True).sum() / best_of_two(s, POOLED).sum() - 1:+8.2%}" for s in sets]
         print(f"  hi_nz < {t:5.3f}: " + " ".join(cells))
 
-    print("\n--- effect of flushing by unit size (heuristic layout), fit set: total bytes saved vs one block run ---")
+    print("\n--- effect of flushing by block group size (heuristic layout), fit set: total bytes saved vs one block run ---")
     s = sets[0]
     byte = heur(s)
     pooled = pick(s, byte, POOLED)
     cols = {"every plane": pick(s, byte, EVERY1), "dense planes": pick(s, byte, DENSE), "dense + retry": pick(s, byte, DENSE, True)}
     edges = [0, 1000, 3000, 10000, 30000, 60000, 1e9]
-    print(f"{'one-run unit size':>20s} {'units':>6s} " + " ".join(f"{k:>26s}" for k in cols))
+    print(f"{'one-run group size':>20s} {'groups':>6s} " + " ".join(f"{k:>26s}" for k in cols))
     for lo, hi_ in zip(edges[:-1], edges[1:]):
         m = (pooled >= lo) & (pooled < hi_)
         if m.any():
             print(f"{lo:9.0f}-{hi_:9.0f} B {m.sum():6d} " + " ".join(
                 f"{1 - v[m].sum() / pooled[m].sum():+8.2%} saved, {np.mean(v[m] > pooled[m]):4.0%} worse" for v in cols.values()))
-    print(f"{'worst unit vs one run':>27s} " + " ".join(f"{(v / pooled).max() - 1:+26.1%}" for v in cols.values()))
-    print(f"{'mean per-unit change':>27s} " + " ".join(f"{np.mean(v / pooled) - 1:+26.2%}" for v in cols.values()))
+    print(f"{'worst group vs one run':>27s} " + " ".join(f"{(v / pooled).max() - 1:+26.1%}" for v in cols.values()))
+    print(f"{'mean per-group change':>27s} " + " ".join(f"{np.mean(v / pooled) - 1:+26.2%}" for v in cols.values()))

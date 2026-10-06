@@ -5,9 +5,9 @@
 zstd codes a frame as blocks (at most 128 KiB each), and every block carries its own literal
 Huffman table. Ending a block at a field or plane boundary (the streaming API's FLUSH_BLOCK) gives
 each plane its own table, and the result is still one ordinary frame that today's decoder reads
-unchanged. This checks that on real unit bodies: the compressed unit is rebuilt with a flush after
+unchanged. This checks that on real block group bodies: the compressed block group is rebuilt with a flush after
 the column fields and after each residual plane (bit planes) or byte plane (byte planes), the
-real decoder (`fluxcode.decode`) must return the same values, and the unit sizes are compared.
+real decoder (`fluxcode.decode`) must return the same values, and the block group sizes are compared.
 
     uv run python plane_layout/flush_blocks.py
 """
@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 import fluxcode
 from _series import planes
 from _signals import KINDS, minute
-from fluxcode import _format, _unit
+from fluxcode import _format, _group
 
 ZD = zstandard.ZstdDecompressor()
 
@@ -48,8 +48,8 @@ def cuts(parsed, every):
     return sorted(set(p for p in pts if 0 <= p <= raw_len))
 
 
-def reflush(unit, every=1):
-    parsed = _unit.decompress(unit)
+def reflush(group, every=1):
+    parsed = _group.decompress(group)
     body = bytes(parsed.raw_body)
     c = zstandard.ZstdCompressor(level=3, write_checksum=False, write_content_size=True).compressobj(size=len(body))
     out = []
@@ -58,13 +58,13 @@ def reflush(unit, every=1):
         out.append(c.compress(body[a:b]))
         out.append(c.flush(zstandard.COMPRESSOBJ_FLUSH_BLOCK))
     out.append(c.flush())
-    return unit[:_format.HEADER_BYTES] + b"".join(out)
+    return group[:_format.HEADER_BYTES] + b"".join(out)
 
 
 if __name__ == "__main__":
     from _signals import DISCRETE, discrete_minute
     names = KINDS + [n for n, _, _ in DISCRETE]
-    print("unit bytes summed over each signal's 3 minutes (header included); today = best of bit/byte planes, one block run")
+    print("block group bytes summed over each signal's 3 minutes (header included); today = best of bit/byte planes, one block run")
     cols = list(POLICIES)
     print(f"{'signal':26s} {'today':>8s} " + " ".join(f"{c:>24s}" for c in cols))
     tot = np.zeros(1 + len(cols))
@@ -72,19 +72,19 @@ if __name__ == "__main__":
         row = np.zeros(1 + len(cols))
         for seed in range(3):
             x = minute(name, 700 + 10 * k + seed) if name in KINDS else discrete_minute(name, 700 + 10 * k + seed)
-            units = {}
+            groups = {}
             for mode in ("bit", "byte"):
                 with planes(mode, flush=False):
-                    units[mode] = fluxcode.encode(x)[0][0]
-            ref = {m: fluxcode.decode([u])[0].values for m, u in units.items()}
-            row[0] += min(len(u) for u in units.values())
+                    groups[mode] = fluxcode.encode(x)[0][0]
+            ref = {m: fluxcode.decode([u])[0].values for m, u in groups.items()}
+            row[0] += min(len(u) for u in groups.values())
             for j, every in enumerate(POLICIES.values()):
-                new = {m: reflush(u, every) for m, u in units.items()}
+                new = {m: reflush(u, every) for m, u in groups.items()}
                 for m in new:
-                    assert zstandard.frame_content_size(new[m][_format.HEADER_BYTES:]) == len(_unit.decompress(units[m]).raw_body)
+                    assert zstandard.frame_content_size(new[m][_format.HEADER_BYTES:]) == len(_group.decompress(groups[m]).raw_body)
                     assert np.array_equal(ref[m], fluxcode.decode([new[m]])[0].values, equal_nan=True), (name, m, every)
                 row[1 + j] += min(len(u) for u in new.values())
         tot += row
         print(f"{name:26s} {row[0]:8.0f} " + " ".join(f"{row[1 + j]:12.0f} {row[1 + j] / row[0] - 1:+10.1%}" for j in range(len(cols))))
     print(f"{'TOTAL (size-weighted)':26s} {tot[0]:8.0f} " + " ".join(f"{tot[1 + j]:12.0f} {tot[1 + j] / tot[0] - 1:+10.1%}" for j in range(len(cols))))
-    print("every re-framed unit decodes to the same values through fluxcode.decode")
+    print("every re-framed block group decodes to the same values through fluxcode.decode")

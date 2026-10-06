@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Params.effort: block flushing inside the unit's one zstd frame, the heuristic layout and the
+"""Params.effort: block flushing inside the block group's one zstd frame, the heuristic layout and the
 zstd level. The frame stays an ordinary one (content size recorded, one-shot decodable), the
 blocks end where the planes do, the heuristic picks a layout from the residuals' high byte, and
 no effort changes the decoded values."""
@@ -8,18 +8,18 @@ no effort changes the decoded values."""
 import numpy as np
 import pytest
 import zstandard
-from _series import planes, unit_rows
+from _series import group_rows, planes
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _compress, _format, _unit
+from fluxcode import Params, _bitpacking, _compress, _format, _group
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
 
 EFFORTS = range(MIN_EFFORT, MAX_EFFORT + 1)
 
 
-def body_of(unit):
-    return _unit.decompress(unit).raw_body
+def body_of(group):
+    return _group.decompress(group).raw_body
 
 
 def test_every_effort_has_settings():
@@ -35,27 +35,27 @@ def test_efforts_decode_the_same(kind):
     x[123] = np.nan  # a flagged block too
     reference = None
     for effort in EFFORTS:
-        (unit,), *_ = fluxcode.encode(x, Params(effort=effort))
-        frame = unit[_format.HEADER_BYTES:]
-        assert zstandard.frame_content_size(frame) == len(body_of(unit))
-        assert zstandard.ZstdDecompressor().decompress(frame) == bytes(body_of(unit))  # one shot, no section lengths
-        values = fluxcode.decode_unit(unit).values
+        (group,), *_ = fluxcode.encode(x, Params(effort=effort))
+        frame = group[_format.HEADER_BYTES:]
+        assert zstandard.frame_content_size(frame) == len(body_of(group))
+        assert zstandard.ZstdDecompressor().decompress(frame) == bytes(body_of(group))  # one shot, no section lengths
+        values = fluxcode.decode_group(group).values
         if reference is None:
             reference = values
         np.testing.assert_array_equal(values, reference)
 
 
-def test_large_unit_is_smaller_flushed():
+def test_large_group_is_smaller_flushed():
     with planes("bit"):
-        (unit,), *_ = fluxcode.encode(minute("random-walk", 3))
-    assert len(unit) - _format.HEADER_BYTES < len(zstandard.ZstdCompressor(level=3).compress(bytes(body_of(unit))))
+        (group,), *_ = fluxcode.encode(minute("random-walk", 3))
+    assert len(group) - _format.HEADER_BYTES < len(zstandard.ZstdCompressor(level=3).compress(bytes(body_of(group))))
 
 
 @pytest.mark.parametrize("byte_planes", [False, True])
 def test_flush_points(byte_planes):
     with planes("byte" if byte_planes else "bit"):
-        (unit,), *_ = fluxcode.encode(minute("sin-9.87hz", 4))
-    parsed = _unit.decompress(unit)
+        (group,), *_ = fluxcode.encode(minute("sin-9.87hz", 4))
+    parsed = _group.decompress(group)
     nb = parsed.header.num_blocks
     cuts = _compress.flush_points(parsed.raw_body, nb, parsed.layout, parsed.has_time, byte_planes)
     start = _format.residual_start(nb, parsed.has_time)
@@ -70,8 +70,8 @@ def test_flush_points(byte_planes):
 
 def test_flush_points_skip_empty_planes():
     with planes("bit"):
-        (unit,), *_ = fluxcode.encode(minute("linear", 4))  # near-constant residuals
-    parsed = _unit.decompress(unit)
+        (group,), *_ = fluxcode.encode(minute("linear", 4))  # near-constant residuals
+    parsed = _group.decompress(group)
     cuts = _compress.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, False)
     assert len(cuts) < 17
 
@@ -95,13 +95,13 @@ def test_compress_body_gives_up_over_the_limit():
 
 def test_heuristic_choice():
     for kind, byte in (("sin-4.12hz", True), ("random-walk", False), ("chirp", False), ("noisy-sine", True)):
-        (unit,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2))
-        assert _format.unpack_header(unit).byte_planes is byte, kind
+        (group,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2))
+        assert _format.unpack_header(group).byte_planes is byte, kind
 
 
 @pytest.mark.parametrize("kind", ["sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes", "quadratic"])
 def test_higher_efforts_are_never_larger(kind):
-    """Effort 9 tries every candidate of effort 5 (and zstd 9), so no unit grows from 5 to 9
+    """Effort 9 tries every candidate of effort 5 (and zstd 9), so no block group grows from 5 to 9
     (noisy-sine seed 1 was larger at zstd 9 alone)."""
     for seed in (1, 6):
         x = minute(kind, seed)
@@ -112,7 +112,7 @@ def test_higher_efforts_are_never_larger(kind):
 def test_efforts_trade_size():
     kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
     size = lambda effort: sum(len(fluxcode.encode(minute(kind, 6), Params(effort=effort))[0][0]) for kind in kinds)
-    assert size(5) <= size(4) <= 1.03 * size(5)  # flushed against one block run: smaller in total, not per unit
+    assert size(5) <= size(4) <= 1.03 * size(5)  # flushed against one block run: smaller in total, not per block group
     assert size(4) <= size(2) <= size(1)
 
 
@@ -122,9 +122,9 @@ def test_wide_share_is_the_same_in_both_layouts(kind):
     bodies = []
     for layout in ("bit", "byte"):
         with planes(layout):
-            (unit,), *_ = fluxcode.encode(x, Params(max_quantize_bits=12))
-        bodies.append(_unit.decompress(unit))
-    rows = unit_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
+            (group,), *_ = fluxcode.encode(x, Params(max_quantize_bits=12))
+        bodies.append(_group.decompress(group))
+    rows = group_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
     zigzag = ((rows << 1) ^ (rows >> 15)) & 0xFFFF
     for bit_idx in (0, 3, 7, 8, 12, 15):
         shares = [_bitpacking.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.octet_offsets[-1]), p.has_time,
