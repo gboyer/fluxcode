@@ -30,6 +30,7 @@ last: `[cw<bits>-|quant<bits>-|ratectl-]<predictor>-<coder or step mapping>[-<va
 | module | codecs | what they are |
 |---|---|---|
 | `tslab/common/datasets.py` | — | every test signal: 12 kinds as continuous one-minute signals, discretized variants, noisy sets, and the report's units |
+| `tslab/common/historian.py` | — | a swinging-door historian simulated: six process tags (a day of 1 s scans each), exception + swinging-door archiving, interpolated and held read-back |
 | `tslab/common/unit.py` | — | the unit harness: `Concat` and `SharedBackend` turn block codecs into unit codecs |
 | `tslab/common/bitio.py`, `intcode.py` | — | bit writer/reader; zigzag, varint, residuals and the order pick |
 | `tslab/classic/quant.py` | `quant8`, `quant8-delta1-deflate`, `quant6-delta1-deflate` | uniform quantization over the block's range, with and without delta + deflate |
@@ -55,6 +56,7 @@ last: `[cw<bits>-|quant<bits>-|ratectl-]<predictor>-<coder or step mapping>[-<va
 uv run python make_report.py        # report/index.html and its SVGs    (~3 min)
 uv run python make_rate_report.py   # report/rate.html                   (~3 min)
 uv run python make_time_report.py   # report/time.html                   (~5 s)
+uv run python make_sdt_report.py    # report/sdt.html and its SVGs       (~4 min)
 ```
 
 `make_report.py` runs every codec on the report's units (`tslab.common.datasets.units()`: 12 kinds ×
@@ -76,7 +78,10 @@ in `report/` before writing. `make_rate_report.py` runs the rate-control experim
 "regime" minutes and writes `report/rate.html` in the same style. `make_time_report.py` writes
 `report/time.html`: only fluxcode's time axis (docs/SPEC.md §4), i.e. what exact timestamps cost for the
 common clock shapes (a perfect grid, a grid with a few gaps, a noisy clock) and some harder ones; its
-timings need a quiet machine. `report/` is generated, and committed so it can be read without rerunning.
+timings need a quiet machine. `make_sdt_report.py` writes `report/sdt.html`: fluxcode on what a
+swinging-door (SDT) historian archives, one unit per tag-day with exact timestamps (`tslab/common/historian.py`): size
+per archived point against zstd and Gorilla, error against the archived points and the scans, a B sweep, block layouts,
+resampled exports, and SDT against storing every scan. `report/` is generated, and committed so it can be read without rerunning.
 
 ## Benchmarks
 
