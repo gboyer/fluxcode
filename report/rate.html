@@ -17,9 +17,9 @@ nav ul{columns:2;list-style:none;padding-left:0}nav li{margin:2px 0;break-inside
 
 <nav><h2 id='contents'>Contents</h2><ul><li><a href='#method'>Method</a></li><li><a href='#summary'>Summary</a></li><li><a href='#per-kind-chart'>Bits and error per signal kind</a></li><li><a href='#kind-delta0123-zstd-10-one-shot'>Per signal kind: delta0123-zstd-10 / one-shot</a></li><li><a href='#kind-delta0123-zstd-window'>Per signal kind: delta0123-zstd / window</a></li><li><a href='#kind-best--rice-zstd-flac-window'>Per signal kind: best: rice|zstd|flac / window</a></li><li><a href='#kind-best--rice-zstd-flac-fixed'>Per signal kind: best: rice|zstd|flac / fixed</a></li></ul></nav>
 <p><a href="index.html">← codec comparison (index.html)</a></p>
-<p>Window = one unit: a minute of 60 blocks, 5 consecutive seconds of each of the 12 signal kinds, every block
-rescaled to [0, 1], standing in for one sensor passing through different regimes. 5 units
-(one per report seed); bits/sample are whole units, every byte counted. Errors are absolute, which equals % of each
+<p>Window = one block group: a minute of 60 blocks, 5 consecutive seconds of each of the 12 signal kinds, every block
+rescaled to [0, 1], standing in for one sensor passing through different regimes. 5 block groups
+(one per report seed); bits/sample are whole block groups, every byte counted. Errors are absolute, which equals % of each
 block's full scale; they are per block, summarized over all blocks (or a kind's blocks).
 <b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_rate_report.py</code>.</p>
 <h2 id="method">Method</h2>
@@ -27,14 +27,14 @@ block's full scale; they are per block, summarized over all blocks (or a kind's 
 <li><b>Pipeline per block:</b> q = round(x / Δ<sub>b</sub>) (the only lossy step, so |err| ≤ Δ<sub>b</sub>/2 is guaranteed),
 residual = diff(q, order) with order ∈ (0, 1, 2, 3) chosen per block, then an entropy coder. Everything but the
 Rice/FLAC bit-packing is vectorized numpy.</li>
-<li><b>window:</b> one Δ for the whole unit, bisected so the unit averages 4 bits/sample including all headers.
+<li><b>window:</b> one Δ for the whole block group, bisected so the block group averages 4 bits/sample including all headers.
 A block that would exceed 8 bits/sample on its own gets its own coarser step Δ·2<sup>e/8</sup> (1-byte e per block).
 With uniform quantization, one shared step is the MSE-optimal way to spend a total budget.</li>
 <li><b>fixed:</b> every block individually driven to 4 bits/sample coded on its own (same format), for comparison;
-the unit then costs what it costs.</li>
+the block group then costs what it costs.</li>
 <li><b>Framing:</b> the rice coder stores its block payloads back to back with a length each; zstd and deflate make one
-compressor call per unit (flags, then start values, then byte planes); flac is one stream per unit, one frame per block;
-<code>best: …</code> stores a coder id per block, then each coder's unit of the blocks it won.</li>
+compressor call per block group (flags, then start values, then byte planes); flac is one stream per block group, one frame per block;
+<code>best: …</code> stores a coder id per block, then each coder's block group of the blocks it won.</li>
 <li><b>Coders:</b> <code>delta0123-rice</code> — FLAC-style partitioned Rice (2<sup>p</sup> partitions, own k each; order/p/k chosen by exact cost);
 <code>delta0123-zstd</code> (level 9) / <code>delta0123-deflate</code> — zigzag residuals, narrowest byte width, byte-stream-split, then compress;
 <code>flac</code> — real libFLAC level 8 (LPC up to order 12) on the same integers, frame bytes only;
@@ -42,9 +42,9 @@ compressor call per unit (flags, then start values, then byte planes); flac is o
 <code>0-order entropy</code> — zero-order entropy of the best residual + headers. A reference, not a codec and not a
 true floor: partitioned Rice, LPC and LZ matching adapt within a block and can beat it.</li>
 <li><b>delta0123-zstd-B:</b> no search — step = block range/(2<sup>B</sup>−1), order = argmin var(diff(q, k)),
-one zstd (level 3) call per unit; lowers B if a block's estimated size would exceed 8 bits/sample.
+one zstd (level 3) call per block group; lowers B if a block's estimated size would exceed 8 bits/sample.
 <code>delta12-zstd-8</code> only considers orders 1 and 2 (performance option).</li>
-<li>All real coders are round-trip verified per unit.</li>
+<li>All real coders are round-trip verified per block group.</li>
 </ul>
 <h2 id='summary'>Summary</h2><table><tr><th class='l'>coder</th><th class='l'>rate control</th><th>avg bits/sample</th><th>overall RMSE</th><th>median block RMSE</th><th>worst block RMSE</th><th>worst max |err|</th><th>capped blocks</th><th>encode µs/block</th></tr>
 <tr><td><code>delta0123-rice</code></td><td class='l'>window</td><td>4.000</td><td>0.0584%</td><td>0.0570%</td><td>0.214%</td><td>0.367%</td><td>1</td><td>72002</td></tr>
@@ -65,9 +65,9 @@ one zstd (level 3) call per unit; lowers B if a block's estimated size would exc
 <tr><td><code>delta0123-zstd-10</code></td><td class='l'>one-shot</td><td>3.844</td><td>0.0313%</td><td>0.0282%</td><td>0.226%</td><td>0.393%</td><td>36</td><td>6</td></tr>
 <tr><td><code>delta0123-zstd-12</code></td><td class='l'>one-shot</td><td>4.413</td><td>0.0224%</td><td>0.0071%</td><td>0.226%</td><td>0.393%</td><td>124</td><td>7</td></tr>
 <tr><td><code>delta12-zstd-8</code></td><td class='l'>one-shot</td><td>2.927</td><td>0.1086%</td><td>0.1128%</td><td>0.226%</td><td>0.393%</td><td>1</td><td>6</td></tr>
-<tr><td class='muted'><code>quant8-delta1-deflate</code> (earlier codec)</td><td class='l muted'>none</td><td>3.079</td><td>0.1080%</td><td>0.1127%</td><td>0.120%</td><td>0.196%</td><td>—</td><td>—</td></tr></table><p class='muted'>One-shot rows include each block's min and max, stored in the unit. Encode time is the full rate-control search for window/fixed rows (Python, single thread), per block; one-shot is a single pass. Every block spans [0, 1], so one-shot's per-block step and the shared window step mean the same thing.</p>
+<tr><td class='muted'><code>quant8-delta1-deflate</code> (earlier codec)</td><td class='l muted'>none</td><td>3.079</td><td>0.1080%</td><td>0.1127%</td><td>0.120%</td><td>0.196%</td><td>—</td><td>—</td></tr></table><p class='muted'>One-shot rows include each block's min and max, stored in the block group. Encode time is the full rate-control search for window/fixed rows (Python, single thread), per block; one-shot is a single pass. Every block spans [0, 1], so one-shot's per-block step and the shared window step mean the same thing.</p>
 <h2 id='per-kind-chart'>Bits and error per signal kind</h2><img src='rate-blocks.svg' alt='Per-kind bits and RMSE'>
-<h2 id='kind-delta0123-zstd-10-one-shot'>Per signal kind: delta0123-zstd-10 / one-shot</h2><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<h2 id='kind-delta0123-zstd-10-one-shot'>Per signal kind: delta0123-zstd-10 / one-shot</h2><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the block group it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
 <tr><td>linear</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>0.43</td><td>0.0282%</td><td>-0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0487%</td></tr>
 <tr><td>quadratic</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>1.14</td><td>0.0289%</td><td>-0.0009%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0489%</td></tr>
 <tr><td>sin-4.12hz</td><td class='l'>B=10 order 2</td><td>0.000978</td><td>2.34</td><td>0.0281%</td><td>+0.0001%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
@@ -81,7 +81,7 @@ one zstd (level 3) call per unit; lowers B if a block's estimated size would exc
 <tr><td>noisy-sine</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>8.02</td><td>0.0282%</td><td>-0.0000%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0488%</td></tr>
 <tr><td>sensor-0.1</td><td class='l'>B=10 order 1</td><td>0.000978</td><td>2.98</td><td>0.0283%</td><td>+0.0002%</td><td>+0.0000%</td><td>+0.0000%</td><td>0.0489%</td></tr>
 </table>
-<h2 id='kind-delta0123-zstd-window'>Per signal kind: delta0123-zstd / window</h2><p>Unit Δ = 0.000679, 0.000635, 0.00063, 0.00063, 0.000655</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<h2 id='kind-delta0123-zstd-window'>Per signal kind: delta0123-zstd / window</h2><p>Block group Δ = 0.000679, 0.000635, 0.00063, 0.00063, 0.000655</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the block group it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
 <tr><td>linear</td><td class='l'>order 1</td><td>0.000635</td><td>0.33</td><td>0.0183%</td><td>-0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
 <tr><td>quadratic</td><td class='l'>order 1</td><td>0.000635</td><td>0.77</td><td>0.0184%</td><td>+0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
 <tr><td>sin-4.12hz</td><td class='l'>order 2</td><td>0.000635</td><td>2.02</td><td>0.0183%</td><td>+0.0001%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0317%</td></tr>
@@ -95,7 +95,7 @@ one zstd (level 3) call per unit; lowers B if a block's estimated size would exc
 <tr><td>noisy-sine</td><td class='l'>order 1</td><td>0.00105</td><td>7.89</td><td>0.0294%</td><td>+0.0003%</td><td>-0.0076%</td><td>+0.0000%</td><td>0.0523%</td></tr>
 <tr><td>sensor-0.1</td><td class='l'>order 1</td><td>0.000635</td><td>2.72</td><td>0.0185%</td><td>-0.0002%</td><td>+0.0090%</td><td>+0.0000%</td><td>0.0316%</td></tr>
 </table>
-<h2 id='kind-best--rice-zstd-flac-window'>Per signal kind: best: rice|zstd|flac / window</h2><p>Unit Δ = 0.000278, 0.000275, 0.000266, 0.000261, 0.000245</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<h2 id='kind-best--rice-zstd-flac-window'>Per signal kind: best: rice|zstd|flac / window</h2><p>Block group Δ = 0.000278, 0.000275, 0.000266, 0.000261, 0.000245</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the block group it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
 <tr><td>linear</td><td class='l'>delta0123-zstd order 1</td><td>0.000266</td><td>0.42</td><td>0.0077%</td><td>-0.0000%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
 <tr><td>quadratic</td><td class='l'>delta0123-zstd order 1</td><td>0.000266</td><td>0.99</td><td>0.0076%</td><td>+0.0001%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
 <tr><td>sin-4.12hz</td><td class='l'>delta0123-zstd order 2</td><td>0.000266</td><td>2.34</td><td>0.0076%</td><td>+0.0000%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0133%</td></tr>
@@ -109,7 +109,7 @@ one zstd (level 3) call per unit; lowers B if a block's estimated size would exc
 <tr><td>noisy-sine</td><td class='l'>delta0123-rice order 1</td><td>0.00069</td><td>7.96</td><td>0.0196%</td><td>-0.0000%</td><td>-0.0036%</td><td>+0.0000%</td><td>0.0345%</td></tr>
 <tr><td>sensor-0.1</td><td class='l'>delta0123-zstd order 1</td><td>0.000266</td><td>2.73</td><td>0.0077%</td><td>-0.0003%</td><td>-0.0009%</td><td>+0.0000%</td><td>0.0131%</td></tr>
 </table>
-<h2 id='kind-best--rice-zstd-flac-fixed'>Per signal kind: best: rice|zstd|flac / fixed</h2><p>Unit Δ = 9.31e-10, 9.31e-10, 9.31e-10, 9.31e-10, 9.31e-10</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the unit it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
+<h2 id='kind-best--rice-zstd-flac-fixed'>Per signal kind: best: rice|zstd|flac / fixed</h2><p>Block group Δ = 9.31e-10, 9.31e-10, 9.31e-10, 9.31e-10, 9.31e-10</p><p class='muted'>Median over the kind's 25 blocks; bits/sample is the block coded on its own (inside the block group it only has a share of the total).</p><table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th><th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>
 <tr><td>linear</td><td class='l'>delta0123-zstd order 1</td><td>9.31e-10</td><td>0.44</td><td>0.0000%</td><td>-0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
 <tr><td>quadratic</td><td class='l'>delta0123-zstd order 2</td><td>9.31e-10</td><td>1.32</td><td>0.0000%</td><td>-0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>
 <tr><td>sin-4.12hz</td><td class='l'>flac LPC</td><td>1e-07</td><td>3.98</td><td>0.0000%</td><td>+0.0000%</td><td>-0.0000%</td><td>+0.0000%</td><td>0.0000%</td></tr>

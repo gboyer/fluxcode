@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""delta0123-zstd: one-shot quantize -> predict -> zstd encoder, no search, one compressor call per unit.
+"""delta0123-zstd: one-shot quantize -> predict -> zstd encoder, no search, one compressor call per block group.
 
 Per block (all compiled, no Python per block):
     step   = (max - min) / (2^B - 1)                       B-bit codes, min and max exact
@@ -10,8 +10,8 @@ Per block (all compiled, no Python per block):
              excess (rounded up) and the block is requantized
     planes = byte planes of zigzag(diff(q, order)), low byte first
 
-Unit (nb blocks), headers interleaved by field, then bodies in block order, one compressor call:
-    unit   := compress( flags[nb] | min f64[nb] | max f64[nb] | init[0] .. init[nb-1] | planes[0] .. planes[nb-1] )
+Block group (nb blocks), headers interleaved by field, then bodies in block order, one compressor call:
+    group   := compress( flags[nb] | min f64[nb] | max f64[nb] | init[0] .. init[nb-1] | planes[0] .. planes[nb-1] )
     flags  := u8 = (B-1) << 4 | order << 2 | width code (0,1,2 -> 1,2,4 bytes)
     init   := order x zigzag LEB128 varint (starting values diff(q, j)[0], j < order)
     planes := width byte planes of zigzag(diff(q, order)), n - order bytes each
@@ -99,8 +99,8 @@ def _put_varint_zz(out, pos, v):
 
 
 @njit(cache=True)
-def _encode_unit(X, bits, mask, cap_bps, out, planes, meta):
-    """Fills out[] with the uncompressed unit; returns its length. meta[b] = (B, order)."""
+def _encode_group(X, bits, mask, cap_bps, out, planes, meta):
+    """Fills out[] with the uncompressed block group; returns its length. meta[b] = (B, order)."""
     nb, n = X.shape
     q = np.empty(n, np.int32)
     u = np.empty(n, np.uint32)
@@ -149,7 +149,7 @@ def _get_varint_zz(raw, pos):
 
 
 @njit(cache=True)
-def _decode_unit(raw, X):
+def _decode_group(raw, X):
     nb, n = X.shape
     lohi = raw[nb:17 * nb].copy().view(np.float64)
     init = np.zeros((nb, 3), np.int64)
@@ -185,7 +185,7 @@ def _decode_unit(raw, X):
 class DeltaZstd:
     """delta<orders>-<compressor>-<bits>[-L<level>]: B-bit quantizer on each block's range -> the delta
     order (from `orders`) with the smallest residual variance -> zigzag byte planes -> one compressor
-    call per unit (see the module docstring). The level is in the name only when it isn't the
+    call per block group (see the module docstring). The level is in the name only when it isn't the
     compressor's default (zstd 3, deflate 9)."""
 
     def __init__(self, bits, level=None, orders=ORDERS, compressor="zstd", cap_bps=CAP_BPS):
@@ -207,22 +207,22 @@ class DeltaZstd:
         else:
             raise ValueError(compressor)
 
-    def raw_unit(self, X):
-        """The uncompressed unit and meta[b] = (B, order)."""
+    def raw_group(self, X):
+        """The uncompressed block group and meta[b] = (B, order)."""
         nb, n = X.shape
         out = np.empty(nb * (MAX_HEADER + 4 * n), np.uint8)
         planes = np.empty(nb * 4 * n, np.uint8)
         meta = np.empty((nb, 2), np.int64)
-        size = _encode_unit(np.ascontiguousarray(X, np.float64), self.bits, self.mask, self.cap_bps, out, planes, meta)
+        size = _encode_group(np.ascontiguousarray(X, np.float64), self.bits, self.mask, self.cap_bps, out, planes, meta)
         return out[:size], meta
 
-    def encode_unit(self, X):
-        raw, meta = self.raw_unit(X)
+    def encode_group(self, X):
+        raw, meta = self.raw_group(X)
         return self._c(raw.tobytes()), [{"bits": int(B), "order": int(o)} for B, o in meta]
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         X = np.empty((nb, n))
-        _decode_unit(np.frombuffer(self._d(data), np.uint8), X)
+        _decode_group(np.frombuffer(self._d(data), np.uint8), X)
         return X
 
 

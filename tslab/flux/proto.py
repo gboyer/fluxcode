@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""fluxproto, the fluxcode prototype: a one-minute unit codec, optionally with step (quantum) detection:
+"""fluxproto, the fluxcode prototype: a one-minute block group codec, optionally with step (quantum) detection:
 delta0123-zstd's quantize -> predict -> zstd with a power-of-two step, fixed B, and
 blocks interleaved by field.
 
@@ -43,11 +43,11 @@ Noise floor (noise_f = f, encoder-only; the format is unchanged):
              (two bytes per sample for any order and any B <= 16; the leading zeros
               make the first residuals the start values, so no separate header)
 
-Unit per minute (N blocks), then zstd-3, interleaved by field, block minima last:
+Block group per minute (N blocks), then zstd-3, interleaved by field, block minima last:
     order | mode << 2 | float32 << 4 (x N) | param byte 0 (x N) .. param byte 7 (x N) | low bytes (x N) | high bytes (x N)
     | min byte 0 (x N) .. min byte 7 (x N)
-raw() is the unit without the minima (what the plane benches analyze); encode_unit / decode_unit
-are the whole unit (tslab.common.unit's interface), decodable from its bytes alone.
+raw() is the block group without the minima (what the plane benches analyze); encode_group / decode_group
+are the whole block group (tslab.common.group's interface), decodable from its bytes alone.
 ("block" layout, for comparison: the same fields one block at a time.)
 planes="bit": the low and high byte planes are bit-shuffled instead: 16 bit planes x N blocks
 (an 8x8 bit transpose per 8 samples, its own inverse), so small residuals leave whole planes of zeros.
@@ -233,7 +233,7 @@ def _nibbleunshuffle(planes, low, high):
 
 
 @njit(cache=True)
-def _encode_unit(X, lo, hi, bits, orders, detect, head, param_i, low, high, noise_f=0.0, noise_rho=-0.6):
+def _encode_group(X, lo, hi, bits, orders, detect, head, param_i, low, high, noise_f=0.0, noise_rho=-0.6):
     """head[b] = order | mode << 2 | float32 << 4; param[b] = e or p; byte planes."""
     nb, n = X.shape
     q = np.empty(n, np.int32)
@@ -276,7 +276,7 @@ def _encode_unit(X, lo, hi, bits, orders, detect, head, param_i, low, high, nois
 
 
 @njit(cache=True)
-def _decode_unit(head, param_i, low, high, lo, X):
+def _decode_group(head, param_i, low, high, lo, X):
     nb, n = X.shape
     v = np.empty(n, np.int64)
     for b in range(nb):
@@ -334,7 +334,7 @@ class FluxProto:
         head = np.empty(nb, np.uint8)
         param = np.zeros(nb, np.int64)
         low, high = np.empty((nb, n), np.uint8), np.empty((nb, n), np.uint8)
-        _encode_unit(X, lo, hi, self.bits, self.orders, self.detect, head, param, low, high, self.noise_f, self.noise_rho)
+        _encode_group(X, lo, hi, self.bits, self.orders, self.detect, head, param, low, high, self.noise_f, self.noise_rho)
         pbytes = param.view(np.uint8).reshape(nb, 8)
         if self.bitplanes:
             planes = np.empty((16, nb, n // 8), np.uint8)
@@ -348,8 +348,8 @@ class FluxProto:
             return np.concatenate([head, pbytes.T.ravel(), low.ravel(), high.ravel()])
         return np.concatenate([head[:, None], pbytes, low, high], axis=1).ravel()
 
-    def encode_unit(self, X):
-        """One minute X[nb, n] -> (unit, infos): zstd(raw || block minima as byte-planed float64)."""
+    def encode_group(self, X):
+        """One minute X[nb, n] -> (group, infos): zstd(raw || block minima as byte-planed float64)."""
         lo, hi = X.min(1), X.max(1)
         raw = self.raw(X, lo, hi)
         anchor = np.ascontiguousarray(lo, "<f8").view(np.uint8).reshape(-1, 8).T.ravel()
@@ -357,7 +357,7 @@ class FluxProto:
         infos = [{"order": int(h & 3), "decimal": bool(h >> 2 & 1)} for h in raw[:nb]] if self.field else None
         return self._c(np.concatenate([raw, anchor]).tobytes()), infos
 
-    def decode_unit(self, data, nb, n):
+    def decode_group(self, data, nb, n):
         assert n == self.n
         buf = np.frombuffer(self._d(data), np.uint8)
         raw = buf[:-8 * nb]
@@ -380,5 +380,5 @@ class FluxProto:
             param = np.ascontiguousarray(rows[:, 1:9]).view(np.int64).ravel()
             low, high = np.ascontiguousarray(rows[:, 9:9 + n]), np.ascontiguousarray(rows[:, 9 + n:])
         X = np.empty((nb, n))
-        _decode_unit(head, param, low, high, lo, X)
+        _decode_group(head, param, low, high, lo, X)
         return X

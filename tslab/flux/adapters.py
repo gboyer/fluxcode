@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""fluxcode (the package at the repo root) wrapped for the experiments: the unit codec adapter, the
+"""fluxcode (the package at the repo root) wrapped for the experiments: the block group codec adapter, the
 B sweep over four versions (continuous and discretized data), and the noise-floor score used by the
-report. Single thread; µs per 1000-sample block, best of 3. A unit is one fluxcode unit per minute and
+report. Single thread; µs per 1000-sample block, best of 3. A block group is one fluxcode block group per minute and
 decodes from its own bytes (header, per-block anchors, zstd frame); errors are % of the block's range.
 """
 
@@ -11,36 +11,36 @@ import time
 import fluxcode
 import numpy as np
 import zstandard
-from fluxcode import Params, _bitpacking, _encoder, _format, _unit
+from fluxcode import Params, _bitpacking, _encoder, _format, _group
 
 from tslab.common.datasets import DISCRETE, load, load_discrete
 
 
 class FluxCodec:
-    """fluxcode-<bits>[-f<f>]: a minute (blocks X[nb, n]) as one real fluxcode unit, nothing added.
+    """fluxcode-<bits>[-f<f>]: a minute (blocks X[nb, n]) as one real fluxcode block group, nothing added.
     Quantize on a power-of-two step (a decimal 10^p grid if the data sits on one), delta order
     0/1/2/3 by variance, residuals mod 2^16 -> zigzag -> 16 bit planes or 2 byte planes (whichever
     Params.effort decides) -> zstd; with f, the step
     is at most f * sigma on blocks that look like white noise. `params` overrides bits / noise_f."""
 
     def __init__(self, bits=16, noise_f=None, params=None):
-        self.params = params or Params(max_quantize_bits=bits, noise_floor_sigma=noise_f)
+        self.params = params or Params(max_quantize_bits=bits, noise_floor_sigma=noise_f or 0)
         self.name = f"fluxcode-{bits}" + (f"-f{noise_f:g}" if noise_f else "")
         self.label = (f"fluxcode, B = {bits}: power-of-two or decimal step, delta order 0/1/2/3, bit or byte planes, zstd"
                       + (f", noise floor f = {noise_f:g}" if noise_f else ""))
 
-    def unit(self, X):
-        return fluxcode.encode_unit(np.ascontiguousarray(X).ravel(), self.params).unit
+    def group(self, X):
+        return fluxcode.encode_group(np.ascontiguousarray(X).ravel(), self.params).group
 
-    def encode_unit(self, X):
-        unit = self.unit(X)
-        rows = _unit.read_rows(_unit.decompress(unit))  # the package's own reader: no layout assumptions here
+    def encode_group(self, X):
+        group = self.group(X)
+        rows = _group.read_rows(_group.decompress(group))  # the package's own reader: no layout assumptions here
         infos = [{"order": int(f & _format.BLOCK_FLAG_ORDER), "decimal": bool(f & _format.BLOCK_FLAG_DECIMAL),
                   "param": int(p)} for f, p in zip(rows.block_flags, rows.grid_params)]
-        return unit, infos
+        return group, infos
 
-    def decode_unit(self, data, nb, n):
-        return fluxcode.decode_unit(data).values.reshape(nb, n)
+    def decode_group(self, data, nb, n):
+        return fluxcode.decode_group(data).values.reshape(nb, n)
 
 
 FLUX_CODECS = [FluxCodec(b) for b in (10, 12, 16)] + [FluxCodec(16, f) for f in (0.01, 0.03, 0.1, 0.25, 0.5, 1.0)]
@@ -57,9 +57,9 @@ def best_of(f, reps=3):
 
 def run(codec, mins):
     X0 = mins[0][1]
-    codec.decode_unit(codec.unit(X0), *X0.shape)  # compile / warm up
-    te, encs = best_of(lambda: [codec.unit(m[1]) for m in mins])
-    td, outs = best_of(lambda: [codec.decode_unit(e, *m[1].shape) for e, m in zip(encs, mins)])
+    codec.decode_group(codec.group(X0), *X0.shape)  # compile / warm up
+    te, encs = best_of(lambda: [codec.group(m[1]) for m in mins])
+    td, outs = best_of(lambda: [codec.decode_group(e, *m[1].shape) for e, m in zip(encs, mins)])
     nblocks = sum(len(m[1]) for m in mins)
     rmse, maxerr, same = [], [], 0
     for m, Y in zip(mins, outs):
@@ -87,7 +87,7 @@ def ideal_quantum(mins):
             head[b] = _encoder.pick_order(q, 1000, 0b1111)
             _encoder.residual(q, head[b], resid[b])
         anchors = np.ascontiguousarray(lo, np.float64).view(np.int64)  # where each block's grid starts
-        total += len(zc.compress(_bitpacking.write_unit(head, np.full(nb, 1000), np.zeros(nb, np.int64), anchors,
+        total += len(zc.compress(_bitpacking.write_group(head, np.full(nb, 1000), np.zeros(nb, np.int64), anchors,
                                                         resid.ravel())))
         nblocks += nb
     return 8 * total / (nblocks * 1000)
@@ -108,7 +108,7 @@ def sweep(mins=None, dmins=None):
     res = {}
     for label, kw in VERSIONS:
         for B in SWEEP_BITS:
-            c = FluxCodec(params=Params(max_quantize_bits=B, noise_floor_sigma=None, **kw))
+            c = FluxCodec(params=Params(max_quantize_bits=B, noise_floor_sigma=0, **kw))
             rc, rd = run(c, mins), run(c, dmins)
             if B == 16:
                 rd["per_signal"] = {name: run(c, [m for m in dmins if m[0] == name])["bps"] for name, _, _ in DISCRETE}
@@ -118,13 +118,13 @@ def sweep(mins=None, dmins=None):
 
 
 def noise_score(codec, mins):
-    """Unit codec on noisy_sets() minutes: bits/sample and median RMS error against the input and
-    the clean signal (units of the true noise sigma), worst max error (% of range)."""
+    """Block group codec on noisy_sets() minutes: bits/sample and median RMS error against the input and
+    the clean signal (groups of the true noise sigma), worst max error (% of range)."""
     bits = 0
     e_in, e_clean, e_max = [], [], []
     for X, lo, hi, C, s in mins:
-        data = codec.encode_unit(X)[0]
-        Y = codec.decode_unit(data, *X.shape)
+        data = codec.encode_group(X)[0]
+        Y = codec.decode_group(data, *X.shape)
         bits += 8 * len(data)
         e_in.append(np.sqrt(np.mean((Y - X) ** 2, axis=1)) / s)
         e_clean.append(np.sqrt(np.mean((Y - C) ** 2, axis=1)) / s)
