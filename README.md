@@ -195,7 +195,7 @@ The implementation is fully in numba, SIMD optimized, and tuned for ARM NEON.
 
 ## Guarantees
 
-From [docs/SPEC.md §8](docs/SPEC.md#8-guarantees), which states them exactly:
+From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exactly:
 
 - **Bounded error.** Every sample decodes within half the block's step, and never further than
   range / (2^`min_quantize_bits` − ½) (1.6% of the block's range at the default of 6), whatever
@@ -220,7 +220,7 @@ From [docs/SPEC.md §8](docs/SPEC.md#8-guarantees), which states them exactly:
 
 ## How it works
 
-Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md)):
+Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCODER.md)):
 
 - **[Quantization](https://en.wikipedia.org/wiki/Quantization_(signal_processing))** to a
   power-of-two step 2^e with at most 2^16 steps across the block's range, or to the coarsest exact
@@ -246,7 +246,9 @@ Per block of 1000 samples (details and pseudocode in [docs/SPEC.md](docs/SPEC.md
 
 ## Documentation
 
-- [docs/SPEC.md](docs/SPEC.md): the format, encoding algorithm, guarantees and conformance tests.
+- [docs/SPEC.md](docs/SPEC.md): the format: layout, decoding and conformance tests.
+- [docs/ENCODER.md](docs/ENCODER.md): the reference encoder: parameters, algorithm, guarantees and
+  its conformance tests.
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md): speed, the day-scale stress run, implementation notes.
 - [docs/TUNING.md](docs/TUNING.md): measurements behind the parameter defaults and the time axis
   design, and what to check on your data.
@@ -296,7 +298,7 @@ Code layout (`fluxcode/`), from the public API down:
   `_time_blocks.py`: dividing timed samples into blocks of a fixed duration.
 - `_compress.py`: the compression policy (efforts, layout choice, flush points, framing, candidate
   choice); `rust/src/compress.rs` is its port.
-- `_encoder.py`, `_decoder.py`: the per-block kernels (SPEC §5, §6); `_time.py`: the time axis
+- `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: the time axis
   kernels (§4); `_noise.py`, `_nonfinite.py` and `_extreme_magnitudes.py`: the noise estimate,
   NaN/inf blocks and extreme ranges, each off the common path.
 - `_format.py`: the header, field offsets and row types (§7); `_bitpacking.py`: writing and

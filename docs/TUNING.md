@@ -1,12 +1,12 @@
 # fluxcode tuning notes
 
 Measurements behind the parameter defaults, and what to check on your data before settling
-them. The format and algorithm are in [SPEC.md](SPEC.md).
+them. The format is in [SPEC.md](SPEC.md), the encoder's algorithm in [ENCODER.md](ENCODER.md).
 
 ## Effort
 
 **`effort`** (1–9, default 4) sets how hard the encoder works on compression: the residual layout,
-block flushes inside the zstd frame and the zstd level (the table is in SPEC.md §1). It never
+block flushes inside the zstd frame and the zstd level (the table is in ENCODER.md §1). It never
 changes the decoded values. Efforts 3 and 4 are the encoder as it was before efforts existed (both
 layouts compressed, the smaller kept, one block run, zstd 3), and the table below is against it.
 Measured 2026-10-02 through the public API, one thread, AC power
@@ -191,7 +191,7 @@ What to measure per tag before settling `noise_floor_sigma` (and `target_bits_pe
 
 ## Time axis
 
-The format is in [SPEC.md §4](SPEC.md#4-time-axis). Measured on one-minute units
+The format is in [SPEC.md §3](SPEC.md#3-time-axis). Measured on one-minute units
 (`bench/time_axis.py`, Apple M3, AC power, single thread); the first three rows are the common
 shapes, and [experimental/report/time.html](../experimental/report/time.html) shows them in detail:
 

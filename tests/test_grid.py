@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """The snapped power-of-two grid: anchor = rint(min / 2^e) * 2^e, q = rint(x / 2^e) - K with
-ties to even, and e the finest step whose snapped grid fits (SPEC §5.1, §5.4)."""
+ties to even, and e the finest step whose snapped grid fits (ENCODER §5.1, §5.4)."""
 
 import numpy as np
 import pytest

@@ -187,7 +187,7 @@ def test_byte_planes_round_trip_and_layout():
 
 
 def test_bit_order_vector():
-    """§9.4: u[3] = 0x0020, u[6] = 0x0400 -> plane 5 byte 0 = 0b00001000, plane 10 byte 0 = 0b01000000."""
+    """SPEC §8.1: u[3] = 0x0020, u[6] = 0x0400 -> plane 5 byte 0 = 0b00001000, plane 10 byte 0 = 0b01000000."""
     v = np.zeros(8, np.int16)
     v[3] = 0x0010  # zigzag(16) = 32 = 0x0020
     v[6] = 0x0200  # zigzag(512) = 1024 = 0x0400

@@ -88,7 +88,7 @@ EFFORTS: dict[int, Effort] = {
     # zstd 9 alone is larger than zstd 3 on about a fifth of units (up to 9%): keep both
     9: Effort("best", True, (3, 9)),
 }
-"""Params.effort to Effort (SPEC.md §1; the measured size and speed of each are in TUNING.md)."""
+"""Params.effort to Effort (ENCODER.md §1; the measured size and speed of each are in TUNING.md)."""
 
 BYTE_PLANES_BIT: int = 7
 BYTE_PLANES_MAX_SHARE: float = 0.01

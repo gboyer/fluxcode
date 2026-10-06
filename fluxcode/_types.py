@@ -120,7 +120,7 @@ class Params:
             falling back to power-of-two grids.
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the unit is compressed (the residual layout, zstd block boundaries and level),
-            never the decoded values; SPEC.md lists what each effort does.
+            never the decoded values; ENCODER.md lists what each effort does.
     """
 
     min_quantize_bits: int = 6

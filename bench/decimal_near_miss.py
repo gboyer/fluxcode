@@ -3,7 +3,7 @@
 """How much does a decimal-detection near miss slow encode down?
 
 A block on a decimal grid except for its last sample makes each candidate exponent scan the whole
-block before failing, instead of stopping at its first off-grid sample (docs/SPEC.md §5.3).
+block before failing, instead of stopping at its first off-grid sample (docs/ENCODER.md §5.3).
 
 Method: single thread, `encode_unit` on one minute (60 blocks) of the `random-walk` signal
 (seed 7), best of 5 x 200 calls after a warm-up, reported in µs per block. The grids are that walk

@@ -1,14 +1,15 @@
 # fluxcode — API plan (v2)
 
 > **History.** This is the design plan fluxcode was implemented from, kept for its reasoning. It
-> is superseded by [SPEC.md](../SPEC.md) (format, algorithm, guarantees) and by the docstrings
+> is superseded by [SPEC.md](../SPEC.md) (format), [ENCODER.md](../ENCODER.md) (algorithm,
+> guarantees) and by the docstrings
 > of the `fluxcode` package (API). Where they differ, they win; the main differences are listed
 > below.
 
 **What changed during implementation:**
 
 - **Names.** The per-block "head byte" below is the `block_flags` field, and the SPEC sections
-  it cites have been renumbered (the format is now SPEC §7).
+  it cites have been renumbered (the format is now SPEC §6, the algorithm ENCODER.md).
 - **Self-describing units.** A unit starts with a 16-byte header (version, block length, sample
   count), and each block stores its own anchor (SPEC §5). `decode(units)` takes only the units and
   returns one array per unit; `decode_unit(unit)` returns the unit's samples as a 1-D array. No

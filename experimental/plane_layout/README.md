@@ -332,7 +332,7 @@ The prototype went into the encoder with these changes, each from a follow-up me
 
 - **One knob, `effort` 1–9**, in place of `planes`: layout (heuristic or both), block flushes and
   zstd level move together, because they interact (with a table per plane, bit planes stop being
-  the poor layout; stronger zstd levels prefer byte planes). The table is in docs/SPEC.md §1,
+  the poor layout; stronger zstd levels prefer byte planes). The table is in docs/ENCODER.md §1,
   measured size and speed in docs/TUNING.md (Effort).
 - **A different layout rule** (`fleet.py`). The rule above, "fewer than 5% of residuals reach 256",
   fit this study's synthetic corpus, but on the day-scale stress test's sensor mix (analog ADC

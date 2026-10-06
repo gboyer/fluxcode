@@ -76,7 +76,7 @@ uv run python make_sdt_report.py    # report/sdt.html and its SVGs       (~4 min
 Charts are SVG, and the build fails if a chart has no data. Each script deletes its own earlier outputs
 in `report/` before writing. `make_rate_report.py` runs the rate-control experiment of REPORT.md §6 on
 "regime" minutes and writes `report/rate.html` in the same style. `make_time_report.py` writes
-`report/time.html`: only fluxcode's time axis (docs/SPEC.md §4), i.e. what exact timestamps cost for the
+`report/time.html`: only fluxcode's time axis (docs/SPEC.md §3), i.e. what exact timestamps cost for the
 common clock shapes (a perfect grid, a grid with a few gaps, a noisy clock) and some harder ones; its
 timings need a quiet machine. `make_sdt_report.py` writes `report/sdt.html`: fluxcode on what a
 swinging-door (SDT) historian archives, one unit per tag-day with exact timestamps (`tslab/common/historian.py`): size
