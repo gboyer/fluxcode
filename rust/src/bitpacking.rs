@@ -4,8 +4,8 @@
 
 use crate::format::{
     block_sizes_start, grid_params_start, residual_start, value_anchor_start, Rows, BIT_PLANES,
-    BLOCK_FLAG_NONFINITE, BYTES_PER_ANCHOR, BYTES_PER_PARAM, BYTES_PER_SIZE, CODE_BYTES_PER_GROUP,
-    GROUP_SAMPLES, METADATA_BYTES_PER_BLOCK, RESIDUAL_BYTES_PER_GROUP,
+    BLOCK_FLAG_NONFINITE, BYTES_PER_ANCHOR, BYTES_PER_PARAM, BYTES_PER_SIZE, CODE_BYTES_PER_OCTET,
+    METADATA_BYTES_PER_BLOCK, OCTET_SAMPLES, RESIDUAL_BYTES_PER_OCTET,
 };
 use crate::planes::{self, transpose8};
 
@@ -31,18 +31,18 @@ fn put_byte_planed(
 
 /// The uncompressed body of a unit without a time axis, in the byte-plane layout: the metadata
 /// columns, the zigzagged residuals as a low and a high byte plane (each block padded with zeros to
-/// whole groups of 8), then the non-finite code planes.
+/// whole octets of 8 samples), then the non-finite code planes.
 pub fn write_body(rows: &Rows) -> Vec<u8> {
-    let (num_blocks, num_groups) = (rows.shape.num_blocks, rows.shape.num_groups);
-    let num_code_groups = rows.code_offsets[num_blocks];
+    let (num_blocks, num_octets) = (rows.shape.num_blocks, rows.shape.num_octets);
+    let num_code_octets = rows.code_offsets[num_blocks];
     let residuals_start = METADATA_BYTES_PER_BLOCK * num_blocks;
-    let residual_bytes = RESIDUAL_BYTES_PER_GROUP * num_groups;
+    let residual_bytes = RESIDUAL_BYTES_PER_OCTET * num_octets;
     let mut body =
-        vec![0u8; residuals_start + residual_bytes + CODE_BYTES_PER_GROUP * num_code_groups];
+        vec![0u8; residuals_start + residual_bytes + CODE_BYTES_PER_OCTET * num_code_octets];
     write_columns(rows, &mut body);
     let (residual_planes, code_planes) = body[residuals_start..].split_at_mut(residual_bytes);
     write_residual_planes(rows, residual_planes);
-    write_code_planes(rows, code_planes, num_code_groups);
+    write_code_planes(rows, code_planes, num_code_octets);
     body
 }
 
@@ -87,11 +87,11 @@ fn write_columns(rows: &Rows, body: &mut [u8]) {
 /// samples zero.
 fn write_residual_planes(rows: &Rows, residual_planes: &mut [u8]) {
     let (low_plane, high_plane) =
-        residual_planes.split_at_mut(GROUP_SAMPLES * rows.shape.num_groups);
+        residual_planes.split_at_mut(OCTET_SAMPLES * rows.shape.num_octets);
     for block_idx in 0..rows.shape.num_blocks {
         let first_sample = rows.sample_offsets[block_idx];
         let block_len = rows.block_sizes[block_idx] as usize;
-        let plane_start = GROUP_SAMPLES * rows.group_offsets[block_idx];
+        let plane_start = OCTET_SAMPLES * rows.octet_offsets[block_idx];
         let low_bytes = &mut low_plane[plane_start..plane_start + block_len];
         let high_bytes = &mut high_plane[plane_start..plane_start + block_len];
         let block_residuals = &rows.residuals[first_sample..first_sample + block_len];
@@ -104,8 +104,8 @@ fn write_residual_planes(rows: &Rows, residual_planes: &mut [u8]) {
 }
 
 /// Writes the non-finite codes of the flagged blocks as two code bit planes.
-fn write_code_planes(rows: &Rows, code_planes: &mut [u8], num_code_groups: usize) {
-    let (plane0, plane1) = code_planes.split_at_mut(num_code_groups);
+fn write_code_planes(rows: &Rows, code_planes: &mut [u8], num_code_octets: usize) {
+    let (plane0, plane1) = code_planes.split_at_mut(num_code_octets);
     for block_idx in 0..rows.shape.num_blocks {
         if rows.block_flags[block_idx] & BLOCK_FLAG_NONFINITE == 0 {
             continue;
@@ -113,44 +113,44 @@ fn write_code_planes(rows: &Rows, code_planes: &mut [u8], num_code_groups: usize
         let first_sample = rows.sample_offsets[block_idx];
         let block_codes =
             &rows.codes[first_sample..first_sample + rows.block_sizes[block_idx] as usize];
-        for (group_idx, group_codes) in block_codes.chunks(GROUP_SAMPLES).enumerate() {
-            let (byte0, byte1) = pack_code_group(group_codes);
-            plane0[rows.code_offsets[block_idx] + group_idx] = byte0;
-            plane1[rows.code_offsets[block_idx] + group_idx] = byte1;
+        for (octet_idx, octet_codes) in block_codes.chunks(OCTET_SAMPLES).enumerate() {
+            let (byte0, byte1) = pack_code_octet(octet_codes);
+            plane0[rows.code_offsets[block_idx] + octet_idx] = byte0;
+            plane1[rows.code_offsets[block_idx] + octet_idx] = byte1;
         }
     }
 }
 
 /// The two code plane bytes of up to 8 codes: bit `j` of the first is the low bit of code `j`, of
-/// the second the high bit. Missing codes of a partial last group count as 0.
-fn pack_code_group(group_codes: &[u8]) -> (u8, u8) {
-    let mut word = [0u8; GROUP_SAMPLES];
-    word[..group_codes.len()].copy_from_slice(group_codes);
+/// the second the high bit. Missing codes of a partial last octet count as 0.
+fn pack_code_octet(octet_codes: &[u8]) -> (u8, u8) {
+    let mut word = [0u8; OCTET_SAMPLES];
+    word[..octet_codes.len()].copy_from_slice(octet_codes);
     // byte 0 of the transpose holds every code's low bit, byte 1 the high bit
     let transposed = transpose8(u64::from_le_bytes(word));
     (transposed as u8, (transposed >> 8) as u8)
 }
 
-/// The bit-plane layout of a byte-plane body: its residual region with every group of 8 bytes
+/// The bit-plane layout of a byte-plane body: its residual region with the 8 bytes of every octet
 /// transposed into one byte of each of the 16 bit planes. The rest of the body is the same
 /// (`_bitpacking.to_bit_planes`).
 pub fn to_bit_planes(
     byte_body: &[u8],
     num_blocks: usize,
-    num_groups: usize,
+    num_octets: usize,
     has_time: bool,
 ) -> Vec<u8> {
     let start = residual_start(num_blocks, has_time);
-    let end = start + RESIDUAL_BYTES_PER_GROUP * num_groups;
+    let end = start + RESIDUAL_BYTES_PER_OCTET * num_octets;
     let mut bit_body = vec![0u8; byte_body.len()];
     bit_body[..start].copy_from_slice(&byte_body[..start]);
     bit_body[end..].copy_from_slice(&byte_body[end..]);
-    let (low_plane, high_plane) = byte_body[start..end].split_at(GROUP_SAMPLES * num_groups);
+    let (low_plane, high_plane) = byte_body[start..end].split_at(OCTET_SAMPLES * num_octets);
     planes::pack_bit_planes(
         low_plane,
         high_plane,
         &mut bit_body[start..end],
-        num_groups,
+        num_octets,
         true,
     );
     bit_body
@@ -161,22 +161,22 @@ pub fn to_bit_planes(
 pub fn wide_share_byte_planes(
     body: &[u8],
     num_blocks: usize,
-    num_groups: usize,
+    num_octets: usize,
     has_time: bool,
     bit: u32,
 ) -> f64 {
     debug_assert!(bit <= 8);
-    if num_groups == 0 {
+    if num_octets == 0 {
         return 0.0;
     }
     let start = residual_start(num_blocks, has_time);
-    let planes = &body[start..start + BIT_PLANES * num_groups];
-    let (low_plane, high_plane) = planes.split_at(GROUP_SAMPLES * num_groups);
+    let planes = &body[start..start + BIT_PLANES * num_octets];
+    let (low_plane, high_plane) = planes.split_at(OCTET_SAMPLES * num_octets);
     let low_mask = ((0xFFu32 << bit) & 0xFF) as u8;
     let wide_slots = low_plane
         .iter()
         .zip(high_plane)
         .filter(|&(&low, &high)| (low & low_mask) | high != 0)
         .count();
-    wide_slots as f64 / (GROUP_SAMPLES * num_groups) as f64
+    wide_slots as f64 / (OCTET_SAMPLES * num_octets) as f64
 }

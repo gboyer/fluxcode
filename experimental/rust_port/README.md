@@ -109,10 +109,10 @@ uv run python rust_port/zstd_flush_gil.py                   # the flush scaling 
 ## Tried on `compress_unit` (2026-10-02, `unit_bench.py`)
 
 - Writing the byte-plane body costs 3-5 µs of a 120 KB unit; the rest is zstd, except the bit-plane layout,
-  which costs about 19 µs over it. Transposing 8 groups at once (bit transpose per word, then the 8x8 bytes of
+  which costs about 19 µs over it. Transposing 8 octets at once (bit transpose per word, then the 8x8 bytes of
   eight words, one store per plane) took that from about 25 µs to 19; building the result without copying
   the body first saves 2 µs. End to end the units are within the 5% noise of before.
-- NEON and SSE2 for the bit-plane transposition (`rust/src/planes.rs`, 16 groups per step; scalar elsewhere):
+- NEON and SSE2 for the bit-plane transposition (`rust/src/planes.rs`, 16 octets per step; scalar elsewhere):
   `bit` -8 µs (sin -11%, linear -26%), default-effort `best` -9 µs (sin -4.5%, linear -24%), effort 5-9 about
   -4% on sin; A/B against the scalar build, twice each, same session. The transpose itself is now a small part
   of what remains: the body is a fresh 120 KB allocation per call (page faults), not measured yet.

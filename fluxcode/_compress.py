@@ -152,9 +152,9 @@ def flush_points(
         Strictly increasing offsets, empty for a unit with no residual plane bytes.
     """
     start = _format.residual_start(num_blocks, has_time)
-    groups = int(offsets.group_offsets[-1])
-    plane_bytes, planes = (8 * groups, 2) if byte_planes else (groups, 16)
-    if not groups:
+    octets = int(offsets.octet_offsets[-1])
+    plane_bytes, planes = (8 * octets, 2) if byte_planes else (octets, 16)
+    if not octets:
         return []
     points = [start]
     for plane_idx in range(planes):
@@ -273,22 +273,22 @@ def pack(
         Serialized unit bytes containing header and compressed zstd frame.
     """
     has_time = time_unit != 0
-    num_groups = int(offsets.group_offsets[-1])
+    num_octets = int(offsets.octet_offsets[-1])
     # Fast path: delegate to Rust extension if available
     if _rust is not None:
         return _rust.pack_unit(  # type: ignore[no-any-return]
-            body, num_blocks, num_samples, num_groups, time_unit, effort.layout, effort.flush,
+            body, num_blocks, num_samples, num_octets, time_unit, effort.layout, effort.flush,
             list(effort.zstd_levels),
         )
 
     def byte_planes_predicted() -> bool:
         """Predicts whether byte planes compress better than bit planes."""
-        share = _bitpacking.wide_share(body, num_blocks, num_groups, has_time, True, BYTE_PLANES_BIT)
+        share = _bitpacking.wide_share(body, num_blocks, num_octets, has_time, True, BYTE_PLANES_BIT)
         return bool(share < BYTE_PLANES_MAX_SHARE)
 
     def bit_planes() -> np.ndarray:
         """Returns the body with its residual region as bit planes."""
-        return _bitpacking.to_bit_planes(body, num_blocks, num_groups, has_time)
+        return _bitpacking.to_bit_planes(body, num_blocks, num_octets, has_time)
 
     # Build candidate layouts according to effort policy
     if effort.layout == "byte" or (effort.layout == "heuristic" and byte_planes_predicted()):

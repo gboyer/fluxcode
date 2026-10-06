@@ -86,7 +86,7 @@ better, or slower than compressing twice), and narrow-residual exceptions to the
 ## Bit planes and byte planes
 
 The header records the residual layout: 16 bit planes or 2 byte planes. On clean periodic signals whose cycles repeat across the unit, zstd finds long
-matches in the byte planes that the 8-sample bit groups break up: in the prototype on synthetic
+matches in the byte planes that the 8-sample octets of the bit planes break up: in the prototype on synthetic
 minute units, sines at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
 
 Measured on 2026-10-01 (default params, B = 16, zstd level 3, 8 one-minute units per signal), the

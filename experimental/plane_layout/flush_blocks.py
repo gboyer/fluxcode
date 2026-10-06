@@ -36,7 +36,7 @@ def cuts(parsed, every):
     """Offsets in the body where a block should end: after the columns, after every `every` bit
     planes (byte planes: after each of the 2 byte planes), after the residuals."""
     raw_len = len(parsed.raw_body)
-    nb, g = parsed.header.num_blocks, int(parsed.layout.group_offsets[-1])
+    nb, g = parsed.header.num_blocks, int(parsed.layout.octet_offsets[-1])
     start = _format.residual_start(nb, parsed.has_time)
     if parsed.header.byte_planes:
         pts = [start + k * 8 * g for k in range(3)]

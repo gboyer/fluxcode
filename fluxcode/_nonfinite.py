@@ -220,26 +220,26 @@ def noise_finite(
 
 
 @njit(inline="always")
-def _restore_group(
-    code_planes: np.ndarray, plane_byte_offset: int, group_idx: int, num_valid: int, in_out_samples: np.ndarray
+def _restore_octet(
+    code_planes: np.ndarray, plane_byte_offset: int, octet_idx: int, num_valid: int, in_out_samples: np.ndarray
 ) -> None:
-    """Restores non-finite samples for an 8-sample group from 2-bit code planes.
+    """Restores non-finite samples for an 8-sample octet from 2-bit code planes.
 
     Args:
-        code_planes: 2D uint8 array of shape (2, code_groups) holding code planes.
+        code_planes: 2D uint8 array of shape (2, code_octets) holding code planes.
         plane_byte_offset: Starting byte offset of the block in code planes.
-        group_idx: Zero-based group index within the block.
-        num_valid: Number of valid samples in this group (1 to 8).
+        octet_idx: Zero-based octet index within the block.
+        num_valid: Number of valid samples in this octet (1 to 8).
         in_out_samples: In-out 1D float64 array modified in-place with non-finite values.
     """
-    plane0_byte = code_planes[0, plane_byte_offset + group_idx]
-    plane1_byte = code_planes[1, plane_byte_offset + group_idx]
-    # Fast path: skip 8-sample group if both plane bytes are zero (all finite)
+    plane0_byte = code_planes[0, plane_byte_offset + octet_idx]
+    plane1_byte = code_planes[1, plane_byte_offset + octet_idx]
+    # Fast path: skip 8-sample octet if both plane bytes are zero (all finite)
     if plane0_byte | plane1_byte:
         for bit_idx in range(num_valid):
             code = get_code(plane0_byte, plane1_byte, bit_idx)
             # Overwrite sample with canonical quiet NaN or signed infinity
-            sample_offset = 8 * group_idx + bit_idx
+            sample_offset = 8 * octet_idx + bit_idx
             if code == CODE_NAN:
                 in_out_samples[sample_offset] = np.nan
             elif code == CODE_POS_INF:
@@ -253,17 +253,17 @@ def restore_nonfinite(code_planes: np.ndarray, plane_byte_offset: int, in_out_sa
     """Overwrites imputed samples with exact non-finite values from code planes.
 
     Reconstructs canonical quiet NaNs and signed infinities for a flagged block.
-    Skips 8-sample groups where all samples are finite.
+    Skips 8-sample octets where all samples are finite.
 
     Args:
-        code_planes: 2D uint8 array of shape (2, code groups) holding code planes.
+        code_planes: 2D uint8 array of shape (2, code octets) holding code planes.
         plane_byte_offset: The block's first byte in each code plane.
         in_out_samples: In-out 1D float64 array of dequantized samples modified in-place.
     """
     num_samples = in_out_samples.shape[0]
-    num_full_groups = num_samples // 8
-    # Full groups with a constant bit count, then a partial last group
-    for group_idx in range(num_full_groups):
-        _restore_group(code_planes, plane_byte_offset, group_idx, 8, in_out_samples)
+    num_full_octets = num_samples // 8
+    # Full octets with a constant bit count, then a partial last octet
+    for octet_idx in range(num_full_octets):
+        _restore_octet(code_planes, plane_byte_offset, octet_idx, 8, in_out_samples)
     if num_samples % 8:
-        _restore_group(code_planes, plane_byte_offset, num_full_groups, num_samples % 8, in_out_samples)
+        _restore_octet(code_planes, plane_byte_offset, num_full_octets, num_samples % 8, in_out_samples)

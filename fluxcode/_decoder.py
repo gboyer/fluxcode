@@ -237,7 +237,7 @@ def check_unit(raw_unit: np.ndarray, sample_offsets: np.ndarray, has_time: bool)
 def decode_unit(
     raw_unit: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     block_ids: np.ndarray,
     out_samples: np.ndarray,
@@ -252,7 +252,7 @@ def decode_unit(
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes (must pass check_unit).
         sample_offsets: 1D int64 array of sample offsets for each block.
-        group_offsets: 1D int64 array of 8-sample group offsets for each block.
+        octet_offsets: 1D int64 array of 8-sample octet offsets for each block.
         code_offsets: 1D int64 array of non-finite code plane byte offsets for each block.
         block_ids: 1D int64 array of the blocks to decode.
         out_samples: Output 1D float64 array of every sample of the unit: each decoded
@@ -261,19 +261,19 @@ def decode_unit(
         has_time: Whether the unit has a time axis (time columns before the residuals).
     """
     num_blocks = sample_offsets.shape[0] - 1
-    num_groups = int(group_offsets[num_blocks])
-    max_groups = 0
+    num_octets = int(octet_offsets[num_blocks])
+    max_octets = 0
     for block_idx in block_ids:
-        max_groups = max(max_groups, group_offsets[block_idx + 1] - group_offsets[block_idx])
-    scratch_low_bytes = np.empty(8 * max_groups, np.uint8)
-    scratch_high_bytes = np.empty(8 * max_groups, np.uint8)
-    scratch_residuals = np.empty(8 * max_groups, np.int32)
+        max_octets = max(max_octets, octet_offsets[block_idx + 1] - octet_offsets[block_idx])
+    scratch_low_bytes = np.empty(8 * max_octets, np.uint8)
+    scratch_high_bytes = np.empty(8 * max_octets, np.uint8)
+    scratch_residuals = np.empty(8 * max_octets, np.int32)
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
     # Obtain views into residual and code bit planes
-    bit_planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
-    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, num_groups, has_time)
-    code_planes = code_planes_view(raw_unit, num_blocks, num_groups, int(code_offsets[num_blocks]), has_time)
+    bit_planes = planes_view(raw_unit, num_blocks, num_octets, has_time)
+    byte_planes_2d = byte_planes_view(raw_unit, num_blocks, num_octets, has_time)
+    code_planes = code_planes_view(raw_unit, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in block_ids:
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
@@ -287,7 +287,7 @@ def decode_unit(
         block_out = out_samples[first_sample:first_sample + block_len]
         if byte_planes:
             # Byte planes: the block's low and high zigzag bytes are contiguous
-            sample_start = 8 * group_offsets[block_idx]
+            sample_start = 8 * octet_offsets[block_idx]
             unzigzag(
                 byte_planes_2d[0, sample_start:sample_start + block_len],
                 byte_planes_2d[1, sample_start:sample_start + block_len],
@@ -296,7 +296,7 @@ def decode_unit(
         else:
             # Gather bit planes into low and high zigzag bytes
             unshuffle_block(
-                bit_planes, group_offsets[block_idx], group_offsets[block_idx + 1] - group_offsets[block_idx],
+                bit_planes, octet_offsets[block_idx], octet_offsets[block_idx + 1] - octet_offsets[block_idx],
                 scratch_low_bytes, scratch_high_bytes,
             )
             # Unzigzag into signed differences

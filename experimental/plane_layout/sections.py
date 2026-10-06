@@ -51,7 +51,7 @@ def sections(parsed):
     nb, has_time = parsed.header.num_blocks, parsed.has_time
     start = _format.residual_start(nb, has_time)
     n = int(parsed.layout.sample_offsets[-1])
-    g = int(parsed.layout.group_offsets[-1])
+    g = int(parsed.layout.octet_offsets[-1])
     code_len = int(parsed.layout.code_offsets[-1]) * _format.NONFINITE_BITS_PER_SAMPLE
     res_end = start + 16 * g
     return dict(columns=raw[:start], residual=raw[start:res_end], codes=raw[res_end:res_end + code_len],

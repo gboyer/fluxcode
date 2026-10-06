@@ -296,11 +296,11 @@ def test_units_are_self_describing(block_len, n_blocks, flagged):
 def _plane_fields(body, num_blocks):
     """The plane fields of a parsed unit body with a time axis, as (planes, layout) pairs."""
     _, lay = _format.read_layout(body, num_blocks)
-    groups, code_groups = int(lay.group_offsets[-1]), int(lay.code_offsets[-1])
-    short, long = _bitpacking.time_planes_views(body, num_blocks, groups, code_groups, int(lay.short_offsets[-1]),
+    octets, code_octets = int(lay.octet_offsets[-1]), int(lay.code_offsets[-1])
+    short, long = _bitpacking.time_planes_views(body, num_blocks, octets, code_octets, int(lay.short_offsets[-1]),
                                             int(lay.long_offsets[-1]))
-    return [(_bitpacking.planes_view(body, num_blocks, groups, True), lay.group_offsets),
-            (_bitpacking.code_planes_view(body, num_blocks, groups, code_groups, True), lay.code_offsets),
+    return [(_bitpacking.planes_view(body, num_blocks, octets, True), lay.octet_offsets),
+            (_bitpacking.code_planes_view(body, num_blocks, octets, code_octets, True), lay.code_offsets),
             (short, lay.short_offsets), (long, lay.long_offsets)]
 
 
@@ -346,9 +346,9 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     # The same rows as byte planes: each block's bytes padded with zero bytes
     byte_body = _bitpacking.write_unit(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
     lay = _format.layout(rows.block_flags, sizes)
-    byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.group_offsets[-1]), True)
+    byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):
-        assert not byte_planes[:, 8 * lay.group_offsets[block_idx] + sizes[block_idx]:8 * lay.group_offsets[block_idx + 1]].any()
+        assert not byte_planes[:, 8 * lay.octet_offsets[block_idx] + sizes[block_idx]:8 * lay.octet_offsets[block_idx + 1]].any()
     byte_unit = (_format.pack_header(num_blocks, n, True, int(_format.TimeUnitCode.NANOSECONDS))
                  + zstandard.ZstdCompressor().compress(byte_body.tobytes()))
     for encoded in (unit, byte_unit):

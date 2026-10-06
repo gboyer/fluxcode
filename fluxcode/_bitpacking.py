@@ -35,7 +35,7 @@ from ._format import (
     get_int64,
     grid_params_start,
     layout,
-    plane_groups,
+    plane_octets,
     put_int16,
     put_int64,
     read_layout,
@@ -73,21 +73,21 @@ def _transpose8(matrix_bits: np.uint64) -> np.uint64:
 
 
 @njit(inline="always")
-def planes_view(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
+def planes_view(raw_unit: np.ndarray, num_blocks: int, num_octets: int, has_time: bool) -> np.ndarray:
     """Provides a 2D view into the 16 residual bit planes of an uncompressed unit.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit data.
         num_blocks: Total number of blocks.
-        num_groups: Bytes per plane: the groups of all blocks.
+        num_octets: Bytes per plane: the octets of all blocks.
         has_time: Whether the unit has a time axis (time columns before the residuals).
 
     Returns:
-        2D uint8 array of shape (16, num_groups) representing bit planes.
+        2D uint8 array of shape (16, num_octets) representing bit planes.
     """
     start_offset = residual_start(num_blocks, has_time)
-    end_offset = start_offset + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_groups
-    return raw_unit[start_offset:end_offset].reshape(16, num_groups)
+    end_offset = start_offset + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_octets
+    return raw_unit[start_offset:end_offset].reshape(16, num_octets)
 
 
 _POPCOUNT = np.array([byte.bit_count() for byte in range(256)], np.int64)
@@ -96,18 +96,18 @@ _POPCOUNT = np.array([byte.bit_count() for byte in range(256)], np.int64)
 
 @njit(nogil=True, cache=True)
 def wide_share(
-    raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, byte_planes: bool, bit_idx: int
+    raw_unit: np.ndarray, num_blocks: int, num_octets: int, has_time: bool, byte_planes: bool, bit_idx: int
 ) -> float:
     """Measures the share of residual slots whose zigzagged residual reaches 2^bit_idx.
 
-    The slots are a unit's samples plus padding, 8 per group. A residual reaches 2^bit_idx
+    The slots are a unit's samples plus padding, 8 per octet. A residual reaches 2^bit_idx
     if any of its bits bit_idx to 15 is set. Padding is zero, so bit planes and byte planes
     give the same share.
 
     Args:
         raw_unit: 1D uint8 array of a body.
         num_blocks: Total number of blocks.
-        num_groups: Groups of all blocks.
+        num_octets: Octets of all blocks.
         has_time: Whether the unit has a time axis.
         byte_planes: Whether the body holds byte planes.
         bit_idx: The bit, 0 to 15.
@@ -115,50 +115,50 @@ def wide_share(
     Returns:
         The share, 0.0 for a unit without plane bytes.
     """
-    if not num_groups:
+    if not num_octets:
         return 0.0
     count = 0
     if byte_planes:
-        bplanes = byte_planes_view(raw_unit, num_blocks, num_groups, has_time)
+        bplanes = byte_planes_view(raw_unit, num_blocks, num_octets, has_time)
         # Eight slots per 64-bit word: mask each byte, fold its bits into bit 0, count the ones
         low_words = bplanes[0].view(np.uint64)
         high_words = bplanes[1].view(np.uint64)
         low_mask = np.uint64(((0xFF << bit_idx) & 0xFF if bit_idx < 8 else 0) * 0x0101010101010101)
         high_mask = np.uint64(((0xFF << max(bit_idx - 8, 0)) & 0xFF) * 0x0101010101010101)
         ones = np.uint64(0x0101010101010101)
-        for word_idx in range(num_groups):
+        for word_idx in range(num_octets):
             word = (low_words[word_idx] & low_mask) | (high_words[word_idx] & high_mask)
             word |= word >> np.uint64(4)
             word |= word >> np.uint64(2)
             word |= word >> np.uint64(1)
             count += int(((word & ones) * ones) >> np.uint64(56))
-        return count / (8 * num_groups)
-    planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
-    wide = np.zeros(num_groups, np.uint8)
+        return count / (8 * num_octets)
+    planes = planes_view(raw_unit, num_blocks, num_octets, has_time)
+    wide = np.zeros(num_octets, np.uint8)
     for plane_idx in range(bit_idx, 16):
         wide |= planes[plane_idx]
-    for group_idx in range(num_groups):
-        count += _POPCOUNT[wide[group_idx]]
-    return count / (8 * num_groups)
+    for octet_idx in range(num_octets):
+        count += _POPCOUNT[wide[octet_idx]]
+    return count / (8 * num_octets)
 
 
 @njit(inline="always")
-def byte_planes_view(raw_unit: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
+def byte_planes_view(raw_unit: np.ndarray, num_blocks: int, num_octets: int, has_time: bool) -> np.ndarray:
     """Provides a 2D view into the residual field as 2 byte planes (flags bit 0).
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit data.
         num_blocks: Total number of blocks.
-        num_groups: Groups of all blocks.
+        num_octets: Octets of all blocks.
         has_time: Whether the unit has a time axis (time columns before the residuals).
 
     Returns:
-        2D uint8 array of shape (2, 8 * num_groups): the low bytes, then the high bytes, each
+        2D uint8 array of shape (2, 8 * num_octets): the low bytes, then the high bytes, each
         block padded with zeros to a multiple of 8 like the bit planes.
     """
     start_offset = residual_start(num_blocks, has_time)
-    end_offset = start_offset + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_groups
-    return raw_unit[start_offset:end_offset].reshape(2, 8 * num_groups)
+    end_offset = start_offset + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_octets
+    return raw_unit[start_offset:end_offset].reshape(2, 8 * num_octets)
 
 
 @njit(inline="always")
@@ -183,34 +183,34 @@ def shuffle_bytes(
     low_bytes: np.ndarray,
     high_bytes: np.ndarray,
     bit_planes: np.ndarray,
-    group_offset: int,
-    num_groups: int,
+    octet_offset: int,
+    num_octets: int,
 ) -> None:
     """Packs a block's zigzag low and high bytes into unit bit planes.
 
-    Transposes each group of 8 bytes as an 8x8 bit matrix and scatters its rows across the
+    Transposes the 8 bytes of each octet as an 8x8 bit matrix and scatters its rows across the
     16 bit planes (0-7 from the low bytes, 8-15 from the high).
 
     Args:
-        low_bytes: uint8 array of at least 8 * num_groups low zigzag bytes (padding included).
-        high_bytes: uint8 array of at least 8 * num_groups high zigzag bytes.
-        bit_planes: 2D uint8 array of shape (16, total groups) holding bit planes.
-        group_offset: The block's first byte in each plane.
-        num_groups: The block's bytes in each plane.
+        low_bytes: uint8 array of at least 8 * num_octets low zigzag bytes (padding included).
+        high_bytes: uint8 array of at least 8 * num_octets high zigzag bytes.
+        bit_planes: 2D uint8 array of shape (16, total octets) holding bit planes.
+        octet_offset: The block's first byte in each plane.
+        num_octets: The block's bytes in each plane.
     """
-    # Reinterpret byte buffers as 64-bit words for 8-byte group transposition
-    low_words64 = low_bytes[:8 * num_groups].view(np.uint64)
-    high_words64 = high_bytes[:8 * num_groups].view(np.uint64)
-    for group_idx in range(num_groups):
+    # Reinterpret byte buffers as 64-bit words to transpose an octet at a time
+    low_words64 = low_bytes[:8 * num_octets].view(np.uint64)
+    high_words64 = high_bytes[:8 * num_octets].view(np.uint64)
+    for octet_idx in range(num_octets):
         # Transpose each 8x8 bit matrix
-        transposed_low = _transpose8(low_words64[group_idx])
-        transposed_high = _transpose8(high_words64[group_idx])
+        transposed_low = _transpose8(low_words64[octet_idx])
+        transposed_high = _transpose8(high_words64[octet_idx])
         for bit_idx in range(8):
             # Extract transposed bytes into corresponding bit planes (0-7 low, 8-15 high)
-            bit_planes[bit_idx, group_offset + group_idx] = np.uint8(
+            bit_planes[bit_idx, octet_offset + octet_idx] = np.uint8(
                 (transposed_low >> np.uint64(8 * bit_idx)) & np.uint64(0xFF)
             )
-            bit_planes[8 + bit_idx, group_offset + group_idx] = np.uint8(
+            bit_planes[8 + bit_idx, octet_offset + octet_idx] = np.uint8(
                 (transposed_high >> np.uint64(8 * bit_idx)) & np.uint64(0xFF)
             )
 
@@ -219,7 +219,7 @@ def shuffle_bytes(
 def shuffle_block(
     residuals: np.ndarray,
     bit_planes: np.ndarray,
-    group_offset: int,
+    octet_offset: int,
     scratch_low_bytes: np.ndarray,
     scratch_high_bytes: np.ndarray,
 ) -> None:
@@ -230,25 +230,25 @@ def shuffle_block(
 
     Args:
         residuals: 1D int16 array of n residual differences for the block.
-        bit_planes: 2D uint8 array of shape (16, total groups) holding bit planes.
-        group_offset: The block's first byte in each plane.
-        scratch_low_bytes: uint8 scratch array of at least 8 * plane_groups(n).
-        scratch_high_bytes: uint8 scratch array of at least 8 * plane_groups(n).
+        bit_planes: 2D uint8 array of shape (16, total octets) holding bit planes.
+        octet_offset: The block's first byte in each plane.
+        scratch_low_bytes: uint8 scratch array of at least 8 * plane_octets(n).
+        scratch_high_bytes: uint8 scratch array of at least 8 * plane_octets(n).
     """
     num_samples = residuals.shape[0]
-    num_8byte_groups = plane_groups(num_samples)
+    num_octets = plane_octets(num_samples)
     zigzag_block(residuals, scratch_low_bytes, scratch_high_bytes)
     # The padding past n is zero
-    scratch_low_bytes[num_samples:8 * num_8byte_groups] = 0
-    scratch_high_bytes[num_samples:8 * num_8byte_groups] = 0
-    shuffle_bytes(scratch_low_bytes, scratch_high_bytes, bit_planes, group_offset, num_8byte_groups)
+    scratch_low_bytes[num_samples:8 * num_octets] = 0
+    scratch_high_bytes[num_samples:8 * num_octets] = 0
+    shuffle_bytes(scratch_low_bytes, scratch_high_bytes, bit_planes, octet_offset, num_octets)
 
 
 @njit(nogil=True, cache=True)
 def unshuffle_block(
     bit_planes: np.ndarray,
-    group_offset: int,
-    num_groups: int,
+    octet_offset: int,
+    num_octets: int,
     out_low_bytes: np.ndarray,
     out_high_bytes: np.ndarray,
 ) -> None:
@@ -258,69 +258,69 @@ def unshuffle_block(
     reversing the 8x8 bit transpose.
 
     Args:
-        bit_planes: 2D uint8 array of shape (16, total groups) holding bit planes.
-        group_offset: The block's first byte in each plane.
-        num_groups: The block's bytes in each plane.
-        out_low_bytes: Output uint8 array of at least 8 * num_groups receiving lower zigzag
+        bit_planes: 2D uint8 array of shape (16, total octets) holding bit planes.
+        octet_offset: The block's first byte in each plane.
+        num_octets: The block's bytes in each plane.
+        out_low_bytes: Output uint8 array of at least 8 * num_octets receiving lower zigzag
             bytes (the padding past n included).
-        out_high_bytes: Output uint8 array of at least 8 * num_groups receiving upper zigzag
+        out_high_bytes: Output uint8 array of at least 8 * num_octets receiving upper zigzag
             bytes.
     """
     low_words64 = out_low_bytes.view(np.uint64)
     high_words64 = out_high_bytes.view(np.uint64)
-    for group_idx in range(num_groups):
+    for octet_idx in range(num_octets):
         gathered_low = np.uint64(0)
         gathered_high = np.uint64(0)
         for bit_idx in range(8):
             # Gather one byte from each bit plane into a 64-bit word
-            gathered_low |= np.uint64(bit_planes[bit_idx, group_offset + group_idx]) << np.uint64(8 * bit_idx)
-            gathered_high |= np.uint64(bit_planes[8 + bit_idx, group_offset + group_idx]) << np.uint64(8 * bit_idx)
+            gathered_low |= np.uint64(bit_planes[bit_idx, octet_offset + octet_idx]) << np.uint64(8 * bit_idx)
+            gathered_high |= np.uint64(bit_planes[8 + bit_idx, octet_offset + octet_idx]) << np.uint64(8 * bit_idx)
         # Transpose back: transposition is self-inverse
-        low_words64[group_idx] = _transpose8(gathered_low)
-        high_words64[group_idx] = _transpose8(gathered_high)
+        low_words64[octet_idx] = _transpose8(gathered_low)
+        high_words64[octet_idx] = _transpose8(gathered_high)
 
 
 @njit(nogil=True, cache=True)
 def _bit_planes_into(
-    byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray
+    byte_body: np.ndarray, num_blocks: int, num_octets: int, has_time: bool, out_body: np.ndarray
 ) -> None:
     """Writes the residual region of a byte-plane body into out_body as bit planes.
 
     Blocks start on a multiple of 8 residuals in the byte planes and are padded with zeros, so
-    the groups of 8 bytes of all blocks line up across the region and one pass over it
+    the octets of all blocks line up across the region and one pass over it
     converts every block.
 
     Args:
         byte_body: 1D uint8 array of the uncompressed body stored as byte planes.
         num_blocks: Total number of blocks.
-        num_groups: Total 8-sample groups across all blocks.
+        num_octets: Total 8-sample octets across all blocks.
         has_time: Whether the unit has a time axis.
         out_body: Destination 1D uint8 body array receiving transposed bit planes.
     """
-    if num_groups:
-        bplanes = byte_planes_view(byte_body, num_blocks, num_groups, has_time)
-        shuffle_bytes(bplanes[0], bplanes[1], planes_view(out_body, num_blocks, num_groups, has_time), 0, num_groups)
+    if num_octets:
+        bplanes = byte_planes_view(byte_body, num_blocks, num_octets, has_time)
+        shuffle_bytes(bplanes[0], bplanes[1], planes_view(out_body, num_blocks, num_octets, has_time), 0, num_octets)
 
 
 @njit(nogil=True, cache=True)
 def _byte_planes_into(
-    bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool, out_body: np.ndarray
+    bit_body: np.ndarray, num_blocks: int, num_octets: int, has_time: bool, out_body: np.ndarray
 ) -> None:
     """Writes the residual region of a bit-plane body into out_body as byte planes.
 
     Args:
         bit_body: 1D uint8 array of the uncompressed body stored as bit planes.
         num_blocks: Total number of blocks.
-        num_groups: Total 8-sample groups across all blocks.
+        num_octets: Total 8-sample octets across all blocks.
         has_time: Whether the unit has a time axis.
         out_body: Destination 1D uint8 body array receiving reconstructed byte planes.
     """
-    if num_groups:
-        bplanes = byte_planes_view(out_body, num_blocks, num_groups, has_time)
-        unshuffle_block(planes_view(bit_body, num_blocks, num_groups, has_time), 0, num_groups, bplanes[0], bplanes[1])
+    if num_octets:
+        bplanes = byte_planes_view(out_body, num_blocks, num_octets, has_time)
+        unshuffle_block(planes_view(bit_body, num_blocks, num_octets, has_time), 0, num_octets, bplanes[0], bplanes[1])
 
 
-def to_bit_planes(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
+def to_bit_planes(byte_body: np.ndarray, num_blocks: int, num_octets: int, has_time: bool) -> np.ndarray:
     """Converts a byte-plane body into a bit-plane body.
 
     Only the residual region changes; the rest of the body is copied as it is.
@@ -328,18 +328,18 @@ def to_bit_planes(byte_body: np.ndarray, num_blocks: int, num_groups: int, has_t
     Args:
         byte_body: 1D uint8 array of a body whose residuals are byte planes.
         num_blocks: Number of blocks.
-        num_groups: Groups of all blocks.
+        num_octets: Octets of all blocks.
         has_time: Whether the unit has a time axis.
 
     Returns:
         A new 1D uint8 array.
     """
     bit_body = byte_body.copy()
-    _bit_planes_into(byte_body, num_blocks, num_groups, has_time, bit_body)
+    _bit_planes_into(byte_body, num_blocks, num_octets, has_time, bit_body)
     return bit_body
 
 
-def to_byte_planes(bit_body: np.ndarray, num_blocks: int, num_groups: int, has_time: bool) -> np.ndarray:
+def to_byte_planes(bit_body: np.ndarray, num_blocks: int, num_octets: int, has_time: bool) -> np.ndarray:
     """Converts a bit-plane body into a byte-plane body.
 
     The residual slots past a block's samples come out zero if they were zero in the bit planes.
@@ -347,14 +347,14 @@ def to_byte_planes(bit_body: np.ndarray, num_blocks: int, num_groups: int, has_t
     Args:
         bit_body: 1D uint8 array of body stored with bit planes.
         num_blocks: Number of blocks.
-        num_groups: Total 8-sample groups across all blocks.
+        num_octets: Total 8-sample octets across all blocks.
         has_time: Whether the unit has a time axis.
 
     Returns:
         New 1D uint8 body array with residuals formatted as byte planes.
     """
     byte_body = bit_body.copy()
-    _byte_planes_into(bit_body, num_blocks, num_groups, has_time, byte_body)
+    _byte_planes_into(bit_body, num_blocks, num_octets, has_time, byte_body)
     return byte_body
 
 
@@ -380,78 +380,78 @@ def unzigzag16(low_bytes: np.ndarray, high_bytes: np.ndarray, sample_idx: int) -
 
 @njit(inline="always")
 def code_planes_view(
-    raw_unit: np.ndarray, num_blocks: int, num_groups: int, num_code_groups: int, has_time: bool
+    raw_unit: np.ndarray, num_blocks: int, num_octets: int, num_code_octets: int, has_time: bool
 ) -> np.ndarray:
     """Provides a 2D view into the non-finite code planes of an uncompressed unit.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit data.
         num_blocks: Total number of blocks.
-        num_groups: Groups of all blocks.
-        num_code_groups: Groups of the blocks carrying non-finite codes.
+        num_octets: Octets of all blocks.
+        num_code_octets: Octets of the blocks carrying non-finite codes.
         has_time: Whether the unit has a time axis (time columns before the residuals).
 
     Returns:
-        2D uint8 array of shape (2, num_code_groups).
+        2D uint8 array of shape (2, num_code_octets).
     """
-    start_offset = code_planes_start(num_blocks, num_groups, has_time)
-    total_code_bytes = num_code_groups * NONFINITE_BITS_PER_SAMPLE
-    return raw_unit[start_offset:start_offset + total_code_bytes].reshape(2, num_code_groups)
+    start_offset = code_planes_start(num_blocks, num_octets, has_time)
+    total_code_bytes = num_code_octets * NONFINITE_BITS_PER_SAMPLE
+    return raw_unit[start_offset:start_offset + total_code_bytes].reshape(2, num_code_octets)
 
 
 @njit(inline="always")
 def time_planes_views(
-    raw_unit: np.ndarray, num_blocks: int, num_groups: int, num_code_groups: int, num_short_groups: int,
-    num_long_groups: int,
+    raw_unit: np.ndarray, num_blocks: int, num_octets: int, num_code_octets: int, num_short_octets: int,
+    num_long_octets: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Provides 2D views into the time residual planes of an uncompressed unit with a time axis.
 
     Args:
         raw_unit: 1D uint8 array containing uncompressed unit data.
         num_blocks: Total number of blocks.
-        num_groups: Groups of all blocks.
-        num_code_groups: Groups of the blocks carrying non-finite codes.
-        num_short_groups: Groups of the irregular blocks.
-        num_long_groups: Groups of the long blocks.
+        num_octets: Octets of all blocks.
+        num_code_octets: Octets of the blocks carrying non-finite codes.
+        num_short_octets: Octets of the irregular blocks.
+        num_long_octets: Octets of the long blocks.
 
     Returns:
         A tuple of (short_planes, long_planes): 2D uint8 arrays of shape
-        (32, num_short_groups) holding planes 0-31 of every irregular block, and
-        (32, num_long_groups) holding planes 32-63 of the long ones.
+        (32, num_short_octets) holding planes 0-31 of every irregular block, and
+        (32, num_long_octets) holding planes 32-63 of the long ones.
     """
-    short_start = code_planes_start(num_blocks, num_groups, True) + num_code_groups * NONFINITE_BITS_PER_SAMPLE
-    short_bytes = TIME_SHORT_PLANES * num_short_groups
-    long_bytes = TIME_SHORT_PLANES * num_long_groups
-    short_planes = raw_unit[short_start:short_start + short_bytes].reshape(TIME_SHORT_PLANES, num_short_groups)
+    short_start = code_planes_start(num_blocks, num_octets, True) + num_code_octets * NONFINITE_BITS_PER_SAMPLE
+    short_bytes = TIME_SHORT_PLANES * num_short_octets
+    long_bytes = TIME_SHORT_PLANES * num_long_octets
+    short_planes = raw_unit[short_start:short_start + short_bytes].reshape(TIME_SHORT_PLANES, num_short_octets)
     long_start = short_start + short_bytes
-    long_planes = raw_unit[long_start:long_start + long_bytes].reshape(TIME_SHORT_PLANES, num_long_groups)
+    long_planes = raw_unit[long_start:long_start + long_bytes].reshape(TIME_SHORT_PLANES, num_long_octets)
     return short_planes, long_planes
 
 
 @njit(inline="always")
-def _put_code_group(
-    sample_codes: np.ndarray, group_idx: int, num_valid: int, code_planes: np.ndarray, plane_byte_offset: int
+def _put_code_octet(
+    sample_codes: np.ndarray, octet_idx: int, num_valid: int, code_planes: np.ndarray, plane_byte_offset: int
 ) -> None:
-    """Packs the codes of an 8-sample group into one byte of each code plane.
+    """Packs the codes of an 8-sample octet into one byte of each code plane.
 
     Bits past num_valid stay zero.
 
     Args:
         sample_codes: 1D uint8 array of 2-bit sample codes.
-        group_idx: Zero-based group index within the block.
-        num_valid: Number of valid samples in this group (1 to 8).
-        code_planes: 2D uint8 array of shape (2, code_groups) holding code planes.
+        octet_idx: Zero-based octet index within the block.
+        num_valid: Number of valid samples in this octet (1 to 8).
+        code_planes: 2D uint8 array of shape (2, code_octets) holding code planes.
         plane_byte_offset: Starting byte offset of the block in code planes.
     """
     plane0_byte = 0
     plane1_byte = 0
     for bit_idx in range(num_valid):
-        code_val = sample_codes[8 * group_idx + bit_idx]
+        code_val = sample_codes[8 * octet_idx + bit_idx]
         # Bit 0 of code goes to plane 0; bit 1 goes to plane 1
         plane0_byte |= (code_val & 1) << bit_idx
         plane1_byte |= ((code_val >> 1) & 1) << bit_idx
-    code_planes[0, plane_byte_offset + group_idx] = plane0_byte
-    code_planes[1, plane_byte_offset + group_idx] = plane1_byte
+    code_planes[0, plane_byte_offset + octet_idx] = plane0_byte
+    code_planes[1, plane_byte_offset + octet_idx] = plane1_byte
 
 
 @njit(nogil=True, cache=True)
@@ -460,26 +460,26 @@ def put_codes(sample_codes: np.ndarray, code_planes: np.ndarray, plane_byte_offs
 
     Args:
         sample_codes: 1D uint8 array of n codes (values in 0..3).
-        code_planes: 2D uint8 array of shape (2, code groups) holding code planes.
+        code_planes: 2D uint8 array of shape (2, code octets) holding code planes.
         plane_byte_offset: The block's first byte in each code plane.
     """
     num_samples = sample_codes.shape[0]
-    num_full_groups = num_samples // 8
-    # Full groups with a constant bit count (it vectorizes), then a partial last group
-    for group_idx in range(num_full_groups):
-        _put_code_group(sample_codes, group_idx, 8, code_planes, plane_byte_offset)
+    num_full_octets = num_samples // 8
+    # Full octets with a constant bit count (it vectorizes), then a partial last octet
+    for octet_idx in range(num_full_octets):
+        _put_code_octet(sample_codes, octet_idx, 8, code_planes, plane_byte_offset)
     if num_samples % 8:
-        _put_code_group(sample_codes, num_full_groups, num_samples % 8, code_planes, plane_byte_offset)
+        _put_code_octet(sample_codes, num_full_octets, num_samples % 8, code_planes, plane_byte_offset)
 
 
 @njit(inline="always")
 def get_code(plane0_byte: int, plane1_byte: int, bit_idx: int) -> int:
-    """Extracts the 2-bit non-finite code of one sample of a group from its plane bytes.
+    """Extracts the 2-bit non-finite code of one sample of an octet from its plane bytes.
 
     Args:
-        plane0_byte: The group's byte of code plane 0.
-        plane1_byte: The group's byte of code plane 1.
-        bit_idx: The sample's position in the group (0..7).
+        plane0_byte: The octet's byte of code plane 0.
+        plane1_byte: The octet's byte of code plane 1.
+        bit_idx: The sample's position in the octet (0..7).
 
     Returns:
         Integer code in 0..3.
@@ -489,23 +489,23 @@ def get_code(plane0_byte: int, plane1_byte: int, bit_idx: int) -> int:
 
 
 @njit(inline="always")
-def _get_code_group(
-    code_planes: np.ndarray, plane_byte_offset: int, group_idx: int, num_valid: int, out_codes: np.ndarray
+def _get_code_octet(
+    code_planes: np.ndarray, plane_byte_offset: int, octet_idx: int, num_valid: int, out_codes: np.ndarray
 ) -> None:
-    """Unpacks codes of an 8-sample group from one byte of each code plane.
+    """Unpacks codes of an 8-sample octet from one byte of each code plane.
 
     Args:
-        code_planes: 2D uint8 array of shape (2, code_groups) holding code planes.
+        code_planes: 2D uint8 array of shape (2, code_octets) holding code planes.
         plane_byte_offset: Starting byte offset of the block in code planes.
-        group_idx: Zero-based group index within the block.
-        num_valid: Number of valid samples in this group (1 to 8).
+        octet_idx: Zero-based octet index within the block.
+        num_valid: Number of valid samples in this octet (1 to 8).
         out_codes: Destination 1D uint8 array receiving unpacked codes.
     """
-    plane0_byte = code_planes[0, plane_byte_offset + group_idx]
-    plane1_byte = code_planes[1, plane_byte_offset + group_idx]
+    plane0_byte = code_planes[0, plane_byte_offset + octet_idx]
+    plane1_byte = code_planes[1, plane_byte_offset + octet_idx]
     for bit_idx in range(num_valid):
-        # Extract 2-bit code for each sample in the 8-sample group
-        out_codes[8 * group_idx + bit_idx] = get_code(plane0_byte, plane1_byte, bit_idx)
+        # Extract 2-bit code for each sample in the 8-sample octet
+        out_codes[8 * octet_idx + bit_idx] = get_code(plane0_byte, plane1_byte, bit_idx)
 
 
 @njit(nogil=True, cache=True)
@@ -513,17 +513,17 @@ def get_codes(code_planes: np.ndarray, plane_byte_offset: int, out_codes: np.nda
     """Unpacks 2-bit non-finite sample codes for a flagged block.
 
     Args:
-        code_planes: 2D uint8 array of shape (2, code groups) holding code planes.
+        code_planes: 2D uint8 array of shape (2, code octets) holding code planes.
         plane_byte_offset: The block's first byte in each code plane.
         out_codes: Output 1D uint8 array of length n receiving unpacked codes.
     """
     num_samples = out_codes.shape[0]
-    num_full_groups = num_samples // 8
-    # Full groups with a constant bit count (it vectorizes), then a partial last group
-    for group_idx in range(num_full_groups):
-        _get_code_group(code_planes, plane_byte_offset, group_idx, 8, out_codes)
+    num_full_octets = num_samples // 8
+    # Full octets with a constant bit count (it vectorizes), then a partial last octet
+    for octet_idx in range(num_full_octets):
+        _get_code_octet(code_planes, plane_byte_offset, octet_idx, 8, out_codes)
     if num_samples % 8:
-        _get_code_group(code_planes, plane_byte_offset, num_full_groups, num_samples % 8, out_codes)
+        _get_code_octet(code_planes, plane_byte_offset, num_full_octets, num_samples % 8, out_codes)
 
 
 @njit(inline="always")
@@ -574,8 +574,8 @@ def _level_planes(
     short_offset: int,
     long_offset: int,
     byte_idx: int,
-    first_group: int,
-    end_group: int,
+    first_octet: int,
+    end_octet: int,
 ) -> np.ndarray:
     """Returns a view into the 8 bit planes corresponding to a block's byte level.
 
@@ -585,33 +585,33 @@ def _level_planes(
     Args:
         short_planes: 2D uint8 array holding short time residual bit planes.
         long_planes: 2D uint8 array holding long time residual bit planes.
-        short_offset: Starting group offset in short_planes.
-        long_offset: Starting group offset in long_planes.
+        short_offset: Starting octet offset in short_planes.
+        long_offset: Starting octet offset in long_planes.
         byte_idx: Byte level index (0 to 7).
-        first_group: Starting group index.
-        end_group: Ending group index.
+        first_octet: Starting octet index.
+        end_octet: Ending octet index.
 
     Returns:
-        2D uint8 array of shape (8, end_group - first_group) containing the bit planes.
+        2D uint8 array of shape (8, end_octet - first_octet) containing the bit planes.
     """
     if byte_idx < 4:
-        return short_planes[8 * byte_idx:8 * byte_idx + 8, short_offset + first_group:short_offset + end_group]
+        return short_planes[8 * byte_idx:8 * byte_idx + 8, short_offset + first_octet:short_offset + end_octet]
     level = byte_idx - 4
-    return long_planes[8 * level:8 * level + 8, long_offset + first_group:long_offset + end_group]
+    return long_planes[8 * level:8 * level + 8, long_offset + first_octet:long_offset + end_octet]
 
 
 @njit(inline="always")
-def _put_time_group(
-    values: np.ndarray, base: int, shift: np.uint64, level_planes: np.ndarray, group_idx: int
+def _put_time_octet(
+    values: np.ndarray, base: int, shift: np.uint64, level_planes: np.ndarray, octet_idx: int
 ) -> None:
-    """Packs selected byte of 8 time values into byte group_idx of 8 bit planes.
+    """Packs selected byte of 8 time values into byte octet_idx of 8 bit planes.
 
     Args:
         values: 1D uint64 array of time residuals.
-        base: Starting index of the 8-sample group.
+        base: Starting index of the 8-sample octet.
         shift: Bit shift offset (8 * byte_index).
         level_planes: 2D uint8 array of the 8 bit planes for this byte level.
-        group_idx: Group index within level_planes.
+        octet_idx: Octet index within level_planes.
     """
     transposed_word = _transpose8(_byte_word(
         values[base], values[base + 1], values[base + 2], values[base + 3],
@@ -619,23 +619,23 @@ def _put_time_group(
         shift,
     ))
     for bit_idx in range(8):
-        level_planes[bit_idx, group_idx] = np.uint8((transposed_word >> np.uint64(8 * bit_idx)) & np.uint64(0xFF))
+        level_planes[bit_idx, octet_idx] = np.uint8((transposed_word >> np.uint64(8 * bit_idx)) & np.uint64(0xFF))
 
 
 @njit(inline="always")
-def _get_time_group(level_planes: np.ndarray, group_idx: int, byte_idx: int, out_bytes: np.ndarray) -> None:
-    """Unpacks byte group_idx of 8 bit planes into byte byte_idx of 8 uint64 samples.
+def _get_time_octet(level_planes: np.ndarray, octet_idx: int, byte_idx: int, out_bytes: np.ndarray) -> None:
+    """Unpacks byte octet_idx of 8 bit planes into byte byte_idx of 8 uint64 samples.
 
     Args:
         level_planes: 2D uint8 array of the 8 bit planes for this byte level.
-        group_idx: Group index within level_planes.
+        octet_idx: Octet index within level_planes.
         byte_idx: Byte position within each 64-bit integer (0 to 7).
         out_bytes: 1D uint8 array view of the destination uint64 residuals.
     """
     gathered_word = np.uint64(0)
     for bit_idx in range(8):
-        gathered_word |= np.uint64(level_planes[bit_idx, group_idx]) << np.uint64(8 * bit_idx)
-    # Transpose back: byte k of the result is byte byte_idx of sample 8 * group_idx + k
+        gathered_word |= np.uint64(level_planes[bit_idx, octet_idx]) << np.uint64(8 * bit_idx)
+    # Transpose back: byte k of the result is byte byte_idx of sample 8 * octet_idx + k
     transposed_word = _transpose8(gathered_word)
     for sample_offset in range(8):
         out_bytes[byte_idx + 8 * sample_offset] = np.uint8(
@@ -665,11 +665,11 @@ def shuffle_time_residuals(
         long_planes: 2D uint8 array of planes 32-63 of the long blocks.
         short_offset: The block's first byte in the short planes.
         long_offset: The block's first byte in the long planes (unused for a short block).
-        scratch_tail: uint64 scratch array of 8 for a partial last group.
+        scratch_tail: uint64 scratch array of 8 for a partial last octet.
     """
     num_samples = time_residuals.shape[0]
-    num_full_groups = num_samples // 8
-    num_groups = plane_groups(num_samples)
+    num_full_octets = num_samples // 8
+    num_octets = plane_octets(num_samples)
     # Bytes above the highest set bit of every residual are zero in all samples
     all_bits = np.uint64(0)
     for sample_idx in range(num_samples):
@@ -677,17 +677,17 @@ def shuffle_time_residuals(
     num_active_bytes = 0
     while num_active_bytes < 8 and (all_bits >> np.uint64(8 * num_active_bytes)) != 0:
         num_active_bytes += 1
-    if num_groups > num_full_groups:
-        # A partial last group packs from a zero-padded copy
+    if num_octets > num_full_octets:
+        # A partial last octet packs from a zero-padded copy
         scratch_tail[:] = 0
-        scratch_tail[:num_samples - 8 * num_full_groups] = time_residuals[8 * num_full_groups:]
+        scratch_tail[:num_samples - 8 * num_full_octets] = time_residuals[8 * num_full_octets:]
     for byte_idx in range(num_active_bytes):
-        level_planes = _level_planes(short_planes, long_planes, short_offset, long_offset, byte_idx, 0, num_groups)
+        level_planes = _level_planes(short_planes, long_planes, short_offset, long_offset, byte_idx, 0, num_octets)
         shift = np.uint64(8 * byte_idx)
-        for group_idx in range(num_full_groups):
-            _put_time_group(time_residuals, 8 * group_idx, shift, level_planes, group_idx)
-        if num_groups > num_full_groups:
-            _put_time_group(scratch_tail, 0, shift, level_planes, num_full_groups)
+        for octet_idx in range(num_full_octets):
+            _put_time_octet(time_residuals, 8 * octet_idx, shift, level_planes, octet_idx)
+        if num_octets > num_full_octets:
+            _put_time_octet(scratch_tail, 0, shift, level_planes, num_full_octets)
 
 
 @njit(nogil=True, cache=True)
@@ -699,15 +699,15 @@ def _time_tail_levels(
     stride: int,
     num_valid: int,
 ) -> int:
-    """Counts active byte levels in a block's partial last group.
+    """Counts active byte levels in a block's partial last octet.
 
     Args:
         short_planes: 2D uint8 array holding short planes.
         long_planes: 2D uint8 array holding long planes.
-        short_offset: Starting group offset in short_planes.
-        long_offset: Starting group offset in long_planes, or -1 for a short block.
-        stride: Total groups allocated for this block.
-        num_valid: Number of valid samples in the partial group (1 to 7).
+        short_offset: Starting octet offset in short_planes.
+        long_offset: Starting octet offset in long_planes, or -1 for a short block.
+        stride: Total octets allocated for this block.
+        num_valid: Number of valid samples in the partial octet (1 to 7).
 
     Returns:
         Number of active byte levels up to the highest with a non-zero bit.
@@ -737,14 +737,14 @@ def _unshuffle_time_tail(
     out_time_residuals: np.ndarray,
     scratch_tail: np.ndarray,
 ) -> None:
-    """Unpacks the partial last group of a block's time residuals.
+    """Unpacks the partial last octet of a block's time residuals.
 
     Args:
         short_planes: 2D uint8 array of short planes.
         long_planes: 2D uint8 array of long planes.
-        short_offset: Starting group offset in short_planes.
-        long_offset: Starting group offset in long_planes.
-        stride: Total groups allocated for this block.
+        short_offset: Starting octet offset in short_planes.
+        long_offset: Starting octet offset in long_planes.
+        stride: Total octets allocated for this block.
         num_active_bytes: Number of active byte levels.
         out_time_residuals: Destination 1D uint64 array receiving reconstructed residuals.
         scratch_tail: 1D uint64 scratch buffer of length 8.
@@ -753,7 +753,7 @@ def _unshuffle_time_tail(
     tail_bytes = scratch_tail.view(np.uint8)
     for byte_idx in range(num_active_bytes):
         level_planes = _level_planes(short_planes, long_planes, short_offset, long_offset, byte_idx, 0, stride)
-        _get_time_group(level_planes, stride - 1, byte_idx, tail_bytes)
+        _get_time_octet(level_planes, stride - 1, byte_idx, tail_bytes)
     num_full_samples = 8 * (stride - 1)
     out_time_residuals[num_full_samples:] = scratch_tail[:out_time_residuals.shape[0] - num_full_samples]
 
@@ -775,15 +775,15 @@ def unshuffle_time_residuals(
         short_offset: The block's first byte in the short planes.
         long_offset: The block's first byte in the long planes, or -1 for a short block.
         out_time_residuals: Output 1D uint64 array of the block's n residuals.
-        scratch_tail: uint64 scratch array of 8 for a partial last group.
+        scratch_tail: uint64 scratch array of 8 for a partial last octet.
 
     Returns:
         The number of byte levels with a nonzero plane byte (at most 4 for a short block).
     """
     num_samples = out_time_residuals.shape[0]
-    # Full groups here; a partial last group (its plane bytes after them) is unpacked separately
-    num_groups = num_samples // 8
-    stride = plane_groups(num_samples)
+    # Full octets here; a partial last octet (its plane bytes after them) is unpacked separately
+    num_octets = num_samples // 8
+    stride = plane_octets(num_samples)
     num_tail_bytes = 0
     if num_samples % 8:
         num_tail_bytes = _time_tail_levels(short_planes, long_planes, short_offset, long_offset, stride,
@@ -793,12 +793,12 @@ def unshuffle_time_residuals(
     num_active_bytes = 8 if long_offset >= 0 else 4
     while num_active_bytes > num_tail_bytes:
         level_planes = _level_planes(
-            short_planes, long_planes, short_offset, long_offset, num_active_bytes - 1, 0, num_groups
+            short_planes, long_planes, short_offset, long_offset, num_active_bytes - 1, 0, num_octets
         )
         level_nonzero = False
         for bit_idx in range(8):
-            for group_idx in range(num_groups):
-                level_nonzero |= level_planes[bit_idx, group_idx] != 0
+            for octet_idx in range(num_octets):
+                level_nonzero |= level_planes[bit_idx, octet_idx] != 0
         if level_nonzero:
             break
         num_active_bytes -= 1
@@ -807,14 +807,14 @@ def unshuffle_time_residuals(
     # Little-endian bytes of the residuals: byte byte_idx of sample s is at 8 * s + byte_idx
     out_bytes = out_time_residuals.view(np.uint8)
     for byte_idx in range(num_active_bytes):
-        level_planes = _level_planes(short_planes, long_planes, short_offset, long_offset, byte_idx, 0, num_groups)
-        for group_idx in range(num_groups):
+        level_planes = _level_planes(short_planes, long_planes, short_offset, long_offset, byte_idx, 0, num_octets)
+        for octet_idx in range(num_octets):
             gathered_word = np.uint64(0)
             for bit_idx in range(8):
-                gathered_word |= np.uint64(level_planes[bit_idx, group_idx]) << np.uint64(8 * bit_idx)
-            # Transpose back: byte k of the result is byte byte_idx of sample 8 * group_idx + k
+                gathered_word |= np.uint64(level_planes[bit_idx, octet_idx]) << np.uint64(8 * bit_idx)
+            # Transpose back: byte k of the result is byte byte_idx of sample 8 * octet_idx + k
             transposed_word = _transpose8(gathered_word)
-            out_byte_idx = 64 * group_idx + byte_idx
+            out_byte_idx = 64 * octet_idx + byte_idx
             for sample_offset in range(8):
                 out_bytes[out_byte_idx + 8 * sample_offset] = np.uint8(
                     (transposed_word >> np.uint64(8 * sample_offset)) & np.uint64(0xFF)
@@ -831,7 +831,7 @@ def unshuffle_time_residuals(
 def write_time_rows(
     block_flags: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
@@ -845,7 +845,7 @@ def write_time_rows(
 
     Args:
         block_flags: 1D uint8 array of block flags (BLOCK_FLAG_IRREGULAR_TIME selects the residual planes).
-        sample_offsets, group_offsets, code_offsets, short_offsets, long_offsets: The Layout.
+        sample_offsets, octet_offsets, code_offsets, short_offsets, long_offsets: The Layout.
         time_starts: 1D int64 array of block start times (empty blocks' are ignored).
         time_steps: 1D int64 array of block time steps.
         time_refs: 1D uint64 array of block reference quotients.
@@ -855,7 +855,7 @@ def write_time_rows(
     """
     num_blocks = block_flags.shape[0]
     short_planes, long_planes = time_planes_views(
-        out_raw_unit, num_blocks, int(group_offsets[num_blocks]), int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
+        out_raw_unit, num_blocks, int(octet_offsets[num_blocks]), int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
         int(long_offsets[num_blocks]),
     )
     scratch_tail = np.empty(8, np.uint64)
@@ -916,19 +916,19 @@ def _long_planes_zero(long_planes: np.ndarray, long_offset: int, num_samples: in
 
     Args:
         long_planes: 2D uint8 array of planes 32-63.
-        long_offset: Starting group offset in long_planes.
+        long_offset: Starting octet offset in long_planes.
         num_samples: Total number of samples in the block.
 
     Returns:
         True if every bit of planes 32-63 is zero for the block's samples, False otherwise.
     """
-    num_groups = plane_groups(num_samples)
+    num_octets = plane_octets(num_samples)
     tail_mask = np.uint8((1 << (num_samples % 8)) - 1) if num_samples % 8 else np.uint8(0xFF)
     for plane_idx in range(TIME_SHORT_PLANES):
-        for group_idx in range(num_groups - 1):
-            if long_planes[plane_idx, long_offset + group_idx]:
+        for octet_idx in range(num_octets - 1):
+            if long_planes[plane_idx, long_offset + octet_idx]:
                 return False
-        if long_planes[plane_idx, long_offset + num_groups - 1] & tail_mask:
+        if long_planes[plane_idx, long_offset + num_octets - 1] & tail_mask:
             return False
     return True
 
@@ -937,7 +937,7 @@ def _long_planes_zero(long_planes: np.ndarray, long_offset: int, num_samples: in
 def read_time_columns(
     raw_unit: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
@@ -951,7 +951,7 @@ def read_time_columns(
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes of a unit with a time axis.
-        sample_offsets, group_offsets, code_offsets, short_offsets, long_offsets: The Layout.
+        sample_offsets, octet_offsets, code_offsets, short_offsets, long_offsets: The Layout.
         out_time_starts: Output 1D int64 array receiving the block start times (0 for an
             empty block).
         out_time_steps: Output 1D int64 array receiving the block time steps.
@@ -966,7 +966,7 @@ def read_time_columns(
     """
     num_blocks = out_time_starts.shape[0]
     _, long_planes = time_planes_views(
-        raw_unit, num_blocks, int(group_offsets[num_blocks]), int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
+        raw_unit, num_blocks, int(octet_offsets[num_blocks]), int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
         int(long_offsets[num_blocks]),
     )
     int64_max = np.uint64(0x7FFFFFFFFFFFFFFF)
@@ -1007,7 +1007,7 @@ def read_time_columns(
 def read_time_residuals(
     raw_unit: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
@@ -1018,14 +1018,14 @@ def read_time_residuals(
 
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes of a unit with a time axis.
-        sample_offsets, group_offsets, code_offsets, short_offsets, long_offsets: The Layout.
+        sample_offsets, octet_offsets, code_offsets, short_offsets, long_offsets: The Layout.
         block_ids: 1D int64 array of the blocks to unpack.
         out_time_residuals: Output 1D uint64 array of every sample receiving the irregular
             given blocks' residuals (other samples are not written).
     """
     num_blocks = sample_offsets.shape[0] - 1
     short_planes, long_planes = time_planes_views(
-        raw_unit, num_blocks, int(group_offsets[num_blocks]), int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
+        raw_unit, num_blocks, int(octet_offsets[num_blocks]), int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
         int(long_offsets[num_blocks]),
     )
     scratch_tail = np.empty(8, np.uint64)
@@ -1044,7 +1044,7 @@ def read_time_residuals(
 def read_time_rows(
     raw_unit: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
@@ -1061,7 +1061,7 @@ def read_time_rows(
     Args:
         raw_unit: 1D uint8 array of uncompressed body bytes.
         sample_offsets: 1D int64 array of sample offsets.
-        group_offsets: 1D int64 array of group offsets.
+        octet_offsets: 1D int64 array of octet offsets.
         code_offsets: 1D int64 array of code plane offsets.
         short_offsets: 1D int64 array of short time plane offsets.
         long_offsets: 1D int64 array of long time plane offsets.
@@ -1074,7 +1074,7 @@ def read_time_rows(
     Returns:
         A tuple of (status, failing_block_idx) matching read_time_columns.
     """
-    offsets = (sample_offsets, group_offsets, code_offsets, short_offsets, long_offsets)
+    offsets = (sample_offsets, octet_offsets, code_offsets, short_offsets, long_offsets)
     status = read_time_columns(raw_unit, *offsets, out_time_starts, out_time_steps, out_time_refs)
     if status[0] == TIME_ROWS_OK:
         if block_ids is None:
@@ -1092,7 +1092,7 @@ def write_rows(
     residuals: np.ndarray,
     codes: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     byte_planes: bool,
     has_time: bool,
@@ -1110,7 +1110,7 @@ def write_rows(
         residuals: 1D int16 array of every sample's difference residual.
         codes: 1D uint8 array of every sample's code (only flagged blocks' are read; may be
             empty if no block is flagged).
-        sample_offsets, group_offsets, code_offsets: The Layout's offsets.
+        sample_offsets, octet_offsets, code_offsets: The Layout's offsets.
         byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
         has_time: Whether the unit has a time axis (time columns before the residuals).
         out_raw_unit: Output 1D uint8 array of length unit_size(...).
@@ -1119,13 +1119,13 @@ def write_rows(
     max_len = 0
     for block_idx in range(num_blocks):
         max_len = max(max_len, block_sizes[block_idx])
-    scratch_low_bytes = np.empty(8 * plane_groups(max_len), np.uint8)
-    scratch_high_bytes = np.empty(8 * plane_groups(max_len), np.uint8)
+    scratch_low_bytes = np.empty(8 * plane_octets(max_len), np.uint8)
+    scratch_high_bytes = np.empty(8 * plane_octets(max_len), np.uint8)
     # Obtain views into residual and non-finite plane regions
-    num_groups = int(group_offsets[num_blocks])
-    planes = planes_view(out_raw_unit, num_blocks, num_groups, has_time)
-    bplanes = byte_planes_view(out_raw_unit, num_blocks, num_groups, has_time)
-    cplanes = code_planes_view(out_raw_unit, num_blocks, num_groups, int(code_offsets[num_blocks]), has_time)
+    num_octets = int(octet_offsets[num_blocks])
+    planes = planes_view(out_raw_unit, num_blocks, num_octets, has_time)
+    bplanes = byte_planes_view(out_raw_unit, num_blocks, num_octets, has_time)
+    cplanes = code_planes_view(out_raw_unit, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in range(num_blocks):
         out_raw_unit[block_idx] = block_flags[block_idx]
         block_len = block_sizes[block_idx]
@@ -1137,16 +1137,16 @@ def write_rows(
         block_residuals = residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]]
         if byte_planes:
             # Zigzag and store the low and high bytes in place, then zero the padding
-            sample_start = 8 * group_offsets[block_idx]
+            sample_start = 8 * octet_offsets[block_idx]
             zigzag_block(
                 block_residuals,
                 bplanes[0, sample_start:sample_start + block_len],
                 bplanes[1, sample_start:sample_start + block_len],
             )
-            bplanes[:, sample_start + block_len:8 * group_offsets[block_idx + 1]] = 0
+            bplanes[:, sample_start + block_len:8 * octet_offsets[block_idx + 1]] = 0
         else:
             # Zigzag, transpose, and store residual bit planes
-            shuffle_block(block_residuals, planes, group_offsets[block_idx], scratch_low_bytes, scratch_high_bytes)
+            shuffle_block(block_residuals, planes, octet_offsets[block_idx], scratch_low_bytes, scratch_high_bytes)
         if block_flags[block_idx] & BLOCK_FLAG_NONFINITE:
             # Store 2-bit code planes for flagged blocks
             put_codes(codes[sample_offsets[block_idx]:sample_offsets[block_idx + 1]], cplanes, code_offsets[block_idx])
@@ -1158,7 +1158,7 @@ def read_rows(
     byte_planes: bool,
     has_time: bool,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     out_grid_params: np.ndarray,
     out_value_anchors: np.ndarray,
@@ -1174,7 +1174,7 @@ def read_rows(
         raw_unit: 1D uint8 array containing uncompressed body bytes.
         byte_planes: Whether the residuals are stored as byte planes (flags bit 0).
         has_time: Whether the unit has a time axis (time columns before the residuals).
-        sample_offsets, group_offsets, code_offsets: The Layout's offsets.
+        sample_offsets, octet_offsets, code_offsets: The Layout's offsets.
         out_grid_params: Output 1D int64 array of length num_blocks receiving grid parameters.
         out_value_anchors: Output 1D int64 array of length num_blocks receiving value anchors.
         out_residuals: Output 1D int16 array of every sample receiving the residuals.
@@ -1182,16 +1182,16 @@ def read_rows(
             (unflagged blocks' samples are left unmodified).
     """
     num_blocks = out_grid_params.shape[0]
-    max_groups = 0
+    max_octets = 0
     for block_idx in range(num_blocks):
-        max_groups = max(max_groups, group_offsets[block_idx + 1] - group_offsets[block_idx])
-    scratch_low_bytes = np.empty(8 * max_groups, np.uint8)
-    scratch_high_bytes = np.empty(8 * max_groups, np.uint8)
+        max_octets = max(max_octets, octet_offsets[block_idx + 1] - octet_offsets[block_idx])
+    scratch_low_bytes = np.empty(8 * max_octets, np.uint8)
+    scratch_high_bytes = np.empty(8 * max_octets, np.uint8)
     # Access views into bit plane sections
-    num_groups = int(group_offsets[num_blocks])
-    planes = planes_view(raw_unit, num_blocks, num_groups, has_time)
-    bplanes = byte_planes_view(raw_unit, num_blocks, num_groups, has_time)
-    cplanes = code_planes_view(raw_unit, num_blocks, num_groups, int(code_offsets[num_blocks]), has_time)
+    num_octets = int(octet_offsets[num_blocks])
+    planes = planes_view(raw_unit, num_blocks, num_octets, has_time)
+    bplanes = byte_planes_view(raw_unit, num_blocks, num_octets, has_time)
+    cplanes = code_planes_view(raw_unit, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in range(num_blocks):
         # Read the byte-planed grid parameter and value anchor
         out_grid_params[block_idx] = get_int16(raw_unit, grid_params_start(num_blocks), num_blocks, block_idx)
@@ -1199,13 +1199,13 @@ def read_rows(
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         if byte_planes:
-            sample_start = 8 * group_offsets[block_idx]
+            sample_start = 8 * octet_offsets[block_idx]
             scratch_low_bytes[:block_len] = bplanes[0, sample_start:sample_start + block_len]
             scratch_high_bytes[:block_len] = bplanes[1, sample_start:sample_start + block_len]
         else:
             # Unshuffle bit planes into zigzag low/high bytes
             unshuffle_block(
-                planes, group_offsets[block_idx], group_offsets[block_idx + 1] - group_offsets[block_idx],
+                planes, octet_offsets[block_idx], octet_offsets[block_idx + 1] - octet_offsets[block_idx],
                 scratch_low_bytes, scratch_high_bytes,
             )
         for sample_idx in range(block_len):
@@ -1262,7 +1262,7 @@ def write_unit(
     raw_unit = np.empty(unit_size(num_blocks, offsets, has_time), np.uint8)
     write_rows(
         block_flags, block_sizes, grid_params, value_anchors, residuals, codes, offsets.sample_offsets,
-        offsets.group_offsets, offsets.code_offsets, byte_planes, has_time, raw_unit,
+        offsets.octet_offsets, offsets.code_offsets, byte_planes, has_time, raw_unit,
     )
     if time_rows is not None:
         write_time_rows(block_flags, *offsets, *time_rows, raw_unit)
@@ -1304,7 +1304,7 @@ def read_unit(
     residuals = np.empty(num_samples, np.int16)
     codes = np.zeros(num_samples, np.uint8)
     read_rows(
-        raw_arr, byte_planes, has_time, offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets,
+        raw_arr, byte_planes, has_time, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets,
         grid_params, value_anchors, residuals, codes,
     )
     time_rows = None
@@ -1357,7 +1357,7 @@ def _copy_columns(dst: np.ndarray, dst_offset: int, src: np.ndarray, src_offset:
 def _splice_body(
     old_body: np.ndarray,
     old_sample_offsets: np.ndarray,
-    old_group_offsets: np.ndarray,
+    old_octet_offsets: np.ndarray,
     old_code_offsets: np.ndarray,
     old_short_offsets: np.ndarray,
     old_long_offsets: np.ndarray,
@@ -1376,7 +1376,7 @@ def _splice_body(
     block_flags: np.ndarray,
     block_sizes: np.ndarray,
     sample_offsets: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
@@ -1390,18 +1390,18 @@ def _splice_body(
     """
     num_blocks = block_flags.shape[0]
     old_num_blocks = old_sample_offsets.shape[0] - 1
-    old_groups, groups = int(old_group_offsets[old_num_blocks]), int(group_offsets[num_blocks])
-    old_bplanes = byte_planes_view(old_body, old_num_blocks, old_groups, has_time)
-    old_cplanes = code_planes_view(old_body, old_num_blocks, old_groups, int(old_code_offsets[old_num_blocks]), has_time)
-    bplanes = byte_planes_view(out_body, num_blocks, groups, has_time)
-    cplanes = code_planes_view(out_body, num_blocks, groups, int(code_offsets[num_blocks]), has_time)
+    old_octets, octets = int(old_octet_offsets[old_num_blocks]), int(octet_offsets[num_blocks])
+    old_bplanes = byte_planes_view(old_body, old_num_blocks, old_octets, has_time)
+    old_cplanes = code_planes_view(old_body, old_num_blocks, old_octets, int(old_code_offsets[old_num_blocks]), has_time)
+    bplanes = byte_planes_view(out_body, num_blocks, octets, has_time)
+    cplanes = code_planes_view(out_body, num_blocks, octets, int(code_offsets[num_blocks]), has_time)
     if has_time:
         old_short, old_long = time_planes_views(
-            old_body, old_num_blocks, old_groups, int(old_code_offsets[old_num_blocks]),
+            old_body, old_num_blocks, old_octets, int(old_code_offsets[old_num_blocks]),
             int(old_short_offsets[old_num_blocks]), int(old_long_offsets[old_num_blocks]),
         )
         short_planes, long_planes = time_planes_views(
-            out_body, num_blocks, groups, int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
+            out_body, num_blocks, octets, int(code_offsets[num_blocks]), int(short_offsets[num_blocks]),
             int(long_offsets[num_blocks]),
         )
         # New blocks write only the levels their residuals reach
@@ -1454,8 +1454,8 @@ def _splice_body(
                     previous_start = old_time_starts[last_filled]
                     seen_samples = True
             _copy_planes(
-                old_bplanes, old_cplanes, old_short, old_long, old_group_offsets, old_code_offsets,
-                old_short_offsets, old_long_offsets, bplanes, cplanes, short_planes, long_planes, group_offsets,
+                old_bplanes, old_cplanes, old_short, old_long, old_octet_offsets, old_code_offsets,
+                old_short_offsets, old_long_offsets, bplanes, cplanes, short_planes, long_planes, octet_offsets,
                 code_offsets, short_offsets, long_offsets, block_idx, run_end,
             )
             block_idx = run_end
@@ -1481,15 +1481,15 @@ def _splice_body(
         block_idx += 1
         if block_len == 0:
             continue
-        group_offset = group_offsets[block_idx - 1]
+        octet_offset = octet_offsets[block_idx - 1]
         first_sample = new_sample_offsets[rank]
-        sample_start = 8 * group_offset
+        sample_start = 8 * octet_offset
         zigzag_block(
             new_residuals[first_sample:first_sample + block_len],
             bplanes[0, sample_start:sample_start + block_len],
             bplanes[1, sample_start:sample_start + block_len],
         )
-        bplanes[:, sample_start + block_len:8 * group_offsets[block_idx]] = 0
+        bplanes[:, sample_start + block_len:8 * octet_offsets[block_idx]] = 0
         if flags & BLOCK_FLAG_NONFINITE:
             put_codes(new_codes[first_sample:first_sample + block_len], cplanes, code_offsets[block_idx - 1])
         if has_time and flags & BLOCK_FLAG_IRREGULAR_TIME:
@@ -1509,7 +1509,7 @@ def _copy_planes(
     old_cplanes: np.ndarray,
     old_short: np.ndarray,
     old_long: np.ndarray,
-    old_group_offsets: np.ndarray,
+    old_octet_offsets: np.ndarray,
     old_code_offsets: np.ndarray,
     old_short_offsets: np.ndarray,
     old_long_offsets: np.ndarray,
@@ -1517,7 +1517,7 @@ def _copy_planes(
     cplanes: np.ndarray,
     short_planes: np.ndarray,
     long_planes: np.ndarray,
-    group_offsets: np.ndarray,
+    octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
     short_offsets: np.ndarray,
     long_offsets: np.ndarray,
@@ -1530,9 +1530,9 @@ def _copy_planes(
     one copy. The old_* and new arguments are the planes and offsets of the old and the new
     body.
     """
-    num_groups = group_offsets[end_block] - group_offsets[first_block]
-    _copy_columns(bplanes, 8 * group_offsets[first_block], old_bplanes, 8 * old_group_offsets[first_block],
-                  8 * num_groups)
+    num_octets = octet_offsets[end_block] - octet_offsets[first_block]
+    _copy_columns(bplanes, 8 * octet_offsets[first_block], old_bplanes, 8 * old_octet_offsets[first_block],
+                  8 * num_octets)
     _copy_columns(cplanes, code_offsets[first_block], old_cplanes, old_code_offsets[first_block],
                   code_offsets[end_block] - code_offsets[first_block])
     _copy_columns(short_planes, short_offsets[first_block], old_short, old_short_offsets[first_block],

@@ -69,11 +69,11 @@ fn compress_unit<'py>(
 }
 
 /// The unit of an uncompressed body whose residuals are byte planes, with or without a time axis
-/// (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_groups` is
-/// the groups of 8 residual bytes of all blocks.
+/// (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_octets` is
+/// the octets (8 residual bytes each) of all blocks.
 #[pyfunction]
 #[pyo3(signature = (
-    body, num_blocks, num_samples, num_groups, time_unit, layout, flush, zstd_levels
+    body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels
 ))]
 #[allow(clippy::too_many_arguments)]
 fn pack_unit<'py>(
@@ -81,7 +81,7 @@ fn pack_unit<'py>(
     body: PyReadonlyArray1<u8>,
     num_blocks: usize,
     num_samples: usize,
-    num_groups: usize,
+    num_octets: usize,
     time_unit: u8,
     layout: &str,
     flush: bool,
@@ -90,7 +90,7 @@ fn pack_unit<'py>(
     let shape = Shape {
         num_blocks,
         num_samples,
-        num_groups,
+        num_octets,
         time_unit,
     };
     if !shape.fits_header() {

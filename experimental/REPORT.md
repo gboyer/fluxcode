@@ -835,7 +835,7 @@ detection, B = 16, 12,600 blocks. Timings alternate between configurations, one 
   through near-random bytes, which more than pays that back.
 - **It isn't better for every input.** It's worse on smooth, periodic signals: slow sines +7% to
   +21%, the 0.1-step random walk +5%, the ramp and square wave +3% and +17% of almost nothing.
-  zstd's repeated sequences in their residuals don't line up with 8-sample bit groups. The
+  zstd's repeated sequences in their residuals don't line up with the 8-sample octets of the bit planes. The
   worst loss is 0.45 bits/sample, on signals that were cheap anyway. It's better on everything
   noisy or wide: −4% to −18%, and −70% on the quadratic, whose order-2 residuals are nearly
   constant.
@@ -849,7 +849,7 @@ detection, B = 16, 12,600 blocks. Timings alternate between configurations, one 
   discretized), against bit-shuffle's 6.12 / 8.17 and byte planes' 6.76 / 8.70, with the fastest
   decode. At B ≤ 12 they're the worst of the three on discretized data.
   - **Per signal, nibbles win only on slow sines** (sin-4.12hz at 0.01: 2.00 vs 2.63
-    bit-shuffle). Their 2-sample groups break fewer of zstd's repeats than 8-sample bit groups do.
+    bit-shuffle). Their 2-sample groups break fewer of zstd's repeats than 8-sample octets do.
   - **They lose badly on the 2⁻⁴ walk** (8.79 vs 6.50 bit-shuffle) and the 0.1 walk (6.21 vs 5.82).
   - **Not adopted:** they never beat bit-shuffle overall.
 - **Plane order barely matters** (original evaluation). Storing the bit planes high bits first changes zstd-3's size by

@@ -61,8 +61,8 @@ def test_flush_points(byte_planes):
     start = _format.residual_start(nb, parsed.has_time)
     assert cuts == sorted(set(cuts)) and cuts[0] == start and cuts[-1] <= len(parsed.raw_body)
     assert len(cuts) <= (3 if byte_planes else 17)
-    groups = int(parsed.layout.group_offsets[-1])
-    plane_bytes = 8 * groups if byte_planes else groups
+    octets = int(parsed.layout.octet_offsets[-1])
+    plane_bytes = 8 * octets if byte_planes else octets
     for cut in cuts[1:]:  # every cut after the columns ends a plane that holds data
         assert cut % plane_bytes == start % plane_bytes
         assert np.count_nonzero(parsed.raw_body[cut - plane_bytes:cut]) * _compress.FLUSH_MIN_DENSITY > plane_bytes
@@ -127,7 +127,7 @@ def test_wide_share_is_the_same_in_both_layouts(kind):
     rows = unit_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
     zigzag = ((rows << 1) ^ (rows >> 15)) & 0xFFFF
     for bit_idx in (0, 3, 7, 8, 12, 15):
-        shares = [_bitpacking.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.group_offsets[-1]), p.has_time,
+        shares = [_bitpacking.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.octet_offsets[-1]), p.has_time,
                                          p.header.byte_planes, bit_idx) for p in bodies]
-        slots = 8 * int(bodies[0].layout.group_offsets[-1])
+        slots = 8 * int(bodies[0].layout.octet_offsets[-1])
         assert shares[0] == shares[1] == np.count_nonzero(zigzag >> bit_idx) / slots, bit_idx

@@ -140,7 +140,7 @@ decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integ
     subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
 - **Non-finite codes** (block flag bit 3): after dequantizing, overwrite samples with code
   01, 10 or 11 with NaN (the canonical quiet NaN), +inf or −inf.
-  - Groups of 8 samples whose two code bytes are both 0 can be skipped.
+  - Octets whose two code bytes are both 0 can be skipped.
 - **Time axis** (header time unit ≠ 0):
   - Block starts are the running sum of the `time_start` field (§6).
   - Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64. Residuals
@@ -175,19 +175,21 @@ Header flags:
 
 ### 6.2 Planes and padding
 
-- **Bytes per block.** Each block b of `n_b` samples takes `g_b` = ceil(`n_b` / 8) bytes of every
-  bit plane. An empty block takes none.
+- **Octets.** A block's samples are stored in octets: 8 consecutive samples, which become one
+  byte of every bit plane (an 8×8 bit transpose per byte of the residuals).
+  - Block b of `n_b` samples has `o_b` = ceil(`n_b` / 8) octets. An empty block has none.
+  - It takes `o_b` bytes of every bit plane, and 8 × `o_b` of every byte plane.
 - **Padding.** When `n_b` isn't a multiple of 8, bits `n_b` mod 8 to 7 of the block's last byte
-  are padding. Byte planes likewise pad each block to 8 × `g_b` bytes.
+  are padding. Byte planes likewise pad each block to 8 × `o_b` samples.
   - Writers zero the padding; decoders ignore it.
 - **Order.** Within a plane, the blocks' bytes follow each other in block order.
 - **Byte-planed columns.** A per-block column of w-byte integers stores byte 0 of every block,
   then byte 1 of every block, and so on to byte w − 1.
 - **Sums** used below:
-  - `G` = Σ `g_b` over all blocks;
-  - `G_nonfinite` over the blocks with block flag bit 3 set;
-  - `G_irregular` over those with bit 4;
-  - `G_long` over those with bit 5.
+  - `O` = Σ `o_b` over all blocks;
+  - `O_nonfinite` over the blocks with block flag bit 3 set;
+  - `O_irregular` over those with bit 4;
+  - `O_long` over those with bit 5.
 
 ### 6.3 Body
 
@@ -203,13 +205,13 @@ The body is these fields, in this order. The four time fields are present only w
 | `time_start` | 8 × `num_blocks` | start time, byte-planed |
 | `time_step` | 8 × `num_blocks` | time step, int64, byte-planed |
 | `time_ref` | 8 × `num_blocks` | reference quotient, uint64, byte-planed |
-| `residual_planes` | 16 × `G` | the residuals u (§4) |
-| `nonfinite_code_planes` | 2 × `G_nonfinite` | the non-finite codes (§2) |
-| `time_residual_planes` | 32 × (`G_irregular` + `G_long`) | the time residuals (§3) |
+| `residual_planes` | 16 × `O` | the residuals u (§4) |
+| `nonfinite_code_planes` | 2 × `O_nonfinite` | the non-finite codes (§2) |
+| `time_residual_planes` | 32 × (`O_irregular` + `O_long`) | the time residuals (§3) |
 
 ```
-body_size = 13 × num_blocks + 16 × G + 2 × G_nonfinite
-          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (G_irregular + G_long))
+body_size = 13 × num_blocks + 16 × O + 2 × O_nonfinite
+          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long))
 ```
 
 Every column is 0 for an empty block. Per field:
@@ -239,9 +241,9 @@ Every column is 0 for an empty block. Per field:
   - irregular block: the value the residuals are taken from (§3).
 - **`residual_planes`**:
   - bit planes (header flags bit 0 clear): bit plane j = 0..15, then block, then byte
-    i = 0..`g_b` − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`.
+    i = 0..`o_b` − 1. Bit k of byte i (LSB = bit 0) is bit j of `u[8i + k]`.
   - byte planes (header flags bit 0 set): byte plane j = 0..1 (low, then high byte of `u`), then
-    block, then sample 0..8 × `g_b` − 1.
+    block, then sample 0..8 × `o_b` − 1.
 - **`nonfinite_code_planes`**: code plane j = 0..1, then the flagged blocks in block order, then
   byte i. Bit k of byte i is bit j of the code of sample 8i + k.
 - **`time_residual_planes`**: per sample of an irregular block, the uint64 residual

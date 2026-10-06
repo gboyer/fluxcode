@@ -11,10 +11,10 @@ the residual planes, bits 1-3 hold the time unit, bits 4-7 are 0), the block cou
 and the sample count (uint32). Every block records its own size, 0 to 65,535 samples, and
 the block sizes add up to the sample count.
 
-Each block of n samples takes num_groups = ceil(n / 8) bytes of every bit plane (none for an
+Each block of n samples takes num_octets = ceil(n / 8) bytes of every bit plane (none for an
 empty block): when n isn't a multiple of 8, the high bits of its last byte are padding, and
-byte planes pad each block to 8 * num_groups bytes. Writers zero the padding; decoders
-ignore it. A field "per group" below holds that many bytes per block, the blocks' bytes
+byte planes pad each block to 8 * num_octets bytes. Writers zero the padding; decoders
+ignore it. A field "per octet" below holds that many bytes per block, the blocks' bytes
 consecutive in block order.
 
 The body, for num_blocks blocks, consists of these consecutive fields (the time fields
@@ -44,13 +44,13 @@ only when the header's time unit is not 0):
        Per-block uint64 reference quotient: sample i > 0's quotient
        (time[i] - time[i-1]) / time_step is time_ref plus its residual (0 in a regular
        block).
-    8. residual_planes (16 bytes per group of every block):
+    8. residual_planes (16 bytes per octet of every block):
        Zigzag-encoded int16 differences mod 2^16, as 16 bit planes across all
        blocks, or (flags bit 0) as 2 byte planes: every low byte, then every high byte.
-    9. nonfinite_code_planes (2 bytes per group of the blocks with non-finite values):
+    9. nonfinite_code_planes (2 bytes per octet of the blocks with non-finite values):
        2 code bit planes for the flagged blocks, encoding sample categories
        (00: finite, 01: NaN, 10: +inf, 11: -inf).
-    10. time_residual_planes (32 bytes per group of the irregular blocks, then 32 per group
+    10. time_residual_planes (32 bytes per octet of the irregular blocks, then 32 per octet
        of the long blocks; time only): per sample of an irregular block, its quotient minus
        time_ref, mod 2^64 and zigzagged (0 for sample 0), as bit planes like the residual
        planes: planes 0-31 of every irregular block, then planes 32-63 of the long blocks.
@@ -211,10 +211,10 @@ TIME_SHORT_PLANES: int = 32
 
 
 @njit(inline="always")
-def plane_groups(block_len: int) -> int:
+def plane_octets(block_len: int) -> int:
     """Calculates the byte width required per bit plane for a given block length.
 
-    Each group holds 8 samples. Blocks whose length is not a multiple of 8 are
+    Each octet holds 8 samples. Blocks whose length is not a multiple of 8 are
     padded with zero bits in their trailing byte.
 
     Args:
@@ -234,14 +234,14 @@ class Layout(NamedTuple):
 
     Attributes:
         sample_offsets: Offsets of the blocks' samples (cumulative block sizes).
-        group_offsets: Offsets of the blocks' bytes in each residual bit plane.
+        octet_offsets: Offsets of the blocks' bytes in each residual bit plane.
         code_offsets: Offsets in each non-finite code plane (only flagged blocks take bytes).
         short_offsets: Offsets in time residual planes 0-31 (only irregular blocks take bytes).
         long_offsets: Offsets in time residual planes 32-63 (only long blocks take bytes).
     """
 
     sample_offsets: np.ndarray
-    group_offsets: np.ndarray
+    octet_offsets: np.ndarray
     code_offsets: np.ndarray
     short_offsets: np.ndarray
     long_offsets: np.ndarray
@@ -252,7 +252,7 @@ def _fill_layout(
     block_flags: np.ndarray,
     block_sizes: np.ndarray,
     out_sample_offsets: np.ndarray,
-    out_group_offsets: np.ndarray,
+    out_octet_offsets: np.ndarray,
     out_code_offsets: np.ndarray,
     out_short_offsets: np.ndarray,
     out_long_offsets: np.ndarray,
@@ -263,24 +263,24 @@ def _fill_layout(
         block_flags: 1D uint8 array of per-block flags.
         block_sizes: 1D int64 array of sample counts per block.
         out_sample_offsets: Preallocated 1D int64 array for sample offsets.
-        out_group_offsets: Preallocated 1D int64 array for byte-plane group offsets.
+        out_octet_offsets: Preallocated 1D int64 array for byte-plane octet offsets.
         out_code_offsets: Preallocated 1D int64 array for non-finite code plane offsets.
         out_short_offsets: Preallocated 1D int64 array for short time residual offsets.
         out_long_offsets: Preallocated 1D int64 array for long time residual offsets.
     """
-    out_sample_offsets[0] = out_group_offsets[0] = out_code_offsets[0] = 0
+    out_sample_offsets[0] = out_octet_offsets[0] = out_code_offsets[0] = 0
     out_short_offsets[0] = out_long_offsets[0] = 0
     for block_idx in range(block_sizes.shape[0]):
         num_samples = block_sizes[block_idx]
-        num_groups = plane_groups(num_samples)
+        num_octets = plane_octets(num_samples)
         flags = block_flags[block_idx]
         out_sample_offsets[block_idx + 1] = out_sample_offsets[block_idx] + num_samples
-        out_group_offsets[block_idx + 1] = out_group_offsets[block_idx] + num_groups
-        out_code_offsets[block_idx + 1] = out_code_offsets[block_idx] + (num_groups if flags & BLOCK_FLAG_NONFINITE else 0)
+        out_octet_offsets[block_idx + 1] = out_octet_offsets[block_idx] + num_octets
+        out_code_offsets[block_idx + 1] = out_code_offsets[block_idx] + (num_octets if flags & BLOCK_FLAG_NONFINITE else 0)
         out_short_offsets[block_idx + 1] = out_short_offsets[block_idx] + (
-            num_groups if flags & BLOCK_FLAG_IRREGULAR_TIME else 0
+            num_octets if flags & BLOCK_FLAG_IRREGULAR_TIME else 0
         )
-        out_long_offsets[block_idx + 1] = out_long_offsets[block_idx] + (num_groups if flags & BLOCK_FLAG_LONG_TIME else 0)
+        out_long_offsets[block_idx + 1] = out_long_offsets[block_idx] + (num_octets if flags & BLOCK_FLAG_LONG_TIME else 0)
 
 
 def layout(block_flags: np.ndarray, block_sizes: np.ndarray) -> Layout:
@@ -345,7 +345,7 @@ def unit_size(num_blocks: int, offsets: Layout, has_time: bool = False) -> int:
         Size of the uncompressed body in bytes.
     """
     size = num_blocks * METADATA_BYTES_PER_BLOCK
-    size += int(offsets.group_offsets[-1]) * 8 * BYTES_PER_RESIDUAL_SAMPLE
+    size += int(offsets.octet_offsets[-1]) * 8 * BYTES_PER_RESIDUAL_SAMPLE
     size += int(offsets.code_offsets[-1]) * NONFINITE_BITS_PER_SAMPLE
     if has_time:
         size += num_blocks * TIME_BYTES_PER_BLOCK
@@ -370,13 +370,13 @@ def unit_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple
         A tuple of (smallest, largest) body sizes in bytes.
     """
     columns = num_blocks * (METADATA_BYTES_PER_BLOCK + (TIME_BYTES_PER_BLOCK if has_time else 0))
-    fewest_groups = plane_groups(num_samples)
-    most_groups = min(num_samples, (num_samples + 7 * num_blocks) // 8)
-    plane_bytes_per_group = 8 * BYTES_PER_RESIDUAL_SAMPLE + NONFINITE_BITS_PER_SAMPLE
+    fewest_octets = plane_octets(num_samples)
+    most_octets = min(num_samples, (num_samples + 7 * num_blocks) // 8)
+    plane_bytes_per_octet = 8 * BYTES_PER_RESIDUAL_SAMPLE + NONFINITE_BITS_PER_SAMPLE
     if has_time:
-        plane_bytes_per_group += 2 * TIME_SHORT_PLANES
-    smallest = columns + fewest_groups * 8 * BYTES_PER_RESIDUAL_SAMPLE
-    return smallest, columns + most_groups * plane_bytes_per_group
+        plane_bytes_per_octet += 2 * TIME_SHORT_PLANES
+    smallest = columns + fewest_octets * 8 * BYTES_PER_RESIDUAL_SAMPLE
+    return smallest, columns + most_octets * plane_bytes_per_octet
 
 
 class UnitHeader(NamedTuple):
@@ -614,18 +614,18 @@ def get_int16(raw_unit: np.ndarray, field_start: int, num_blocks: int, block_idx
 
 
 @njit(inline="always")
-def code_planes_start(num_blocks: int, num_groups: int, has_time: bool) -> int:
+def code_planes_start(num_blocks: int, num_octets: int, has_time: bool) -> int:
     """Calculates the byte offset of non-finite code planes.
 
     Args:
         num_blocks: Total number of blocks in the unit.
-        num_groups: Total group count across all blocks.
+        num_octets: Total octet count across all blocks.
         has_time: Whether the unit includes time axis columns.
 
     Returns:
         Offset in bytes where non-finite code planes begin.
     """
-    return residual_start(num_blocks, has_time) + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_groups
+    return residual_start(num_blocks, has_time) + BYTES_PER_RESIDUAL_SAMPLE * 8 * num_octets
 
 
 class TimeRows(NamedTuple):

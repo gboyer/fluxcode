@@ -24,14 +24,14 @@ pub const METADATA_BYTES_PER_BLOCK: usize =
 /// Bytes of the three 8-byte time columns of a unit with a time axis, per block.
 pub const TIME_BYTES_PER_BLOCK: usize = 3 * 8;
 
-/// Samples per group: each plane holds one byte per group.
-pub const GROUP_SAMPLES: usize = 8;
+/// Samples per octet: each plane holds one byte per octet.
+pub const OCTET_SAMPLES: usize = 8;
 /// Bit planes of the residuals (16 bits each), or byte planes (2 bytes each).
 pub const BIT_PLANES: usize = 16;
-/// Bytes of the residual planes per group.
-pub const RESIDUAL_BYTES_PER_GROUP: usize = BIT_PLANES;
-/// Bytes of the non-finite code planes (2 bits per sample) per group of a flagged block.
-pub const CODE_BYTES_PER_GROUP: usize = 2;
+/// Bytes of the residual planes per octet.
+pub const RESIDUAL_BYTES_PER_OCTET: usize = BIT_PLANES;
+/// Bytes of the non-finite code planes (2 bits per sample) per octet of a flagged block.
+pub const CODE_BYTES_PER_OCTET: usize = 2;
 
 /// Offset of the block_sizes field in the body.
 pub fn block_sizes_start(num_blocks: usize) -> usize {
@@ -53,11 +53,11 @@ pub fn residual_start(num_blocks: usize, has_time: bool) -> usize {
     (METADATA_BYTES_PER_BLOCK + if has_time { TIME_BYTES_PER_BLOCK } else { 0 }) * num_blocks
 }
 
-/// What the header records, and the groups of residual bytes (8 samples each) of all blocks.
+/// What the header records, and the octets of residual bytes (8 samples each) of all blocks.
 pub struct Shape {
     pub num_blocks: usize,
     pub num_samples: usize,
-    pub num_groups: usize,
+    pub num_octets: usize,
     pub time_unit: u8,
 }
 
@@ -92,7 +92,7 @@ impl Shape {
     }
 }
 
-/// A unit's rows and the offsets of each block in the samples, residual groups and code groups.
+/// A unit's rows and the offsets of each block in the samples, residual octets and code octets.
 ///
 /// Each offsets vector has `num_blocks + 1` entries: entry `b` is block `b`'s offset, and the last
 /// the total.
@@ -105,7 +105,7 @@ pub struct Rows<'a> {
     pub residuals: &'a [i16],
     pub codes: &'a [u8],
     pub sample_offsets: Vec<usize>,
-    pub group_offsets: Vec<usize>,
+    pub octet_offsets: Vec<usize>,
     pub code_offsets: Vec<usize>,
 }
 
@@ -130,19 +130,19 @@ impl<'a> Rows<'a> {
             return Err(mismatch());
         }
         let mut sample_offsets = vec![0usize; num_blocks + 1];
-        let mut group_offsets = vec![0usize; num_blocks + 1];
+        let mut octet_offsets = vec![0usize; num_blocks + 1];
         let mut code_offsets = vec![0usize; num_blocks + 1];
         for block_idx in 0..num_blocks {
             if !(0..=u16::MAX as i64).contains(&block_sizes[block_idx]) {
                 return Err(mismatch());
             }
             let size = block_sizes[block_idx] as usize;
-            let groups = size.div_ceil(GROUP_SAMPLES);
+            let octets = size.div_ceil(OCTET_SAMPLES);
             let has_codes = block_flags[block_idx] & BLOCK_FLAG_NONFINITE != 0;
             sample_offsets[block_idx + 1] = sample_offsets[block_idx] + size;
-            group_offsets[block_idx + 1] = group_offsets[block_idx] + groups;
+            octet_offsets[block_idx + 1] = octet_offsets[block_idx] + octets;
             code_offsets[block_idx + 1] =
-                code_offsets[block_idx] + if has_codes { groups } else { 0 };
+                code_offsets[block_idx] + if has_codes { octets } else { 0 };
         }
         let num_samples = sample_offsets[num_blocks];
         if residuals.len() != num_samples || codes.len() != num_samples {
@@ -151,7 +151,7 @@ impl<'a> Rows<'a> {
         let shape = Shape {
             num_blocks,
             num_samples,
-            num_groups: group_offsets[num_blocks],
+            num_octets: octet_offsets[num_blocks],
             time_unit: 0,
         };
         Ok(Rows {
@@ -163,7 +163,7 @@ impl<'a> Rows<'a> {
             residuals,
             codes,
             sample_offsets,
-            group_offsets,
+            octet_offsets,
             code_offsets,
         })
     }

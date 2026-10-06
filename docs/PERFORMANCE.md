@@ -195,7 +195,7 @@ the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode
 are built in byte planes, which are what the carried blocks are copied between (a bit-plane unit's
 residual region is converted once, by one transpose, before the copy), and the bit-plane body for
 the second candidate is derived from the byte-plane one by one more transpose of the whole region
-(`_bitpacking.to_bit_planes`): block groups line up across the region, so no block is converted
+(`_bitpacking.to_bit_planes`): octets line up across the region, so no block is converted
 on its own. The same holds for `write_unit` when a unit is encoded (3,600 blocks of 10: 195 µs in
 bit planes; 52 µs in byte planes plus the 24 µs transpose).
 In `update_time_blocks` the decoded and new samples are merged in one numba pass over both (they are

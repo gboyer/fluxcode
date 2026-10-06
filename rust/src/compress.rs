@@ -4,7 +4,7 @@
 //! end, and which candidate frame to keep.
 
 use crate::bitpacking::{to_bit_planes, wide_share_byte_planes, write_body};
-use crate::format::{Rows, Shape, BIT_PLANES, GROUP_SAMPLES};
+use crate::format::{Rows, Shape, BIT_PLANES, OCTET_SAMPLES};
 use zstd_safe::zstd_sys::ZSTD_EndDirective::{self, ZSTD_e_end, ZSTD_e_flush};
 use zstd_safe::{CCtx, CParameter, InBuffer, OutBuffer};
 
@@ -43,15 +43,15 @@ impl Layout {
 
 /// Where zstd blocks end: after the metadata and after each residual plane that is dense enough.
 fn flush_points(body: &[u8], shape: &Shape, byte_planes: bool) -> Vec<usize> {
-    let num_groups = shape.num_groups;
-    if num_groups == 0 {
+    let num_octets = shape.num_octets;
+    if num_octets == 0 {
         return vec![];
     }
     let start = shape.residual_start();
     let (plane_bytes, num_planes) = if byte_planes {
-        (GROUP_SAMPLES * num_groups, 2)
+        (OCTET_SAMPLES * num_octets, 2)
     } else {
-        (num_groups, BIT_PLANES)
+        (num_octets, BIT_PLANES)
     };
     let mut points = vec![start];
     for plane_idx in 0..num_planes {
@@ -225,15 +225,15 @@ pub fn pack(
     flush: bool,
     levels: &[i32],
 ) -> Result<Vec<u8>, String> {
-    let (num_blocks, num_groups, has_time) = (shape.num_blocks, shape.num_groups, shape.has_time());
-    if byte_body.len() < shape.residual_start() + BIT_PLANES * num_groups {
+    let (num_blocks, num_octets, has_time) = (shape.num_blocks, shape.num_octets, shape.has_time());
+    if byte_body.len() < shape.residual_start() + BIT_PLANES * num_octets {
         return Err("body too short for its residual planes".to_string());
     }
     let byte_planes_predicted = || {
-        wide_share_byte_planes(byte_body, num_blocks, num_groups, has_time, BYTE_PLANES_BIT)
+        wide_share_byte_planes(byte_body, num_blocks, num_octets, has_time, BYTE_PLANES_BIT)
             < BYTE_PLANES_MAX_SHARE
     };
-    let bit_body = || to_bit_planes(byte_body, num_blocks, num_groups, has_time);
+    let bit_body = || to_bit_planes(byte_body, num_blocks, num_octets, has_time);
     match layout {
         Layout::Byte => smallest_unit(shape, &[(true, byte_body)], flush, levels),
         Layout::Bit => smallest_unit(shape, &[(false, &bit_body())], flush, levels),

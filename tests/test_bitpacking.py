@@ -17,7 +17,7 @@ from fluxcode._format import (
 RNG = np.random.default_rng(0)
 
 SIZES = [*range(18), 255, 256, 257]
-"""Block sizes around the 8-sample groups, plus a few long ones."""
+"""Block sizes around the 8-sample octets, plus a few long ones."""
 
 
 def random_rows(rng, sizes, has_time, nonfinite=0.3, irregular=0.5, long=0.3):
@@ -69,18 +69,18 @@ def assert_padding_zero(body, rows, byte_planes, has_time):
     """Every plane field pads each block's last byte with zero bits (byte planes: zero bytes)."""
     num_blocks, sizes = rows.block_flags.shape[0], rows.block_sizes
     lay = _format.layout(rows.block_flags, sizes)
-    groups, code_groups = int(lay.group_offsets[-1]), int(lay.code_offsets[-1])
-    fields = [(_bitpacking.code_planes_view(body, num_blocks, groups, code_groups, has_time), lay.code_offsets)]
+    octets, code_octets = int(lay.octet_offsets[-1]), int(lay.code_offsets[-1])
+    fields = [(_bitpacking.code_planes_view(body, num_blocks, octets, code_octets, has_time), lay.code_offsets)]
     if has_time:
-        short, long = _bitpacking.time_planes_views(body, num_blocks, groups, code_groups, int(lay.short_offsets[-1]),
+        short, long = _bitpacking.time_planes_views(body, num_blocks, octets, code_octets, int(lay.short_offsets[-1]),
                                                     int(lay.long_offsets[-1]))
         fields += [(short, lay.short_offsets), (long, lay.long_offsets)]
     if byte_planes:
-        planes = _bitpacking.byte_planes_view(body, num_blocks, groups, has_time)
+        planes = _bitpacking.byte_planes_view(body, num_blocks, octets, has_time)
         for block_idx in range(num_blocks):
-            assert not planes[:, 8 * lay.group_offsets[block_idx] + sizes[block_idx]:8 * lay.group_offsets[block_idx + 1]].any()
+            assert not planes[:, 8 * lay.octet_offsets[block_idx] + sizes[block_idx]:8 * lay.octet_offsets[block_idx + 1]].any()
     else:
-        fields.append((_bitpacking.planes_view(body, num_blocks, groups, has_time), lay.group_offsets))
+        fields.append((_bitpacking.planes_view(body, num_blocks, octets, has_time), lay.octet_offsets))
     for field, field_offsets in fields:
         for block_idx in range(num_blocks):
             block_bytes = field[:, field_offsets[block_idx]:field_offsets[block_idx + 1]]
@@ -120,12 +120,12 @@ def test_flags_select_the_fields():
     upper 32 time planes."""
     rows = random_rows(np.random.default_rng(2), [20] * 40, True)
     lay = _format.layout(rows.block_flags, rows.block_sizes)
-    groups = np.diff(lay.group_offsets)
+    octets = np.diff(lay.octet_offsets)
     for flag, field_offsets in [(BLOCK_FLAG_NONFINITE, lay.code_offsets), (BLOCK_FLAG_IRREGULAR_TIME, lay.short_offsets),
                                 (BLOCK_FLAG_LONG_TIME, lay.long_offsets)]:
         flagged = (rows.block_flags & flag) > 0
         assert 0 < flagged.sum() < 40
-        np.testing.assert_array_equal(np.diff(field_offsets), np.where(flagged, groups, 0))
+        np.testing.assert_array_equal(np.diff(field_offsets), np.where(flagged, octets, 0))
 
 
 def _columns(raw, N):
@@ -154,11 +154,11 @@ def test_shuffle_round_trip_and_layout(sizes):
     planes = raw[13 * N:].reshape(16, -1)
     offsets = np.concatenate([[0], np.cumsum(sizes)])
     for b in range(N):
-        block_planes = planes[:, lay.group_offsets[b]:lay.group_offsets[b + 1]]
-        bits = np.unpackbits(block_planes, axis=1, bitorder="little")  # (16, 8 * groups): bit j of u[i]
+        block_planes = planes[:, lay.octet_offsets[b]:lay.octet_offsets[b + 1]]
+        bits = np.unpackbits(block_planes, axis=1, bitorder="little")  # (16, 8 * octets): bit j of u[i]
         block_u = u[offsets[b]:offsets[b + 1]]
         np.testing.assert_array_equal(bits[:, :sizes[b]], ((block_u[None] >> np.arange(16)[:, None]) & 1).astype(np.uint8))
-        assert not bits[:, sizes[b]:].any()  # each block's last group is padded with zero bits
+        assert not bits[:, sizes[b]:].any()  # each block's last octet is padded with zero bits
     rows = _bitpacking.read_unit(raw, N)
     for got, want in zip(rows[:5], (flags, sizes, param, anchor, resid)):
         np.testing.assert_array_equal(got, want)
@@ -300,6 +300,6 @@ def test_plane_conversion_matches_write_unit(seed, has_time):
     byte_body = _bitpacking.write_unit(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
     bit_body = _bitpacking.write_unit(*rows[:6], byte_planes=False, time_rows=rows.time_rows)
     num_blocks = rows.block_flags.shape[0]
-    num_groups = int(_format.layout(rows.block_flags, rows.block_sizes).group_offsets[-1])
-    np.testing.assert_array_equal(_bitpacking.to_bit_planes(byte_body, num_blocks, num_groups, has_time), bit_body)
-    np.testing.assert_array_equal(_bitpacking.to_byte_planes(bit_body, num_blocks, num_groups, has_time), byte_body)
+    num_octets = int(_format.layout(rows.block_flags, rows.block_sizes).octet_offsets[-1])
+    np.testing.assert_array_equal(_bitpacking.to_bit_planes(byte_body, num_blocks, num_octets, has_time), bit_body)
+    np.testing.assert_array_equal(_bitpacking.to_byte_planes(bit_body, num_blocks, num_octets, has_time), byte_body)

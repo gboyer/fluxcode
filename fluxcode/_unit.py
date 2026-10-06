@@ -350,7 +350,7 @@ def decode_blocks(
     offsets = parsed.layout
     values = np.empty(parsed.header.num_samples)
     _decoder.decode_unit(
-        parsed.raw_body, offsets.sample_offsets, offsets.group_offsets, offsets.code_offsets, block_ids, values,
+        parsed.raw_body, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets, block_ids, values,
         parsed.header.byte_planes, parsed.has_time,
     )
     ticks = None
@@ -413,7 +413,7 @@ def read_rows(parsed: ParsedUnit, time_rows: _format.TimeRows | None = None) -> 
         (time_rows if time_rows is not None else read_time_rows(parsed)) if parsed.has_time else None,
     )
     _bitpacking.read_rows(
-        parsed.raw_body, parsed.header.byte_planes, parsed.has_time, offsets.sample_offsets, offsets.group_offsets,
+        parsed.raw_body, parsed.header.byte_planes, parsed.has_time, offsets.sample_offsets, offsets.octet_offsets,
         offsets.code_offsets, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
     )
     return rows
@@ -555,7 +555,7 @@ def splice(
     # Splicing copies byte planes, so convert a bit-plane body first
     if not parsed.header.byte_planes:
         old_body = _bitpacking.to_byte_planes(
-            old_body, num_old_blocks, int(parsed.layout.group_offsets[-1]), has_time
+            old_body, num_old_blocks, int(parsed.layout.octet_offsets[-1]), has_time
         )
     # Splice modified block rows directly into the binary body
     body, offsets = _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets)

@@ -48,7 +48,7 @@ def row(x, mx=16, nf=0.25):
     sizes = {m: [pooled(units[m])] + [len(reflush(units[m], e)) for e in EVERY] + [len(dense(units[m]))] for m in units}
     parsed = _unit.decompress(units["bit"])
     start = _format.residual_start(parsed.header.num_blocks, parsed.has_time)
-    g = int(parsed.layout.group_offsets[-1])
+    g = int(parsed.layout.octet_offsets[-1])
     planes = parsed.raw_body[start:start + 16 * g]
     u = residuals(units["byte"])
     return (sizes["bit"] + sizes["byte"], dict(hi_nz=float(np.mean(u > 255)), nonzero_bytes=int(np.count_nonzero(planes)),
