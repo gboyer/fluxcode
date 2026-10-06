@@ -113,10 +113,10 @@ def test_short_blocks_honour_decimal_detection_off():
 def test_target_weights_blocks_by_size():
     """The target budget covers the analyzed samples: short and empty blocks don't count."""
     x = minute("chirp", 2)
-    base = fluxcode.encode_unit(x, Params(noise_floor_sigma=None, target_bits_per_sample=6.0)).unit
+    base = fluxcode.encode_unit(x, Params(noise_floor_sigma=0, target_bits_per_sample=6.0)).unit
     sizes = [1000] * 60
     padded = np.concatenate([x, np.zeros(5)])
-    mixed = fluxcode.encode_blocks(padded, sizes + [5, 0], Params(noise_floor_sigma=None, target_bits_per_sample=6.0))
+    mixed = fluxcode.encode_blocks(padded, sizes + [5, 0], Params(noise_floor_sigma=0, target_bits_per_sample=6.0))
     np.testing.assert_array_equal(unit_rows(mixed.unit).residuals[:60_000], unit_rows(base).residuals)
 
 

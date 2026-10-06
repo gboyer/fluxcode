@@ -156,6 +156,12 @@ true noise σ, against the input and against the same signal generated without n
 - **Against the clean signal, f ≤ 0.25 is indistinguishable from storing the noise exactly**
   (within 0.2%). f = 0.5 costs under 1%, f = 1 costs 2.5–4%. Recommended range 0.1–0.5, default
   0.25 (indistinguishable from exact against the clean signal), to be tuned on your data.
+- **Off by default for units with times.** Timed data is often irregular, and irregular samples
+  don't oversample the signal: a swinging-door archive keeps only the points a straight line
+  can't predict, so it looks like white noise to the gate. With f = 0.25 the gate coarsened such
+  archives to up to 0.6 CompDev of error, against exact decimals with it off
+  ([sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html)). Pass f explicitly to use the
+  noise floor on timed data, e.g. a regular grid stored with its times.
 - **Deterministic fast signals are deliberately not gated.** The ~50 Hz sine and the chirp keep
   full precision and full cost (6.6 and 7.8 bits/sample at B = 16) at every f, because they are
   signal. Bit-shuffled zstd handles such signals only moderately well. Very clean

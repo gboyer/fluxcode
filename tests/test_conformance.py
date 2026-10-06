@@ -12,7 +12,7 @@ import fluxcode
 from fluxcode import Params, _bitpacking, _encoder, _format, _unit
 from fluxcode._format import BLOCK_FLAG_DECIMAL, BLOCK_FLAG_ORDER
 
-OFF = Params(noise_floor_sigma=None)
+OFF = Params(noise_floor_sigma=0)
 
 
 def rows(unit):
@@ -29,8 +29,8 @@ ALL = [(k, minute(k, s)) for k in KINDS for s in (11, 12)] + [(n, discrete_minut
 IDS = [a[0] for a in ALL]
 
 
-@pytest.mark.parametrize("params", [Params(), OFF, Params(min_quantize_bits=16, noise_floor_sigma=None),
-                                    Params(max_quantize_bits=10), Params(noise_floor_sigma=None, target_bits_per_sample=6.0)],
+@pytest.mark.parametrize("params", [Params(), OFF, Params(min_quantize_bits=16, noise_floor_sigma=0),
+                                    Params(max_quantize_bits=10), Params(noise_floor_sigma=0, target_bits_per_sample=6.0)],
                          ids=["default", "no-noise", "16bit", "max10", "target6"])
 @pytest.mark.parametrize("name,x", ALL, ids=IDS)
 def test_round_trip_error_bound(name, x, params):
@@ -115,7 +115,7 @@ def test_range_just_below_power_of_two():
     x = np.linspace(0.0, rng, 1000)
     x[-1] = rng
     assert _encoder.exponent(rng, 16) == -15
-    units, _, _, _ = encode_series(x, Params(decimal_detection=False, noise_floor_sigma=None))
+    units, _, _, _ = encode_series(x, Params(decimal_detection=False, noise_floor_sigma=0))
     _, param, _ = rows(units[0])
     assert param[0] == -15
     assert np.abs(decode_series(units) - x).max() <= 2.0 ** -16
@@ -218,7 +218,7 @@ def test_subnormal_ranges(make, lossless, params):
     assert (err <= (hi - lo) / (2 ** params.min_quantize_bits - 0.5)).all()
     _, param = flags_params(units)
     assert (err[param == -1074] == 0).all()
-    if lossless and params.max_quantize_bits == 16 and params.noise_floor_sigma is None:  # noise may gate
+    if lossless and params.max_quantize_bits == 16 and params.noise_factor(False) == 0:  # noise may gate
         assert (param == -1074).all()
         np.testing.assert_array_equal(y, x)
 
@@ -253,7 +253,7 @@ def test_huge_ranges(make, params):
 def test_decoder_clamps_to_largest_double():
     """A step that rounds DBL_MAX up to 2^1024 would decode to inf; the decoder clamps it."""
     x = np.r_[0.0, DBL_MAX, np.zeros(998)]
-    units, _, _, _ = encode_series(x, Params(min_quantize_bits=1, max_quantize_bits=1, noise_floor_sigma=None))
+    units, _, _, _ = encode_series(x, Params(min_quantize_bits=1, max_quantize_bits=1, noise_floor_sigma=0))
     y = decode_series(units)
     assert y[1] == DBL_MAX and np.isfinite(y).all()
 
@@ -316,7 +316,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     x[[1, n // 2, n - 1]] = [np.nan, np.inf, -np.inf]
     ticks = np.cumsum(rng.integers(1, 5, n))
     ticks[offsets[4] + 2:] += 2 ** 40  # inside block 4, which then needs long time residuals
-    params = Params(noise_floor_sigma=None)
+    params = Params(noise_floor_sigma=0)
     unit = fluxcode.encode_blocks(x, sizes, params, times=ticks, time_unit="ns").unit
     rows = unit_rows(unit)
     assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_NONFINITE) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))

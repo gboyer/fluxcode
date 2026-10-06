@@ -24,7 +24,7 @@ class FluxCodec:
     is at most f * sigma on blocks that look like white noise. `params` overrides bits / noise_f."""
 
     def __init__(self, bits=16, noise_f=None, params=None):
-        self.params = params or Params(max_quantize_bits=bits, noise_floor_sigma=noise_f)
+        self.params = params or Params(max_quantize_bits=bits, noise_floor_sigma=noise_f or 0)
         self.name = f"fluxcode-{bits}" + (f"-f{noise_f:g}" if noise_f else "")
         self.label = (f"fluxcode, B = {bits}: power-of-two or decimal step, delta order 0/1/2/3, bit or byte planes, zstd"
                       + (f", noise floor f = {noise_f:g}" if noise_f else ""))
@@ -108,7 +108,7 @@ def sweep(mins=None, dmins=None):
     res = {}
     for label, kw in VERSIONS:
         for B in SWEEP_BITS:
-            c = FluxCodec(params=Params(max_quantize_bits=B, noise_floor_sigma=None, **kw))
+            c = FluxCodec(params=Params(max_quantize_bits=B, noise_floor_sigma=0, **kw))
             rc, rd = run(c, mins), run(c, dmins)
             if B == 16:
                 rd["per_signal"] = {name: run(c, [m for m in dmins if m[0] == name])["bps"] for name, _, _ in DISCRETE}

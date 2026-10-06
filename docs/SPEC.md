@@ -33,7 +33,7 @@ and so is the division into blocks (§2).
 | `min_quantize_bits` | 1–max | 6 | hard: the coarsest step. Neither the noise floor nor the target coarsens a block past 2^min steps across its range |
 | `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders the encoder may choose from (§5.5) |
 | `decimal_detection` | on / off | on | try a decimal grid (10^p) before the power-of-two grid |
-| `noise_floor_sigma` | off, or f > 0; 0.1–0.5 recommended | 0.25 | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics) |
+| `noise_floor_sigma` | default, off (0), or f > 0; 0.1–0.5 recommended | default: 0.25 for a unit without times, off for a unit with times | noise floor: on blocks whose residual looks like white measurement noise, coarsen the step to at most f·σ for the whole block (§5.2; measured behaviour in TUNING.md). Turn off per tag where high-frequency content matters (vibration, harmonics). Off by default with times: timed data is often irregular (a swinging-door archive, events), and its samples look like white noise without being noise |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-unit cap on the size (§5.7): a guard against unexpectedly high usage, not a way to squeeze signals whose shape you don't know |
 | `effort` | 1–9 | 4 | encoder effort: how the body is compressed (below). It changes the size and the encode time, never the decoded values |
 
@@ -235,7 +235,8 @@ The encoder computes e_fine with B = `max_quantize_bits` and e_coarse with B = `
 
 ### 5.2 Noise floor
 
-If `noise_floor_sigma` = f is set, rng > 0 and the block has at least 256 samples:
+If the noise floor f is on (`noise_floor_sigma` > 0, or the default on a unit without times: f = 0.25),
+rng > 0 and the block has at least 256 samples:
 
 ```
 d     = x[i+2] − 2·x[i+1] + x[i]  for i = 0..n−3,  minus its mean   # second differences

@@ -13,7 +13,7 @@ from fluxcode import Params
 from fluxcode._format import BLOCK_FLAG_NONFINITE
 
 L = 1000
-OFF = Params(noise_floor_sigma=None)
+OFF = Params(noise_floor_sigma=0)
 
 
 def same(y, x):

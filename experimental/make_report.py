@@ -347,7 +347,7 @@ _PURPLES = matplotlib.colormaps["Purples"]
 CURVE_STYLES = {e: dict(color=_PURPLES(0.5 + 0.5 * (e - 1) / 8), lw=2.4 if e == DEFAULT_EFFORT else 1.3,
                         label=f"effort {e}" + {1: " (fastest)", 9: " (smallest)", DEFAULT_EFFORT: " (default)"}[e])
                 for e in CURVE_EFFORTS}
-FLUX_CURVES = {e: [FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6), noise_floor_sigma=None,
+FLUX_CURVES = {e: [FluxCodec(params=Params(max_quantize_bits=b, min_quantize_bits=min(b, 6), noise_floor_sigma=0,
                                         target_bits_per_sample=None, effort=e))
                    for b in range(4, 17)] for e in CURVE_EFFORTS}
 DEFAULT_CODEC = "fluxcode-16-f0.25"  # Params() unchanged: the diamond

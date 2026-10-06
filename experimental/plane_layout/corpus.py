@@ -97,7 +97,7 @@ def draw_signal(rng):
 
 def configs(rng):
     mx = int(rng.choice([8, 10, 12, 14, 16]))
-    nf = None if rng.random() < 0.3 else 0.25
+    nf = 0.0 if rng.random() < 0.3 else 0.25
     return Params(max_quantize_bits=mx, noise_floor_sigma=nf), mx, nf
 
 
@@ -146,7 +146,7 @@ def main():
             fam, q, x = draw_signal(rng)
             _, mx, nf = configs(rng)
             bit, byte, u = record(x, mx, nf)
-            for k, v in zip(cols, (fam, -1.0 if q is None else q, mx, -1.0 if nf is None else nf, bit, byte, u)):
+            for k, v in zip(cols, (fam, -1.0 if q is None else q, mx, -1.0 if not nf else nf, bit, byte, u)):
                 cols[k].append(v)
             if len(cols["u"]) % 500 == 0:
                 print(len(cols["u"]), flush=True)

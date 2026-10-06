@@ -46,11 +46,12 @@ class BlockStats(NamedTuple):
     block_mean: np.ndarray
 
 
-def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, int]:
+def kernel_args(params: Params, timed: bool) -> tuple[int, int, int, float, float, bool, int]:
     """Converts encoder parameters into the arguments of the encoding kernel.
 
     Args:
         params: Encoder configuration parameters.
+        timed: Whether the unit stores timestamps (it decides the default noise floor).
 
     Returns:
         A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, decimal,
@@ -61,20 +62,23 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, int]
         params.min_quantize_bits,
         params.max_quantize_bits,
         sum(1 << order for order in params.diff_orders),
-        float(params.noise_floor_sigma or 0.0),
+        params.noise_factor(timed),
         float(params.target_bits_per_sample or 0.0),
         bool(params.decimal_detection),
         _encoder.PICK_LEN,
     )
 
 
-def encode_rows(samples: np.ndarray, block_sizes: np.ndarray, params: Params) -> tuple[_format.UnitRows, BlockStats]:
+def encode_rows(
+    samples: np.ndarray, block_sizes: np.ndarray, params: Params, timed: bool
+) -> tuple[_format.UnitRows, BlockStats]:
     """Encodes blocks into their rows (without a time axis) and summary statistics.
 
     Args:
         samples: 1D float64 array of every sample, block after block.
         block_sizes: 1D int64 array of block sizes adding up to the sample count.
         params: Encoder parameters.
+        timed: Whether the unit stores timestamps.
 
     Returns:
         A tuple of (rows, stats): the blocks' UnitRows (without time rows) and their
@@ -96,7 +100,7 @@ def encode_rows(samples: np.ndarray, block_sizes: np.ndarray, params: Params) ->
     _encoder.encode_unit(
         samples,
         sample_offsets(block_sizes),
-        *kernel_args(params),
+        *kernel_args(params, timed),
         rows.block_flags,
         rows.grid_params,
         rows.value_anchors,
@@ -151,7 +155,7 @@ def encode(
             anywhere.
     """
     _args.check_unit_counts(block_sizes.shape[0], samples.shape[0], block_sizes)
-    rows, stats = encode_rows(samples, block_sizes, params)
+    rows, stats = encode_rows(samples, block_sizes, params, ticks is not None)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
     return EncodedUnit(_compress.compress(rows, samples.shape[0], _compress.EFFORTS[params.effort], time_unit), *stats)
@@ -525,7 +529,7 @@ def splice(
     _args.check_unit_counts(num_blocks, num_samples)
 
     # Encode value residuals and codes for the replacement blocks
-    new_rows, stats = encode_rows(samples, block_sizes, params)
+    new_rows, stats = encode_rows(samples, block_sizes, params, ticks is not None)
     new_offsets = sample_offsets(block_sizes)
     old_starts = None
     if ticks is not None:

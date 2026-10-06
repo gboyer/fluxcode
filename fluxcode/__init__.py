@@ -47,6 +47,7 @@ from ._api import (
     update_time_blocks,
 )
 from ._types import (
+    DEFAULT_NOISE_FLOOR_SIGMA,
     DecodedUnit,
     EncodedSeries,
     EncodedUnit,
@@ -56,6 +57,7 @@ from ._types import (
 )
 
 __all__ = [
+    "DEFAULT_NOISE_FLOOR_SIGMA",
     "DecodedUnit",
     "EncodedSeries",
     "EncodedUnit",

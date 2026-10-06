@@ -3,6 +3,8 @@
 """docs/SPEC.md time axis: exact round trips, regular and irregular blocks, the layout, the
 encoder's input checks, the decoder's corrupt-unit checks, and update with times."""
 
+import dataclasses
+
 import numpy as np
 import pytest
 import zstandard
@@ -32,10 +34,12 @@ def decoded_times(unit):
 
 
 def round_trip(values, times, params=Params(), block_len=BLOCK_LEN, **kwargs):
-    """Encodes and decodes with times; the values must decode as they do without times."""
+    """Encodes and decodes with times; the values must decode as they do without times at the
+    same noise floor (the default one depends on whether there are times)."""
     unit = fluxcode.encode_unit(values, params, block_len=block_len, times=times, **kwargs).unit
     decoded = fluxcode.decode_unit(unit)
-    plain = fluxcode.encode_unit(values, params, block_len=block_len).unit
+    same_floor = dataclasses.replace(params, noise_floor_sigma=params.noise_factor(timed=True))
+    plain = fluxcode.encode_unit(values, same_floor, block_len=block_len).unit
     np.testing.assert_array_equal(decoded.values, fluxcode.decode_unit(plain).values)
     return unit, decoded
 
@@ -408,3 +412,34 @@ def test_update_time_errors():
     # Within a new block
     with pytest.raises(ValueError, match="non-decreasing: sample 1 "):
         fluxcode.update(unit, {0: block}, times={0: block_times[::-1]})
+
+
+def test_default_noise_floor_is_off_with_times():
+    """noise_floor_sigma=None: DEFAULT_NOISE_FLOOR_SIGMA without times, off with them; an
+    explicit floor applies either way."""
+    values = minute("noisy-sine", 7)
+    times = regular_times(values.shape[0])
+
+    def decoded(params, **kwargs):
+        return fluxcode.decode_unit(fluxcode.encode_unit(values, params, **kwargs).unit).values
+
+    floor = Params(noise_floor_sigma=fluxcode.DEFAULT_NOISE_FLOOR_SIGMA)
+    off = Params(noise_floor_sigma=0)
+    np.testing.assert_array_equal(decoded(Params()), decoded(floor))
+    np.testing.assert_array_equal(decoded(Params(), times=times), decoded(off, times=times))
+    np.testing.assert_array_equal(decoded(floor, times=times), decoded(floor))
+    assert not np.array_equal(decoded(floor), decoded(off))  # the floor does gate this signal
+
+
+def test_update_default_noise_floor_follows_the_unit():
+    """update re-encodes a timed unit's blocks with the floor off, an untimed one's with it on."""
+    values = minute("noisy-sine", 8)[:5000]
+    times = regular_times(values.shape[0])
+    fresh = minute("noisy-sine", 9)[:BLOCK_LEN]
+    off, floor = Params(noise_floor_sigma=0), Params(noise_floor_sigma=fluxcode.DEFAULT_NOISE_FLOOR_SIGMA)
+    for kwargs, expected in (({"times": times}, off), ({}, floor)):
+        unit = fluxcode.encode_unit(values, **kwargs).unit
+        new_times = {"times": {2: times[2 * BLOCK_LEN:3 * BLOCK_LEN]}} if kwargs else {}
+        updated = fluxcode.update(unit, {2: fresh}, **new_times).unit
+        reference = fluxcode.update(unit, {2: fresh}, expected, **new_times).unit
+        np.testing.assert_array_equal(fluxcode.decode_unit(updated).values, fluxcode.decode_unit(reference).values)

@@ -120,7 +120,7 @@ class Params:
     min_quantize_bits: int = 6                  # hard: steps are never coarser than this (1..16)
     max_quantize_bits: int = 16                 # hard: steps are never finer than this (min..16)
     diff_orders: frozenset[int] = frozenset({0, 1, 2, 3})   # one element: no order selection
-    noise_floor_sigma: float | None = 0.25      # f: step ≤ f·σ on blocks that look like white noise
+    noise_floor_sigma: float | None = None      # f: step ≤ f·σ on blocks that look like white noise; None: 0.25 without times, off with them
     target_bits_per_sample: float | None = None # soft per-unit cap
     decimal_detection: bool = True
     block_len: int = 1000                       # multiple of 8

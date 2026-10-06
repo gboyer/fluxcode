@@ -35,8 +35,10 @@ type:
   sigma multiplier that you want to preserve, and the quantization grid is reduced
   accordingly. This helps compression for noisy data, but
   preserves clean periodic data (unless the frequency approaches the sample rate).
-  By default, 0.25 sigmas. It only applies to blocks of at least 256 samples, so a fixed
-  `block_len` under 256 never gets one.
+  By default, 0.25 sigmas for units without timestamps, and off for units with them: timed
+  data is often irregular (a historian's swinging-door archive, events), whose samples look
+  like white noise without being noise. It only applies to blocks of at least 256 samples, so a
+  fixed `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -151,7 +153,7 @@ which set the step to 0.25σ.
   bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
-  `noise_floor_sigma=0.25` (`None` turns the noise floor off), `target_bits_per_sample=None`
+  `noise_floor_sigma=None` (0.25 without times, off with them; 0 turns it off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers

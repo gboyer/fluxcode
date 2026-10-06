@@ -74,7 +74,7 @@ CASES = {
     "noisy-sine default": (lambda: minute("noisy-sine", 1), Params(), _encode_fixed()),
     "gauss-spikes default": (lambda: minute("gauss-spikes", 1), Params(), _encode_fixed()),
     "random-walk default": (lambda: minute("random-walk", 1), Params(), _encode_fixed()),
-    "noisy-sine noise off": (lambda: minute("noisy-sine", 2), Params(noise_floor_sigma=None), _encode_fixed()),
+    "noisy-sine noise off": (lambda: minute("noisy-sine", 2), Params(noise_floor_sigma=0), _encode_fixed()),
     "chirp target 6": (lambda: minute("chirp", 2), Params(target_bits_per_sample=6.0), _encode_fixed()),
     "random-walk target 8": (lambda: minute("random-walk", 2), Params(target_bits_per_sample=8.0), _encode_fixed()),
     "square orders {2}": (lambda: minute("square-2.24hz", 1), Params(diff_orders={2}), _encode_fixed()),

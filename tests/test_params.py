@@ -66,8 +66,8 @@ def size(x, p):
 @pytest.mark.parametrize("kind", ["chirp", "sin-50.3hz", "noisy-sine", "random-walk"])
 def test_target_caps_expensive_signals(kind):
     x = minute(kind, 5)
-    free = size(x, Params(noise_floor_sigma=None))
-    capped = size(x, Params(noise_floor_sigma=None, target_bits_per_sample=6.0))
+    free = size(x, Params(noise_floor_sigma=0))
+    capped = size(x, Params(noise_floor_sigma=0, target_bits_per_sample=6.0))
     assert capped < free
     assert capped < 6.0 + 1.0  # soft: the estimate is within about a bit
 

@@ -78,7 +78,7 @@ def test_update_copies_carried_blocks_without_unpacking(monkeypatch):
 
 def test_untouched_blocks_identical_with_target():
     """With a target, re-encoding the whole unit would reallocate; update carries residuals over."""
-    p = Params(noise_floor_sigma=None, target_bits_per_sample=6.0)
+    p = Params(noise_floor_sigma=0, target_bits_per_sample=6.0)
     _, unit, _, _, _ = encoded("noisy-sine", params=p)
     before = fluxcode.decode_unit(unit).values.reshape(-1, L)
     unit2 = fluxcode.update(unit, {0: minute("chirp", 1)[:L]}, p).unit
@@ -201,7 +201,7 @@ def test_non_finite_float_anchors_are_rejected(anchor):
 
 def test_out_of_range_decimal_anchors_are_rejected():
     x = np.round(np.cumsum(np.random.default_rng(3).normal(size=3 * L)), 2)
-    unit, _, _, _ = fluxcode.encode_unit(x, Params(noise_floor_sigma=None))
+    unit, _, _, _ = fluxcode.encode_unit(x, Params(noise_floor_sigma=0))
     assert (unit_rows(unit).block_flags & _format.BLOCK_FLAG_DECIMAL).all()
 
     def bad_anchor(flags, sizes, param, anchors, *_):
