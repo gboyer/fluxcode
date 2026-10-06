@@ -1,5 +1,11 @@
 # fluxcode — specification
 
+<!-- FIXME: The specification needs to focus only on the file layout and best-case error guarantees. Create a separate doc that talks about the encoder. -->
+
+<!-- FIXME: this long string of semicolon separated clauses is very hard to read. Use bullets, perhaps nested. Apply this stylistic change everywhere; bullets, not proose blocks. -->
+
+<!-- LARGER CHANGE (after finishing the doc changes): Rename "unit" everywhere to "block group" (in prose) or "group" (when a shorter name is needed for code). In science and engineering, "unit" is overloaded as units of measurement and units of large industrial facilities. -->
+
 Lossy (bounded-error) and, for decimal data, lossless compression of float64 time series,
 designed around 1 kHz sensor data, with their timestamps stored exactly if given (§4). One
 compressed unit holds blocks of 0 to 65,535 samples each; the unit records every block's size.
@@ -49,6 +55,11 @@ Huffman table, and the frame is an ordinary one either way), and the zstd levels
 | 3–4 | best | one run | 3 |
 | 5–8 | best | flushed | 3 |
 | 9 | best | flushed | 3 and 9 |
+
+<!--
+  -- FIXME: this talks about "before", but this is an unpublished spec. Everything in
+  -- this spec should focus on current-only.
+  -->
 
 *Heuristic*: byte planes if fewer than 1% of the unit's residuals (zigzagged) reach 128, else
 bit planes, one compression. *Best*: both layouts, the smaller kept, ties to byte planes (they
