@@ -212,27 +212,29 @@ shapes, and [experimental/report/time.html](../experimental/report/time.html) sh
 
 | timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
 |---|---|---|---|---|---|
-| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +25 µs (+8%) | +12 µs (+10%) |
-| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +33 µs (+10%) | +17 µs (+14%) |
-| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +399 µs (+124%) | +146 µs (+124%) |
-| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +114 µs (+35%) | +67 µs (+57%) |
-| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +296 µs (+92%) | +122 µs (+103%) |
-| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +263 µs (+81%) | +92 µs (+78%) |
-| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +472 µs (+146%) | +195 µs (+165%) |
-| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +387 µs (+120%) | +145 µs (+123%) |
-| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +468 µs (+145%) | +179 µs (+152%) |
-| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +515 µs (+159%) | +205 µs (+174%) |
-| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +613 µs (+190%) | +246 µs (+208%) |
-| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +267 µs (+83%) | +101 µs (+86%) |
+| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +19 µs (+6%) | +13 µs (+11%) |
+| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +21 µs (+6%) | +19 µs (+16%) |
+| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +364 µs (+111%) | +140 µs (+119%) |
+| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +99 µs (+30%) | +66 µs (+56%) |
+| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +278 µs (+85%) | +120 µs (+102%) |
+| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +232 µs (+71%) | +96 µs (+81%) |
+| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +442 µs (+135%) | +192 µs (+163%) |
+| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +356 µs (+109%) | +133 µs (+113%) |
+| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +359 µs (+110%) | +182 µs (+154%) |
+| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +399 µs (+122%) | +210 µs (+178%) |
+| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +566 µs (+173%) | +241 µs (+204%) |
+| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +130 µs (+40%) | +100 µs (+85%) |
 
-For scale, the same block group's values take 17,976 bytes, 323 µs to encode (default effort, with
+For scale, the same block group's values take 17,976 bytes, 327 µs to encode (default effort, with
 both layouts compressed, which compresses the time fields twice too) and 118 µs to decode; the
-percentages are of those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-07).
-Since 2026-10-02 the noise floor runs on block groups with times: the encode time includes, on
-regular blocks, the noise estimate that used to be skipped (+7 µs for 60 blocks), and on irregular
-ones the cadence check (the share of one-scan intervals, then the estimate on consecutive scans
-where the share is high enough), up to about 1.7 µs per block (+100 µs on the noisy clock; +4 µs
-on deadband logging, whose blocks are too short). The values come out the same here.
+percentages are of those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-07,
+at 4e89772). The noise floor runs on block groups with times: the encode time includes, on regular
+blocks, the noise estimate (about 7 µs for 60 blocks), and on irregular ones the cadence check (the
+median of 15 intervals and one counting pass), then, where 90% of the intervals are one scan, the
+estimate on consecutive scans. Against the previous cadence (a 1st-percentile scan interval with a
+histogram fallback, at 0581c29) the added encode time is 6–9% lower on jittered and noisy clocks
+(the noisy clock 399 → 364 µs), 23% lower on Poisson events (468 → 359 µs, which took the histogram)
+and half on bursts (267 → 130 µs). The values come out the same with and without times here.
 Irregular timestamps can cost more than the values: their entropy is what it is. Even a perfect grid
 adds 60,000 int64 ticks to read on encode and write on decode, as many bytes as the values: on 4
 threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md](PERFORMANCE.md)).

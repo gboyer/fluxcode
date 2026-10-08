@@ -169,23 +169,23 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 |0.0000%| 2.39 | 1.42 |
-| square wave | 0.04 |0.0000%| 2.54 | 1.19 |
-| sine, 4.12 Hz | 2.40 |0.0010%| 6.02 | 2.15 |
-| sine, 50.3 Hz | 6.74 |0.0010%| 5.93 | 2.19 |
-| chirp | 7.81 |0.0010%| 7.41 | 2.07 |
-| random walk | 12.62 |0.0015%| 5.53 | 1.87 |
-| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.29 | 1.93 |
-| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.23 | 2.29 |
-| noisy sine (σ = 5) | 5.24 |0.2334%| 4.20 | 1.63 |
-| Gaussian spikes on uniform noise | 6.60 |1.4661%| 4.99 | 1.90 |
-| **all 15 signals** | **4.76** | | **5.03** | **1.81** |
+| linear ramp | 0.02 |0.0000%| 2.37 | 1.38 |
+| square wave | 0.04 |0.0000%| 2.51 | 1.14 |
+| sine, 4.12 Hz | 2.40 |0.0010%| 6.07 | 2.10 |
+| sine, 50.3 Hz | 6.74 |0.0010%| 5.93 | 2.14 |
+| chirp | 7.81 |0.0010%| 7.41 | 2.04 |
+| random walk | 12.62 |0.0015%| 5.50 | 1.82 |
+| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.29 | 1.88 |
+| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.19 | 2.13 |
+| noisy sine (σ = 5) | 5.24 |0.2334%| 4.19 | 1.60 |
+| Gaussian spikes on uniform noise | 6.60 |1.4661%| 4.98 | 1.87 |
+| **all 15 signals** | **4.76** | | **5.01** | **1.76** |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The default
 effort compresses each block group with bit and with byte planes and keeps the smaller. The whole
-set at effort 1 is 4.83 bits/sample at 3.41 µs/block to encode, and at effort 5 4.66 at 5.78
+set at effort 1 is 4.83 bits/sample at 3.40 µs/block to encode, and at effort 5 4.66 at 5.77
 ([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits` (see
 the [research report](experimental/report/index.html#scatter-kinds)).
 
