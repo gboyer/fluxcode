@@ -346,7 +346,7 @@ def share_of(ticks):
     """A block's share of one-scan intervals, and which they are."""
     ticks = np.asarray(ticks, np.int64)
     intervals = np.empty(ticks.size - 1)
-    return _noise.cadence(ticks, intervals)[0], intervals > 0
+    return _noise.cadence(ticks, intervals, np.empty(_noise.CADENCE_COUNTS, np.int32))[0], intervals > 0
 
 
 def test_cadence_share():
@@ -367,9 +367,18 @@ def test_cadence_share():
     assert share_of(np.zeros(10))[0] == 0.0
     jittered = scans + rng.integers(0, 201, scans.size)
     intervals = np.empty(scans.size - 1)
-    assert _noise.cadence(jittered, intervals)[1] == pytest.approx(np.diff(jittered).mean())
+    assert _noise.cadence(jittered, intervals, np.empty(_noise.CADENCE_COUNTS, np.int32))[1] == pytest.approx(np.diff(jittered).mean())
 
 
 def test_cadence_factor_ramp():
     factors = [_noise.cadence_factor(share) for share in (0.0, 0.5, 0.6, 0.7, 0.9, 1.0)]
     assert factors == pytest.approx([0.0, 0.0, 0.25, 0.5, 1.0, 1.0])
+
+
+def test_float_bits():
+    """The allocation-free bit casts match numpy's views on positive normal floats."""
+    values = np.r_[1.0, 3.0, 1e-300, 1e300, np.ldexp(1.0, 64) - 2048.0, np.random.default_rng(9).uniform(1, 1e12, 100)]
+    for value in values:
+        bits = int(np.array([value]).view(np.int64)[0])
+        assert _noise._float_bits(value) == bits
+        assert _noise._bits_float(bits) == value

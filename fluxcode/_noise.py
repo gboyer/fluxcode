@@ -55,6 +55,9 @@ CADENCE_BINS: int = 256
 NUM_COUNT_CHAINS: int = 4
 """Interleaved histogram chains, so that runs of the same bin don't stall on each other."""
 
+CADENCE_COUNTS: int = NUM_COUNT_CHAINS * CADENCE_BINS
+"""Size of the histogram's scratch array."""
+
 CADENCE_TOLERANCE: float = 0.5
 """An interval within this fraction of the scan interval is one scan. Generous: it only has to
 separate one scan (1x) from a skipped one (2x), and so covers timestamps jittered by 20%."""
@@ -279,15 +282,20 @@ def regular_times(ticks: np.ndarray) -> bool:
 
 
 @njit(inline="always")
-def _from_bits(bits: int) -> float:
-    """The float64 whose bit pattern is bits."""
-    return np.array([bits]).view(np.float64)[0]
+def _float_bits(value: float) -> int:
+    """The bit pattern of a positive normal float64, as an int64 (monotonic in the value).
+
+    Computed with frexp rather than through an array view, so that it allocates nothing.
+    """
+    mantissa, exponent = math.frexp(value)
+    # mantissa is in [0.5, 1): its 52 fraction bits are exactly (2 mantissa - 1) 2^52
+    return ((exponent + 1022) << 52) | int((2.0 * mantissa - 1.0) * 4503599627370496.0)
 
 
 @njit(inline="always")
-def _to_bits(value: float) -> int:
-    """The bit pattern of a float64, as an int64 (monotonic in the value for positive floats)."""
-    return np.array([value]).view(np.int64)[0]
+def _bits_float(bits: int) -> float:
+    """The positive normal float64 whose bit pattern is bits (the inverse of _float_bits)."""
+    return math.ldexp(1.0 + (bits & 0xFFFFFFFFFFFFF) / 4503599627370496.0, (bits >> 52) - 1023)
 
 
 @njit(inline="always")
@@ -300,7 +308,7 @@ def _interval(ticks_next: np.ndarray, ticks_prev: np.ndarray, interval_idx: int)
 
 
 @njit(nogil=True, cache=True, fastmath=True)
-def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]:
+def cadence(ticks: np.ndarray, out_intervals: np.ndarray, scratch_counts: np.ndarray) -> tuple[float, float]:
     """Finds a block's one-scan intervals, their share and their mean.
 
     The scan interval is the CADENCE_QUANTILE quantile of the block's non-zero intervals,
@@ -312,6 +320,9 @@ def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]
         ticks: 1D int64 array of the block's ticks (at least 2).
         out_intervals: Output 1D float64 array of len(ticks) - 1 receiving each interval if it
             is one scan, else 0.0.
+        scratch_counts: 1D int32 scratch array of at least CADENCE_COUNTS (the histogram's). It
+            allocates nothing itself: inlined into the encoder's block loop, an allocation slows
+            every block.
 
     Returns:
         A tuple of (share, mean): the share of one-scan intervals and their mean length (both
@@ -330,9 +341,9 @@ def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]
     if shortest_minus_one == ~np.uint64(0):
         intervals[:] = 0.0
         return 0.0, 0.0
-    shortest_bits = _to_bits(np.float64(shortest_minus_one + one))
+    shortest_bits = _float_bits(np.float64(shortest_minus_one + one))
     # Usually the quantile is within the first bin: classify against its edge while counting it
-    first_edge = _from_bits(shortest_bits + (1 << CADENCE_BIN_SHIFT))
+    first_edge = _bits_float(shortest_bits + (1 << CADENCE_BIN_SHIFT))
     num_nonzero = 0
     first_count = 0
     num_one_scan = 0
@@ -351,7 +362,8 @@ def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]
     if first_count <= rank:
         # Histogram of eighth-octave bins above the shortest interval (float bits are monotonic
         # in the value), in interleaved chains so that repeated bins don't stall on each other
-        counts = np.zeros(NUM_COUNT_CHAINS * CADENCE_BINS, np.int32)
+        counts = scratch_counts[:CADENCE_COUNTS]
+        counts[:] = 0
         interval_bits = intervals.view(np.int64)
         for interval_idx in range(num_intervals):
             intervals[interval_idx] = _interval(ticks_next, ticks_prev, interval_idx)
@@ -369,7 +381,7 @@ def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]
                 scan_bin = bin_idx
                 break
         # The upper edge of the bin
-        scan = _from_bits(shortest_bits + ((scan_bin + 1) << CADENCE_BIN_SHIFT))
+        scan = _bits_float(shortest_bits + ((scan_bin + 1) << CADENCE_BIN_SHIFT))
         lower, upper = (1.0 - CADENCE_TOLERANCE) * scan, (1.0 + CADENCE_TOLERANCE) * scan
         num_one_scan = 0
         one_scan_total = 0.0
@@ -493,6 +505,7 @@ def block_noise(
     ticks: np.ndarray,
     scale_exp: int,
     scratch_intervals: np.ndarray,
+    scratch_counts: np.ndarray,
     scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
 ) -> tuple[float, float, float]:
@@ -510,6 +523,7 @@ def block_noise(
         scale_exp: Power-of-two scaling exponent that maps the block range to [0.5, 1.0).
         scratch_intervals: 1D float64 scratch array of at least len(samples) - 1 (used with
             ticks).
+        scratch_counts: 1D int32 scratch array of at least CADENCE_COUNTS (used with ticks).
         scratch_diffs: 1D float64 scratch array of at least len(samples).
         scratch_weights: 1D float64 scratch array of at least len(samples).
 
@@ -524,7 +538,7 @@ def block_noise(
     if irregular:
         # Scale the floor by the share of consecutive scans (none for a sparse archive)
         intervals = scratch_intervals[:ticks.shape[0] - 1]
-        share, mean_interval = cadence(ticks, intervals)
+        share, mean_interval = cadence(ticks, intervals, scratch_counts)
         scale = cadence_factor(share)
         if scale == 0:
             return 0.0, 0.0, 0.0

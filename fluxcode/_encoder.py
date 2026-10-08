@@ -25,7 +25,7 @@ from ._format import (
     P_MIN,
     SHORT_BLOCK_LEN,
 )
-from ._noise import block_noise
+from ._noise import CADENCE_COUNTS, block_noise
 from ._nonfinite import fill_nonfinite
 
 leading_zeros = cast("Callable[[int | np.integer], int]", _leading_zeros)
@@ -930,6 +930,7 @@ def encode_group(
     scratch_noise_weights = np.empty(max_len)
     timed = ticks.shape[0] > 0
     scratch_intervals = np.empty(max_len if timed else 0)
+    scratch_counts = np.empty(CADENCE_COUNTS if timed else 0, np.int32)
     no_codes = np.empty(0, np.uint8)
     no_ticks = ticks[:0]
     use_target = target_bits > 0
@@ -1005,6 +1006,7 @@ def encode_group(
                 ticks[first_sample:first_sample + block_len] if timed else no_ticks,
                 range_scale(block_min, block_max),
                 scratch_intervals,
+                scratch_counts,
                 scratch_noise_diffs,
                 scratch_noise_weights,
             )

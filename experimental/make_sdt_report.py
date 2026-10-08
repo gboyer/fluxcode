@@ -123,7 +123,7 @@ def one_scan_shares(ticks):
     for hour in np.unique(hours):
         block = ticks[hours == hour]
         if block.size >= NOISE_MIN_LEN:
-            shares.append(1.0 if _noise.regular_times(block) else _noise.cadence(block, np.empty(block.size - 1))[0])
+            shares.append(1.0 if _noise.regular_times(block) else _noise.cadence(block, np.empty(block.size - 1), np.empty(_noise.CADENCE_COUNTS, np.int32))[0])
     return shares
 
 
