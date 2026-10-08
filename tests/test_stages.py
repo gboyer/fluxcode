@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from fluxcode import _decoder, _encoder, _noise, _nonfinite
+from fluxcode import _decoder, _encoder, _noise, _nonfinite, _time
 
 RNG = np.random.default_rng(0)
 
@@ -340,7 +340,7 @@ def test_noise_weighted_cancels_slopes_across_unequal_intervals():
     noisy = 0.001 * ticks.astype(float) + rng.normal(0, 0.01, 1000)
     d, w = np.empty(1000), np.empty(1000)
     k = _encoder.range_scale(noisy.min(), noisy.max())
-    lower, upper, _ = _noise.cadence(ticks, np.empty(_noise.CADENCE_SAMPLES, np.int64))
+    lower, upper, _ = _noise.cadence(ticks, np.empty(_time.CADENCE_SAMPLES, np.int64))
     sigma, rho = _noise.noise_weighted(noisy, NO_CODES, ticks, lower, upper, k, 0, d, w)
     assert sigma == pytest.approx(0.01, rel=0.1) and rho < -0.6
     assert _noise.noise(noisy, k, d)[0] > 5 * sigma
@@ -377,7 +377,7 @@ def test_robust_noise_is_unbiased_on_steady_noise(n):
 
 def cadence_of(ticks):
     """A block's one-scan window and share."""
-    return _noise.cadence(np.asarray(ticks, np.int64), np.empty(_noise.CADENCE_SAMPLES, np.int64))
+    return _noise.cadence(np.asarray(ticks, np.int64), np.empty(_time.CADENCE_SAMPLES, np.int64))
 
 
 def gets_floor(ticks):

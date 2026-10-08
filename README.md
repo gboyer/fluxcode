@@ -26,7 +26,7 @@ High level properties:
   subnormal ranges, +/- Infinity, and NaN.
 * **Timestamps**: Optionally stores exact timestamps (s, ms, µs or ns) for irregular sampling.
   Regular intervals store very cheaply, but noisy timestamps dramatically
-  increase compressed size.
+  increase compressed size, unless you allow a time error (below).
 
 Encoding features to balance size, accuracy, and performance depending on data
 type:
@@ -40,6 +40,11 @@ type:
   Without timestamps the samples are taken as evenly spaced, so store an archive with its times
   (or with the noise floor off). It only applies to blocks of at least 256 samples, so a fixed
   `block_len` under 256 never gets one.
+* **Time error**: Optionally lets each timestamp move by up to a share of its block's interval
+  (`time_error`, off by default): times round to a 1-2-5 step (1, 2, 5, 10, ... ticks) from the
+  epoch, so a jittered clock lands back on its own grid and stores as a regular one. A time error
+  of about 5× the jitter (σ over the interval) does that: 0.05 for 1% jitter, 120 KB → 63 bytes a
+  minute at 1 kHz. Smaller ones still save most of the jitter's cost.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -157,7 +162,7 @@ which set the step to 0.25σ.
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9), `time_error=0` (0–0.5). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -219,7 +224,9 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
   decode identically; without a size target, the updated block group is byte-identical to encoding
   the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
-- **Timestamps decode exactly.**
+- **Timestamps decode exactly** by default. With `time_error` = e, each moves by at most e times
+  its block's interval (2% more at most), they stay in order, and `update_time_blocks` never moves
+  a stored one.
 
 ## How it works
 

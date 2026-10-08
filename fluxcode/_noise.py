@@ -23,6 +23,7 @@ from numba import njit
 
 from . import _extreme_magnitudes as xm
 from ._format import CODE_FINITE
+from ._time import CADENCE_SHARE, median_interval
 
 MAD_TO_SD: float = math.sqrt(math.pi / 2)
 """Ratio of standard deviation to mean absolute deviation for a normal distribution."""
@@ -44,13 +45,6 @@ QUIET_RATIO: float = 0.75
 that is lower: noise that varies within a block is floored by at most 4/3 of its quietest part.
 On steady white noise the quietest of up to 255 windows never measured below 0.77 of the mean,
 so steady noise reads unbiased (the plain minimum read 5% low over 3 windows, 18% over 255)."""
-
-CADENCE_SAMPLES: int = 15
-"""Evenly spaced intervals whose median is a block's scan interval. Where nearly all intervals
-are one scan, so is the median of any 15 of them; where it is not, the block gets no floor."""
-
-CADENCE_SHARE: float = 0.9
-"""Share of a block's intervals that must be one scan for a noise floor."""
 
 MIN_ONE_SCAN_TRIPLETS: int = 254
 """Fewest triplets of consecutive scans an irregular block needs for a noise floor: as many as
@@ -286,17 +280,7 @@ def cadence(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, fl
     num_intervals = ticks.shape[0] - 1
     # Offset slices from index 0 allow SIMD vectorization without negative index checks
     ticks_next, ticks_prev = ticks[1:], ticks[:num_intervals]
-    # Insertion sort of the evenly spaced intervals (a library sort would allocate)
-    pivots = scratch_pivots[:CADENCE_SAMPLES]
-    for pivot_idx in range(CADENCE_SAMPLES):
-        interval_idx = pivot_idx * (num_intervals - 1) // (CADENCE_SAMPLES - 1)
-        pivot = ticks_next[interval_idx] - ticks_prev[interval_idx]
-        insert_idx = pivot_idx
-        while insert_idx > 0 and pivots[insert_idx - 1] > pivot:
-            pivots[insert_idx] = pivots[insert_idx - 1]
-            insert_idx -= 1
-        pivots[insert_idx] = pivot
-    scan = pivots[CADENCE_SAMPLES // 2]
+    scan = median_interval(ticks, scratch_pivots)
     # Strictly between scan/2 and 3 scan/2 in integers: no rounding, and no overflow below 2^62
     if not 0 < scan < (1 << 62):
         return 0, 0, 0.0

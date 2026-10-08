@@ -26,8 +26,9 @@ from ._format import (
     P_MIN,
     SHORT_BLOCK_LEN,
 )
-from ._noise import CADENCE_SAMPLES, block_noise
+from ._noise import block_noise
 from ._nonfinite import fill_nonfinite
+from ._time import CADENCE_SAMPLES
 
 leading_zeros = cast("Callable[[int | np.integer], int]", _leading_zeros)
 """Numba intrinsic counting leading zero bits, typed as its jitted call signature."""

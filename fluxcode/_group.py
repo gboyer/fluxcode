@@ -144,8 +144,49 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     return time_rows
 
 
+def snap_ticks(
+    ticks: np.ndarray, block_sizes: np.ndarray, time_error: float, boundary: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rounds each block's ticks to its time quantum (_time.time_quanta, _time.snap_times).
+
+    Args:
+        ticks: 1D int64 array of every sample's tick.
+        block_sizes: 1D int64 array of block sizes adding up to the tick count.
+        time_error: The time error (Params.time_error); 0 keeps the ticks.
+        boundary: If positive, every quantum divides it (time blocks' boundaries).
+
+    Returns:
+        A tuple of (ticks, quanta): the rounded ticks (a new array if any block was rounded,
+        else the given one) and each block's quantum (0 where its ticks were kept).
+
+    Raises:
+        ValueError: If the times contain NaT or decrease anywhere.
+    """
+    quanta = np.zeros(block_sizes.shape[0], np.int64)
+    if time_error <= 0 or not ticks.shape[0]:
+        return ticks, quanta
+    # NaT is int64 minimum: past the first time it is a decrease
+    if ticks[0] == _time.INT64_MIN:
+        raise ValueError("times contain NaT")
+    offsets = sample_offsets(block_sizes)
+    _time.time_quanta(ticks, offsets, float(time_error), boundary, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta)
+    if not quanta.any():
+        return ticks, quanta
+    snapped = np.empty_like(ticks)
+    status, sample_idx = _time.snap_times(ticks, offsets, quanta, snapped)
+    if status != _time.OK:
+        raise _args.decrease_error(ticks, sample_idx)
+    return snapped, quanta
+
+
 def encode(
-    samples: np.ndarray, block_sizes: np.ndarray, params: Params, ticks: np.ndarray | None = None, time_unit: int = 0
+    samples: np.ndarray,
+    block_sizes: np.ndarray,
+    params: Params,
+    ticks: np.ndarray | None = None,
+    time_unit: int = 0,
+    *,
+    snap: bool = True,
 ) -> EncodedGroup:
     """Encodes blocks of samples (and their ticks) into a block group.
 
@@ -155,6 +196,7 @@ def encode(
         params: Encoder parameters.
         ticks: 1D int64 array of the samples' timestamps, or None for no time axis.
         time_unit: Time unit code of ticks (0 without a time axis).
+        snap: Whether to round the ticks to params.time_error (False: the caller has).
 
     Returns:
         EncodedGroup holding compressed block group bytes and block min/max/mean.
@@ -164,6 +206,8 @@ def encode(
             anywhere.
     """
     _args.check_group_counts(block_sizes.shape[0], samples.shape[0], block_sizes)
+    if ticks is not None and snap:
+        ticks, _ = snap_ticks(ticks, block_sizes, params.time_error)
     rows, stats = encode_rows(samples, block_sizes, params, ticks)
     return EncodedGroup(_compress.compress(rows, samples.shape[0], _compress.EFFORTS[params.effort], time_unit), *stats)
 
@@ -193,7 +237,11 @@ def encode_series(
     samples_per_group = blocks_per_group * block_len
     num_blocks = -(-min(samples_per_group, samples.shape[0]) // block_len)
     _args.check_group_counts(num_blocks, min(samples_per_group, samples.shape[0]))
-    if ticks is not None:
+    if ticks is not None and params.time_error > 0:
+        # Round the whole series at once (its blocks are the block groups' blocks), so that
+        # block groups stay in order where neighbouring blocks' quanta differ
+        ticks, _ = snap_ticks(ticks, _args.fixed_sizes(ticks.shape[0], block_len), params.time_error)
+    elif ticks is not None:
         # Verify chronological order across block group boundaries
         group_starts = np.arange(samples_per_group, ticks.shape[0], samples_per_group)
         decreases = group_starts[ticks[group_starts] < ticks[group_starts - 1]]
@@ -209,6 +257,7 @@ def encode_series(
             params,
             None if ticks is None else ticks[idx:idx + samples_per_group],
             time_unit,
+            snap=False,
         ))
     groups, mins, maxs, means = (list(col) for col in zip(*parts))
     return EncodedSeries(groups, mins, maxs, means)
@@ -483,6 +532,91 @@ def _check_spliced_order(
         )
 
 
+def _stored_quantum(parsed: ParsedGroup, time_rows: _format.TimeRows, block_idx: int, time_error: float) -> int:
+    """The quantum the time error gives a stored block's (rounded) times.
+
+    Args:
+        parsed: The block group.
+        time_rows: Its time rows (the columns at least; the block's residuals are unpacked).
+        block_idx: A non-empty stored block.
+        time_error: The time error (> 0).
+
+    Returns:
+        The quantum, 0 if its times wouldn't be rounded.
+    """
+    block_ids = np.array([block_idx], np.int64)
+    offsets = parsed.layout.sample_offsets
+    _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
+    out_ticks = np.empty(parsed.header.num_samples, np.int64)
+    expand_times(parsed.block_flags, offsets, time_rows, block_ids, out_ticks)
+    ticks = out_ticks[offsets[block_idx]:offsets[block_idx + 1]]
+    quanta = np.zeros(1, np.int64)
+    _time.time_quanta(
+        ticks, np.array([0, ticks.shape[0]], np.int64), time_error, 0, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta
+    )
+    return int(quanta[0])
+
+
+def _clamp_to_neighbours(
+    parsed: ParsedGroup,
+    time_rows: _format.TimeRows,
+    sizes: np.ndarray,
+    indices: np.ndarray,
+    new_offsets: np.ndarray,
+    quanta: np.ndarray,
+    time_error: float,
+    raw_ticks: np.ndarray,
+    in_out_ticks: np.ndarray,
+) -> None:
+    """Keeps rounded new blocks in order with the stored blocks around them.
+
+    A stored block's times were rounded too, by up to half its quantum, so a new block whose
+    times are in order with the samples a stored neighbour was made from can still round past
+    it. A new block that starts below the previous stored block's last time is raised to it if
+    its first time as given is within half the larger of the two blocks' quanta of it; one that
+    ends above the next stored block's start is lowered to it likewise. Every time then stays
+    within half that quantum of the time given, as in encode (_time.snap_times). Larger
+    overlaps are left for _check_spliced_order to reject.
+
+    Args:
+        parsed: The existing block group.
+        time_rows: Its time rows (the columns at least).
+        sizes: 1D int64 array of the spliced block group's block sizes.
+        indices: 1D int64 array of the new blocks, increasing.
+        new_offsets: 1D int64 array of the new blocks' sample offsets.
+        quanta: 1D int64 array of the new blocks' quanta (0: not rounded).
+        time_error: The time error (> 0).
+        raw_ticks: 1D int64 array of the new blocks' ticks as given.
+        in_out_ticks: 1D int64 array of the new blocks' rounded ticks, clamped in place.
+    """
+    num_old_blocks = parsed.header.num_blocks
+    is_new = np.zeros(sizes.shape[0], bool)
+    is_new[indices] = True
+    filled = np.flatnonzero(sizes)
+    rows = np.flatnonzero(sizes[indices] > 0)
+    positions = np.searchsorted(filled, indices[rows])
+    # Each new block's previous and next non-empty blocks, where those are stored ones
+    previous = np.where(positions > 0, filled[np.maximum(positions - 1, 0)], -1)
+    following = np.where(positions + 1 < filled.shape[0], filled[np.minimum(positions + 1, filled.shape[0] - 1)], -1)
+    stored_previous = (previous >= 0) & ~is_new[np.maximum(previous, 0)]
+    stored_following = (following >= 0) & (following < num_old_blocks) & ~is_new[np.maximum(following, 0)]
+    last_ticks = np.zeros(rows.shape[0], np.int64)
+    last_ticks[stored_previous] = _last_ticks(parsed, time_rows, previous[stored_previous])
+    for row, new_idx in enumerate(rows.tolist()):
+        first, end = int(new_offsets[new_idx]), int(new_offsets[new_idx + 1])
+        block = in_out_ticks[first:end]
+        if stored_previous[row] and block[0] < last_ticks[row]:
+            floor = int(last_ticks[row])
+            half = max(int(quanta[new_idx]), _stored_quantum(parsed, time_rows, int(previous[row]), time_error)) // 2
+            if raw_ticks[first] >= floor - half:
+                np.maximum(block, floor, out=block)
+        if stored_following[row] and block[-1] > time_rows.starts[following[row]]:
+            ceiling = int(time_rows.starts[following[row]])
+            half = max(int(quanta[new_idx]), _stored_quantum(parsed, time_rows, int(following[row]), time_error)) // 2
+            if raw_ticks[end - 1] <= ceiling + half:
+                np.minimum(block, ceiling, out=block)
+
+
 def splice(
     parsed: ParsedGroup,
     indices: np.ndarray,
@@ -491,6 +625,8 @@ def splice(
     ticks: np.ndarray | None,
     params: Params,
     old_time_rows: _format.TimeRows | None = None,
+    *,
+    snap: bool = True,
 ) -> UpdatedGroup:
     """Replaces or appends blocks of a block group, carrying every other block over untouched.
 
@@ -507,6 +643,9 @@ def splice(
             exactly when the block group has a time axis.
         params: Encoder parameters.
         old_time_rows: The block group's time rows if already read (the columns at least).
+        snap: Whether to round the new blocks' ticks to params.time_error (False: the caller
+            has). New blocks that overlap a stored neighbour by up to half the larger of their
+            quanta are clamped to it (_clamp_to_neighbours).
 
     Returns:
         UpdatedGroup with the new block group and the statistics of every re-encoded block
@@ -534,10 +673,20 @@ def splice(
     sizes[indices] = block_sizes
     num_samples = int(sizes.sum())
     _args.check_group_counts(num_blocks, num_samples)
+    new_offsets = sample_offsets(block_sizes)
+    if ticks is not None and snap and params.time_error > 0:
+        raw_ticks = ticks
+        ticks, quanta = snap_ticks(ticks, block_sizes, params.time_error)
+        if ticks is raw_ticks:
+            ticks = ticks.copy()
+        if old_time_rows is None:
+            old_time_rows = read_time_rows(parsed, np.zeros(0, np.int64))
+        _clamp_to_neighbours(
+            parsed, old_time_rows, sizes, indices, new_offsets, quanta, params.time_error, raw_ticks, ticks
+        )
 
     # Encode value residuals and codes for the replacement blocks
     new_rows, stats = encode_rows(samples, block_sizes, params, ticks)
-    new_offsets = sample_offsets(block_sizes)
     old_starts = None
     if ticks is not None:
         # encode_rows encoded the replacement blocks' timestamp rows

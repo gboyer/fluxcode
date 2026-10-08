@@ -31,6 +31,7 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 | `noise_floor_sigma` | off (0), or f > 0 | 0.25 | the noise floor (§5.2) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-block-group size cap (§5.7) |
 | `effort` | 1–9 | 4 | how the body is compressed (below) |
+| `time_error` | 0–0.5 | 0 (exact) | how far a timestamp may move, per interval (§4) |
 
 - **`max_quantize_bits`:** a block's snapped power-of-two grid spans at most 2^max steps
   (65,535 at 16, §5.1).
@@ -45,6 +46,11 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 - **`target_bits_per_sample`:** a guard against unexpectedly high usage, not a way to squeeze
   signals whose shape you don't know.
 - **`effort`:** changes the size and the encode time, never the decoded values.
+- **`time_error`:** 0 stores timestamps exactly. e > 0 lets each move by up to e times its block's
+  interval, which puts a jittered clock back on its grid.
+  - About 5× the clock's jitter (σ over the interval) makes it regular: 0.05 for 1% jitter.
+  - The values see the rounded times: a block that becomes regular gets the noise floor of regular
+    times (§5.2).
 
 **Precedence.** With e_fine the §5.1 exponent at `max_quantize_bits` and e_coarse the one at
 `min_quantize_bits`:
@@ -153,6 +159,43 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
   - Why: zigzagged residuals from the mean are about 2σ. Those from the minimum are
     non-negative, so zigzag only shifts them up a bit plane (plane 0 all zero), and they are about
     √(σ² + (mean − min)²).
+- **Time error** (`time_error` = e > 0): each block's ticks are rounded before the analysis
+  above. The format is unchanged.
+  - **Interval** c: the median of 15 evenly spaced intervals, as for the noise floor's cadence
+    (§5.2). If at least 90% of the intervals are one scan (strictly between c/2 and 3c/2), their
+    mean instead: stable to about 0.2% on a 5%-jittered clock, where the median of 15 varies by
+    about 2%.
+  - **Quantum** q: the largest 1-2-5 × 10^k ticks at most 2·e·c·1.02.
+    - The 2% slack: a nice e times a nice period is itself a 1-2-5 step (2 × 0.1 × 1 ms), so on a
+      clock running slightly fast q would otherwise flip between 200 and 100 µs from block to
+      block.
+    - Any 1-2-5 step up to a fifth of a 1-2-5 period divides it: for e ≤ 0.1 a jittered clock
+      rounds back onto its own grid.
+    - A block isn't rounded if q would be 1, it has fewer than 2 samples or a median interval of
+      0, or it is regular and already on q's grid.
+  - **Rounding:** to the nearest multiple of q counted from the epoch (ties up), so series on the
+    same clock share a grid. A tick moves by at most q/2 ≤ 1.02·e·c. The ticks' order is checked
+    before rounding, which could hide a decrease.
+  - **Order across blocks:** rounding with one quantum keeps ticks in order. Where neighbouring
+    blocks' quanta differ, a block's leading ticks that round below the previous block's last are
+    raised to it: still within the larger quantum's half of their own times. That takes
+    near-duplicate times across a block boundary where the rate changes.
+  - **Time blocks** (`encode_time_blocks`): quanta also divide the block boundaries (the GCD of
+    `start_time` and `block_duration` in ticks), and times are assigned to blocks after rounding.
+    A time just before a boundary rounds onto it and belongs to the next block; every block's
+    times stay in its range.
+  - **`update`** rounds the new blocks as encoding does. One that rounds past a stored neighbour
+    (the stored times were rounded too) is clamped to it, raised to the previous block's last time
+    or lowered to the next one's start, if its given time is within half the larger of the two
+    blocks' quanta of it, as re-sending a block's original times is. Larger overlaps are rejected
+    as decreases.
+  - **`update_time_blocks`** rounds each new sample with the quantum of the block it falls in,
+    from that block's stored and new samples, then assigns and merges: "the same timestamp" is the
+    rounded one. Stored samples keep their times. A new sample that rounds onto the next block's
+    start joins that block (decoded if stored).
+  - **Without a cadence** (events, sparse archives) c is the median of 15 intervals, a rough
+    estimate: on Poisson events times moved by up to 1.45·e of the overall median interval.
+  - Measured sizes and times are in [TUNING.md](TUNING.md#time-error).
 - **Cost.**
   - A regular series costs only its per-block start, step and reference: about 65 bytes per
     block group of 60 blocks.
@@ -511,7 +554,8 @@ N their total samples.
     has one). The updated series must be non-decreasing throughout, which it checks where a new
     block meets its non-empty neighbours.
   - Without a target, the updated block group is byte-identical to encoding the updated series from
-    scratch (every block is encoded independently).
+    scratch (every block is encoded independently); with a time error, unless a new block was
+    clamped to a stored neighbour (§4).
 - **`update_time_blocks` is an upsert plus a range deletion, touching only the blocks it affects.**
   - **What it keeps:**
     - it first discards every sample timed in the optional delete ranges (`[start, end)` each);
@@ -537,7 +581,13 @@ N their total samples.
       coarsest grid the block has used;
     - decimal data on a decimal grid stays exact.
   - The result is byte-identical to `encode_time_blocks` of the resulting series when no block is
-    left empty at the end.
+    left empty at the end, and no time error is set (with one, the new samples' quanta come from
+    the blocks before rounding).
+- **Times** decode exactly at `time_error` 0. With e > 0 (§4):
+  - each moves by at most half its block's quantum, ≤ 1.02·e times the block's interval (or half
+    the larger quantum, where a block was raised to or clamped to its neighbour);
+  - the series stays non-decreasing, and every time block's times stay in its range;
+  - `update_time_blocks` never moves a stored time.
 
 ## 7. Conformance tests
 

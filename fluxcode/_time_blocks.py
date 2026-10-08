@@ -8,13 +8,19 @@ Block b of a block group holds the samples timed in
 The start time and duration aren't stored: the caller keeps them (typically the start is
 part of the block group's storage key) and passes the same ones to update_time_blocks. Times, the
 start, the duration and delete ranges are all converted to int64 ticks in the times' unit.
+
+With a time error (Params.time_error), times are rounded before they are assigned to blocks:
+each block's quantum divides the block boundaries, so a time rounds at most onto the next
+boundary, and then belongs to the next block. Every block's times stay within its range.
 """
+
+import math
 
 import numpy as np
 import numpy.typing as npt
 from numba import njit
 
-from . import _args, _format, _group
+from . import _args, _format, _group, _time
 from ._args import DurationLike, RangesLike, TimeLike
 from ._types import EncodedGroup, Params, UpdatedGroup
 
@@ -89,7 +95,12 @@ def encode_time_blocks(
     assert ticks is not None
     start = _args.to_ticks(start_time, unit_code, "start_time")
     duration = _args.to_ticks(block_duration, unit_code, "block_duration", duration=True)
-    return _group.encode(series_arr, chunk(ticks, start, duration), params, ticks, unit_code)
+    sizes = chunk(ticks, start, duration)
+    if params.time_error > 0:
+        # Quanta from the blocks the times are in; a time rounded onto a boundary moves on
+        ticks, _ = _group.snap_ticks(ticks, sizes, params.time_error, math.gcd(start, duration))
+        sizes = chunk(ticks, start, duration)
+    return _group.encode(series_arr, sizes, params, ticks, unit_code, snap=False)
 
 
 @njit(nogil=True, cache=True)
@@ -232,24 +243,23 @@ def update_time_blocks(
         raise _args.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
     touched, covered = _block_masks(ranges, start, duration, num_old_blocks)
-    # Decode existing blocks touched by deletions or new samples (excluding fully covered ones)
-    touched[new_ids[new_ids < num_old_blocks]] = True
     touched &= ~covered
-    decoded = np.flatnonzero(touched)
+    # Decode existing blocks touched by deletions or new samples (excluding fully covered ones)
+    decoded = np.flatnonzero(touched | _new_blocks_mask(new_ids, num_old_blocks, covered))
     time_rows = _group.read_time_rows(parsed, decoded)
-    old_sizes = parsed.block_sizes
-    gathered_values, gathered_ticks = np.zeros(0), np.zeros(0, np.int64)
-    gathered_blocks = np.zeros(0, np.int64)
-    if decoded.shape[0]:
-        all_values, all_ticks = _group.decode_blocks(parsed, decoded, time_rows)
-        assert all_ticks is not None
-        # Collect decoded samples into a single run in chronological order
-        run_sizes = old_sizes[decoded]
-        run_starts = parsed.layout.sample_offsets[decoded]
-        positions = np.arange(int(run_sizes.sum())) + np.repeat(run_starts - (np.cumsum(run_sizes) - run_sizes),
-                                                                 run_sizes)
-        gathered_values, gathered_ticks = all_values[positions], all_ticks[positions]
-        gathered_blocks = np.repeat(decoded, run_sizes)
+    gathered = _gather(parsed, decoded, time_rows)
+    if params.time_error > 0 and ticks.shape[0]:
+        ticks = _snap_new_ticks(
+            gathered, ticks, series_samples, new_ids, ranges, params.time_error, math.gcd(start, duration)
+        )
+        new_ids = block_ids(ticks, start, duration)
+        # A time rounded onto a boundary belongs to the next block: decode it too, if stored
+        extra = np.setdiff1d(np.flatnonzero(_new_blocks_mask(new_ids, num_old_blocks, covered)), decoded)
+        if extra.shape[0]:
+            decoded = np.union1d(decoded, extra)
+            time_rows = _group.read_time_rows(parsed, decoded)
+            gathered = _gather(parsed, decoded, time_rows)
+    gathered_ticks, gathered_values, gathered_blocks = gathered
     # Determine total block count including newly appended blocks
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
     changed = np.zeros(num_blocks, np.bool_)
@@ -264,14 +274,15 @@ def update_time_blocks(
     )
     # Account for covered blocks that lost all existing samples
     covered_ids = np.flatnonzero(covered)
-    changed[covered_ids] |= old_sizes[covered_ids] > 0
+    changed[covered_ids] |= parsed.block_sizes[covered_ids] > 0
     indices = np.flatnonzero(changed)
     if not indices.shape[0]:
         return UpdatedGroup(group, np.zeros(0, np.int64), np.zeros(0), np.zeros(0), np.zeros(0))
     sizes = sizes[indices]
     if sizes.max() > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
-    # Splice updated blocks into the block group while carrying unchanged blocks verbatim
+    # Splice updated blocks into the block group while carrying unchanged blocks verbatim (the
+    # new samples are rounded; stored ones keep their times)
     return _group.splice(
         parsed,
         indices,
@@ -280,4 +291,92 @@ def update_time_blocks(
         merged_ticks[:num_merged],
         params,
         time_rows,
+        snap=False,
     )
+
+
+def _new_blocks_mask(new_ids: np.ndarray, num_old_blocks: int, covered: np.ndarray) -> np.ndarray:
+    """Marks the stored blocks new samples fall in, except those deletions cover whole.
+
+    Args:
+        new_ids: 1D int64 array of the new samples' blocks.
+        num_old_blocks: Number of stored blocks.
+        covered: 1D bool array of the stored blocks deletions cover.
+
+    Returns:
+        1D bool array of num_old_blocks.
+    """
+    mask = np.zeros(num_old_blocks, np.bool_)
+    mask[new_ids[new_ids < num_old_blocks]] = True
+    return mask & ~covered
+
+
+def _gather(
+    parsed: _group.ParsedGroup, decoded: np.ndarray, time_rows: _format.TimeRows
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Decodes stored blocks into one chronological run.
+
+    Args:
+        parsed: The block group.
+        decoded: 1D int64 array of the blocks to decode, increasing.
+        time_rows: Its time rows, with those blocks' residuals.
+
+    Returns:
+        A tuple of (ticks, values, blocks): the blocks' samples, block after block, and the
+        block of each.
+    """
+    if not decoded.shape[0]:
+        return np.zeros(0, np.int64), np.zeros(0), np.zeros(0, np.int64)
+    all_values, all_ticks = _group.decode_blocks(parsed, decoded, time_rows)
+    assert all_ticks is not None
+    run_sizes = parsed.block_sizes[decoded]
+    run_starts = parsed.layout.sample_offsets[decoded]
+    positions = np.arange(int(run_sizes.sum())) + np.repeat(run_starts - (np.cumsum(run_sizes) - run_sizes), run_sizes)
+    return all_ticks[positions], all_values[positions], np.repeat(decoded, run_sizes)
+
+
+def _snap_new_ticks(
+    gathered: tuple[np.ndarray, np.ndarray, np.ndarray],
+    ticks: np.ndarray,
+    values: np.ndarray,
+    new_ids: np.ndarray,
+    ranges: np.ndarray,
+    time_error: float,
+    boundary: int,
+) -> np.ndarray:
+    """Rounds new samples' ticks to the quanta of the blocks they fall in.
+
+    A block's quantum comes from its samples after the update as given (stored and new,
+    before rounding), so a few new samples round to the grid of the stored ones.
+
+    Args:
+        gathered: (ticks, values, blocks) of the decoded stored blocks (_gather).
+        ticks: 1D int64 array of the new samples' ticks, non-decreasing.
+        values: 1D float64 array of the new samples.
+        new_ids: 1D int64 array of the new samples' blocks.
+        ranges: 2D int64 array of the deletion ranges.
+        time_error: The time error (> 0).
+        boundary: The block boundaries' GCD: every quantum divides it.
+
+    Returns:
+        1D int64 array of the new samples' rounded ticks (in order).
+    """
+    old_ticks, old_values, old_blocks = gathered
+    num_blocks = max(int(old_blocks[-1]) + 1 if old_blocks.shape[0] else 0, int(new_ids[-1]) + 1)
+    changed = np.zeros(num_blocks, np.bool_)
+    sizes = np.zeros(num_blocks, np.int64)
+    num_total = old_ticks.shape[0] + ticks.shape[0]
+    merged_ticks, merged_values = np.empty(num_total, np.int64), np.empty(num_total)
+    num_merged = _merge_samples(
+        old_ticks, old_values, old_blocks, ticks, values, new_ids, ranges, changed, merged_ticks, merged_values, sizes
+    )
+    quanta = np.zeros(num_blocks, np.int64)
+    _time.time_quanta(
+        merged_ticks[:num_merged], _group.sample_offsets(sizes), time_error, boundary,
+        np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
+    )
+    snapped = np.empty_like(ticks)
+    new_sizes = np.bincount(new_ids, minlength=num_blocks).astype(np.int64)
+    status, _ = _time.snap_times(ticks, _group.sample_offsets(new_sizes), quanta, snapped)
+    assert status == _time.OK
+    return snapped

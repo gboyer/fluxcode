@@ -19,6 +19,9 @@ MAX_EFFORT: int = 9
 DEFAULT_NOISE_FLOOR_SIGMA: float = 0.25
 """The default noise_floor_sigma."""
 
+MAX_TIME_ERROR: float = 0.5
+"""Largest Params.time_error: at 0.5 a block's ticks round to its own interval."""
+
 TimeUnit = Literal["s", "ms", "us", "ns"]
 """Resolution of integer timestamps: seconds, milliseconds, microseconds or nanoseconds."""
 
@@ -122,6 +125,12 @@ class Params:
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
+        time_error: Largest change to a timestamp, as a share of its block's interval (0 to
+            MAX_TIME_ERROR); 0 (the default) stores times exactly. Each block's times are
+            rounded to a 1-2-5 step of at most 2 * time_error intervals (2% more at most), from
+            the epoch: a jittered clock rounds back onto its own grid once time_error is about
+            5 times its jitter's standard deviation over its interval, and then stores as
+            regular times. Smaller time errors still save most of the jitter's cost.
     """
 
     min_quantize_bits: int = 6
@@ -132,6 +141,7 @@ class Params:
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
     effort: int = 4
+    time_error: float = 0.0
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -166,6 +176,9 @@ class Params:
             )
         if not (is_int(self.effort) and MIN_EFFORT <= self.effort <= MAX_EFFORT):
             raise ValueError(f"effort must be an integer from {MIN_EFFORT} to {MAX_EFFORT}, got {self.effort!r}")
+        time_error = self.time_error
+        if not (is_real(time_error) and 0 <= time_error <= MAX_TIME_ERROR):
+            raise ValueError(f"time_error must be a number from 0 to {MAX_TIME_ERROR:g}, got {time_error!r}")
 
 
 def is_int(val: object) -> bool:

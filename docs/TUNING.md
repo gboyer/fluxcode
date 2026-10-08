@@ -264,3 +264,58 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
 - Block starts are stored as unsigned increases (monotonic by requirement), which costs 45
   bytes per regular block group against 280 raw. The value anchor is not transformed: XOR with the
   previous anchor (+0.1% overall) and zigzagged integer deltas (−0.03%) were both noise.
+
+### Time error
+
+`time_error` = e lets each time move by up to e times its block's interval (ENCODER §4): times
+round to a 1-2-5 step of at most 2e intervals, from the epoch. Measured with
+`bench/time_axis.py --time-error 0.02,0.05,0.1` (one-minute block groups of 60 × 1000, Apple M3, AC
+power, single thread, Python without the Rust extension, 2026-10-08): bytes the times add, encode
+and decode time they add, irregular blocks of 60, and the largest move in median intervals.
+
+| timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
+|---|---|---|---|---|
+| jitter σ=10 µs, ns | 120,712 B, +465/+179 µs, 60 | 14,678 B, +367/+139 µs, 60, 0.010 | 63 B, +76/+4 µs, 0, 0.046 | 63 B, +75/+11 µs, 0, 0.046 |
+| jitter σ=10 µs, µs | 45,903 B, +369/+130 µs, 60 | 14,625 B, +362/+109 µs, 60, 0.010 | 63 B, +67/+13 µs, 0, 0.042 | 63 B, +66/+13 µs, 0, 0.042 |
+| noisy clock (σ=20 µs, µs) | 53,422 B, +366/+132 µs, 60 | 21,143 B, +379/+139 µs, 60, 0.010 | 3,010 B, +375/+98 µs, 60, 0.050 | 65 B, +65/+11 µs, 0, 0.088 |
+| drifting clock (0.99998 ms) | 339 B, +233/+96 µs, 60 | 272 B, +272/+67 µs, 38, 0.010 | 594 B, +118/+33 µs, 8, 0.050 | 543 B, +90/+27 µs, 4, 0.100 |
+| Poisson events, mean 1 ms, ns | 164,661 B, +404/+187 µs, 60 | 57,146 B, +381/+143 µs, 60, 0.036 | 47,544 B, +371/+138 µs, 60, 0.072 | 39,711 B, +332/+129 µs, 60, 0.145 |
+| deadband logging, ms grid | 55,498 B, +567/+226 µs, 60 | unchanged, +613 µs | unchanged, +610 µs | 51,259 B, +575/+223 µs, 60, 0.100 |
+
+- **About 5× the jitter makes a clock regular.** A time stays on its grid point while its jitter
+  is under q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which
+  costs a few KB a minute instead of 63 B (2% jitter at e = 0.05: 2,530 B instead of 127 KB).
+  Below that the size falls smoothly with e: there's no threshold where it jumps.
+- **Regular clocks are faster to encode and decode once rounded**: the regular time path, the
+  plain noise estimate, the regular decode loop.
+- **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; finding
+  each block's quantum and rounding costs +22 µs per block group on a regular grid (a regular
+  block on its grid isn't rounded) and +50–65 µs on irregular ones.
+- **A drifting clock** stays regular for a few hundred samples at a time, then a time crosses to
+  the next grid point: a few hundred bytes, as exact.
+- **Events and deadband logging** have no grid to land on. Events get 1.5–4× smaller (more in ns than in µs ticks); times on a
+  1 ms grid already have a coarse GCD and gain only from e = 0.1. Without a cadence the interval
+  is the median of 15, a rough estimate: times moved by up to 1.45 e of the overall median.
+
+**Design notes** (measured with prototypes on the patterns above, 2026-10-08):
+- **1-2-5 steps, not powers of two:** a power-of-two step doesn't divide a 1 ms period, so the
+  rounded times never come back to a grid (jitter σ=10 µs at a step near the median/8: 6,250 B
+  against 343 B; the noisy clock 10,932 against 5,652). 1-2-10 has a 5× gap that drops a 5 ms clock
+  to a 200 µs step (5,524 B against 43 at e = 0.05).
+- **The interval estimate** is the mean of one-scan intervals where there is a cadence: on a
+  nice period and a nice e, the median of 15 would flip the step between blocks. Rounding per
+  sample (not fitting a period) keeps the error bounded through drift and gaps.
+- **Values are not interpolated onto the rounded times.** Against the physical signal, under
+  sampling jitter (each sample taken at its stamp) interpolating is close to ideal and plain
+  rounding is off by slope × jitter; under stamp jitter (samples on the grid, stamps late or early)
+  it is the other way round. Interpolation also costs value bytes: decimals and integers stop being
+  exact (+14% on integer ADC counts to +350% on clean or decimal signals, though those were
+  generated on the sample index, so part of it is the jitter put back; free only where the noise
+  floor already rounds). The values are kept as measured.
+- **Resampling onto a grid** (values interpolated at every grid point) was dominated by rounding
+  at the same step: as small on jittered clocks with 3× the error against the input, and 6–150×
+  the samples on bursts and deadband logging, 2× when a 1-2-5 grid falls under a clock running
+  slightly fast.
+- **The cadence stays the median of 15:** a geometric mean of the intervals took 2.33 µs per block
+  against 0.33, and counts 1×/2× mixes with 42% or more two-scan intervals as one scan (a 50% mix
+  scored 100%).

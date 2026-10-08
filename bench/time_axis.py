@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Cost of the time axis: bytes and encode/decode time a block group's timestamps add, per timestamp
-pattern, on one-minute block groups (60 blocks of 1000) of a 4.12 Hz sine. Single thread.
+pattern, on one-minute block groups (60 blocks of 1000) of a 4.12 Hz sine. Single thread. With
+--time-error, the same at each time error (Params.time_error), with the largest change to a time.
 
-    uv run python bench/time_axis.py [--reps 20]
+    uv run python bench/time_axis.py [--reps 20] [--time-error 0.02,0.05,0.1]
 """
 
 import argparse
@@ -62,7 +63,11 @@ def best(func, reps):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reps", type=int, default=20)
+    parser.add_argument("--time-error", default="", help="comma-separated time errors to compare (Params.time_error)")
     args = parser.parse_args()
+    if args.time_error:
+        compare_time_errors([float(e) for e in args.time_error.split(",")], args.reps)
+        return
     values = minute("sin-4.12hz", 1)
     plain_group = fluxcode.encode_group(values).group
     plain_encode = best(lambda: fluxcode.encode_group(values), args.reps)
@@ -84,6 +89,35 @@ def main():
         decode_time = best(lambda group=group: fluxcode.decode_group(group), args.reps) - plain_decode
         print(f"| {name} | {num_irregular}/60 | {extra_bytes} | {8 * extra_bytes / MINUTE:.3f} | "
               f"{encode_time:.0f} | {decode_time:.0f} |")
+
+
+def compare_time_errors(time_errors, reps):
+    """Bytes, added encode/decode time and the largest change to a time (in median intervals) per
+    pattern and time error."""
+    values = minute("sin-4.12hz", 1)
+    plain_group = fluxcode.encode_group(values).group
+    plain_encode = best(lambda: fluxcode.encode_group(values), reps)
+    plain_decode = best(lambda: fluxcode.decode_group(plain_group), reps)
+    plain_bytes = len(plain_group)
+    errors = [0.0, *time_errors]
+    print("| timestamps | " + " | ".join(f"e = {e:g}" for e in errors) + " |")
+    print("|---|" + "---|" * len(errors))
+    for name, ticks in patterns(np.random.default_rng(0)):
+        times = ticks.view("datetime64[ns]")
+        median = float(np.median(np.diff(ticks)))
+        cells = []
+        for time_error in errors:
+            params = fluxcode.Params(time_error=time_error)
+            group = fluxcode.encode_group(values, params, times=times).group
+            decoded = fluxcode.decode_group(group)
+            moved = np.abs(decoded.times.view(np.int64) - ticks).max() / median
+            encode_time = best(lambda params=params: fluxcode.encode_group(values, params, times=times), reps) - plain_encode
+            decode_time = best(lambda group=group: fluxcode.decode_group(group), reps) - plain_decode
+            parsed = _group.decompress(group)
+            irregular = int(np.count_nonzero(parsed.block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME))
+            cell = f"{len(group) - plain_bytes} B, +{encode_time:.0f}/+{decode_time:.0f} µs, {irregular}/60"
+            cells.append(cell if time_error == 0 else f"{cell}, max {moved:.3f}")
+        print(f"| {name} | " + " | ".join(cells) + " |")
 
 
 if __name__ == "__main__":
