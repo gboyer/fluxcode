@@ -9,8 +9,10 @@ harness: [bench/stress.py](../bench/stress.py).
 **Since these tables, `Params.planes` became `Params.effort`** (TUNING.md, Effort). `planes="best"`
 below is the old default, which is now effort 3–4 (the default, 4): the same block groups, byte for
 byte. `planes="bit"` is gone; effort 1 is the fast option (about a third faster, 1.5–2.5% larger).
-The tables below are from 2026-10-01; the 2026-10-02 reruns in `bench/` (gigabyte, day-scale,
-timestamps, updates, with the default effort) agree within 1–4%, with the same sizes.
+The tables below are from 2026-10-01; the 2026-10-07 reruns in `bench/` (gigabyte, day-scale,
+timestamps, updates, with the default effort and the noise floor on timed data) agree within 1–8%,
+with the same sizes, except jittered timestamps, which now pay for the noise floor's cadence estimate
+(+17% encode on the noisy clock).
 
 Most of the change from the previous tables is `planes="best"`: every block group is compressed
 twice, with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller
@@ -184,12 +186,12 @@ table: [bench/UPDATE_RESULTS.md](../bench/UPDATE_RESULTS.md)):
 
 | operation | vs encode |
 |---|---|
-| `update` of 1 of 60 blocks (with or without times) | −10% to −18% (−33 to −43 µs) |
-| `update` appending a 61st block | −2% to −6% |
-| `update_time_blocks`, 2 s straddling 3 of 60 one-second blocks | −30% to −37% (−170 to −182 µs) |
-| `update_time_blocks`, 2 s straddling 3 of 3,600 blocks of 10 samples | −28% to −38% (−333 to −391 µs) |
+| `update` of 1 of 60 blocks (with or without times) | −13% to −21% (−43 to −56 µs) |
+| `update` appending a 61st block | −6% to −10% |
+| `update_time_blocks`, 2 s straddling 3 of 60 one-second blocks | −32% to −38% (−182 to −194 µs) |
+| `update_time_blocks`, 2 s straddling 3 of 3,600 blocks of 10 samples | −28% to −38% (−334 to −392 µs) |
 | `update_time_blocks`, one sample in 1 of the 3,600 blocks | −30% to −41% |
-| `update_time_blocks`, one sample (replaced) in each of the 3,600 blocks | +38% to +80% (+536 to +697 µs) |
+| `update_time_blocks`, one sample (replaced) in each of the 3,600 blocks | +39% to +81% (+541 to +705 µs) |
 
 An update decompresses the old block group, encodes only the new blocks, and copies every carried
 block's bytes into the new body (`_bitpacking.splice_body`), so it skips the kernels and the shuffle
