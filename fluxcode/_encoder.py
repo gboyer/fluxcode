@@ -18,6 +18,7 @@ from numba.cpython.unsafe.numbers import leading_zeros as _leading_zeros
 from . import _extreme_magnitudes as xm
 from ._format import (
     BLOCK_FLAG_DECIMAL,
+    BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_NONFINITE,
     E_MAX,
     E_MIN,
@@ -25,7 +26,7 @@ from ._format import (
     P_MIN,
     SHORT_BLOCK_LEN,
 )
-from ._noise import CADENCE_COUNTS, block_noise
+from ._noise import CADENCE_SAMPLES, block_noise
 from ._nonfinite import fill_nonfinite
 
 leading_zeros = cast("Callable[[int | np.integer], int]", _leading_zeros)
@@ -873,6 +874,7 @@ def encode_group(
     samples: np.ndarray,
     sample_offsets: np.ndarray,
     ticks: np.ndarray,
+    time_flags: np.ndarray,
     min_bits: int,
     max_bits: int,
     orders_mask: int,
@@ -894,13 +896,15 @@ def encode_group(
     Blocks of at most SHORT_BLOCK_LEN samples skip the analysis: they take the finest step
     (a decimal grid if one is detected, else the power-of-two grid) and order 0, and stay
     outside the target. An empty block gets zero flags, grid parameter and anchor, and NaN
-    statistics. On a block with irregular times, the noise floor is estimated on consecutive
-    scans only and scaled by their share (_noise.cadence).
+    statistics. A block with irregular times gets a noise floor only if it has a cadence, and
+    estimates it on consecutive scans (_noise.cadence).
 
     Args:
         samples: 1D float64 array of every sample of the block group.
         sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         ticks: 1D int64 array of every sample's tick, or an empty array without a time axis.
+        time_flags: 1D uint8 array of the blocks' time flags (BLOCK_FLAG_IRREGULAR_TIME, as the
+            time rows set them), or an empty array without a time axis.
         min_bits: Hard lower bound on quantization bits.
         max_bits: Hard upper bound on quantization bits.
         orders_mask: Bitmask of allowable predictor difference orders.
@@ -929,8 +933,7 @@ def encode_group(
     scratch_noise_diffs = np.empty(max_len)
     scratch_noise_weights = np.empty(max_len)
     timed = ticks.shape[0] > 0
-    scratch_intervals = np.empty(max_len if timed else 0)
-    scratch_counts = np.empty(CADENCE_COUNTS if timed else 0, np.int32)
+    scratch_pivots = np.empty(CADENCE_SAMPLES, np.int64)
     no_codes = np.empty(0, np.uint8)
     no_ticks = ticks[:0]
     use_target = target_bits > 0
@@ -998,23 +1001,20 @@ def encode_group(
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max
         noise_sigma = noise_rho = 0.0
-        block_noise_factor = noise_factor
         if noise_factor > 0 and block_max > block_min and block_len >= NOISE_MIN_LEN:
-            noise_sigma, noise_rho, cadence_scale = block_noise(
+            # Only irregular times steer the noise floor: regular ones are as no times
+            irregular = timed and (time_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME) != 0
+            noise_sigma, noise_rho = block_noise(
                 block_samples,
                 block_codes if has_nonfinite else no_codes,
-                ticks[first_sample:first_sample + block_len] if timed else no_ticks,
+                ticks[first_sample:first_sample + block_len] if irregular else no_ticks,
                 range_scale(block_min, block_max),
-                scratch_intervals,
-                scratch_counts,
+                scratch_pivots,
                 scratch_noise_diffs,
                 scratch_noise_weights,
             )
-            block_noise_factor *= cadence_scale
         # Plan quantization exponent
-        planned_exp = plan_step(
-            block_min, block_max, noise_sigma, noise_rho, block_noise_factor, min_bits, max_bits
-        )
+        planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
         block_exponents[block_idx] = planned_exp
         out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor = encode_block(
             block_samples,

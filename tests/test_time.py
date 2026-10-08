@@ -464,17 +464,35 @@ def test_sparse_archive_gets_no_noise_floor():
     assert not np.array_equal(fluxcode.decode_group(fluxcode.encode_group(values).group).values, values)
 
 
-def test_noise_floor_ramps_with_the_share_of_kept_scans():
-    """Nearly every scan kept: the full floor (step 0.25 for sigma 1.5); 70% kept: half of it
-    (one step finer); jittered times count as kept."""
+def test_noise_floor_needs_nearly_every_scan():
+    """Nearly every scan kept: the full floor (step 0.25 for sigma 1.5); 80% kept: none, as with
+    the floor off."""
     full, full_err = block_steps(*scans_kept(0.97))
     assert (full[:-1] == -2).all() and 0 < full_err <= 0.125  # the last block is too short to gate
-    half, _ = block_steps(*scans_kept(0.7))
-    assert (half[:-1] == -3).all()
+    thinned = scans_kept(0.8)
+    np.testing.assert_array_equal(block_steps(*thinned)[0], block_steps(*thinned, OFF)[0])
+
+
+def test_noise_floor_on_jittered_clocks():
+    """Jittered times, receive delays and Gaussian clock noise all count as every scan kept."""
+    rng = np.random.default_rng(11)
     values, _ = scans_kept(1.0)
-    jitter = np.random.default_rng(11).integers(0, 200, values.size) * np.timedelta64(1, "ms")
-    jittered, _ = block_steps(values, START_2026 + np.arange(values.size) * np.timedelta64(1, "s") + jitter)
-    np.testing.assert_array_equal(jittered, full[:jittered.size])
+    seconds = START_2026 + np.arange(values.size) * np.timedelta64(1, "s")
+    for jitter_ms in (rng.integers(-200, 201, values.size), rng.exponential(100, values.size).astype(np.int64),
+                      rng.normal(0, 150, values.size).astype(np.int64)):
+        times = np.sort(seconds + jitter_ms * np.timedelta64(1, "ms"))
+        steps, _ = block_steps(values, times)
+        assert (steps[:-1] == -2).all()
+
+
+def test_mixed_scan_multiples_get_no_noise_floor():
+    """An archive of one- and two-scan intervals in about equal parts gets no floor: the scan
+    interval is their median, not a mean between them."""
+    rng = np.random.default_rng(14)
+    values, _ = scans_kept(1.0)
+    scans = np.cumsum(rng.choice([1, 2, 3], values.size, p=[0.5, 0.45, 0.05]))
+    times = START_2026 + scans * np.timedelta64(1, "s")
+    np.testing.assert_array_equal(block_steps(values, times)[0], block_steps(values, times, OFF)[0])
 
 
 def test_events_without_a_cadence_get_no_noise_floor():

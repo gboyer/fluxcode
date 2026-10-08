@@ -71,21 +71,26 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, int]
 def encode_rows(
     samples: np.ndarray, block_sizes: np.ndarray, params: Params, ticks: np.ndarray | None = None
 ) -> tuple[_format.GroupRows, BlockStats]:
-    """Encodes blocks into their rows (without a time axis) and summary statistics.
+    """Encodes blocks into their rows (and time rows, given ticks) and summary statistics.
 
     Args:
         samples: 1D float64 array of every sample, block after block.
         block_sizes: 1D int64 array of block sizes adding up to the sample count.
         params: Encoder parameters.
-        ticks: 1D int64 array of the samples' ticks, or None without a time axis. They only
-            steer the noise floor (on irregular blocks); encode_time_rows encodes them.
+        ticks: 1D int64 array of the samples' ticks, or None without a time axis. They are
+            checked and encoded first: irregular blocks' ticks then steer the noise floor.
 
     Returns:
-        A tuple of (rows, stats): the blocks' GroupRows (without time rows) and their
-        BlockStats.
+        A tuple of (rows, stats): the blocks' GroupRows (time rows None without ticks) and
+        their BlockStats.
+
+    Raises:
+        ValueError: If the times contain NaT or decrease anywhere.
     """
     num_blocks = block_sizes.shape[0]
     num_samples = samples.shape[0]
+    block_flags = np.zeros(num_blocks, np.uint8)
+    time_rows = None if ticks is None else encode_time_rows(ticks, block_sizes, block_flags)
     rows = _format.GroupRows(
         np.empty(num_blocks, np.uint8),
         block_sizes,
@@ -93,7 +98,7 @@ def encode_rows(
         np.empty(num_blocks, np.int64),
         np.empty(num_samples, np.int16),
         np.empty(num_samples, np.uint8),
-        None,
+        time_rows,
     )
     stats = BlockStats(np.empty(num_blocks), np.empty(num_blocks), np.empty(num_blocks))
     # Invoke numba kernel to process all blocks of the block group
@@ -101,6 +106,7 @@ def encode_rows(
         samples,
         sample_offsets(block_sizes),
         np.zeros(0, np.int64) if ticks is None else ticks,
+        block_flags[:0] if ticks is None else block_flags,
         *kernel_args(params),
         rows.block_flags,
         rows.grid_params,
@@ -109,6 +115,8 @@ def encode_rows(
         rows.codes,
         *stats,
     )
+    # The kernel writes the value flags; the time rows set the time flags
+    rows.block_flags[:] |= block_flags
     return rows, stats
 
 
@@ -157,8 +165,6 @@ def encode(
     """
     _args.check_group_counts(block_sizes.shape[0], samples.shape[0], block_sizes)
     rows, stats = encode_rows(samples, block_sizes, params, ticks)
-    if ticks is not None:
-        rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
     return EncodedGroup(_compress.compress(rows, samples.shape[0], _compress.EFFORTS[params.effort], time_unit), *stats)
 
 
@@ -534,9 +540,9 @@ def splice(
     new_offsets = sample_offsets(block_sizes)
     old_starts = None
     if ticks is not None:
-        # Encode timestamp rows for the replacement blocks
-        new_time_rows = encode_time_rows(ticks, block_sizes, new_rows.block_flags)
-        new_rows = new_rows._replace(time_rows=new_time_rows)
+        # encode_rows encoded the replacement blocks' timestamp rows
+        new_time_rows = new_rows.time_rows
+        assert new_time_rows is not None
         if old_time_rows is None:
             old_time_rows = read_time_rows(parsed, np.zeros(0, np.int64))
         old_starts = old_time_rows.starts

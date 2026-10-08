@@ -17,7 +17,7 @@
  "noisy-sine adc12 decimal off": "db13a9b80e9b13c8d345c84a78544c0add50e586235f874fda5eb2315c5fd8cf",
  "noisy-sine with gaps": "4fd96d88b85ec1479850543277f66b4cf43afd05ccdc1850b272fb98f5c1a949",
  "random-walk with gaps target 6": "ffb82ffaedd78bc07d6ffcd609bc1795008b504d579e9d88b23518ed51abea2f",
- "white noise at 1e-310": "137ecb096797c7032d9303ad9ba6ef7c3b0986a2363afa06b255d2141cc63e9b",
+ "white noise at 1e-310": "be59fa73542b9854842c5934cd7f35dbed6be3510bd0f5a4a358709d0fae13ea",
  "white noise across +-DBL_MAX": "c6a2e001c4109181b7c7a011add8d8eb01cc25ac5ca3d02000dddcc007804a52",
  "short last block": "b2ba3293e0038563ab928dc74abccd8f49e05036d689af44e53698e82a7994cf",
  "block_len 64, 7 blocks": "9af7d997940a86271415d4ec4be35ae1ea2802466272c0c2e5d3a33f00a1d6b4",

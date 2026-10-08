@@ -241,10 +241,11 @@ def test_noise_scale_extremes():
     """The noise estimate scales exactly: the same white noise gives the same rho at any scale."""
     x = np.random.default_rng(0).normal(size=1000)
     x = x / np.abs(x).max()
-    ref = _noise.noise(x, _encoder.range_scale(x.min(), x.max()))
+    d = np.empty(1000)
+    ref = _noise.noise(x, _encoder.range_scale(x.min(), x.max()), d)
     for k in (-1060, -1000, 1000, 1023):
         y = np.ldexp(x, k)
-        sigma, rho = _noise.noise(y, _encoder.range_scale(y.min(), y.max()))
+        sigma, rho = _noise.noise(y, _encoder.range_scale(y.min(), y.max()), d)
         if k > -1050:  # at -1060 the samples themselves are rounded to the subnormal grid
             assert rho == ref[1] and sigma == math.ldexp(ref[0], k)
         else:
@@ -253,8 +254,9 @@ def test_noise_scale_extremes():
 
 def ref_robust_noise(d, ok):
     """numpy reference of robust_noise: the mean-removed valid differences in windows of at least
-    256 valid ones, each with its clipped MAD spread and clipped to 4 of it; the smallest spread,
-    and the lag-1 autocorrelation of adjacent valid pairs."""
+    256 valid ones, each with its clipped MAD spread and clipped to 4 of it; the windows' mean
+    spread or the smallest over 0.75, whichever is lower, and the lag-1 autocorrelation of
+    adjacent valid pairs."""
     dv = np.where(ok, d - d[ok].mean(), 0.0)
     num_valid = int(ok.sum())
     num_windows = max(1, num_valid // 256)
@@ -272,7 +274,12 @@ def ref_robust_noise(d, ok):
         dv[start:end] = np.clip(dv[start:end], -4 * k * mad, 4 * k * mad)
         start = end
     pairs = (ok[1:] & ok[:-1]).sum()
-    return min(spreads), (np.sum(dv[1:] * dv[:-1]) / pairs) / (np.sum(dv ** 2) / num_valid)
+    spread = min(np.mean(spreads), min(spreads) / 0.75)
+    return spread, (np.sum(dv[1:] * dv[:-1]) / pairs) / (np.sum(dv ** 2) / num_valid)
+
+
+NO_CODES = np.zeros(0, np.uint8)
+NO_TICKS = np.zeros(0, np.int64)
 
 
 @pytest.mark.parametrize("kind", ["random-walk", "noisy-sine", "chirp", "sin-4.12hz", "impulses", "gauss-spikes"])
@@ -289,7 +296,7 @@ def test_noise_weighted_matches_reference(kind, frac, scale_k):
         xf, codes = np.empty(1000), np.empty(1000, np.uint8)
         lo, hi, _, _ = _nonfinite.fill_nonfinite(y, xf, codes)
         k = _encoder.range_scale(lo, hi)
-        sigma, rho = _noise.noise_weighted(xf, codes, np.zeros(0), 1.0, k, 0, d, w)
+        sigma, rho = _noise.noise_weighted(xf, codes, NO_TICKS, 0, 0, k, 0, d, w)
         yr = np.ldexp(y, -k)  # exact rescale for the reference
         ok = (codes[:-2] | codes[1:-1] | codes[2:]) == 0
         spread, rr = ref_robust_noise(yr[2:] - 2 * yr[1:-1] + yr[:-2], ok)
@@ -300,16 +307,28 @@ def test_noise_weighted_matches_reference(kind, frac, scale_k):
         assert sigma == pytest.approx(math.ldexp(spread, k) / math.sqrt(6), rel=1e-9)
 
 
+def test_noise_matches_reference():
+    """noise is the reference on plain second differences (every triplet valid), over one window
+    and over many."""
+    rng = np.random.default_rng(4)
+    for x in (rng.normal(size=1000), np.r_[rng.normal(0, 0.01, 3000), rng.normal(0, 1, 3000)]):
+        k = _encoder.range_scale(x.min(), x.max())
+        sigma, rho = _noise.noise(x, k, np.empty(x.size))
+        xr = np.ldexp(x, -k)
+        spread, rr = ref_robust_noise(xr[2:] - 2 * xr[1:-1] + xr[:-2], np.ones(x.size - 2, bool))
+        assert rho == pytest.approx(rr, abs=1e-9)
+        assert sigma == pytest.approx(math.ldexp(spread, k) / math.sqrt(6), rel=1e-9)
+
+
 def test_noise_weighted_with_equal_intervals_is_plain():
     """On equal intervals the chord difference is the plain second difference, and with every
-    triplet valid noise_weighted is noise."""
+    triplet valid noise_weighted is noise (to the last bits)."""
     x = np.random.default_rng(5).normal(size=1000)
     k = _encoder.range_scale(x.min(), x.max())
     d, w = np.empty(1000), np.empty(1000)
-    no_codes = np.zeros(0, np.uint8)
-    ref_sigma, ref_rho = _noise.noise(x, k)
-    for intervals in (np.full(999, 7.0), np.zeros(0)):
-        sigma, rho = _noise.noise_weighted(x, no_codes, intervals, 7.0, k, 0, d, w)
+    ref_sigma, ref_rho = _noise.noise(x, k, d)
+    for ticks, lower, upper in ((np.arange(1000, dtype=np.int64) * 7, 3, 11), (NO_TICKS, 0, 0)):
+        sigma, rho = _noise.noise_weighted(x, NO_CODES, ticks, lower, upper, k, 0, d, w)
         assert sigma == pytest.approx(ref_sigma, rel=1e-12) and rho == pytest.approx(ref_rho, rel=1e-12)
 
 
@@ -321,64 +340,88 @@ def test_noise_weighted_cancels_slopes_across_unequal_intervals():
     noisy = 0.001 * ticks.astype(float) + rng.normal(0, 0.01, 1000)
     d, w = np.empty(1000), np.empty(1000)
     k = _encoder.range_scale(noisy.min(), noisy.max())
-    intervals = np.diff(ticks).astype(float)
-    sigma, rho = _noise.noise_weighted(noisy, np.zeros(0, np.uint8), intervals, intervals.mean(), k, 0, d, w)
+    lower, upper, _ = _noise.cadence(ticks, np.empty(_noise.CADENCE_SAMPLES, np.int64))
+    sigma, rho = _noise.noise_weighted(noisy, NO_CODES, ticks, lower, upper, k, 0, d, w)
     assert sigma == pytest.approx(0.01, rel=0.1) and rho < -0.6
-    assert _noise.noise(noisy, k)[0] > 5 * sigma
+    assert _noise.noise(noisy, k, d)[0] > 5 * sigma
 
 
-def test_robust_noise_takes_the_quietest_window():
-    """Noise that varies within a block is floored by its quietest part."""
+def test_chord_difference_is_unbiased_for_any_intervals():
+    """White noise at intervals spread over the whole one-scan window reads its own sigma: each
+    triplet is scaled to the variance of a regular second difference."""
+    rng = np.random.default_rng(13)
+    n = 50_000
+    ticks = np.cumsum(rng.integers(510, 1490, n)).astype(np.int64)
+    x = rng.normal(0, 1, n)
+    k = _encoder.range_scale(x.min(), x.max())
+    sigma, rho = _noise.noise_weighted(x, NO_CODES, ticks, 500, 1500, k, 0, np.empty(n), np.empty(n))
+    assert sigma == pytest.approx(1.0, rel=0.02) and rho < -0.6
+
+
+def test_robust_noise_floors_by_the_quietest_window():
+    """Noise that varies within a block is floored by at most 4/3 of its quietest part's."""
     rng = np.random.default_rng(7)
     x = np.r_[rng.normal(0, 0.01, 600), rng.normal(0, 1, 600)]
-    sigma, rho = _noise.noise(x, _encoder.range_scale(x.min(), x.max()))
-    assert sigma == pytest.approx(0.01, rel=0.15) and rho < -0.6
+    sigma, rho = _noise.noise(x, _encoder.range_scale(x.min(), x.max()), np.empty(1200))
+    assert sigma == pytest.approx(0.01 / 0.75, rel=0.15) and rho < -0.6
 
 
-def test_regular_times():
-    assert _noise.regular_times(np.arange(5, dtype=np.int64) * 3)
-    assert _noise.regular_times(np.array([5, 9], np.int64))
-    assert _noise.regular_times(np.zeros(4, np.int64))
-    assert not _noise.regular_times(np.array([0, 3, 6, 10], np.int64))
+@pytest.mark.parametrize("n", [1000, 16_000, 65_536])
+def test_robust_noise_is_unbiased_on_steady_noise(n):
+    """Steady white noise reads its sigma however many windows the block has (the quietest of
+    255 windows alone reads about 18% low)."""
+    x = np.random.default_rng(n).normal(size=n)
+    sigma, _ = _noise.noise(x, _encoder.range_scale(x.min(), x.max()), np.empty(n))
+    assert sigma == pytest.approx(1.0, rel=0.04)
 
 
-def share_of(ticks):
-    """A block's share of one-scan intervals, and which they are."""
-    ticks = np.asarray(ticks, np.int64)
-    intervals = np.empty(ticks.size - 1)
-    return _noise.cadence(ticks, intervals, np.empty(_noise.CADENCE_COUNTS, np.int32))[0], intervals > 0
+def cadence_of(ticks):
+    """A block's one-scan window and share."""
+    return _noise.cadence(np.asarray(ticks, np.int64), np.empty(_noise.CADENCE_SAMPLES, np.int64))
 
 
-def test_cadence_share():
+def gets_floor(ticks):
+    return cadence_of(ticks)[1] > 0
+
+
+SCANS = np.arange(5000, dtype=np.int64) * 1000
+
+
+def test_cadence_window():
+    """One scan is strictly between half and 1.5 times the median interval, in integers."""
+    lower, upper, share = cadence_of(SCANS)
+    assert (lower, upper, share) == (500, 1500, 1.0)
+    assert cadence_of(np.arange(1000, dtype=np.int64) * 7)[:2] == (3, 11)  # 3.5 < d < 10.5
+    # Zero intervals are never one scan; nor are huge ones (no overflow), nor decreases
+    assert cadence_of(np.zeros(10)) == (0, 0, 0.0)
+    assert not gets_floor(np.arange(20, dtype=np.int64) << 62)
+    assert 0.99 < cadence_of(np.r_[SCANS[:1000], SCANS[900:1000]])[2] < 1.0
+
+
+def test_cadence_jittered_clocks():
+    """Jittered times, receive delays and gaps keep the floor."""
     rng = np.random.default_rng(8)
-    scans = np.arange(5000, dtype=np.int64) * 1000
-    # Jittered by up to 20% of the interval: every interval is one scan
-    assert share_of(scans + rng.integers(0, 201, scans.size))[0] == 1.0
-    # A tenth of the scans dropped: their intervals are two scans
-    kept = scans[rng.random(scans.size) >= 0.1]
-    share, one_scan = share_of(kept)
-    np.testing.assert_array_equal(one_scan, np.diff(kept) == 1000)
-    assert 0.85 < share < 0.95
-    # A sparse archive keeps three scans in ten: about a third of its intervals are one scan
-    assert 0.2 < share_of(scans[rng.random(scans.size) < 0.3])[0] < 0.4
-    # A few bursts (1 ms apart) don't move the scan interval; zero intervals are never one scan
-    burst = np.sort(np.r_[scans, scans[::1000] + 1])
-    assert share_of(burst)[0] > 0.99
-    assert share_of(np.zeros(10))[0] == 0.0
-    jittered = scans + rng.integers(0, 201, scans.size)
-    intervals = np.empty(scans.size - 1)
-    assert _noise.cadence(jittered, intervals, np.empty(_noise.CADENCE_COUNTS, np.int32))[1] == pytest.approx(np.diff(jittered).mean())
+    for jitter in (rng.integers(-200, 201, SCANS.size),  # uniform +-20%
+                   rng.normal(0, 150, SCANS.size).astype(np.int64),  # sd 15%
+                   rng.exponential(100, SCANS.size).astype(np.int64)):  # receive delay, mean 10%
+        assert cadence_of(np.sort(SCANS + jitter))[2] > 0.95
+    # 5% of scans dropped, and 5% near-duplicate times: the floor stays
+    assert gets_floor(SCANS[rng.random(SCANS.size) >= 0.05])
+    assert gets_floor(np.sort(np.r_[SCANS, SCANS[rng.random(SCANS.size) < 0.05] + 1]))
 
 
-def test_cadence_factor_ramp():
-    factors = [_noise.cadence_factor(share) for share in (0.0, 0.5, 0.6, 0.7, 0.9, 1.0)]
-    assert factors == pytest.approx([0.0, 0.0, 0.25, 0.5, 1.0, 1.0])
-
-
-def test_float_bits():
-    """The allocation-free bit casts match numpy's views on positive normal floats."""
-    values = np.r_[1.0, 3.0, 1e-300, 1e300, np.ldexp(1.0, 64) - 2048.0, np.random.default_rng(9).uniform(1, 1e12, 100)]
-    for value in values:
-        bits = int(np.array([value]).view(np.int64)[0])
-        assert _noise._float_bits(value) == bits
-        assert _noise._bits_float(bits) == value
+def test_cadence_without_most_scans():
+    """Anything short of nearly every scan gets no floor: sparse or moderately thinned archives,
+    periodic drops, too many near-duplicates, events, mixed cadences."""
+    rng = np.random.default_rng(9)
+    assert not gets_floor(SCANS[rng.random(SCANS.size) >= 0.2])
+    assert not gets_floor(SCANS[rng.random(SCANS.size) < 0.3])
+    assert not gets_floor(SCANS[SCANS % 8000 != 0])  # every 8th scan dropped: 86% one scan
+    assert gets_floor(SCANS[SCANS % 16000 != 0])  # every 16th: 93%
+    assert not gets_floor(np.sort(np.r_[SCANS, SCANS[rng.random(SCANS.size) < 0.15] + 1]))
+    assert not gets_floor(np.cumsum(rng.exponential(1000, 5000)).astype(np.int64))
+    # Exact multiples of the scan, mostly one and two (where a mean would sit between them)
+    for one, two in ((0.55, 0.37), (0.5, 0.45), (0.4, 0.55)):
+        gaps = rng.choice([1, 2, 3], 5000, p=[one, two, 1 - one - two])
+        assert not gets_floor(np.cumsum(gaps) * 1000)
+        assert not gets_floor(np.cumsum(gaps) * 1000 + rng.normal(0, 150, 5000).astype(np.int64))

@@ -8,12 +8,12 @@ Used by the encoder's noise floor gate to coarsen quantization steps on blocks
 dominated by white measurement noise without degrading deterministic or
 random-walk signals.
 
-On a block with irregular times, only triplets of consecutive scans count: samples one scan
-interval apart, the interval being the short end of the block's intervals. A swinging-door
-archive keeps only the points a straight line can't predict, so its sparse points look like
-white noise without being noise; where it kept consecutive scans, they are the sensor's raw
-samples. The share of one-scan intervals also scales the noise floor (`cadence_factor`): a
-sparse archive gets none, one that kept most scans all of it.
+A block with irregular times gets a noise floor only if it has a cadence: nearly all of its
+intervals one scan apart (`cadence`). That covers jittered clocks and gaps; a swinging-door or
+deadband archive keeps only the points a straight line or the last value can't predict, so its
+points look like white noise without being noise, and it gets none unless it kept nearly every
+scan. Neither do events or any other spread of intervals. On such a block only triplets of
+consecutive scans count.
 """
 
 import math
@@ -37,37 +37,20 @@ SIGMA_GAIN: float = math.sqrt(6.0)
 """Ratio of second-difference standard deviation to white-noise standard deviation."""
 
 NOISE_WINDOW: int = 256
-"""Valid second differences per window of the noise level: sigma is the smallest window's, so
-noise that varies within a block is floored by its quietest part. Up to twice as many are one
-window."""
+"""Valid second differences per window of the noise level (up to twice as many are one window)."""
 
-CADENCE_QUANTILE: float = 0.01
-"""Quantile of a block's non-zero time intervals taken as its scan interval: the short end, so
-that a sparse archive's typical gap isn't mistaken for it, but not the minimum, which one burst
-or near-duplicate time would drag down."""
+QUIET_RATIO: float = 0.75
+"""The noise level is the windows' mean spread, or the quietest window's over QUIET_RATIO if
+that is lower: noise that varies within a block is floored by at most 4/3 of its quietest part.
+On steady white noise the quietest of up to 255 windows never measured below 0.77 of the mean,
+so steady noise reads unbiased (the plain minimum read 5% low over 3 windows, 18% over 255)."""
 
-CADENCE_BIN_SHIFT: int = 49
-"""The quantile is found in bins of 2^49 in float64 bit patterns: an eighth of an octave."""
+CADENCE_SAMPLES: int = 15
+"""Evenly spaced intervals whose median is a block's scan interval. Where nearly all intervals
+are one scan, so is the median of any 15 of them; where it is not, the block gets no floor."""
 
-CADENCE_BINS: int = 256
-"""Eighth-octave bins above the shortest interval (32 octaves); longer intervals share the last."""
-
-NUM_COUNT_CHAINS: int = 4
-"""Interleaved histogram chains, so that runs of the same bin don't stall on each other."""
-
-CADENCE_COUNTS: int = NUM_COUNT_CHAINS * CADENCE_BINS
-"""Size of the histogram's scratch array."""
-
-CADENCE_TOLERANCE: float = 0.5
-"""An interval within this fraction of the scan interval is one scan. Generous: it only has to
-separate one scan (1x) from a skipped one (2x), and so covers timestamps jittered by 20%."""
-
-CADENCE_SHARE_OFF: float = 0.5
-"""Share of one-scan intervals at or below which a block gets no noise floor."""
-
-CADENCE_SHARE_FULL: float = 0.9
-"""Share of one-scan intervals from which a block gets the full noise floor; in between it
-ramps linearly."""
+CADENCE_SHARE: float = 0.9
+"""Share of a block's intervals that must be one scan for a noise floor."""
 
 MIN_ONE_SCAN_TRIPLETS: int = 254
 """Fewest triplets of consecutive scans an irregular block needs for a noise floor: as many as
@@ -75,56 +58,28 @@ the second differences of the smallest block that gets one (_encoder.NOISE_MIN_L
 
 
 @njit(nogil=True, cache=True, fastmath=True)
-def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
-    """Estimates white-noise standard deviation and lag-1 autocorrelation.
+def _robust_noise(diffs: np.ndarray, mean_diff: float) -> tuple[float, float]:
+    """The robust spread and lag-1 autocorrelation of second differences.
 
-    Evaluates second differences of finite samples scaled by 2^-scale_exp (which
-    brings the block's range into [0.5, 1.0)) to prevent intermediate overflow or
-    underflow, and removes their mean (a parabolic trend). Splits them into windows of
-    NOISE_WINDOW or more; in each, a robust standard deviation comes from the mean absolute
-    deviation re-estimated CLIP_PASSES times without the differences beyond CLIP_SIGMAS, and
-    the window's differences are clipped to CLIP_SIGMAS of it. Sigma is the smallest window's;
-    rho is the lag-1 autocorrelation of the clipped differences. noise_weighted is the same
-    estimator on a subset of the differences.
+    Splits the mean-removed differences into windows of NOISE_WINDOW or more; in each, a robust
+    standard deviation comes from the mean absolute deviation re-estimated CLIP_PASSES times
+    without the differences beyond CLIP_SIGMAS, and the window's differences are clipped to
+    CLIP_SIGMAS of it. The spread combines the windows' (QUIET_RATIO); rho is the lag-1
+    autocorrelation of the clipped differences.
 
     Args:
-        samples: 1D float64 array of finite samples.
-        scale_exp: Power-of-two scaling exponent that maps the block range to
-            [0.5, 1.0).
+        diffs: 1D float64 array of at least 2 second differences, overwritten with the clipped,
+            mean-removed differences.
+        mean_diff: Their mean.
 
     Returns:
-        A tuple of (sigma, rho):
-            sigma: Estimated white-noise standard deviation in original signal
-                units, or 0.0 if a window's variation is negligible or underflows.
-            rho: Lag-1 autocorrelation of clipped second differences (typically
-                -2/3 for white noise, -1/2 for random walks, and positive for
-                smooth signals). Returns (0.0, 0.0) if fewer than 4 samples are
-                present.
+        A tuple of (spread, rho), or (0.0, 0.0) if a window has no spread or the clipped
+        squares underflow.
     """
-    num_diffs = samples.shape[0] - 2
-    # Need at least two second differences to compute lag-1 autocorrelation
-    if num_diffs < 2:
-        return 0.0, 0.0
-    # Use single-step scaling within normal range, or two-step prescaling for extreme exponents
-    if abs(scale_exp) <= xm.SCALE_LIMIT:
-        scale_factor = math.ldexp(1.0, -scale_exp)
-    else:
-        samples, scale_factor = xm.prescale(samples, scale_exp)
-    diffs = np.empty(num_diffs)
-    mean_diff = 0.0
-    for diff_idx in range(num_diffs):
-        # Second difference: samples[i + 2] - 2 * samples[i + 1] + samples[i]
-        diff_val = (
-            samples[diff_idx + 2] * scale_factor
-            - 2.0 * (samples[diff_idx + 1] * scale_factor)
-            + samples[diff_idx] * scale_factor
-        )
-        diffs[diff_idx] = diff_val
-        mean_diff += diff_val
-    # Subtract mean second difference to remove pure parabolic trends (quadratics)
-    mean_diff /= num_diffs
+    num_diffs = diffs.shape[0]
     num_windows = max(1, num_diffs // NOISE_WINDOW)
     smallest_spread = 0.0
+    total_spread = 0.0
     for window_idx in range(num_windows):
         # Slices from index 0 allow SIMD vectorization without negative index checks
         window_start = num_diffs * window_idx // num_windows
@@ -154,6 +109,7 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
             return 0.0, 0.0
         # The first window's spread, then the smallest (no infinities under fastmath)
         smallest_spread = spread if window_idx == 0 else min(smallest_spread, spread)
+        total_spread += spread
         clip_threshold = CLIP_SIGMAS * spread
         # Clip extreme difference spikes to +/- CLIP_SIGMAS sigmas of their window
         for diff_idx in range(window_len):
@@ -169,17 +125,16 @@ def noise(samples: np.ndarray, scale_exp: int) -> tuple[float, float]:
     # Check for underflow where differences are below ~1e-154 of the range
     if not sum_sq_diffs > 0:
         return 0.0, 0.0
-    # Normalize covariance by pair count and variance by difference count, as noise_weighted
+    # Normalize covariance by pair count and variance by difference count, as _robust_noise_weighted
     rho = (lag1_cross_prod / (num_diffs - 1)) / (sum_sq_diffs / num_diffs)
-    # Scale robust standard deviation back to signal units and divide by sqrt(6)
-    return math.ldexp(smallest_spread, scale_exp) / SIGMA_GAIN, rho
+    return min(total_spread / num_windows, smallest_spread / QUIET_RATIO), rho
 
 
 @njit(nogil=True, cache=True, fastmath=True)
 def _robust_noise_weighted(
     diffs: np.ndarray, weights: np.ndarray, num_valid: float, mean_diff: float
 ) -> tuple[float, float]:
-    """The spread and lag-1 autocorrelation of noise() on the valid differences only.
+    """The spread and lag-1 autocorrelation of _robust_noise on the valid differences only.
 
     Windows hold equal shares of the valid differences; the autocorrelation pairs adjacent
     valid differences.
@@ -192,13 +147,13 @@ def _robust_noise_weighted(
         mean_diff: Mean of the valid differences.
 
     Returns:
-        A tuple of (spread, rho): the smallest window's robust standard deviation of the
-        differences and their lag-1 autocorrelation, or (0.0, 0.0) if a window has no spread
-        or the clipped squares underflow.
+        A tuple of (spread, rho) as _robust_noise's, or (0.0, 0.0) if a window has no spread or
+        the clipped squares underflow.
     """
     num_diffs = diffs.shape[0]
     num_windows = max(1, int(num_valid) // NOISE_WINDOW)
     smallest_spread = 0.0
+    total_spread = 0.0
     window_start = 0
     valid_seen = 0.0
     for window_idx in range(num_windows):
@@ -241,6 +196,7 @@ def _robust_noise_weighted(
             return 0.0, 0.0
         # The first window's spread, then the smallest (no infinities under fastmath)
         smallest_spread = spread if window_idx == 0 else min(smallest_spread, spread)
+        total_spread += spread
         clip_threshold = CLIP_SIGMAS * spread
         for diff_idx in range(window_len):
             window_diffs[diff_idx] = min(max(window_diffs[diff_idx], -clip_threshold), clip_threshold)
@@ -258,165 +214,110 @@ def _robust_noise_weighted(
     if not sum_sq_diffs > 0 or valid_pairs == 0:
         return 0.0, 0.0
     # Normalize covariance by pair count and variance by valid difference count
-    return smallest_spread, (lag1_cross_prod / valid_pairs) / (sum_sq_diffs / num_valid)
-
-
-@njit(nogil=True, cache=True)
-def regular_times(ticks: np.ndarray) -> bool:
-    """Whether a block's ticks are equally spaced (a block of fewer than 3 always is).
-
-    Args:
-        ticks: 1D int64 array of the block's ticks.
-
-    Returns:
-        True if every interval equals the first.
-    """
-    if ticks.shape[0] < 3:
-        return True
-    first_interval = ticks[1] - ticks[0]
-    differing_bits = np.int64(0)
-    # Branch-free so that it vectorizes; wrapping differences compare exactly
-    for tick_idx in range(2, ticks.shape[0]):
-        differing_bits |= (ticks[tick_idx] - ticks[tick_idx - 1]) ^ first_interval
-    return differing_bits == 0
-
-
-@njit(inline="always")
-def _float_bits(value: float) -> int:
-    """The bit pattern of a positive normal float64, as an int64 (monotonic in the value).
-
-    Computed with frexp rather than through an array view, so that it allocates nothing.
-    """
-    mantissa, exponent = math.frexp(value)
-    # mantissa is in [0.5, 1): its 52 fraction bits are exactly (2 mantissa - 1) 2^52
-    return ((exponent + 1022) << 52) | int((2.0 * mantissa - 1.0) * 4503599627370496.0)
-
-
-@njit(inline="always")
-def _bits_float(bits: int) -> float:
-    """The positive normal float64 whose bit pattern is bits (the inverse of _float_bits)."""
-    return math.ldexp(1.0 + (bits & 0xFFFFFFFFFFFFF) / 4503599627370496.0, (bits >> 52) - 1023)
-
-
-@njit(inline="always")
-def _interval(ticks_next: np.ndarray, ticks_prev: np.ndarray, interval_idx: int) -> float:
-    """The interval before ticks_next[interval_idx], as float64.
-
-    uint64: a non-decreasing pair's difference fits; float64 keeps 53 bits of it.
-    """
-    return np.float64(np.uint64(ticks_next[interval_idx]) - np.uint64(ticks_prev[interval_idx]))
+    rho = (lag1_cross_prod / valid_pairs) / (sum_sq_diffs / num_valid)
+    return min(total_spread / num_windows, smallest_spread / QUIET_RATIO), rho
 
 
 @njit(nogil=True, cache=True, fastmath=True)
-def cadence(ticks: np.ndarray, out_intervals: np.ndarray, scratch_counts: np.ndarray) -> tuple[float, float]:
-    """Finds a block's one-scan intervals, their share and their mean.
+def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tuple[float, float]:
+    """Estimates white-noise standard deviation and lag-1 autocorrelation.
 
-    The scan interval is the CADENCE_QUANTILE quantile of the block's non-zero intervals,
-    rounded up to the next eighth of an octave above the shortest (by at most 12.5%, well within
-    CADENCE_TOLERANCE); an interval within CADENCE_TOLERANCE of it is one scan. A decrease in the
-    times makes its interval huge (they are checked elsewhere), so never one scan.
+    Evaluates second differences of finite samples scaled by 2^-scale_exp (which brings the
+    block's range into [0.5, 1.0)) to prevent intermediate overflow or underflow, removes their
+    mean (a parabolic trend) and takes their robust spread and autocorrelation (_robust_noise).
 
     Args:
-        ticks: 1D int64 array of the block's ticks (at least 2).
-        out_intervals: Output 1D float64 array of len(ticks) - 1 receiving each interval if it
-            is one scan, else 0.0.
-        scratch_counts: 1D int32 scratch array of at least CADENCE_COUNTS (the histogram's). It
-            allocates nothing itself: inlined into the encoder's block loop, an allocation slows
-            every block.
+        samples: 1D float64 array of finite samples.
+        scale_exp: Power-of-two scaling exponent that maps the block range to [0.5, 1.0).
+        scratch_diffs: 1D float64 scratch array of at least len(samples) - 2.
 
     Returns:
-        A tuple of (share, mean): the share of one-scan intervals and their mean length (both
-        0.0 if there are none).
+        A tuple of (sigma, rho):
+            sigma: Estimated white-noise standard deviation in original signal units, or 0.0
+                if a window's variation is negligible or underflows.
+            rho: Lag-1 autocorrelation of clipped second differences (typically -2/3 for white
+                noise, -1/2 for random walks, and positive for smooth signals). Returns
+                (0.0, 0.0) if fewer than 4 samples are present.
     """
-    num_intervals = ticks.shape[0] - 1
-    intervals = out_intervals[:num_intervals]
-    # Offset slices from index 0 allow SIMD vectorization without negative index checks
-    ticks_next, ticks_prev = ticks[1:], ticks[:num_intervals]
-    # The shortest non-zero interval, in uint64 (zero wraps to the largest)
-    one = np.uint64(1)
-    shortest_minus_one = ~np.uint64(0)
-    for interval_idx in range(num_intervals):
-        gap = np.uint64(ticks_next[interval_idx]) - np.uint64(ticks_prev[interval_idx])
-        shortest_minus_one = min(shortest_minus_one, gap - one)
-    if shortest_minus_one == ~np.uint64(0):
-        intervals[:] = 0.0
+    num_diffs = samples.shape[0] - 2
+    # Need at least two second differences to compute lag-1 autocorrelation
+    if num_diffs < 2:
         return 0.0, 0.0
-    shortest_bits = _float_bits(np.float64(shortest_minus_one + one))
-    # Usually the quantile is within the first bin: classify against its edge while counting it
-    first_edge = _bits_float(shortest_bits + (1 << CADENCE_BIN_SHIFT))
-    num_nonzero = 0
-    first_count = 0
-    num_one_scan = 0
-    one_scan_total = 0.0
-    lower, upper = (1.0 - CADENCE_TOLERANCE) * first_edge, (1.0 + CADENCE_TOLERANCE) * first_edge
-    for interval_idx in range(num_intervals):
-        length = _interval(ticks_next, ticks_prev, interval_idx)
-        num_nonzero += int(length > 0)
-        first_count += int((length > 0) & (length < first_edge))
-        is_one_scan = (lower <= length) & (length <= upper)
-        kept = length if is_one_scan else 0.0
-        intervals[interval_idx] = kept
-        num_one_scan += int(is_one_scan)
-        one_scan_total += kept
-    rank = int(CADENCE_QUANTILE * (num_nonzero - 1))
-    if first_count <= rank:
-        # Histogram of eighth-octave bins above the shortest interval (float bits are monotonic
-        # in the value), in interleaved chains so that repeated bins don't stall on each other
-        counts = scratch_counts[:CADENCE_COUNTS]
-        counts[:] = 0
-        interval_bits = intervals.view(np.int64)
-        for interval_idx in range(num_intervals):
-            intervals[interval_idx] = _interval(ticks_next, ticks_prev, interval_idx)
-            # Zero intervals fall below the shortest and are not counted
-            bin_idx = (interval_bits[interval_idx] - shortest_bits) >> CADENCE_BIN_SHIFT
-            if bin_idx >= 0:
-                chain = interval_idx % NUM_COUNT_CHAINS
-                counts[chain * CADENCE_BINS + min(bin_idx, CADENCE_BINS - 1)] += 1
-        seen = 0
-        scan_bin = CADENCE_BINS - 1
-        for bin_idx in range(CADENCE_BINS):
-            for chain in range(NUM_COUNT_CHAINS):
-                seen += counts[chain * CADENCE_BINS + bin_idx]
-            if seen > rank:
-                scan_bin = bin_idx
-                break
-        # The upper edge of the bin
-        scan = _bits_float(shortest_bits + ((scan_bin + 1) << CADENCE_BIN_SHIFT))
-        lower, upper = (1.0 - CADENCE_TOLERANCE) * scan, (1.0 + CADENCE_TOLERANCE) * scan
-        num_one_scan = 0
-        one_scan_total = 0.0
-        for interval_idx in range(num_intervals):
-            length = intervals[interval_idx]
-            is_one_scan = (lower <= length) & (length <= upper)
-            kept = length if is_one_scan else 0.0
-            intervals[interval_idx] = kept
-            num_one_scan += int(is_one_scan)
-            one_scan_total += kept
-    if num_one_scan == 0:
-        return 0.0, 0.0
-    return num_one_scan / num_intervals, one_scan_total / num_one_scan
+    # Use single-step scaling within normal range, or two-step prescaling for extreme exponents
+    if abs(scale_exp) <= xm.SCALE_LIMIT:
+        scale_factor = math.ldexp(1.0, -scale_exp)
+    else:
+        samples, scale_factor = xm.prescale(samples, scale_exp)
+    diffs = scratch_diffs[:num_diffs]
+    sum_diffs = 0.0
+    for diff_idx in range(num_diffs):
+        # Second difference: samples[i + 2] - 2 * samples[i + 1] + samples[i]
+        diff_val = (
+            samples[diff_idx + 2] * scale_factor
+            - 2.0 * (samples[diff_idx + 1] * scale_factor)
+            + samples[diff_idx] * scale_factor
+        )
+        diffs[diff_idx] = diff_val
+        sum_diffs += diff_val
+    # Subtract mean second difference to remove pure parabolic trends (quadratics)
+    spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
+    # Scale robust standard deviation back to signal units and divide by sqrt(6)
+    return math.ldexp(spread, scale_exp) / SIGMA_GAIN, rho
 
 
 @njit(nogil=True, cache=True)
-def cadence_factor(share: float) -> float:
-    """Scales the noise floor by a block's share of one-scan intervals.
+def cadence(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, float]:
+    """A block's one-scan window, if nearly all of its intervals are one scan.
+
+    The scan interval c is the median of CADENCE_SAMPLES evenly spaced intervals; an interval
+    strictly between c/2 and 3c/2 is one scan. That separates one scan from two (a skipped
+    scan) and covers jittered times. A decrease in the times wraps to a negative interval
+    (they are checked elsewhere), so never one scan.
 
     Args:
-        share: Share of one-scan intervals, 0.0 to 1.0.
+        ticks: 1D int64 array of the block's ticks (at least 2).
+        scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
 
     Returns:
-        0.0 at or below CADENCE_SHARE_OFF, 1.0 from CADENCE_SHARE_FULL, linear in between.
+        A tuple of (lower, upper, share): an interval d is one scan if lower < d < upper, and
+        share is the share of one-scan intervals. If it is below CADENCE_SHARE, the window is
+        (0, 0), which holds no interval.
     """
-    ramp = (share - CADENCE_SHARE_OFF) / (CADENCE_SHARE_FULL - CADENCE_SHARE_OFF)
-    return min(max(ramp, 0.0), 1.0)
+    num_intervals = ticks.shape[0] - 1
+    # Offset slices from index 0 allow SIMD vectorization without negative index checks
+    ticks_next, ticks_prev = ticks[1:], ticks[:num_intervals]
+    # Insertion sort of the evenly spaced intervals (a library sort would allocate)
+    pivots = scratch_pivots[:CADENCE_SAMPLES]
+    for pivot_idx in range(CADENCE_SAMPLES):
+        interval_idx = pivot_idx * (num_intervals - 1) // (CADENCE_SAMPLES - 1)
+        pivot = ticks_next[interval_idx] - ticks_prev[interval_idx]
+        insert_idx = pivot_idx
+        while insert_idx > 0 and pivots[insert_idx - 1] > pivot:
+            pivots[insert_idx] = pivots[insert_idx - 1]
+            insert_idx -= 1
+        pivots[insert_idx] = pivot
+    scan = pivots[CADENCE_SAMPLES // 2]
+    # Strictly between scan/2 and 3 scan/2 in integers: no rounding, and no overflow below 2^62
+    if not 0 < scan < (1 << 62):
+        return 0, 0, 0.0
+    lower, upper = scan // 2, scan + (scan + 1) // 2
+    num_one_scan = 0
+    for interval_idx in range(num_intervals):
+        interval = ticks_next[interval_idx] - ticks_prev[interval_idx]
+        num_one_scan += (interval > lower) & (interval < upper)
+    share = num_one_scan / num_intervals
+    if share < CADENCE_SHARE:
+        return 0, 0, share
+    return lower, upper, share
 
 
 @njit(nogil=True, cache=True, fastmath=True)
 def noise_weighted(
     samples: np.ndarray,
     codes: np.ndarray,
-    intervals: np.ndarray,
-    mean_interval: float,
+    ticks: np.ndarray,
+    lower: int,
+    upper: int,
     scale_exp: int,
     min_valid: int,
     scratch_diffs: np.ndarray,
@@ -425,20 +326,21 @@ def noise_weighted(
     """Estimates white-noise parameters on the valid triplets of a block.
 
     A triplet (three consecutive samples) is valid if all three are finite (when codes are
-    given) and both its intervals are one scan (when intervals are given). With intervals, its
-    difference is the middle sample's from the straight line through its neighbours, times the
-    sum of its intervals over the mean one: a slope cancels however the intervals differ, and on
-    equal intervals it is the plain second difference. On white noise its variance is
-    (b^2 + a^2 + (a + b)^2) / m^2 sigma^2 for intervals a and b and mean m: 6 sigma^2 on average
-    times 1 + (2/3) var / m^2, which the interval spread of one-scan triplets keeps under 6%
-    (3% in sigma) and jittered timestamps far under.
+    given) and both its intervals are one scan, lower < d < upper (when ticks are given). With
+    ticks, its difference is the middle sample's from the straight line through its
+    neighbours, scaled to the variance of a regular second difference on white noise: for
+    intervals a (before) and b (after), sqrt(6) (b x0 + a x2 - (a + b) x1) / sqrt((a + b)^2 +
+    a^2 + b^2). A slope cancels however the intervals differ, white noise of sigma gives
+    6 sigma^2 for any intervals, and equal intervals give the plain second difference.
+    If every triplet is valid, the plain estimator takes the differences (_robust_noise).
 
     Args:
         samples: 1D float64 array of the block's samples (non-finite ones sample-and-held).
         codes: 1D uint8 array of the samples' 2-bit codes, or an empty array if all are finite.
-        intervals: 1D float64 array of the block's one-scan intervals (0.0 for the others, as
-            cadence gives them), or an empty array to use plain second differences.
-        mean_interval: Mean one-scan interval (read with intervals).
+        ticks: 1D int64 array of the samples' ticks, or an empty array to use plain second
+            differences.
+        lower: Exclusive lower bound of a one-scan interval (read with ticks).
+        upper: Exclusive upper bound of a one-scan interval (read with ticks).
         scale_exp: Power-of-two scaling exponent that normalizes range to [0.5, 1.0).
         min_valid: Minimum number of valid triplets required to gate.
         scratch_diffs: 1D float64 scratch array of at least len(samples) - 2.
@@ -460,14 +362,13 @@ def noise_weighted(
     else:
         samples, scale_factor = xm.prescale(samples, scale_exp)
     has_codes = codes.shape[0] > 0
-    timed = intervals.shape[0] > 0
-    interval_scale = 1.0 / mean_interval if timed else 1.0
+    timed = ticks.shape[0] > 0
     diffs = scratch_diffs[:num_diffs]
     weights = scratch_weights[:num_diffs]
     # Offset slices from index 0 allow SIMD vectorization without negative index checks
     samples_0, samples_1, samples_2 = samples[:num_diffs], samples[1:num_diffs + 1], samples[2:num_diffs + 2]
     codes_0, codes_1, codes_2 = codes[:num_diffs], codes[1:num_diffs + 1], codes[2:num_diffs + 2]
-    intervals_before, intervals_after = intervals[:num_diffs], intervals[1:num_diffs + 1]
+    ticks_0, ticks_1, ticks_2 = ticks[:num_diffs], ticks[1:num_diffs + 1], ticks[2:num_diffs + 2]
     num_valid = 0.0
     sum_diffs = 0.0
     for diff_idx in range(num_diffs):
@@ -478,11 +379,15 @@ def noise_weighted(
         middle = samples_1[diff_idx] * scale_factor
         last = samples_2[diff_idx] * scale_factor
         if timed:
-            before = intervals_before[diff_idx]
-            after = intervals_after[diff_idx]
-            is_valid &= (before > 0) & (after > 0)
-            # (a + b) (chord - middle), over the mean interval
-            diff_val = (after * first + before * last - (before + after) * middle) * interval_scale
+            before = ticks_1[diff_idx] - ticks_0[diff_idx]
+            after = ticks_2[diff_idx] - ticks_1[diff_idx]
+            is_valid &= (before > lower) & (before < upper) & (after > lower) & (after < upper)
+            # (a + b) times the middle's distance below the line through its neighbours, over
+            # sqrt((a + b)^2 + a^2 + b^2) / sqrt(6): the line weighs each by the other's interval
+            after_f, before_f = np.float64(after), np.float64(before)
+            span = after_f + before_f
+            norm = math.sqrt(max(span * span + after_f * after_f + before_f * before_f, 1.0))
+            diff_val = SIGMA_GAIN * (after_f * first + before_f * last - span * middle) / norm
         else:
             diff_val = last - 2.0 * middle + first
         # Selects rather than branches, so that the loop vectorizes
@@ -494,7 +399,10 @@ def noise_weighted(
         sum_diffs += diff_val
     if num_valid < max(min_valid, 2):
         return 0.0, 0.0
-    spread, rho = _robust_noise_weighted(diffs, weights, num_valid, sum_diffs / num_valid)
+    if num_valid == num_diffs:
+        spread, rho = _robust_noise(diffs, sum_diffs / num_valid)
+    else:
+        spread, rho = _robust_noise_weighted(diffs, weights, num_valid, sum_diffs / num_valid)
     return math.ldexp(spread, scale_exp) / SIGMA_GAIN, rho
 
 
@@ -504,55 +412,46 @@ def block_noise(
     codes: np.ndarray,
     ticks: np.ndarray,
     scale_exp: int,
-    scratch_intervals: np.ndarray,
-    scratch_counts: np.ndarray,
+    scratch_pivots: np.ndarray,
     scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
-) -> tuple[float, float, float]:
-    """Estimates a block's white noise for the noise floor, and how much of the floor it gets.
+) -> tuple[float, float]:
+    """Estimates a block's white noise for the noise floor.
 
     A block with regular times (or none) and finite samples uses noise. With non-finite samples,
-    only triplets of finite ones count (at least half the block). With irregular times, only
-    triplets of consecutive scans (at least MIN_ONE_SCAN_TRIPLETS), and the floor is scaled by
-    the share of one-scan intervals (cadence_factor).
+    only triplets of finite ones count (at least half the block). With irregular times, only a
+    block with a cadence gets a floor, and only triplets of consecutive scans count (at least
+    MIN_ONE_SCAN_TRIPLETS).
 
     Args:
         samples: 1D float64 array of the block's finite (or sample-and-held) samples.
         codes: 1D uint8 array of the samples' 2-bit codes, or an empty array if all are finite.
-        ticks: 1D int64 array of the samples' ticks, or an empty array without a time axis.
+        ticks: 1D int64 array of the samples' ticks if they are irregular (not all intervals
+            equal), else an empty array.
         scale_exp: Power-of-two scaling exponent that maps the block range to [0.5, 1.0).
-        scratch_intervals: 1D float64 scratch array of at least len(samples) - 1 (used with
-            ticks).
-        scratch_counts: 1D int32 scratch array of at least CADENCE_COUNTS (used with ticks).
+        scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES (used with ticks).
         scratch_diffs: 1D float64 scratch array of at least len(samples).
         scratch_weights: 1D float64 scratch array of at least len(samples).
 
     Returns:
-        A tuple of (sigma, rho, scale): the white-noise estimate (as noise) and the factor
-        that scales the noise floor (1.0 unless the times are irregular).
+        A tuple of (sigma, rho), as noise's; (0.0, 0.0) for irregular times without a cadence.
     """
-    irregular = ticks.shape[0] > 0 and not regular_times(ticks)
-    scale = 1.0
-    intervals = scratch_intervals[:0]
-    mean_interval = 1.0
+    irregular = ticks.shape[0] > 0
+    if not irregular and codes.shape[0] == 0:
+        return noise(samples, scale_exp, scratch_diffs)
+    lower, upper = 0, 0
     if irregular:
-        # Scale the floor by the share of consecutive scans (none for a sparse archive)
-        intervals = scratch_intervals[:ticks.shape[0] - 1]
-        share, mean_interval = cadence(ticks, intervals, scratch_counts)
-        scale = cadence_factor(share)
-        if scale == 0:
-            return 0.0, 0.0, 0.0
-    if codes.shape[0] == 0 and not irregular:
-        sigma, rho = noise(samples, scale_exp)
-    else:
-        sigma, rho = noise_weighted(
-            samples,
-            codes,
-            intervals,
-            mean_interval,
-            scale_exp,
-            MIN_ONE_SCAN_TRIPLETS if irregular else samples.shape[0] // 2,
-            scratch_diffs,
-            scratch_weights,
-        )
-    return sigma, rho, scale
+        lower, upper, _ = cadence(ticks, scratch_pivots)
+        if upper == 0:
+            return 0.0, 0.0
+    return noise_weighted(
+        samples,
+        codes,
+        ticks,
+        lower,
+        upper,
+        scale_exp,
+        MIN_ONE_SCAN_TRIPLETS if irregular else samples.shape[0] // 2,
+        scratch_diffs,
+        scratch_weights,
+    )
