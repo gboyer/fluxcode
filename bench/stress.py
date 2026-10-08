@@ -363,7 +363,7 @@ def breakdown(wl, reps=200):
         x = xs[1]
         sizes = np.full(BLOCKS, BLOCK)
         cz, dz = _compress.zstd()
-        group_rows, _ = _group.encode_rows(x, sizes, p, False)
+        group_rows, _ = _group.encode_rows(x, sizes, p)
         offsets = _format.layout(group_rows.block_flags, sizes)
         num_octets = int(offsets.octet_offsets[-1])
         # As _compress.pack builds them: the byte-plane body, the bit-plane body derived from it
@@ -384,7 +384,7 @@ def breakdown(wl, reps=200):
             return 1e6 * best
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(group) * 8 / x.size,
-                     t(_group.encode_rows, x, sizes, p, False),
+                     t(_group.encode_rows, x, sizes, p),
                      t(_bitpacking.write_group, *group_rows[:6], True, None, offsets),
                      t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_octets, False),
                      t(compress_both, cz, byte_body, bit_body), t(fluxcode.encode_group, x, p),

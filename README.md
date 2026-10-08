@@ -34,10 +34,10 @@ type:
 * **Noise floor**: For data with high frequency noise, you can optionally specify the sigma
   multiplier that you want to preserve, and the quantization grid is reduced accordingly. This helps
   compression for noisy data, but preserves clean periodic data (unless the frequency approaches the
-  sample rate). By default, 0.25 sigmas for block groups without timestamps, and off for block
-  groups with them: timed data is often irregular (a historian's swinging-door archive, events),
-  whose samples look like white noise without being noise. It only applies to blocks of at least 256
-  samples, so a fixed `block_len` under 256 never gets one.
+  sample rate). By default, 0.25 sigmas. With irregular timestamps, the noise is measured on
+  consecutive scans only and the floor fades out as fewer scans are kept: a historian's sparse
+  swinging-door archive looks like white noise without being noise, and gets none. It only applies
+  to blocks of at least 256 samples, so a fixed `block_len` under 256 never gets one.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -154,7 +154,7 @@ which set the step to 0.25σ.
   bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
   used however often it is updated.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
-  `noise_floor_sigma=None` (0.25 without times, off with them; 0 turns it off), `target_bits_per_sample=None`
+  `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
@@ -229,9 +229,10 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
   changes the range.
 - **Noise floor:** a robust (clipped [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation))
   estimate of the noise in the second differences, plus their lag-1 autocorrelation (−2/3 for
-  white noise). Blocks that look like white noise get a step of at most 0.25σ. Blocks under 256
-  samples keep their finest step: the autocorrelation estimate is too noisy there to tell white
-  noise from a random walk.
+  white noise). Blocks that look like white noise get a step of at most 0.25σ of their quietest
+  part. Blocks under 256 samples keep their finest step: the autocorrelation estimate is too noisy
+  there to tell white noise from a random walk. With irregular times, only consecutive scans
+  count, and the floor is scaled by their share, so sparse archives and events keep their values.
 - **Fixed polynomial predictors** of order 0–3, picked per block by residual variance, as in
   [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and
   [FLAC's fixed predictors](https://www.rfc-editor.org/rfc/rfc9639#name-fixed-predictor-subframe).

@@ -13,7 +13,6 @@ import math
 import numpy as np
 from numba import njit
 
-from . import _extreme_magnitudes as xm
 from ._bitpacking import get_code
 from ._format import (
     CODE_FINITE,
@@ -21,7 +20,6 @@ from ._format import (
     CODE_NEG_INF,
     CODE_POS_INF,
 )
-from ._noise import CLIP_PASSES, CLIP_SIGMAS, MAD_TO_SD, SIGMA_GAIN
 
 
 @njit(nogil=True, cache=True)
@@ -105,118 +103,6 @@ def _mean_by_division_coded(samples: np.ndarray, codes: np.ndarray, finite_count
         if codes[sample_idx] == CODE_FINITE:
             accum_mean += samples[sample_idx] / finite_count
     return accum_mean
-
-
-@njit(nogil=True, cache=True, fastmath=True)
-def noise_finite(
-    held_samples: np.ndarray,
-    codes: np.ndarray,
-    scale_exp: int,
-    min_diffs: int,
-    scratch_diffs: np.ndarray,
-    scratch_weights: np.ndarray,
-) -> tuple[float, float]:
-    """Estimates white-noise parameters on finite triplets within held data.
-
-    Only second differences formed by three consecutive finite samples are
-    counted; held non-finite values are assigned zero weight. Autocorrelation
-    only pairs consecutive valid differences.
-
-    Args:
-        held_samples: 1D float64 array of sample-and-held data.
-        codes: 1D uint8 array of 2-bit classification codes.
-        scale_exp: Power-of-two scaling exponent that normalizes range to [0.5, 1.0).
-        min_diffs: Minimum number of valid all-finite differences required to gate.
-        scratch_diffs: 1D float64 scratch array of at least len(held_samples) - 2 for
-            differences.
-        scratch_weights: 1D float64 scratch array of at least len(held_samples) - 2 for
-            triplet weights.
-
-    Returns:
-        A tuple of (sigma, rho):
-            sigma: Estimated white-noise standard deviation in original block groups.
-            rho: Lag-1 autocorrelation of valid differences.
-            Both are 0.0 if there are fewer than min_diffs (and at least 2) valid
-            differences, or if their variance is negligible.
-    """
-    num_samples = held_samples.shape[0]
-    num_diffs = num_samples - 2
-    if num_diffs < 2:
-        return 0.0, 0.0
-    # Apply power-of-two scaling to prevent intermediate overflow/underflow
-    if abs(scale_exp) <= xm.SCALE_LIMIT:
-        scale_factor = math.ldexp(1.0, -scale_exp)
-    else:
-        held_samples, scale_factor = xm.prescale(held_samples, scale_exp)
-    # Offset slices from index 0 avoid numba's negative-index checks, so the loops vectorize
-    codes_0, codes_1, codes_2 = codes[:num_diffs], codes[1:num_diffs + 1], codes[2:num_diffs + 2]
-    samples_0 = held_samples[:num_diffs]
-    samples_1 = held_samples[1:num_diffs + 1]
-    samples_2 = held_samples[2:num_diffs + 2]
-    finite_diff_count = 0.0
-    mean_diff = 0.0
-    for diff_idx in range(num_diffs):
-        # Triplet is valid only if all three consecutive samples are finite
-        is_valid_triplet = 1.0 if (codes_0[diff_idx] | codes_1[diff_idx] | codes_2[diff_idx]) == CODE_FINITE else 0.0
-        # Compute second difference
-        diff_val = (
-            samples_2[diff_idx] * scale_factor
-            - 2.0 * (samples_1[diff_idx] * scale_factor)
-            + samples_0[diff_idx] * scale_factor
-        )
-        scratch_weights[diff_idx] = is_valid_triplet
-        scratch_diffs[diff_idx] = diff_val
-        finite_diff_count += is_valid_triplet
-        # Accumulate weighted differences for mean subtraction
-        mean_diff += diff_val * is_valid_triplet
-    # Require sufficient finite differences to avoid false positives on random walks
-    if finite_diff_count < max(min_diffs, 2):
-        return 0.0, 0.0
-    mean_diff /= finite_diff_count
-    mean_abs_dev = 0.0
-    for diff_idx in range(num_diffs):
-        scratch_diffs[diff_idx] -= mean_diff
-        # Accumulate weighted mean absolute deviation
-        mean_abs_dev += abs(scratch_diffs[diff_idx]) * scratch_weights[diff_idx]
-    mean_abs_dev /= finite_diff_count
-    # Iterative outlier clipping on valid differences
-    for _ in range(CLIP_PASSES):
-        clip_threshold = CLIP_SIGMAS * MAD_TO_SD * mean_abs_dev
-        clipped_sum = 0.0
-        kept_count = 0.0
-        for diff_idx in range(num_diffs):
-            abs_diff = abs(scratch_diffs[diff_idx])
-            # Keep sample only if within clip threshold and triplet is finite
-            is_kept = (abs_diff <= clip_threshold) * scratch_weights[diff_idx]
-            clipped_sum += abs_diff * is_kept
-            kept_count += is_kept
-        mean_abs_dev = clipped_sum / kept_count if kept_count > 0 else 0.0
-    robust_std = MAD_TO_SD * mean_abs_dev
-    if not robust_std > 0:
-        return 0.0, 0.0
-    clip_threshold = CLIP_SIGMAS * robust_std
-    sum_sq_diffs = 0.0
-    for diff_idx in range(num_diffs):
-        # Zero out invalid differences and clip outliers
-        scratch_diffs[diff_idx] = min(max(scratch_diffs[diff_idx], -clip_threshold), clip_threshold) * scratch_weights[diff_idx]
-        sum_sq_diffs += scratch_diffs[diff_idx] * scratch_diffs[diff_idx]
-    lag1_cross_prod = 0.0
-    valid_pairs_count = 0.0
-    diffs_shifted = scratch_diffs[1:num_diffs]
-    diffs_base = scratch_diffs[:num_diffs - 1]
-    weights_shifted = scratch_weights[1:num_diffs]
-    weights_base = scratch_weights[:num_diffs - 1]
-    for diff_idx in range(num_diffs - 1):
-        # Lag-1 cross product
-        lag1_cross_prod += diffs_shifted[diff_idx] * diffs_base[diff_idx]
-        # Count only pairs of adjacent differences that are both valid
-        valid_pairs_count += weights_shifted[diff_idx] * weights_base[diff_idx]
-    if not sum_sq_diffs > 0 or valid_pairs_count == 0:
-        return 0.0, 0.0
-    # Normalize covariance by pair count and variance by total difference count
-    variance_norm = sum_sq_diffs / finite_diff_count
-    autocorr = (lag1_cross_prod / valid_pairs_count) / variance_norm
-    return math.ldexp(robust_std, scale_exp) / SIGMA_GAIN, autocorr
 
 
 @njit(inline="always")

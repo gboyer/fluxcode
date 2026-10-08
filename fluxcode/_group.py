@@ -46,12 +46,11 @@ class BlockStats(NamedTuple):
     block_mean: np.ndarray
 
 
-def kernel_args(params: Params, timed: bool) -> tuple[int, int, int, float, float, bool, int]:
+def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, int]:
     """Converts encoder parameters into the arguments of the encoding kernel.
 
     Args:
         params: Encoder configuration parameters.
-        timed: Whether the block group stores timestamps (it decides the default noise floor).
 
     Returns:
         A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, decimal,
@@ -62,7 +61,7 @@ def kernel_args(params: Params, timed: bool) -> tuple[int, int, int, float, floa
         params.min_quantize_bits,
         params.max_quantize_bits,
         sum(1 << order for order in params.diff_orders),
-        params.noise_factor(timed),
+        float(params.noise_floor_sigma),
         float(params.target_bits_per_sample or 0.0),
         bool(params.decimal_detection),
         _encoder.PICK_LEN,
@@ -70,7 +69,7 @@ def kernel_args(params: Params, timed: bool) -> tuple[int, int, int, float, floa
 
 
 def encode_rows(
-    samples: np.ndarray, block_sizes: np.ndarray, params: Params, timed: bool
+    samples: np.ndarray, block_sizes: np.ndarray, params: Params, ticks: np.ndarray | None = None
 ) -> tuple[_format.GroupRows, BlockStats]:
     """Encodes blocks into their rows (without a time axis) and summary statistics.
 
@@ -78,7 +77,8 @@ def encode_rows(
         samples: 1D float64 array of every sample, block after block.
         block_sizes: 1D int64 array of block sizes adding up to the sample count.
         params: Encoder parameters.
-        timed: Whether the block group stores timestamps.
+        ticks: 1D int64 array of the samples' ticks, or None without a time axis. They only
+            steer the noise floor (on irregular blocks); encode_time_rows encodes them.
 
     Returns:
         A tuple of (rows, stats): the blocks' GroupRows (without time rows) and their
@@ -100,7 +100,8 @@ def encode_rows(
     _encoder.encode_group(
         samples,
         sample_offsets(block_sizes),
-        *kernel_args(params, timed),
+        np.zeros(0, np.int64) if ticks is None else ticks,
+        *kernel_args(params),
         rows.block_flags,
         rows.grid_params,
         rows.value_anchors,
@@ -155,7 +156,7 @@ def encode(
             anywhere.
     """
     _args.check_group_counts(block_sizes.shape[0], samples.shape[0], block_sizes)
-    rows, stats = encode_rows(samples, block_sizes, params, ticks is not None)
+    rows, stats = encode_rows(samples, block_sizes, params, ticks)
     if ticks is not None:
         rows = rows._replace(time_rows=encode_time_rows(ticks, block_sizes, rows.block_flags))
     return EncodedGroup(_compress.compress(rows, samples.shape[0], _compress.EFFORTS[params.effort], time_unit), *stats)
@@ -529,7 +530,7 @@ def splice(
     _args.check_group_counts(num_blocks, num_samples)
 
     # Encode value residuals and codes for the replacement blocks
-    new_rows, stats = encode_rows(samples, block_sizes, params, ticks is not None)
+    new_rows, stats = encode_rows(samples, block_sizes, params, ticks)
     new_offsets = sample_offsets(block_sizes)
     old_starts = None
     if ticks is not None:

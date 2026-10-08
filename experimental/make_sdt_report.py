@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 import zstandard
-from fluxcode import Params
+from fluxcode import Params, _noise
+from fluxcode._encoder import NOISE_MIN_LEN
 
 from tslab.classic.gorilla import Gorilla
 from tslab.common.historian import (
@@ -47,8 +48,8 @@ SECOND = "#eb6834"
 SCANS = "0.72"
 RAW_BYTES = 16  # an int64 timestamp and a float64 value per point
 
-DEFAULT = Params()  # with times, the noise floor is off
-FLOOR = Params(noise_floor_sigma=fluxcode.DEFAULT_NOISE_FLOOR_SIGMA)  # the default without times
+DEFAULT = Params()  # noise floor 0.25, as much of it as the archive's share of consecutive scans allows
+OFF = Params(noise_floor_sigma=0)
 DAY_START = np.datetime64(DAY_START_NS, "ns")
 
 
@@ -94,18 +95,36 @@ def zstd_bytes(values, ticks):
 
 
 def flux_measure(scans, idx, ticks, params, encode=ENCODE):
-    """Bytes (all, and values only: the same blocks without times, at the same noise floor) and
-    errors of one archive."""
+    """Bytes (all, and values only), errors and floored blocks of one archive. The times' bytes are
+    those of the same blocks with the noise floor off, minus the same without times (they don't
+    depend on the floor); floored blocks are those that decode differently with it off."""
     values = scans[idx]
     group = encode(values, ticks, params)
     decoded = fluxcode.decode_group(group)
     assert np.array_equal(decoded.times.view(np.int64), ticks)
-    same_floor = dataclasses.replace(params, noise_floor_sigma=params.noise_factor(timed=True))
-    values_only = fluxcode.encode_blocks(values, decoded.block_sizes, same_floor).group
+    off = dataclasses.replace(params, noise_floor_sigma=0)
+    off_group = encode(values, ticks, off)
+    time_bytes = len(off_group) - len(fluxcode.encode_blocks(values, decoded.block_sizes, off).group)
+    ends = np.cumsum(decoded.block_sizes)
+    differs = np.add.reduceat(decoded.values != fluxcode.decode_group(off_group).values, ends - decoded.block_sizes)
     trend = interp(idx, decoded.values, DAY_S)
-    return {"bytes": len(group), "value_bytes": len(values_only), "point_err": np.abs(decoded.values - values).max(),
+    return {"bytes": len(group), "value_bytes": len(group) - time_bytes, "point_err": np.abs(decoded.values - values).max(),
             "exact": np.count_nonzero(decoded.values == values), "trend_err": np.abs(trend - scans).max(),
-            "trend_rms": np.sqrt(np.mean((trend - scans) ** 2))}
+            "trend_rms": np.sqrt(np.mean((trend - scans) ** 2)),
+            "floored": int(np.count_nonzero(differs[decoded.block_sizes > 0])),
+            "blocks": int(np.count_nonzero(decoded.block_sizes >= NOISE_MIN_LEN))}
+
+
+def one_scan_shares(ticks):
+    """The share of one-scan intervals (as the noise floor sees them) of each 1 h block of at
+    least NOISE_MIN_LEN points."""
+    hours = (ticks - DAY_START_NS) // (3600 * SECOND_NS)
+    shares = []
+    for hour in np.unique(hours):
+        block = ticks[hours == hour]
+        if block.size >= NOISE_MIN_LEN:
+            shares.append(1.0 if _noise.regular_times(block) else _noise.cadence(block, np.empty(block.size - 1))[0])
+    return shares
 
 
 def every_scan(scans, budgets):
@@ -124,8 +143,8 @@ def every_scan(scans, budgets):
 
 
 def resampled(read_back, idx, values):
-    """fluxcode (defaults: no noise floor with times) on the archive read back at every scan: bytes (1 s times included,
-    1000-scan blocks) and the max error against that read-back."""
+    """fluxcode (defaults) on the archive read back at every scan: bytes (1 s times included, 1000-scan blocks) and the
+    max error against that read-back."""
     series = read_back(idx, values, DAY_S)
     ticks = (DAY_START_NS + np.arange(DAY_S, dtype=np.int64) * SECOND_NS).view("datetime64[ns]")
     group = fluxcode.encode_group(series, DEFAULT, times=ticks).group
@@ -140,6 +159,7 @@ def measure_tag(tag):
     r = {"points": [], "sdt_trend_err": [], "sdt_trend_rms": [], "gorilla": 0, "zstd": 0, "gorilla_src": 0,
          "flux": {}, "flux_src": [], "layouts": {name: 0 for name, _ in LAYOUTS}, "sweep": {b: [] for b in SWEEP_BITS},
          "scans_default": [], "scans_budget": [], "scans_matched": [], "dev_sweep": {s: [] for s in DEV_SCALES},
+         "shares": {s: [] for s in DEV_SCALES},
          "resampled": {name: [] for name, _ in READ_BACKS}}
     for day in range(DAYS):
         scans, idx = tag_day(tag, day)
@@ -151,7 +171,7 @@ def measure_tag(tag):
         r["gorilla"] += gorilla_bytes(values, ticks, SECOND_NS)
         r["gorilla_src"] += gorilla_bytes(values, src, 1_000_000)
         r["zstd"] += zstd_bytes(values, ticks)
-        for name, params in (("defaults", DEFAULT), ("noise floor 0.25", FLOOR)):
+        for name, params in (("defaults", DEFAULT), ("noise floor off", OFF)):
             r["flux"].setdefault(name, []).append(flux_measure(scans, idx, ticks, params))
         r["flux_src"].append(flux_measure(scans, idx, src, DEFAULT))
         for name, read_back in READ_BACKS:
@@ -166,9 +186,13 @@ def measure_tag(tag):
         r["scans_matched"].append(matched)
         for scale in DEV_SCALES:
             s_scans, s_idx = tag_day(tag, day, comp_dev=scale * dev)
-            sdt = flux_measure(s_scans, s_idx, times_ns(s_idx, tag, day), DEFAULT)
-            matched = every_scan(s_scans, (sdt["trend_err"],))[1][0]
-            r["dev_sweep"][scale].append((sdt["bytes"], sdt["trend_err"], matched[0]))
+            s_ticks = times_ns(s_idx, tag, day)
+            sdt = flux_measure(s_scans, s_idx, s_ticks, DEFAULT)
+            sdt["off_bytes"] = len(ENCODE(s_scans[s_idx], s_ticks, OFF))
+            sdt["n"] = len(s_idx)
+            sdt["every_scan"] = every_scan(s_scans, (sdt["trend_err"],))[1][0][0]
+            r["dev_sweep"][scale].append(sdt)
+            r["shares"][scale] += one_scan_shares(s_ticks)
     r["n"] = sum(r["points"])
     print(f"{tag}: {r['n'] / DAYS:.0f} points/day", flush=True)
     return r
@@ -238,9 +262,9 @@ def plot_sweep(results):
         for b, (x, y) in zip(SWEEP_BITS, pts):
             if b in (SWEEP_BITS[0], SWEEP_BITS[-1]):
                 ax.annotate(f"B={b}", (x, y), textcoords="offset points", xytext=(6, 3), fontsize=7.5, color="0.3")
-        d = r["flux"]["noise floor 0.25"]
+        d = r["flux"]["defaults"]
         ax.plot(total(d, "bytes") / r["n"], max(worst(d, "point_err") / dev, EXACT_FLOOR), "D", color=SECOND, ms=8,
-                mec="k", mew=0.6, label="B = 16, noise floor 0.25 (the default without times)")
+                mec="k", mew=0.6, label="defaults (B = 16, the noise floor as the archive allows)")
         ax.axhline(1, color="0.45", ls=":", lw=1)
         ax.axhline(EXACT_FLOOR, color="0.8", lw=0.8)
         ax.set_yscale("log")
@@ -264,8 +288,8 @@ def plot_dev_sweep(results):
     for ax, tag in zip(axes, TAGS):
         r, dev = results[tag], TAG_INFO[tag][2]
         devs = [s * dev for s in DEV_SCALES]
-        sdt = [sum(b for b, _, _ in r["dev_sweep"][s]) / DAYS / 1000 for s in DEV_SCALES]
-        scans = [sum(c for _, _, c in r["dev_sweep"][s]) / DAYS / 1000 for s in DEV_SCALES]
+        sdt = [total(r["dev_sweep"][s], "bytes") / DAYS / 1000 for s in DEV_SCALES]
+        scans = [total(r["dev_sweep"][s], "every_scan") / DAYS / 1000 for s in DEV_SCALES]
         ax.plot(devs, sdt, "-o", color=SERIES, lw=1.5, ms=5, label="SDT archive + fluxcode (defaults)")
         ax.plot(devs, scans, "-s", color=SECOND, lw=1.5, ms=5,
                 label="every scan with fluxcode, no SDT: coarsest B whose max error is within SDT's")
@@ -335,42 +359,45 @@ it (about 1.9 here); the exception filter adds the rest.</p>
 <p>Bytes per archived point over all {days}, everything a decoder needs included. Raw is an int64 time and a float64 value
 (16 bytes). zstd and Gorilla are lossless: zstd-3 of the time deltas and the values as two int64/float64 columns; Gorilla
 with its own delta-of-delta timestamps (in seconds) and XOR values. fluxcode is one block group per tag-day in {LAYOUT}
-(<a href="#layout">layout</a>), with exact times; its <i>values</i> and <i>times</i> columns split its bytes by
-encoding the same blocks without times.</p>
+(<a href="#layout">layout</a>), with exact times; its <i>values</i> and <i>times</i> columns split its bytes, the
+times' being those of the same blocks with the noise floor off minus the same blocks without times.</p>
 <table><tr><th class='l'>tag</th><th>points per day</th><th>raw</th><th>zstd</th><th>Gorilla</th>
-<th>fluxcode, noise floor 0.25</th><th>max error</th><th>fluxcode defaults</th><th>values</th><th>times</th>
-<th>max error</th><th>exact</th><th>kB per day</th></tr>""")
+<th>fluxcode defaults</th><th>values</th><th>times</th><th>max error</th><th>exact</th><th>kB per day</th>
+<th>noise floor off</th><th>max error</th></tr>""")
     for tag in TAGS:
         r, dev = results[tag], TAG_INFO[tag][2]
-        n, d, o = r["n"], r["flux"]["noise floor 0.25"], r["flux"]["defaults"]
+        n, o, d = r["n"], r["flux"]["noise floor off"], r["flux"]["defaults"]
         h.append(f"<tr><td>{tag}</td><td>{n / DAYS:,.0f}</td><td>{RAW_BYTES}</td><td>{per_point(r['zstd'], n)}</td>"
-                 f"<td>{per_point(r['gorilla'], n)}</td><td>{per_point(total(d, 'bytes'), n)}</td>"
-                 f"<td>{rel(worst(d, 'point_err'), dev)}</td><td><b>{per_point(total(o, 'bytes'), n)}</b></td>"
-                 f"<td>{per_point(total(o, 'value_bytes'), n)}</td>"
-                 f"<td>{per_point(total(o, 'bytes') - total(o, 'value_bytes'), n)}</td>"
-                 f"<td>{rel(worst(o, 'point_err'), dev)}</td><td>{100 * total(o, 'exact') / n:.0f}%</td>"
-                 f"<td>{total(o, 'bytes') / DAYS / 1000:.2f}</td></tr>")
+                 f"<td>{per_point(r['gorilla'], n)}</td><td><b>{per_point(total(d, 'bytes'), n)}</b></td>"
+                 f"<td>{per_point(total(d, 'value_bytes'), n)}</td>"
+                 f"<td>{per_point(total(d, 'bytes') - total(d, 'value_bytes'), n)}</td>"
+                 f"<td>{rel(worst(d, 'point_err'), dev)}</td><td>{100 * total(d, 'exact') / n:.0f}%</td>"
+                 f"<td>{total(d, 'bytes') / DAYS / 1000:.2f}</td><td>{per_point(total(o, 'bytes'), n)}</td>"
+                 f"<td>{rel(worst(o, 'point_err'), dev)}</td></tr>")
     h.append("""</table><p class='muted'>Max error: the worst |decoded − archived| over the days, in CompDevs. Exact:
-the share of points that decode bit-exact. kB per day: fluxcode at the defaults, whose noise floor is off with times.
-The noise floor 0.25 column is the default for a block group without times, forced on here.</p>""")
+the share of points that decode bit-exact. Values and times: the times' bytes are those of the same blocks with the noise
+floor off minus the same without times. The <a href="#noise-floor">noise floor</a> section explains where the defaults
+and the noise floor off differ.</p>""")
 
     h.append(f"""<h2 id="accuracy">Accuracy against the scans</h2>
 <p>What matters downstream is the trend: straight lines between the decoded points, compared with the scans the historian
 saw. SDT alone is the historian's own error; fluxcode's is added on top. In CompDevs, worst over the {days}.</p>
-<table><tr><th class='l'>tag</th><th>SDT alone: max</th><th>RMS</th><th>+ fluxcode, noise floor 0.25: max</th><th>RMS</th>
-<th>+ fluxcode defaults: max</th><th>RMS</th></tr>""")
+<table><tr><th class='l'>tag</th><th>SDT alone: max</th><th>RMS</th><th>+ fluxcode defaults: max</th><th>RMS</th>
+<th>+ fluxcode, noise floor off: max</th><th>RMS</th></tr>""")
     for tag in TAGS:
         r, dev = results[tag], TAG_INFO[tag][2]
         cells = [f"{max(r['sdt_trend_err']) / dev:.3f}", f"{np.mean(r['sdt_trend_rms']) / dev:.3f}"]
-        for name in ("noise floor 0.25", "defaults"):
+        for name in ("defaults", "noise floor off"):
             rows = r["flux"][name]
             cells += [f"{worst(rows, 'trend_err') / dev:.3f}", f"{np.mean([x['trend_rms'] for x in rows]) / dev:.3f}"]
         h.append(f"<tr><td>{tag}</td>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
     h.append("</table>")
 
+    h.append(noise_floor_section(results))
+
     h.append(f"""<h2 id="sweep">Size vs accuracy</h2>
-<p>fluxcode's B (<code>max_quantize_bits</code>) from 4 to 16 with the noise floor off (the default with times), and at B = 16 with the noise floor at 0.25, the
-default without times (diamond).
+<p>fluxcode's B (<code>max_quantize_bits</code>) from 4 to 16 with the noise floor off, and the defaults (diamond: B = 16
+and the noise floor).
 The error is the worst |decoded − archived| over the {days}, in CompDevs; exact decodes sit on the bottom line. B sets the
 step from each block's range, so the same B gives a different error on each tag: there is no B that means "a tenth of
 CompDev".</p>""")
@@ -453,10 +480,43 @@ scan| in CompDevs.</p>
     h.append(plot_dev_sweep(results))
 
     toc = [("findings", "Findings", []), ("tags", "The tags", []), ("size", "Size", []), ("accuracy", "Accuracy against the scans", []),
-           ("sweep", "Size vs accuracy", []), ("layout", "Block layout", []), ("timestamps", "Timestamps", []), ("resampled", "Resampled exports", []),
+           ("noise-floor", "Noise floor", []), ("sweep", "Size vs accuracy", []), ("layout", "Block layout", []), ("timestamps", "Timestamps", []), ("resampled", "Resampled exports", []),
            ("no-sdt", "SDT or every scan?", [])]
     (OUT / "sdt.html").write_text(shell("fluxcode on swinging-door historian data", "", toc, "\n".join(h)))
     print(f"wrote {OUT / 'sdt.html'}")
+
+
+def noise_floor_section(results):
+    """The noise floor on each tag as CompDev changes: one-scan share, floored blocks, size and error."""
+    h = [f"""<h2 id="noise-floor">Noise floor</h2>
+<p>fluxcode's noise floor (default 0.25σ) coarsens the step of blocks whose samples look like white measurement noise.
+An SDT archive's sparse points look like that without being noise: swinging door keeps exactly the points a straight
+line can't predict. So on a block with irregular times, fluxcode measures the noise on consecutive scans only (two
+intervals of one scan, the scan being the block's 1st-percentile interval), and scales the floor by the share of
+one-scan intervals: none at 50% or less, all of it from 90%. A sparse archive gets no floor and keeps its values; one
+that kept most scans is raw sensor data, and gets it. Below, each tag's archive at five CompDevs (ExcDev half of it),
+{LAYOUT}, all {DAYS} days, against the same with the noise floor off.</p>
+<table><tr><th class='l'>tag</th><th>CompDev</th><th>points per day</th><th>one-scan share</th><th>blocks floored</th>
+<th>kB per day</th><th>noise floor off</th><th>max error</th><th>exact</th></tr>"""]
+    for tag in TAGS:
+        r, dev = results[tag], TAG_INFO[tag][2]
+        for scale in DEV_SCALES:
+            rows, shares = r["dev_sweep"][scale], r["shares"][scale]
+            n = total(rows, "n")
+            blocks = total(rows, "blocks")
+            floored = total(rows, "floored")
+            saving = total(rows, "bytes") / total(rows, "off_bytes") - 1
+            share = span(shares, "{:.0%}") if shares else "–"
+            h.append(f"<tr><td>{tag if scale == DEV_SCALES[0] else ''}</td><td>{scale * dev:g}</td><td>{n / DAYS:,.0f}</td>"
+                     f"<td>{share}</td><td>{f'{floored} of {blocks}' if blocks else '–'}</td>"
+                     f"<td>{total(rows, 'bytes') / DAYS / 1000:.2f}</td><td>{total(rows, 'off_bytes') / DAYS / 1000:.2f}"
+                     f"{f' ({saving:+.0%})' if floored else ''}</td><td>{rel(worst(rows, 'point_err'), dev)}</td>"
+                     f"<td>{100 * total(rows, 'exact') / n:.0f}%</td></tr>")
+    h.append("""</table><p class='muted'>One-scan share: the range over the 1 h blocks of at least 256 points (smaller
+blocks get no noise floor). Blocks floored: those that decode differently with the noise floor off, of the blocks of at
+least 256 points. Max error: the worst |decoded − archived| at the defaults, in CompDevs of the tag's own (the first table),
+so that the rows of a tag compare. Exact: the share of points that decode bit-exact at the defaults.</p>""")
+    return "\n".join(h)
 
 
 def span(values, fmt="{:.2f}"):
@@ -469,13 +529,17 @@ def findings(results):
     """The summary at the top of the page, from the numbers."""
     dense = [t for t in TAGS if results[t]["n"] / DAYS >= 1000]
     sparse = [t for t in TAGS if t not in dense]
-    dense_decimal = [t for t in dense if t != "ph-float32"]
 
     def per_point_of(tag, key="bytes", name="defaults"):
         return total(results[tag]["flux"][name], key) / results[tag]["n"]
 
-    floor_err = {t: worst(results[t]["flux"]["noise floor 0.25"], "point_err") / TAG_INFO[t][2] for t in TAGS}
-    noisiest = max(floor_err, key=floor_err.get)
+    own = {t: results[t]["dev_sweep"][1] for t in TAGS}  # each tag's own CompDev
+    floored_tags = [t for t in TAGS if total(own[t], "floored")]
+    sparse_archives = [t for t in TAGS if t not in floored_tags and results[t]["shares"][1]]
+    max_sparse_share = max((max(results[t]["shares"][1]) for t in sparse_archives), default=0)
+    floor_share = {t: span(results[t]["shares"][1], "{:.0%}") for t in floored_tags}
+    floor_saving = {t: total(own[t], "bytes") / total(own[t], "off_bytes") - 1 for t in floored_tags}
+    floor_err = {t: worst(own[t], "point_err") / TAG_INFO[t][2] for t in floored_tags}
     times = [per_point_of(t) - per_point_of(t, "value_bytes") for t in dense]
     source = [(total(results[t]["flux_src"], "bytes") - per_point_of(t) * results[t]["n"]) / results[t]["n"]
               for t in dense]
@@ -489,14 +553,14 @@ def findings(results):
                        for t in TAGS] for name, _ in READ_BACKS}
     return f"""<h2 id="findings">Findings</h2>
 <ul>
-<li><b>No noise floor on SDT archives,</b> which is the default for a block group with times. Swinging door keeps only the
-points a straight line can't predict, so an archive looks like white noise to the noise-floor detector, which coarsens
-the step: with the noise floor at 0.25 (the default without times) fluxcode's own error reaches
-{floor_err[noisiest]:.2g} CompDevs on {noisiest} ({span([floor_err[t] for t in dense], "{:.2g}")} on the dense tags).
-At the defaults, the dense decimal tags
-({", ".join(dense_decimal)}) decode exactly at {span([per_point_of(t) for t in dense_decimal])} bytes per point, values
-and times, and the float32 tag is within {worst(f32, "point_err") / TAG_INFO["ph-float32"][2]:.1g} CompDevs at
-{per_point_of("ph-float32"):.2f} bytes per point.</li>
+<li><b>The noise floor adapts to the archive.</b> On the sparse archives of {", ".join(sparse_archives) or "no tag"}
+(at most {max_sparse_share:.0%} of intervals one scan) it is off, and the decimal tags decode exactly as they do with it
+off; swinging door's points look like white noise without being noise. Where the historian kept most scans
+({", ".join(f"{t}: {floor_share[t]}" for t in floored_tags) or "no tag"} of intervals one scan) they are raw sensor data,
+and the floor applies: {", ".join(f"{t} {floor_saving[t]:+.0%}" for t in floored_tags)} in size, at a max error of
+{", ".join(f"{floor_err[t]:.2g}" for t in floored_tags)} CompDevs: CompDev is set far below the noise there
+(<a href="#noise-floor">noise floor</a>). At the defaults the float32 tag is within
+{worst(f32, "point_err") / TAG_INFO["ph-float32"][2]:.1g} CompDevs at {per_point_of("ph-float32"):.2f} bytes per point.</li>
 <li><b>Store the archived points, not a resampled export.</b> Read back at the 1 s scan rate, the same archive takes
 {span(resample["interpolated"], "{:.1f}")}× the bytes interpolated and {span(resample["held"], "{:.1f}")}× held
 (<a href="#resampled">resampled exports</a>), and fluxcode can't recover the points from either.</li>

@@ -3,8 +3,6 @@
 """docs/SPEC.md time axis: exact round trips, regular and irregular blocks, the layout, the
 encoder's input checks, the decoder's corrupt-group checks, and update with times."""
 
-import dataclasses
-
 import numpy as np
 import pytest
 import zstandard
@@ -17,6 +15,7 @@ from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_LONG_TIME
 
 INT64_MAX = np.iinfo(np.int64).max
 INT64_MIN = np.iinfo(np.int64).min
+OFF = Params(noise_floor_sigma=0)
 BLOCK_LEN = 1000
 START_2026 = np.datetime64("2026-09-27T00:00:00", "ns")
 
@@ -33,13 +32,13 @@ def decoded_times(group):
     return times
 
 
-def round_trip(values, times, params=Params(), block_len=BLOCK_LEN, **kwargs):
-    """Encodes and decodes with times; the values must decode as they do without times at the
-    same noise floor (the default one depends on whether there are times)."""
+def round_trip(values, times, params=OFF, block_len=BLOCK_LEN, **kwargs):
+    """Encodes and decodes with times; the values must decode as they do without times (times
+    only steer the noise floor, so by default it is off, and the signals passed with it on are
+    clean)."""
     group = fluxcode.encode_group(values, params, block_len=block_len, times=times, **kwargs).group
     decoded = fluxcode.decode_group(group)
-    same_floor = dataclasses.replace(params, noise_floor_sigma=params.noise_factor(timed=True))
-    plain = fluxcode.encode_group(values, same_floor, block_len=block_len).group
+    plain = fluxcode.encode_group(values, params, block_len=block_len).group
     np.testing.assert_array_equal(decoded.values, fluxcode.decode_group(plain).values)
     return group, decoded
 
@@ -414,32 +413,74 @@ def test_update_time_errors():
         fluxcode.update(group, {0: block}, times={0: block_times[::-1]})
 
 
-def test_default_noise_floor_is_off_with_times():
-    """noise_floor_sigma=None: DEFAULT_NOISE_FLOOR_SIGMA without times, off with them; an
-    explicit floor applies either way."""
+def test_noise_floor_with_regular_times_is_the_untimed_one():
+    """Regular times don't change the noise floor: the default one gates as without times."""
     values = minute("noisy-sine", 7)
     times = regular_times(values.shape[0])
 
     def decoded(params, **kwargs):
         return fluxcode.decode_group(fluxcode.encode_group(values, params, **kwargs).group).values
 
-    floor = Params(noise_floor_sigma=fluxcode.DEFAULT_NOISE_FLOOR_SIGMA)
-    off = Params(noise_floor_sigma=0)
-    np.testing.assert_array_equal(decoded(Params()), decoded(floor))
-    np.testing.assert_array_equal(decoded(Params(), times=times), decoded(off, times=times))
-    np.testing.assert_array_equal(decoded(floor, times=times), decoded(floor))
-    assert not np.array_equal(decoded(floor), decoded(off))  # the floor does gate this signal
+    np.testing.assert_array_equal(decoded(Params(), times=times), decoded(Params()))
+    assert not np.array_equal(decoded(Params()), decoded(OFF))  # the floor does gate this signal
 
 
-def test_update_default_noise_floor_follows_the_group():
-    """update re-encodes a timed block group's blocks with the floor off, an untimed one's with it on."""
+def test_update_noise_floor_with_regular_times():
+    """update re-encodes a block with regular times as it would without times."""
     values = minute("noisy-sine", 8)[:5000]
     times = regular_times(values.shape[0])
     fresh = minute("noisy-sine", 9)[:BLOCK_LEN]
-    off, floor = Params(noise_floor_sigma=0), Params(noise_floor_sigma=fluxcode.DEFAULT_NOISE_FLOOR_SIGMA)
-    for kwargs, expected in (({"times": times}, off), ({}, floor)):
-        group = fluxcode.encode_group(values, **kwargs).group
-        new_times = {"times": {2: times[2 * BLOCK_LEN:3 * BLOCK_LEN]}} if kwargs else {}
-        updated = fluxcode.update(group, {2: fresh}, **new_times).group
-        reference = fluxcode.update(group, {2: fresh}, expected, **new_times).group
-        np.testing.assert_array_equal(fluxcode.decode_group(updated).values, fluxcode.decode_group(reference).values)
+    timed = fluxcode.encode_group(values, times=times).group
+    updated = fluxcode.update(timed, {2: fresh}, times={2: times[2 * BLOCK_LEN:3 * BLOCK_LEN]}).group
+    reference = fluxcode.update(fluxcode.encode_group(values).group, {2: fresh}).group
+    np.testing.assert_array_equal(fluxcode.decode_group(updated).values, fluxcode.decode_group(reference).values)
+
+
+def scans_kept(keep, sigma=1.5, decimals=None, seed=10):
+    """Noisy scans 1 s apart (on a slow sine), of which the historian kept a share: values, times."""
+    rng = np.random.default_rng(seed)
+    num_scans = 20_000
+    values = 50 + 10 * np.sin(np.arange(num_scans) / 3000) + rng.normal(0, sigma, num_scans)
+    if decimals is not None:
+        values = np.round(values, decimals)
+    kept = np.flatnonzero(rng.random(num_scans) < keep)
+    return values[kept], (START_2026 + kept * np.timedelta64(1, "s"))
+
+
+def block_steps(values, times, params=Params()):
+    """The power-of-two step exponent of every block, and the max decode error."""
+    group = fluxcode.encode_group(values, params, times=times).group
+    return group_rows(group).grid_params, np.abs(fluxcode.decode_group(group).values - values).max()
+
+
+def test_sparse_archive_gets_no_noise_floor():
+    """A historian that kept a third of the scans: the points look like white noise but aren't
+    oversampled, so the default floor and an explicit one are off and decimals decode exactly."""
+    values, times = scans_kept(0.3, decimals=2)
+    for params in (Params(), Params(noise_floor_sigma=1.0)):
+        group = fluxcode.encode_group(values, params, times=times).group
+        np.testing.assert_array_equal(fluxcode.decode_group(group).values, values)
+    # Without times the same points gate
+    assert not np.array_equal(fluxcode.decode_group(fluxcode.encode_group(values).group).values, values)
+
+
+def test_noise_floor_ramps_with_the_share_of_kept_scans():
+    """Nearly every scan kept: the full floor (step 0.25 for sigma 1.5); 70% kept: half of it
+    (one step finer); jittered times count as kept."""
+    full, full_err = block_steps(*scans_kept(0.97))
+    assert (full[:-1] == -2).all() and 0 < full_err <= 0.125  # the last block is too short to gate
+    half, _ = block_steps(*scans_kept(0.7))
+    assert (half[:-1] == -3).all()
+    values, _ = scans_kept(1.0)
+    jitter = np.random.default_rng(11).integers(0, 200, values.size) * np.timedelta64(1, "ms")
+    jittered, _ = block_steps(values, START_2026 + np.arange(values.size) * np.timedelta64(1, "s") + jitter)
+    np.testing.assert_array_equal(jittered, full[:jittered.size])
+
+
+def test_events_without_a_cadence_get_no_noise_floor():
+    """Exponentially spaced events have no scan interval: no floor, as for a sparse archive."""
+    rng = np.random.default_rng(12)
+    ticks = np.cumsum(rng.exponential(1e6, 5000)).astype(np.int64)
+    values = np.round(rng.normal(0, 1, 5000), 2)
+    group = fluxcode.encode_group(values, times=ticks.view("datetime64[us]")).group
+    np.testing.assert_array_equal(fluxcode.decode_group(group).values, values)

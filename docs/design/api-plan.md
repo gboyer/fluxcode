@@ -21,7 +21,7 @@
 - **Non-finite values are encoded exactly** (head bit 3 with two code planes, SPEC §2) instead of
   raising (§6 below).
 - **No float32 flag.** Decimals stored as float32 upstream decode as the decimal itself.
-- **Validation:** `noise_floor_sigma` is None or a finite number ≥ 0; `target_bits_per_sample` is
+- **Validation:** `noise_floor_sigma` is a finite number ≥ 0; `target_bits_per_sample` is
   None or ≥ 6; `block_len` is a multiple of 8 up to 65,536; `blocks_per_group × block_len` is at
   most 2^26; `diff_orders` may be any set or sequence of orders.
 - **More modules:** `_noise`, `_nonfinite` and `_extreme_magnitudes` joined the layout of §3. The
@@ -121,7 +121,7 @@ class Params:
     min_quantize_bits: int = 6                  # hard: steps are never coarser than this (1..16)
     max_quantize_bits: int = 16                 # hard: steps are never finer than this (min..16)
     diff_orders: frozenset[int] = frozenset({0, 1, 2, 3})   # one element: no order selection
-    noise_floor_sigma: float | None = None      # f: step ≤ f·σ on blocks that look like white noise; None: 0.25 without times, off with them
+    noise_floor_sigma: float = 0.25             # f: step ≤ f·σ on blocks that look like white noise; 0 is off
     target_bits_per_sample: float | None = None # soft per-block-group cap
     decimal_detection: bool = True
     block_len: int = 1000                       # multiple of 8
@@ -131,7 +131,7 @@ class Params:
 Validated in `__post_init__`, raising `ValueError`:
 - `1 ≤ min ≤ max ≤ 16` (16 is a format limit: residuals are mod 2^16);
 - `diff_orders` is a non-empty subset of {0, 1, 2, 3};
-- `noise_floor_sigma` is None or ≥ 0 (0 means off);
+- `noise_floor_sigma` is ≥ 0 (0 means off);
 - `target_bits_per_sample` is None or > 0;
 - `block_len` is a positive multiple of 8, and `blocks_per_group` ≥ 1.
 

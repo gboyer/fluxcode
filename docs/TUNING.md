@@ -158,12 +158,20 @@ true noise σ, against the input and against the same signal generated without n
 - **Against the clean signal, f ≤ 0.25 is indistinguishable from storing the noise exactly**
   (within 0.2%). f = 0.5 costs under 1%, f = 1 costs 2.5–4%. Recommended range 0.1–0.5, default
   0.25 (indistinguishable from exact against the clean signal), to be tuned on your data.
-- **Off by default for block groups with times.** Timed data is often irregular, and irregular
-  samples don't oversample the signal: a swinging-door archive keeps only the points a straight line
-  can't predict, so it looks like white noise to the gate. With f = 0.25 the gate coarsened such
-  archives to up to 0.6 CompDev of error, against exact decimals with it off
-  ([sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html)). Pass f explicitly to use the
-  noise floor on timed data, e.g. a regular grid stored with its times.
+- **Irregular times: consecutive scans only, and only where most scans are kept** (ENCODER §5.2).
+  A swinging-door archive keeps only the points a straight line can't predict, so its sparse points
+  look like white noise to the gate: measured on them, σ came out 4× the sensor's. On the simulated
+  archives of [sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html), at each tag's own
+  CompDev:
+  - temperature, flow and pH keep under 40% of intervals one scan and get no floor: their decimals
+    decode exactly, as with the floor off;
+  - motor-current, whose CompDev (0.2 A) is far below its noise (1 A), keeps 80–84% and gets
+    most of the floor: 36% smaller, max error 0.125 A;
+  - as CompDev moves, the floor follows the share: motor-current at twice its CompDev (64–70%)
+    gets a step one level finer, at four times (45–51%) none.
+  - Consecutive scans in an archive read about 1.3× the sensor's σ (swinging door kept them
+    because they broke the line), so the step there is up to f·1.3σ.
+  - Regular times, or none, give the same steps as before.
 - **Deterministic fast signals are deliberately not gated.** The ~50 Hz sine and the chirp keep
   full precision and full cost (6.6 and 7.8 bits/sample at B = 16) at every f, because they are
   signal. Bit-shuffled zstd handles such signals only moderately well. Very clean

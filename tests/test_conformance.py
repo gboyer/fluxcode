@@ -225,7 +225,7 @@ def test_subnormal_ranges(make, lossless, params):
     assert (err <= (hi - lo) / (2 ** params.min_quantize_bits - 0.5)).all()
     _, param = flags_params(groups)
     assert (err[param == -1074] == 0).all()
-    if lossless and params.max_quantize_bits == 16 and params.noise_factor(False) == 0:  # noise may gate
+    if lossless and params.max_quantize_bits == 16 and params.noise_floor_sigma == 0:  # noise may gate
         assert (param == -1074).all()
         np.testing.assert_array_equal(y, x)
 

@@ -17,7 +17,7 @@ MAX_EFFORT: int = 9
 """The range of Params.effort."""
 
 DEFAULT_NOISE_FLOOR_SIGMA: float = 0.25
-"""The noise floor that noise_floor_sigma=None gives a block group without times."""
+"""The default noise_floor_sigma."""
 
 TimeUnit = Literal["s", "ms", "us", "ns"]
 """Resolution of integer timestamps: seconds, milliseconds, microseconds or nanoseconds."""
@@ -110,10 +110,10 @@ class Params:
         diff_orders: Non-empty subset of {0, 1, 2, 3} specifying predictor
             difference orders evaluated by the encoder.
         noise_floor_sigma: Noise floor multiplier f: steps on white-noise blocks coarsen up
-            to f * sigma; 0 turns it off. None (the default) is DEFAULT_NOISE_FLOOR_SIGMA for
-            a block group without times and off for a block group with times, which are often irregular (a
-            historian's swinging-door archive, events): their samples don't oversample the
-            signal, so they look like white noise without being noise.
+            to f * sigma; 0 turns it off. On a block with irregular times, sigma comes from
+            consecutive scans only and f is scaled by their share: none for a sparse archive
+            (a historian's swinging-door archive looks like white noise without being noise),
+            all of it once nearly every scan is kept.
         target_bits_per_sample: Soft per-block-group cap on compressed bits per sample
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
@@ -127,24 +127,10 @@ class Params:
     max_quantize_bits: int = 16
     # Any set or sequence of orders is accepted; __post_init__ stores it as a frozenset.
     diff_orders: AbstractSet[int] | Sequence[int] = frozenset({0, 1, 2, 3})
-    noise_floor_sigma: float | None = None
+    noise_floor_sigma: float = DEFAULT_NOISE_FLOOR_SIGMA
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
     effort: int = 4
-
-    def noise_factor(self, timed: bool) -> float:
-        """The noise floor multiplier for a block group with or without times (0.0 when off).
-
-        Args:
-            timed: Whether the block group stores timestamps.
-
-        Returns:
-            noise_floor_sigma, or for None DEFAULT_NOISE_FLOOR_SIGMA without times and 0.0
-            with them.
-        """
-        if self.noise_floor_sigma is None:
-            return 0.0 if timed else DEFAULT_NOISE_FLOOR_SIGMA
-        return float(self.noise_floor_sigma)
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -169,8 +155,8 @@ class Params:
         object.__setattr__(self, "diff_orders", frozenset(int(order) for order in frozen_orders))
         noise_factor = self.noise_floor_sigma
         # Validate noise floor multiplier
-        if noise_factor is not None and not (is_real(noise_factor) and noise_factor >= 0 and np.isfinite(noise_factor)):
-            raise ValueError(f"noise_floor_sigma must be None or a finite number >= 0, got {noise_factor!r}")
+        if not (is_real(noise_factor) and noise_factor >= 0 and np.isfinite(noise_factor)):
+            raise ValueError(f"noise_floor_sigma must be a finite number >= 0, got {noise_factor!r}")
         target_bits = self.target_bits_per_sample
         # Validate soft target bit rate
         if target_bits is not None and not (is_real(target_bits) and MIN_TARGET_BITS <= target_bits and np.isfinite(target_bits)):

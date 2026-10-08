@@ -28,7 +28,7 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 | `min_quantize_bits` | 1–max | 6 | the coarsest step (hard) |
 | `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders to choose from (§5.5) |
 | `decimal_detection` | on / off | on | try a decimal grid before the power-of-two grid (§5.3) |
-| `noise_floor_sigma` | default, off (0), or f > 0 | 0.25 without times, off with times | the noise floor (§5.2) |
+| `noise_floor_sigma` | off (0), or f > 0 | 0.25 | the noise floor (§5.2) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-block-group size cap (§5.7) |
 | `effort` | 1–9 | 4 | how the body is compressed (below) |
 
@@ -40,8 +40,8 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
   the step to at most f·σ for the whole block.
   - 0.1–0.5 recommended.
   - Turn it off per tag where high-frequency content matters (vibration, harmonics).
-  - Off by default with times: timed data is often irregular (a swinging-door archive, events),
-    and its samples look like white noise without being noise.
+  - With irregular times it adapts to the data (§5.2): a sparse swinging-door archive or events
+    get no noise floor, an archive that kept nearly every scan all of it.
 - **`target_bits_per_sample`:** a guard against unexpectedly high usage, not a way to squeeze
   signals whose shape you don't know.
 - **`effort`:** changes the size and the encode time, never the decoded values.
@@ -208,18 +208,57 @@ ps = 2^e                                 # the power-of-two step
 
 ### 5.2 Noise floor
 
-Runs when the noise floor f is on (`noise_floor_sigma` > 0, or the default on a block group without
-times: f = 0.25), rng > 0 and the block has at least 256 samples:
+Runs when the noise floor f is on (`noise_floor_sigma` > 0), rng > 0 and the block has at least
+256 samples:
 
 ```
 d     = x[i+2] − 2·x[i+1] + x[i]  for i = 0..n−3,  minus its mean   # second differences
-mad   = mean |d|; twice: mad = mean of |d| over |d| <= 4·sqrt(π/2)·mad  # clipped re-estimate
-sd    = sqrt(π/2)·mad;   σ = sd / sqrt(6)                             # white-noise level
-ρ     = lag-1 autocorrelation of d clipped to ±4·sd
+split d into W = max(1, n_d // 256) windows of n_d / W differences each
+per window: mad = mean |d|; twice: mad = mean of |d| over |d| <= 4·sqrt(π/2)·mad  # clipped
+            sd_w = sqrt(π/2)·mad;  clip the window's d to ±4·sd_w
+σ     = min_w sd_w / sqrt(6)                                        # the quietest window's noise
+ρ     = lag-1 autocorrelation of the clipped d
 if ρ < −0.6:   e = max(e, floor(log2(f·σ)))
 e = min(e, e_coarse)                                                # min_quantize_bits is hard
 ```
 
+On a block with irregular times (not all intervals equal), first:
+
+```
+Δ_i   = t[i+1] − t[i];   Δ_scan = the 1st percentile of the non-zero Δ_i     # the scan interval
+one_scan_i = 0.5·Δ_scan <= Δ_i <= 1.5·Δ_scan
+share = mean of one_scan_i;   f = f · clamp((share − 0.5) / 0.4, 0, 1)
+d_i   = 2·(a·x[i] + b·x[i+2] − x[i+1]) · sqrt(1.5 / (1 + a² + b²))       # a = Δ_{i+1}/(Δ_i + Δ_{i+1}), b = 1 − a
+        only where one_scan_i and one_scan_{i+1}; at least 254 of them, else no floor
+```
+
+- **Timed blocks: consecutive scans only.** A historian's swinging-door (SDT) archive keeps only
+  the points a straight line can't predict, so its sparse points look like white noise without
+  being noise: on the simulated archives of
+  [sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html) the plain estimate put σ at 4× the
+  sensor's. Where it kept consecutive scans, those are the sensor's raw samples.
+  - The scan interval is the 1st percentile, not the minimum (one burst or near-duplicate time
+    would drag that down) nor the median (a sparse archive's typical gap).
+  - ±50% only has to separate one scan from a skipped one (2×), and covers timestamps jittered by
+    20%.
+  - The difference is the middle sample's from the line through its neighbours, scaled to a
+    regular second difference's variance on white noise, so a slope cancels across unequal
+    intervals. On equal intervals it is the plain second difference.
+  - **The share of one-scan intervals scales f:** none at or below 50% (a sparse archive), all of
+    it from 90% (nearly every scan kept), linear in between. With f's power-of-two floor, 70%
+    gives a step one level finer. It applies to an explicit f as to the default, so the noise
+    floor is safe on data whose shape the caller doesn't know.
+  - A gap (a sensor outage) is one interval, so it barely moves the share. Events without a
+    cadence (exponential intervals) have few one-scan intervals and get no floor.
+  - Consecutive scans in a swinging-door archive are the ones that broke the line: σ measured on
+    them reads about 1.3× the sensor's on the simulated archives, so the step there is up to
+    f·1.3σ. The ramp keeps f small until most scans are kept.
+  - Regular blocks take the plain path: the same steps as without times.
+- **Windows.** Noise that varies within a block (a quiet stretch, then a noisy one) gives one
+  blended estimate over the whole block, which would coarsen the quiet part past f·σ of its own
+  noise. Each window of 256 or more differences gets its own estimate and the quietest one
+  counts. A block of under 512 differences is one window. The minimum of a few estimates is
+  biased low by a few percent, which only moves a step when f·σ sits just above a power of two.
 - **What the gate separates,** by ρ on second differences:
   - white measurement noise: −2/3;
   - a random walk (whose increments are signal): −1/2;
