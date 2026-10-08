@@ -17,10 +17,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
-import _fresh_numba_cache  # noqa: E402, F401  (before fluxcode: a cache keyed on its sources)
 import html
 from pathlib import Path
 
+import _fresh_numba_cache  # noqa: E402, F401  (before fluxcode: a cache keyed on its sources)
 import fluxcode
 import matplotlib
 
@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 import zstandard
-from fluxcode import Params, _noise
+from fluxcode import Params
 from fluxcode._encoder import NOISE_MIN_LEN
 
 from tslab.classic.gorilla import Gorilla
@@ -121,14 +121,15 @@ def flux_measure(scans, idx, ticks, params, encode=ENCODE):
 
 
 def one_scan_shares(ticks):
-    """The share of one-scan intervals (as the noise floor sees them) of each 1 h block of at
-    least NOISE_MIN_LEN points."""
+    """The share of one-scan (1 s) intervals of each 1 h block of at least NOISE_MIN_LEN points: the
+    noise floor needs CADENCE_SHARE of them (on these scan-aligned archives the median of 15 it
+    takes the scan from is one scan wherever that share is reached)."""
     hours = (ticks - DAY_START_NS) // (3600 * SECOND_NS)
     shares = []
     for hour in np.unique(hours):
         block = ticks[hours == hour]
         if block.size >= NOISE_MIN_LEN:
-            shares.append(1.0 if _noise.regular_times(block) else _noise.cadence(block, np.empty(block.size - 1), np.empty(_noise.CADENCE_COUNTS, np.int32))[0])
+            shares.append(np.mean(np.diff(block) == SECOND_NS))
     return shares
 
 
@@ -496,11 +497,11 @@ def noise_floor_section(results):
     h = [f"""<h2 id="noise-floor">Noise floor</h2>
 <p>fluxcode's noise floor (default 0.25σ) coarsens the step of blocks whose samples look like white measurement noise.
 An SDT archive's sparse points look like that without being noise: swinging door keeps exactly the points a straight
-line can't predict. So on a block with irregular times, fluxcode measures the noise on consecutive scans only (two
-intervals of one scan, the scan being the block's 1st-percentile interval), and scales the floor by the share of
-one-scan intervals: none at 50% or less, all of it from 90%. A sparse archive gets no floor and keeps its values; one
-that kept most scans is raw sensor data, and gets it. Below, each tag's archive at five CompDevs (ExcDev half of it),
-{LAYOUT}, all {DAYS} days, against the same with the noise floor off.</p>
+line can't predict. So a block with irregular times gets a floor only if it has a cadence: at least 90% of its
+intervals one scan (between half and 1.5 times the median of 15 evenly spaced intervals). Then the noise is measured on
+consecutive scans only. An archive that kept nearly every scan is raw sensor data, and gets the floor; any sparser
+one gets none and keeps its values. Below, each tag's archive at five CompDevs (ExcDev half of it), {LAYOUT}, all
+{DAYS} days, against the same with the noise floor off.</p>
 <table><tr><th class='l'>tag</th><th>CompDev</th><th>points per day</th><th>one-scan share</th><th>blocks floored</th>
 <th>kB per day</th><th>noise floor off</th><th>max error</th><th>exact</th></tr>"""]
     for tag in TAGS:
@@ -538,13 +539,16 @@ def findings(results):
     def per_point_of(tag, key="bytes", name="defaults"):
         return total(results[tag]["flux"][name], key) / results[tag]["n"]
 
-    own = {t: results[t]["dev_sweep"][1] for t in TAGS}  # each tag's own CompDev
-    floored_tags = [t for t in TAGS if total(own[t], "floored")]
-    sparse_archives = [t for t in TAGS if t not in floored_tags and results[t]["shares"][1]]
-    max_sparse_share = max((max(results[t]["shares"][1]) for t in sparse_archives), default=0)
-    floor_share = {t: span(results[t]["shares"][1], "{:.0%}") for t in floored_tags}
-    floor_saving = {t: total(own[t], "bytes") / total(own[t], "off_bytes") - 1 for t in floored_tags}
-    floor_err = {t: worst(own[t], "point_err") / TAG_INFO[t][2] for t in floored_tags}
+    own_floored = [t for t in TAGS if total(results[t]["dev_sweep"][1], "floored")]  # at each tag's own CompDev
+    own_shares = {t: results[t]["shares"][1] for t in TAGS if results[t]["shares"][1]}
+    densest = max(own_shares, key=lambda t: max(own_shares[t]))
+    swept = [(t, scale) for t in TAGS for scale in DEV_SCALES if total(results[t]["dev_sweep"][scale], "floored")]
+
+    def floor_effect(tag, scale):
+        rows = results[tag]["dev_sweep"][scale]
+        return (f"{tag} at {scale:g}× its CompDev ({span(results[tag]['shares'][scale], '{:.0%}')} one scan): "
+                f"{total(rows, 'bytes') / total(rows, 'off_bytes') - 1:+.0%} in size, max error "
+                f"{worst(rows, 'point_err') / TAG_INFO[tag][2]:.2g} of its own CompDevs")
     times = [per_point_of(t) - per_point_of(t, "value_bytes") for t in dense]
     source = [(total(results[t]["flux_src"], "bytes") - per_point_of(t) * results[t]["n"]) / results[t]["n"]
               for t in dense]
@@ -558,13 +562,12 @@ def findings(results):
                        for t in TAGS] for name, _ in READ_BACKS}
     return f"""<h2 id="findings">Findings</h2>
 <ul>
-<li><b>The noise floor adapts to the archive.</b> On the sparse archives of {", ".join(sparse_archives) or "no tag"}
-(at most {max_sparse_share:.0%} of intervals one scan) it is off, and the decimal tags decode exactly as they do with it
-off; swinging door's points look like white noise without being noise. Where the historian kept most scans
-({", ".join(f"{t}: {floor_share[t]}" for t in floored_tags) or "no tag"} of intervals one scan) they are raw sensor data,
-and the floor applies: {", ".join(f"{t} {floor_saving[t]:+.0%}" for t in floored_tags)} in size, at a max error of
-{", ".join(f"{floor_err[t]:.2g}" for t in floored_tags)} CompDevs: CompDev is set far below the noise there
-(<a href="#noise-floor">noise floor</a>). At the defaults the float32 tag is within
+<li><b>The noise floor applies only where the historian kept nearly every scan.</b> Swinging door's points look like
+white noise without being noise, so a block needs 90% of its intervals one scan. At each tag's own CompDev,
+{f"the floor applies to {', '.join(own_floored)}" if own_floored else "no archive gets it"}: the densest,
+{densest}, has {span(own_shares[densest], "{:.0%}")} of intervals one scan, and the decimal tags decode exactly as with
+the floor off. In the CompDev sweep it applies to {"; ".join(floor_effect(t, scale) for t, scale in swept) or "no tag"}:
+CompDev is set far below the noise there (<a href="#noise-floor">noise floor</a>). At the defaults the float32 tag is within
 {worst(f32, "point_err") / TAG_INFO["ph-float32"][2]:.1g} CompDevs at {per_point_of("ph-float32"):.2f} bytes per point.</li>
 <li><b>Store the archived points, not a resampled export.</b> Read back at the 1 s scan rate, the same archive takes
 {span(resample["interpolated"], "{:.1f}")}× the bytes interpolated and {span(resample["held"], "{:.1f}")}× held

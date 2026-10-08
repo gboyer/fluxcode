@@ -110,10 +110,11 @@ class Params:
         diff_orders: Non-empty subset of {0, 1, 2, 3} specifying predictor
             difference orders evaluated by the encoder.
         noise_floor_sigma: Noise floor multiplier f: steps on white-noise blocks coarsen up
-            to f * sigma; 0 turns it off. On a block with irregular times, sigma comes from
-            consecutive scans only and f is scaled by their share: none for a sparse archive
-            (a historian's swinging-door archive looks like white noise without being noise),
-            all of it once nearly every scan is kept.
+            to f * sigma; 0 turns it off. A block with irregular times gets it only if at
+            least 90% of its intervals are one scan (a jittered clock, or one with gaps), with
+            sigma from consecutive scans: none for a sparse archive (a historian's
+            swinging-door archive looks like white noise without being noise) or events.
+            Without times the samples are taken as evenly spaced.
         target_bits_per_sample: Soft per-block-group cap on compressed bits per sample
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before

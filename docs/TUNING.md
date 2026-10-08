@@ -158,20 +158,25 @@ true noise σ, against the input and against the same signal generated without n
 - **Against the clean signal, f ≤ 0.25 is indistinguishable from storing the noise exactly**
   (within 0.2%). f = 0.5 costs under 1%, f = 1 costs 2.5–4%. Recommended range 0.1–0.5, default
   0.25 (indistinguishable from exact against the clean signal), to be tuned on your data.
-- **Irregular times: consecutive scans only, and only where most scans are kept** (ENCODER §5.2).
-  A swinging-door archive keeps only the points a straight line can't predict, so its sparse points
-  look like white noise to the gate: measured on them, σ came out 4× the sensor's. On the simulated
-  archives of [sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html), at each tag's own
-  CompDev:
-  - temperature, flow and pH keep under 40% of intervals one scan and get no floor: their decimals
-    decode exactly, as with the floor off;
-  - motor-current, whose CompDev (0.2 A) is far below its noise (1 A), keeps 80–84% and gets
-    most of the floor: 36% smaller, max error 0.125 A;
-  - as CompDev moves, the floor follows the share: motor-current at twice its CompDev (64–70%)
-    gets a step one level finer, at four times (45–51%) none.
+- **Irregular times: only blocks with a cadence, on consecutive scans** (ENCODER §5.2). A block
+  gets the floor only if at least 90% of its intervals are one scan. A swinging-door archive keeps
+  only the points a straight line can't predict, so its sparse points look like white noise to the
+  gate: measured on them, σ came out 4× the sensor's. On the simulated archives of
+  [sdt.html](https://gboyer.github.io/fluxcode/report/sdt.html):
+  - at each tag's own CompDev no archive gets the floor: temperature, flow and pH keep under 40%
+    of intervals one scan and their decimals decode exactly, and motor-current keeps 80–84%;
+  - motor-current, whose noise (1 A) is far above its CompDev (0.2 A), gets it at half its CompDev
+    (89–92% one scan, 99 of 120 blocks): 33% smaller, and at a quarter (94–96%, every block): 41%
+    smaller, at a max error of 0.125 A.
+  - Archives that kept 80–90% of scans got part of the floor from an earlier rule (a ramp from
+    50% to 90%): 36% smaller for motor-current at its own CompDev. The all-or-nothing rule gives
+    that up so that unanticipated spreads of intervals get no floor rather than a wrong one.
   - Consecutive scans in an archive read about 1.3× the sensor's σ (swinging door kept them
     because they broke the line), so the step there is up to f·1.3σ.
-  - Regular times, or none, give the same steps as before.
+  - Jittered clocks keep the floor: up to ±20% uniform, sd 15% Gaussian or a 10% mean receive
+    delay on every block, with gaps or near-duplicate times on up to 10% of intervals.
+  - Regular times, or none, give the same steps as before. Without times the samples are taken as
+    evenly spaced: store an archive with its times, or with the noise floor off.
 - **Deterministic fast signals are deliberately not gated.** The ~50 Hz sine and the chirp keep
   full precision and full cost (6.6 and 7.8 bits/sample at B = 16) at every f, because they are
   signal. Bit-shuffled zstd handles such signals only moderately well. Very clean
