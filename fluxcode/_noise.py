@@ -352,9 +352,11 @@ def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]
         # Histogram of eighth-octave bins above the shortest interval (float bits are monotonic
         # in the value), in interleaved chains so that repeated bins don't stall on each other
         counts = np.zeros(NUM_COUNT_CHAINS * CADENCE_BINS, np.int32)
+        interval_bits = intervals.view(np.int64)
         for interval_idx in range(num_intervals):
+            intervals[interval_idx] = _interval(ticks_next, ticks_prev, interval_idx)
             # Zero intervals fall below the shortest and are not counted
-            bin_idx = (_to_bits(_interval(ticks_next, ticks_prev, interval_idx)) - shortest_bits) >> CADENCE_BIN_SHIFT
+            bin_idx = (interval_bits[interval_idx] - shortest_bits) >> CADENCE_BIN_SHIFT
             if bin_idx >= 0:
                 chain = interval_idx % NUM_COUNT_CHAINS
                 counts[chain * CADENCE_BINS + min(bin_idx, CADENCE_BINS - 1)] += 1
@@ -372,7 +374,7 @@ def cadence(ticks: np.ndarray, out_intervals: np.ndarray) -> tuple[float, float]
         num_one_scan = 0
         one_scan_total = 0.0
         for interval_idx in range(num_intervals):
-            length = _interval(ticks_next, ticks_prev, interval_idx)
+            length = intervals[interval_idx]
             is_one_scan = (lower <= length) & (length <= upper)
             kept = length if is_one_scan else 0.0
             intervals[interval_idx] = kept
