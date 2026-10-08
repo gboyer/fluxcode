@@ -22,6 +22,7 @@ from pathlib import Path
 
 os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 
+import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
 HERE = Path(__file__).resolve()

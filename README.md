@@ -309,8 +309,11 @@ Code layout (`fluxcode/`), from the public API down:
 
 The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
 defining each kernel, not the constants and helpers it inlines from other modules. After editing
-`fluxcode/_format.py` (for example), a benchmark can run stale compiled code: clear the cache with
-`find fluxcode -name '*.nb[ic]' -delete`. The tests always compile from source (`tests/conftest.py`).
+`fluxcode/_format.py` (for example), a script can run stale compiled code. The tests always compile
+from source (`tests/conftest.py`), and the benchmarks and report generators import
+`bench/_fresh_numba_cache.py` first, which keys numba's cache directory on a hash of the
+`fluxcode` sources (an edit anywhere starts a fresh cache). For your own scripts, import it too,
+or clear the cache with `find fluxcode -name '*.nb[ic]' -delete`.
 
 ## License
 

@@ -29,6 +29,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "tests"), str(REPO / "bench")]
 
+import _fresh_numba_cache  # noqa: E402, F401  (before fluxcode: a cache keyed on its sources)
 import fluxcode  # noqa: E402
 from _signals import CLOCKS, MINUTE, clock_minute, minute  # noqa: E402
 from fluxcode import _format, _group  # noqa: E402

@@ -13,6 +13,11 @@ with fluxcode instead of SDT. Sizes and errors only, no timings.
 """
 
 import dataclasses
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+import _fresh_numba_cache  # noqa: E402, F401  (before fluxcode: a cache keyed on its sources)
 import html
 from pathlib import Path
 

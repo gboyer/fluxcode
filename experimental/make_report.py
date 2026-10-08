@@ -17,6 +17,11 @@ Every table, legend and chart uses these. Every chart is checked for data at bui
 """
 
 import html
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+import _fresh_numba_cache  # noqa: E402, F401  (before fluxcode: a cache keyed on its sources)
 from collections import Counter
 from pathlib import Path
 

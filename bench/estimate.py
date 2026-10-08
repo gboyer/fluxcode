@@ -10,6 +10,7 @@ floor off), and what the target then delivers.
 import sys
 from pathlib import Path
 
+import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
