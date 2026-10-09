@@ -436,18 +436,63 @@ def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
     return pivots[CADENCE_SAMPLES // 2]
 
 
+ONE_SCAN_SUM_LIMIT: int = 1 << 46
+"""Scan intervals below which one_scan's sum of one-scan intervals fits int64: 65,535 of them
+below 1.5 x 2^46 add up within it. Integer sums vectorize; a float sum is a serial chain."""
+
+
 @njit(inline="always")
-def time_quantum(interval: float, time_error: float, boundary: int) -> int:
+def one_scan(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, int, int, int, bool]:
+    """A block's scan interval and its one-scan intervals.
+
+    The scan interval c is the median of CADENCE_SAMPLES evenly spaced intervals
+    (median_interval); an interval strictly between c/2 and 3c/2 is one scan. That separates
+    one scan from two (a skipped scan) and covers jittered times. A decrease in the times gives
+    a negative interval, never one scan.
+
+    Args:
+        ticks: 1D int64 array of the block's ticks (at least 2).
+        scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
+
+    Returns:
+        A tuple of (scan, lower, upper, num_one_scan, one_scan_total, regular): an interval d
+        is one scan if lower < d < upper; the number of one-scan intervals and their sum (which
+        wraps, so is meaningful only for a scan below ONE_SCAN_SUM_LIMIT); and whether every
+        interval is equal. All 0 (and not regular) if the scan isn't in (0, 2^62).
+    """
+    num_intervals = ticks.shape[0] - 1
+    scan = median_interval(ticks, scratch_pivots)
+    # Strictly between scan/2 and 3 scan/2 in integers: no rounding, and no overflow below 2^62
+    if not 0 < scan < (1 << 62):
+        return 0, 0, 0, 0, 0, False
+    lower, upper = scan // 2, scan + (scan + 1) // 2
+    # Offset slices from index 0 allow SIMD vectorization without negative index checks
+    ticks_next, ticks_prev = ticks[1:], ticks[:num_intervals]
+    first_interval = ticks_next[0] - ticks_prev[0]
+    num_one_scan = 0
+    one_scan_total = 0
+    differing_bits = 0
+    for interval_idx in range(num_intervals):
+        interval = ticks_next[interval_idx] - ticks_prev[interval_idx]
+        is_one_scan = (interval > lower) & (interval < upper)
+        num_one_scan += is_one_scan
+        one_scan_total += interval * is_one_scan
+        differing_bits |= interval ^ first_interval
+    return scan, lower, upper, num_one_scan, one_scan_total, differing_bits == 0
+
+
+@njit(inline="always")
+def time_quantum(interval: float, time_error: float) -> int:
     """The largest 1-2-5 x 10^k step of at most 2 time_error interval TIME_ERROR_SLACK ticks.
 
     Rounding to it moves a tick by at most half of it: time_error times the interval (2% more
     at most). 1-2-5 steps divide the round periods of clocks (any step up to a fifth of a
-    1-2-5 period divides it), so a jittered clock rounds back onto its own grid.
+    1-2-5 period divides it), so a jittered clock on a round phase rounds back onto its own
+    grid.
 
     Args:
         interval: The block's interval in ticks.
         time_error: The time error e (> 0).
-        boundary: If positive, the step must divide it (time blocks: their boundaries' GCD).
 
     Returns:
         The step, or 1 if no step above 1 fits.
@@ -458,7 +503,7 @@ def time_quantum(interval: float, time_error: float, boundary: int) -> int:
     while decade <= limit:
         for mantissa in (1, 2, 5):
             step = mantissa * decade
-            if step <= limit and (boundary <= 0 or boundary % step == 0):
+            if step <= limit:
                 best = step
         if decade > INT64_MAX // 50:
             break
@@ -471,73 +516,46 @@ def time_quanta(
     ticks: np.ndarray,
     sample_offsets: np.ndarray,
     time_error: float,
-    boundary: int,
     scratch_pivots: np.ndarray,
     out_quanta: np.ndarray,
+    out_on_grid: np.ndarray,
 ) -> None:
     """Chooses each block's time quantum: the step its ticks are rounded to.
 
-    The block's interval is its scan interval c (median_interval), or, if at least
-    CADENCE_SHARE of its intervals are one scan (strictly between c/2 and 3c/2), their mean:
-    stable to about 0.2% on a 5% jittered clock, where the median of 15 wanders by 2%.
+    The block's interval is its scan interval c (one_scan), or, if at least CADENCE_SHARE of its
+    intervals are one scan and c is below ONE_SCAN_SUM_LIMIT, their mean: stable to about 0.2%
+    on a 5% jittered clock, where the median of 15 wanders by 2%.
 
     Args:
         ticks: 1D int64 array of every sample's tick.
         sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
         time_error: The time error e (> 0).
-        boundary: If positive, every quantum divides it (see time_quantum).
         scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
-        out_quanta: Output 1D int64 array of the blocks' quanta: 0 where the ticks stay as
-            they are (fewer than 2 samples, a median interval of 0, no step above 1, or a
-            regular block already on its quantum's grid).
+        out_quanta: Output 1D int64 array of the blocks' quanta: 0 where there is none
+            (fewer than 2 samples, a median interval of 0, or no step above 1).
+        out_on_grid: Output 1D bool array: the block is regular and already on its quantum's
+            grid, so rounding would leave it as it is.
     """
     num_blocks = sample_offsets.shape[0] - 1
     for block_idx in range(num_blocks):
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         out_quanta[block_idx] = 0
+        out_on_grid[block_idx] = False
         if block_len < 2:
             continue
         times = ticks[first_sample:first_sample + block_len]
-        scan = median_interval(times, scratch_pivots)
-        if not 0 < scan < (1 << 62):
+        scan, _, _, num_one_scan, one_scan_total, regular = one_scan(times, scratch_pivots)
+        if scan == 0:
             continue
-        lower, upper = scan // 2, scan + (scan + 1) // 2
-        num_intervals = block_len - 1
-        # Offset slices from index 0 allow SIMD vectorization without negative index checks
-        times_next, times_prev = times[1:], times[:num_intervals]
-        num_one_scan = 0
         reference = float(scan)
-        if scan < (1 << 46):
-            # Integer sums vectorize (a float sum is a serial chain): 65,535 one-scan intervals
-            # below 1.5 x 2^46 add up within int64
-            one_scan_total = 0
-            first_interval = times_next[0] - times_prev[0]
-            differing_bits = 0
-            for interval_idx in range(num_intervals):
-                interval = times_next[interval_idx] - times_prev[interval_idx]
-                is_one_scan = (interval > lower) & (interval < upper)
-                num_one_scan += is_one_scan
-                one_scan_total += interval * is_one_scan
-                differing_bits |= interval ^ first_interval
-            if num_one_scan >= CADENCE_SHARE * num_intervals:
-                reference = one_scan_total / num_one_scan
-            if differing_bits == 0:
-                # A regular block already on the quantum's grid would round to itself: skip it
-                quantum = time_quantum(reference, time_error, boundary)
-                if times[0] % quantum == 0 and first_interval % quantum == 0:
-                    continue
-        else:
-            one_scan_float = 0.0
-            for interval_idx in range(num_intervals):
-                interval = times_next[interval_idx] - times_prev[interval_idx]
-                is_one_scan = (interval > lower) & (interval < upper)
-                num_one_scan += is_one_scan
-                one_scan_float += np.float64(interval * is_one_scan)
-            if num_one_scan >= CADENCE_SHARE * num_intervals:
-                reference = one_scan_float / num_one_scan
-        quantum = time_quantum(reference, time_error, boundary)
-        out_quanta[block_idx] = quantum if quantum > 1 else 0
+        if scan < ONE_SCAN_SUM_LIMIT and num_one_scan >= CADENCE_SHARE * (block_len - 1):
+            reference = one_scan_total / num_one_scan
+        quantum = time_quantum(reference, time_error)
+        if quantum <= 1:
+            continue
+        out_quanta[block_idx] = quantum
+        out_on_grid[block_idx] = regular and times[0] % quantum == 0 and (times[1] - times[0]) % quantum == 0
 
 
 @njit(inline="always")
@@ -556,10 +574,12 @@ def _round_tick(tick: np.int64, quantum: np.int64) -> np.int64:
     return down + quantum
 
 
-FLOAT_ROUNDING_SPAN: int = 1 << 51
-"""Largest span of a block's ticks (from its first, rounded) that rounds in float64: a float64
-quotient of offsets below 2^51 ticks is within a millionth of a tick of exact, so it rounds to
-the nearest multiple exactly (bar ties, either of which is within half a quantum)."""
+FLOAT_ROUNDING_SPAN: int = 1 << 48
+"""Largest span of a block's ticks (from its first, rounded) that rounds in float64. The float64
+quotient offset/quantum is off by at most about offset x 2^-52 quanta, so its rounded multiple is
+off by at most offset x 2^-52 ticks: under 1/16 tick below 2^48. A tick that isn't a tie is at
+least half a tick from the rounding point, so it rounds as exact arithmetic would; a tie may go
+either way, both within half a quantum."""
 
 
 @njit(nogil=True, cache=True)
@@ -570,14 +590,16 @@ def snap_times(
 
     Multiples count from tick 0 (the epoch), so series on the same clock share a grid; ties
     round up. A tick that can't be rounded without leaving the int64 range stays as it is.
-    Rounding with one quantum keeps ticks in order; where neighbouring blocks' quanta differ,
-    a tick rounded below the previous block's last is raised to it, which is still within the
-    larger quantum's half of its own time.
+    Rounding with one quantum keeps ticks in order. Where neighbouring blocks' quanta differ
+    and the earlier block's last ticks round past the later one's first, the block with the
+    larger quantum gives way: the earlier block's trailing ticks are lowered to it, or the
+    later block's leading ticks raised to the earlier one's last. Either way a tick stays
+    within half its own block's quantum of where it was.
 
     Args:
         ticks: 1D int64 array of every sample's tick (no NaT).
         sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
-        quanta: 1D int64 array of the blocks' quanta (0 keeps a block's ticks).
+        quanta: 1D int64 array of the blocks' quanta (0 or 1 keeps a block's ticks).
         out_ticks: Output 1D int64 array of every sample's rounded tick.
 
     Returns:
@@ -593,7 +615,6 @@ def snap_times(
         for sample_idx in range(1, num_samples):
             if ticks[sample_idx] < ticks[sample_idx - 1]:
                 return DECREASING, sample_idx
-    previous = np.int64(INT64_MIN)
     num_blocks = sample_offsets.shape[0] - 1
     for block_idx in range(num_blocks):
         first_sample = sample_offsets[block_idx]
@@ -605,28 +626,51 @@ def snap_times(
         quantum = np.int64(quanta[block_idx])
         if quantum <= 1:
             out[:] = times
+            continue
+        first, last = times[0], times[block_len - 1]
+        base = _round_tick(first, quantum)
+        if (np.int64(INT64_MIN) + quantum <= first and last <= np.int64(INT64_MAX) - quantum
+                and last - base < FLOAT_ROUNDING_SPAN):
+            # Offsets from the rounded first tick, in float64: exact here, and it vectorizes
+            # (NEON has no 64-bit integer vector multiply; the rounded offset is an integer
+            # below 2^48, so its float64 product is exact). Every offset is at least
+            # -quantum/2, so truncating offset/quantum + 0.5 floors.
+            quantum_float = np.float64(quantum)
+            inverse = 1.0 / quantum_float
+            for sample_idx in range(block_len):
+                multiple = np.trunc(np.float64(times[sample_idx] - base) * inverse + 0.5)
+                out[sample_idx] = base + np.int64(multiple * quantum_float)
         else:
-            first, last = times[0], times[block_len - 1]
-            base = _round_tick(first, quantum)
-            if (np.int64(INT64_MIN) + quantum <= first and last <= np.int64(INT64_MAX) - quantum
-                    and last - base < FLOAT_ROUNDING_SPAN):
-                # Offsets from the rounded first tick, in float64: exact here, and it vectorizes
-                # (NEON has no 64-bit integer vector multiply; the rounded offset is an integer
-                # below 2^51, so its float64 product is exact). Every offset is at least
-                # -quantum/2, so truncating offset/quantum + 0.5 floors.
-                quantum_float = np.float64(quantum)
-                inverse = 1.0 / quantum_float
-                for sample_idx in range(block_len):
-                    multiple = np.trunc(np.float64(times[sample_idx] - base) * inverse + 0.5)
-                    out[sample_idx] = base + np.int64(multiple * quantum_float)
-            else:
-                for sample_idx in range(block_len):
-                    out[sample_idx] = _round_tick(times[sample_idx], quantum)
-        # Rounding keeps a block in order: only its leading ticks can fall below the previous
-        # block's last
-        sample_idx = 0
-        while sample_idx < block_len and out[sample_idx] < previous:
-            out[sample_idx] = previous
+            for sample_idx in range(block_len):
+                out[sample_idx] = _round_tick(times[sample_idx], quantum)
+    # Rounding keeps each block in order: only ticks next to a boundary can cross it
+    previous_block = -1
+    for block_idx in range(num_blocks):
+        first_sample = sample_offsets[block_idx]
+        if sample_offsets[block_idx + 1] == first_sample:
+            continue
+        if previous_block >= 0:
+            previous_first = sample_offsets[previous_block]
+            sample_idx = first_sample - 1
+            # The earlier block rounded up past this one with the larger quantum: lower its
+            # trailing ticks
+            if out_ticks[sample_idx] > out_ticks[first_sample] and max(quanta[previous_block], 1) > max(
+                quanta[block_idx], 1
+            ):
+                while sample_idx >= previous_first and out_ticks[sample_idx] > out_ticks[first_sample]:
+                    out_ticks[sample_idx] = out_ticks[first_sample]
+                    sample_idx -= 1
+        previous_block = block_idx
+    # Then raise any block's leading ticks still below the previous block's last: this block
+    # rounded down past it (or, on blocks of a few ticks, the lowering went too far back)
+    previous = np.int64(INT64_MIN)
+    for block_idx in range(num_blocks):
+        first_sample = sample_offsets[block_idx]
+        end = sample_offsets[block_idx + 1]
+        sample_idx = first_sample
+        while sample_idx < end and out_ticks[sample_idx] < previous:
+            out_ticks[sample_idx] = previous
             sample_idx += 1
-        previous = out[block_len - 1]
+        if end > first_sample:
+            previous = out_ticks[end - 1]
     return OK, 0

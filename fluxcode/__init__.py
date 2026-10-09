@@ -18,7 +18,8 @@ Typical usage:
     # Decode the block group (lossy: within the error bound, exact for decimal data):
     x_rec, _, block_sizes = fluxcode.decode_group(group)
 
-    # With timestamps (datetime64, or integer ticks with time_unit), stored exactly:
+    # With timestamps (datetime64, or integer ticks with time_unit), stored exactly (or within
+    # Params(time_error=...) of an interval):
     block group, *_ = fluxcode.encode_group(x, times=t)
     x_rec, t_rec, _ = fluxcode.decode_group(group)
 

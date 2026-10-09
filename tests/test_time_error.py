@@ -40,19 +40,17 @@ def test_invalid_time_error_is_rejected(time_error):
         Params(time_error=time_error)
 
 
-@pytest.mark.parametrize("interval,time_error,boundary,quantum", [
-    (MS, 0.05, 0, 100_000),
-    (MS, 0.1, 0, 200_000),
-    (999_990, 0.1, 0, 200_000),  # the slack: a slightly fast clock keeps the round step
-    (16_666_667, 0.02, 0, 500_000),
-    (16_666_667, 0.02, 1_500_000, 500_000),
-    (16_666_667, 0.02, 300_000, 100_000),  # must divide the boundaries
-    (MS, 0.5, 0, MS),
-    (10, 0.01, 0, 1),
-    (1e18, 0.5, 0, 1_000_000_000_000_000_000),
+@pytest.mark.parametrize("interval,time_error,quantum", [
+    (MS, 0.05, 100_000),
+    (MS, 0.1, 200_000),
+    (999_990, 0.1, 200_000),  # the slack: a slightly fast clock keeps the round step
+    (16_666_667, 0.02, 500_000),
+    (MS, 0.5, MS),
+    (10, 0.01, 1),
+    (1e18, 0.5, 1_000_000_000_000_000_000),
 ])
-def test_time_quantum(interval, time_error, boundary, quantum):
-    assert _time.time_quantum(float(interval), time_error, boundary) == quantum
+def test_time_quantum(interval, time_error, quantum):
+    assert _time.time_quantum(float(interval), time_error) == quantum
 
 
 @pytest.mark.parametrize("jitter", [0.005, 0.02, 0.1])
@@ -116,8 +114,8 @@ def test_blocks_with_different_quanta_stay_in_order():
     group = fluxcode.encode_blocks(np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")).group
     decoded = fluxcode.decode_group(group).times.view(np.int64)
     assert (np.diff(decoded) >= 0).all()
-    assert decoded[20] == decoded[19] == START + 19 * MS + 100_000  # raised to the previous block's last
-    assert np.abs(decoded - ticks).max() <= 50_000  # the larger quantum's half
+    assert decoded[19] == decoded[20] == START + 19 * MS + 60_000  # the slower block's last lowered
+    assert np.abs(decoded - ticks)[:20].max() <= 50_000 and np.abs(decoded - ticks)[20:].max() <= 5000
 
 
 def test_bulk_encode_keeps_block_groups_in_order():
@@ -194,14 +192,6 @@ def test_time_blocks_round_onto_the_next_block():
     assert ((decoded_ticks[early] - START) % SECOND == 0).all()
 
 
-def test_time_block_quanta_divide_the_boundaries():
-    start = START + 30_000  # 30 us past a round second: quanta must divide 10 us
-    ticks = at_or_after(jittered(5000, jitter=0.01, seed=5, start=start), start)
-    group = encode_seconds(np.zeros(ticks.size), ticks, start=start).group
-    _, decoded = check_time_blocks(group, start)
-    assert (decoded % 10_000 == 0).all() and np.abs(decoded - ticks).max() <= 5000
-
-
 def test_update_time_blocks_replaces_a_sample_at_its_rounded_time():
     ticks = at_or_after(jittered(5000, jitter=0.01, seed=6))
     values = np.arange(ticks.size, dtype=np.float64)
@@ -241,3 +231,53 @@ def test_update_time_blocks_keeps_stored_times():
     assert indices.tolist() == [1]
     np.testing.assert_array_equal(np.setdiff1d(after, stored), [START + SECOND + 500 * MS + 500_000])  # on 100 us
     assert np.isin(stored, after).all()
+
+
+def test_bulk_encode_rejects_a_decrease_between_block_groups_it_doesnt_round():
+    """The order check between block groups runs whether or not any block is rounded."""
+    ticks = START + np.arange(40, dtype=np.int64) * SECOND  # on a 1 s grid: nothing to round
+    ticks[20:] -= 21 * SECOND  # the second block group starts before the first ends
+    with pytest.raises(ValueError, match="non-decreasing"):
+        fluxcode.encode(np.zeros(40), Params(time_error=0.05), block_len=20, blocks_per_group=1,
+                        times=ticks.view("datetime64[ns]"))
+
+
+def slow_then_fast():
+    """A 1 Hz block on its grid but for its last scan, 4 ms early (it rounds up to the second),
+    then a 1 kHz block starting 1 ms after that scan."""
+    slow = START + np.arange(20, dtype=np.int64) * SECOND
+    slow[-1] -= 4 * MS
+    fast = slow[-1] + MS + np.arange(1000, dtype=np.int64) * MS
+    return np.concatenate([slow, fast]), np.array([20, 1000])
+
+
+def test_the_block_with_the_larger_quantum_gives_way():
+    """Each time stays within half its own block's quantum: the slow block's last scan is lowered
+    to the fast block's first time, rather than the fast block's first scans raised to it."""
+    ticks, sizes = slow_then_fast()
+    params = Params(noise_floor_sigma=0, time_error=0.05)
+    group = fluxcode.encode_blocks(np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")).group
+    decoded = fluxcode.decode_group(group).times.view(np.int64)
+    assert (np.diff(decoded) >= 0).all()
+    np.testing.assert_array_equal(decoded[20:], ticks[20:])  # the fast block is on its 100 us grid already
+    assert decoded[19] == ticks[20] and abs(decoded[19] - ticks[19]) <= 50 * MS
+
+
+def test_update_resends_a_fast_block_after_a_regular_stored_one():
+    ticks, sizes = slow_then_fast()
+    params = Params(noise_floor_sigma=0, time_error=0.05)
+    values = np.arange(ticks.size, dtype=np.float64)
+    group = fluxcode.encode_blocks(values, sizes, params, times=ticks.view("datetime64[ns]")).group
+    for block, part in [(1, np.s_[20:]), (0, np.s_[:20])]:
+        updated = fluxcode.update(group, {block: values[part]}, params, times={block: ticks[part].view("datetime64[ns]")})
+        assert updated.group == group
+
+
+def test_time_blocks_round_whatever_the_start():
+    start = START + 123_457  # not a multiple of any quantum
+    ticks = at_or_after(jittered(5000, jitter=0.01, seed=9, start=START), start)
+    group = encode_seconds(np.zeros(ticks.size), ticks, start=start).group
+    _, decoded = check_time_blocks(group, start)
+    # On the 100 us grid, but for a time that would round below the start: raised to it
+    assert decoded[0] == start and (decoded[1:] % 100_000 == 0).all()
+    assert np.abs(decoded - ticks).max() <= 51_000

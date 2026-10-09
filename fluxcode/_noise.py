@@ -23,7 +23,7 @@ from numba import njit
 
 from . import _extreme_magnitudes as xm
 from ._format import CODE_FINITE
-from ._time import CADENCE_SHARE, median_interval
+from ._time import CADENCE_SHARE, one_scan
 
 MAD_TO_SD: float = math.sqrt(math.pi / 2)
 """Ratio of standard deviation to mean absolute deviation for a normal distribution."""
@@ -277,18 +277,10 @@ def cadence(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, fl
         share is the share of one-scan intervals. If it is below CADENCE_SHARE, the window is
         (0, 0), which holds no interval.
     """
-    num_intervals = ticks.shape[0] - 1
-    # Offset slices from index 0 allow SIMD vectorization without negative index checks
-    ticks_next, ticks_prev = ticks[1:], ticks[:num_intervals]
-    scan = median_interval(ticks, scratch_pivots)
-    # Strictly between scan/2 and 3 scan/2 in integers: no rounding, and no overflow below 2^62
-    if not 0 < scan < (1 << 62):
+    _, lower, upper, num_one_scan, _, _ = one_scan(ticks, scratch_pivots)
+    if upper == 0:
         return 0, 0, 0.0
-    lower, upper = scan // 2, scan + (scan + 1) // 2
-    num_one_scan = 0
-    for interval_idx in range(num_intervals):
-        interval = ticks_next[interval_idx] - ticks_prev[interval_idx]
-        num_one_scan += (interval > lower) & (interval < upper)
+    num_intervals = ticks.shape[0] - 1
     share = num_one_scan / num_intervals
     if share < CADENCE_SHARE:
         return 0, 0, share

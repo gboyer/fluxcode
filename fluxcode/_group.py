@@ -144,32 +144,36 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     return time_rows
 
 
-def snap_ticks(
-    ticks: np.ndarray, block_sizes: np.ndarray, time_error: float, boundary: int = 0
-) -> tuple[np.ndarray, np.ndarray]:
+def snap_ticks(ticks: np.ndarray, block_sizes: np.ndarray, time_error: float) -> tuple[np.ndarray, np.ndarray]:
     """Rounds each block's ticks to its time quantum (_time.time_quanta, _time.snap_times).
+
+    The order of the ticks is checked only if a block is rounded (rounding could hide a
+    decrease); otherwise they are returned as given, for encode_times to check.
 
     Args:
         ticks: 1D int64 array of every sample's tick.
         block_sizes: 1D int64 array of block sizes adding up to the tick count.
         time_error: The time error (Params.time_error); 0 keeps the ticks.
-        boundary: If positive, every quantum divides it (time blocks' boundaries).
 
     Returns:
         A tuple of (ticks, quanta): the rounded ticks (a new array if any block was rounded,
         else the given one) and each block's quantum (0 where its ticks were kept).
 
     Raises:
-        ValueError: If the times contain NaT or decrease anywhere.
+        ValueError: If the times contain NaT, or decrease anywhere when a block is rounded.
     """
-    quanta = np.zeros(block_sizes.shape[0], np.int64)
+    num_blocks = block_sizes.shape[0]
+    quanta = np.zeros(num_blocks, np.int64)
     if time_error <= 0 or not ticks.shape[0]:
         return ticks, quanta
     # NaT is int64 minimum: past the first time it is a decrease
     if ticks[0] == _time.INT64_MIN:
         raise ValueError("times contain NaT")
     offsets = sample_offsets(block_sizes)
-    _time.time_quanta(ticks, offsets, float(time_error), boundary, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta)
+    on_grid = np.zeros(num_blocks, np.bool_)
+    _time.time_quanta(ticks, offsets, float(time_error), np.empty(_time.CADENCE_SAMPLES, np.int64), quanta, on_grid)
+    # A regular block already on its grid would round to itself
+    quanta[on_grid] = 0
     if not quanta.any():
         return ticks, quanta
     snapped = np.empty_like(ticks)
@@ -237,16 +241,15 @@ def encode_series(
     samples_per_group = blocks_per_group * block_len
     num_blocks = -(-min(samples_per_group, samples.shape[0]) // block_len)
     _args.check_group_counts(num_blocks, min(samples_per_group, samples.shape[0]))
-    if ticks is not None and params.time_error > 0:
-        # Round the whole series at once (its blocks are the block groups' blocks), so that
-        # block groups stay in order where neighbouring blocks' quanta differ
-        ticks, _ = snap_ticks(ticks, _args.fixed_sizes(ticks.shape[0], block_len), params.time_error)
-    elif ticks is not None:
+    if ticks is not None:
         # Verify chronological order across block group boundaries
         group_starts = np.arange(samples_per_group, ticks.shape[0], samples_per_group)
         decreases = group_starts[ticks[group_starts] < ticks[group_starts - 1]]
         if decreases.shape[0]:
             raise _args.decrease_error(ticks, int(decreases[0]))
+        # Round the whole series at once (its blocks are the block groups' blocks), so that
+        # block groups stay in order where neighbouring blocks' quanta differ
+        ticks, _ = snap_ticks(ticks, _args.fixed_sizes(ticks.shape[0], block_len), params.time_error)
     parts = []
     # Encode each chunk as an independent block group
     for idx in range(0, samples.shape[0], samples_per_group):
@@ -475,10 +478,28 @@ def read_rows(parsed: ParsedGroup, time_rows: _format.TimeRows | None = None) ->
     return rows
 
 
-def _last_ticks(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np.ndarray) -> np.ndarray:
-    """Returns the last ticks of the given non-empty blocks of a parsed block group.
+def _block_ticks(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np.ndarray) -> np.ndarray:
+    """Expands the ticks of the given blocks of a parsed block group.
 
     Only those blocks' time residuals are unpacked and expanded.
+
+    Args:
+        parsed: The block group.
+        time_rows: Its time rows: the columns at least (the blocks' residuals are unpacked
+            into them).
+        block_ids: 1D int64 array of the blocks.
+
+    Returns:
+        1D int64 array of every sample of the block group, written at the given blocks' samples.
+    """
+    _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
+    out_ticks = np.empty(parsed.header.num_samples, np.int64)
+    expand_times(parsed.block_flags, parsed.layout.sample_offsets, time_rows, block_ids, out_ticks)
+    return out_ticks
+
+
+def _last_ticks(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np.ndarray) -> np.ndarray:
+    """Returns the last ticks of the given non-empty blocks of a parsed block group.
 
     Args:
         parsed: The block group.
@@ -491,11 +512,8 @@ def _last_ticks(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np.
     """
     if not block_ids.shape[0]:
         return np.zeros(0, np.int64)
-    offsets = parsed.layout.sample_offsets
-    _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
-    out_ticks = np.empty(parsed.header.num_samples, np.int64)
-    expand_times(parsed.block_flags, offsets, time_rows, block_ids, out_ticks)
-    return out_ticks[offsets[block_ids + 1] - 1]
+    out_ticks = _block_ticks(parsed, time_rows, block_ids)
+    return out_ticks[parsed.layout.sample_offsets[block_ids + 1] - 1]
 
 
 def _check_spliced_order(
@@ -533,26 +551,31 @@ def _check_spliced_order(
 
 
 def _stored_quantum(parsed: ParsedGroup, time_rows: _format.TimeRows, block_idx: int, time_error: float) -> int:
-    """The quantum the time error gives a stored block's (rounded) times.
+    """The quantum the time error gives a stored block's times.
+
+    A regular block's interval is in its columns (step times reference); an irregular one's
+    times are expanded.
 
     Args:
         parsed: The block group.
-        time_rows: Its time rows (the columns at least; the block's residuals are unpacked).
+        time_rows: Its time rows (the columns at least; an irregular block's residuals are
+            unpacked).
         block_idx: A non-empty stored block.
         time_error: The time error (> 0).
 
     Returns:
-        The quantum, 0 if its times wouldn't be rounded.
+        The quantum, 0 if there is none.
     """
-    block_ids = np.array([block_idx], np.int64)
+    if not parsed.block_flags[block_idx] & _format.BLOCK_FLAG_IRREGULAR_TIME:
+        interval = float(time_rows.steps[block_idx]) * float(time_rows.refs[block_idx])
+        quantum = _time.time_quantum(interval, time_error)
+        return quantum if quantum > 1 else 0
     offsets = parsed.layout.sample_offsets
-    _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
-    out_ticks = np.empty(parsed.header.num_samples, np.int64)
-    expand_times(parsed.block_flags, offsets, time_rows, block_ids, out_ticks)
-    ticks = out_ticks[offsets[block_idx]:offsets[block_idx + 1]]
+    ticks = _block_ticks(parsed, time_rows, np.array([block_idx], np.int64))[offsets[block_idx]:offsets[block_idx + 1]]
     quanta = np.zeros(1, np.int64)
     _time.time_quanta(
-        ticks, np.array([0, ticks.shape[0]], np.int64), time_error, 0, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta
+        ticks, np.array([0, ticks.shape[0]], np.int64), time_error, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
+        np.zeros(1, np.bool_),
     )
     return int(quanta[0])
 

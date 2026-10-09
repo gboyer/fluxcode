@@ -59,7 +59,8 @@ def encode_group(
     nothing else. Non-finite values (NaN, +inf, -inf) are encoded exactly (canonical quiet
     NaN).
 
-    With times, the block group also stores the samples' timestamps exactly: naive (no time
+    With times, the block group also stores the samples' timestamps exactly, or with
+    params.time_error rounded to within that share of their block's interval: naive (no time
     zone; UTC is recommended, since local time can repeat or skip), non-decreasing, and
     without NaT. Equal consecutive timestamps are allowed.
 
@@ -312,7 +313,9 @@ def update_time_blocks(
 
     First every existing sample timed within delete_ranges is discarded. Then the new
     samples are added: an existing sample with the same timestamp as a new one is replaced,
-    and new samples sharing a timestamp are all kept (in their order). So with only samples
+    and new samples sharing a timestamp are all kept (in their order). With params.time_error,
+    new times are rounded first (stored ones keep theirs), and "the same timestamp" is the
+    rounded one. So with only samples
     it is an upsert, with only delete_ranges a deletion, and with both a range replacement
     (new samples may be timed anywhere; those in a deleted range are kept, as they're added
     after the deletion). start_time and block_duration must be the ones the block group was

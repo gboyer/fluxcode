@@ -176,23 +176,30 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
   - **Rounding:** to the nearest multiple of q counted from the epoch (ties up), so series on the
     same clock share a grid. A tick moves by at most q/2 ≤ 1.02·e·c. The ticks' order is checked
     before rounding, which could hide a decrease.
+    - **Phase:** a clock ticking on round times (multiples of q from the epoch, as historians
+      scan) rounds back onto its own grid. One at another phase rounds each tick to whichever of
+      the two grid points around it is nearer, so it stays irregular and saves less: 1 kHz with 10 µs jitter at e = 0.05: 43 B a minute on a round phase, 1.7 KB 25 µs off it, 13.6 KB 50 µs off (exact: 120 KB).
   - **Order across blocks:** rounding with one quantum keeps ticks in order. Where neighbouring
-    blocks' quanta differ, a block's leading ticks that round below the previous block's last are
-    raised to it: still within the larger quantum's half of their own times. That takes
-    near-duplicate times across a block boundary where the rate changes.
-  - **Time blocks** (`encode_time_blocks`): quanta also divide the block boundaries (the GCD of
-    `start_time` and `block_duration` in ticks), and times are assigned to blocks after rounding.
-    A time just before a boundary rounds onto it and belongs to the next block; every block's
-    times stay in its range.
-  - **`update`** rounds the new blocks as encoding does. One that rounds past a stored neighbour
-    (the stored times were rounded too) is clamped to it, raised to the previous block's last time
-    or lowered to the next one's start, if its given time is within half the larger of the two
-    blocks' quanta of it, as re-sending a block's original times is. Larger overlaps are rejected
-    as decreases.
+    blocks' quanta differ and the earlier block's last ticks round past the later one's first,
+    the block with the larger quantum gives way: the earlier block's trailing ticks are lowered
+    to the later one's first, or the later block's leading ticks raised to the earlier one's last.
+    Every tick stays within half its own block's quantum. That takes near-duplicate times across
+    a block boundary where the rate changes.
+  - **Time blocks** (`encode_time_blocks`): times are rounded with the quanta of the blocks they
+    fall in, then assigned to blocks. A time that rounds across a boundary belongs to the block it
+    lands in; one that would round below `start_time` is raised to it (between its time and its
+    rounded one). Every block's times stay in its range.
+  - **`update`** rounds the new blocks as encoding does. A stored block can't give way, so a new
+    block that rounds past a stored neighbour (the stored times were rounded too) is clamped to
+    it, raised to the previous block's last time or lowered to the next one's start, if its given
+    time is within half the larger of the two blocks' quanta of it. A stored regular block's
+    quantum comes from its columns (step × reference), an irregular one's from its expanded
+    times. Re-sending a block's original times gives the original block group; larger overlaps
+    are rejected as decreases.
   - **`update_time_blocks`** rounds each new sample with the quantum of the block it falls in,
     from that block's stored and new samples, then assigns and merges: "the same timestamp" is the
-    rounded one. Stored samples keep their times. A new sample that rounds onto the next block's
-    start joins that block (decoded if stored).
+    rounded one. Stored samples keep their times. A new sample that rounds into the next block
+    joins it (decoded if stored).
   - **Without a cadence** (events, sparse archives) c is the median of 15 intervals, a rough
     estimate: on Poisson events times moved by up to 1.45·e of the overall median interval.
   - Measured sizes and times are in [TUNING.md](TUNING.md#time-error).
@@ -584,8 +591,8 @@ N their total samples.
     left empty at the end, and no time error is set (with one, the new samples' quanta come from
     the blocks before rounding).
 - **Times** decode exactly at `time_error` 0. With e > 0 (§4):
-  - each moves by at most half its block's quantum, ≤ 1.02·e times the block's interval (or half
-    the larger quantum, where a block was raised to or clamped to its neighbour);
+  - each moves by at most half its block's quantum, ≤ 1.02·e times the block's interval (in an
+    `update`, a block clamped to a stored neighbour with a larger quantum: half of that one);
   - the series stays non-decreasing, and every time block's times stay in its range;
   - `update_time_blocks` never moves a stored time.
 
@@ -665,6 +672,21 @@ N their total samples.
     - re-encoding decoded values one level coarser keeps their mean (ties to even);
     - 200 straddling updates that move the block's min and max keep the kept samples' error under
       one step of the coarsest grid used, unchanged while the step is.
+11. **Time error** (§4, `tests/test_time_error.py`):
+    - every time within 1.02·e of its block's interval, at several jitters, time errors and
+      periods (1 ms, 16.667 ms), and before 1970;
+    - a clock with jitter of a fifth of e stores every block as regular; a regular grid's block
+      group is byte-identical to the one at e = 0;
+    - a decrease that rounding would hide, and NaT, are rejected, in one block group and between
+      the block groups of `encode`;
+    - at a rate change the block with the larger quantum gives way, in `encode_blocks` and across
+      the block groups of `encode`;
+    - re-sending either block of a rate change with `update` gives the same block group; an
+      overlap beyond the clamp is rejected;
+    - time blocks: times rounding across a boundary land in the next block, every block's times
+      stay in its range, and a `start_time` off the grid still rounds;
+    - `update_time_blocks` replaces a sample at its rounded time, moves a new sample onto a stored
+      next block (keeping its other samples), and keeps stored times.
 
 ## References
 

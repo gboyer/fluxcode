@@ -128,9 +128,10 @@ class Params:
         time_error: Largest change to a timestamp, as a share of its block's interval (0 to
             MAX_TIME_ERROR); 0 (the default) stores times exactly. Each block's times are
             rounded to a 1-2-5 step of at most 2 * time_error intervals (2% more at most), from
-            the epoch: a jittered clock rounds back onto its own grid once time_error is about
-            5 times its jitter's standard deviation over its interval, and then stores as
-            regular times. Smaller time errors still save most of the jitter's cost.
+            the epoch: a jittered clock whose ticks fall on round times rounds back onto its
+            own grid once time_error is about 5 times its jitter's standard deviation over its
+            interval, and then stores as regular times. Smaller time errors, or a clock at
+            another phase, still save most of the jitter's cost.
     """
 
     min_quantize_bits: int = 6

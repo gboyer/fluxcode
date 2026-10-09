@@ -9,12 +9,11 @@ The start time and duration aren't stored: the caller keeps them (typically the 
 part of the block group's storage key) and passes the same ones to update_time_blocks. Times, the
 start, the duration and delete ranges are all converted to int64 ticks in the times' unit.
 
-With a time error (Params.time_error), times are rounded before they are assigned to blocks:
-each block's quantum divides the block boundaries, so a time rounds at most onto the next
-boundary, and then belongs to the next block. Every block's times stay within its range.
+With a time error (Params.time_error), times are rounded with the quanta of the blocks they
+fall in, then assigned to blocks: a time that rounds across a boundary belongs to the block it
+lands in, and one that would round below the start time is raised to it (still within half a
+quantum of where it was). Every block's times stay within its range.
 """
-
-import math
 
 import numpy as np
 import numpy.typing as npt
@@ -97,9 +96,11 @@ def encode_time_blocks(
     duration = _args.to_ticks(block_duration, unit_code, "block_duration", duration=True)
     sizes = chunk(ticks, start, duration)
     if params.time_error > 0:
-        # Quanta from the blocks the times are in; a time rounded onto a boundary moves on
-        ticks, _ = _group.snap_ticks(ticks, sizes, params.time_error, math.gcd(start, duration))
-        sizes = chunk(ticks, start, duration)
+        # Quanta from the blocks the times are in; a time rounded across a boundary moves on
+        snapped, _ = _group.snap_ticks(ticks, sizes, params.time_error)
+        if snapped is not ticks:
+            ticks = np.maximum(snapped, start, out=snapped)
+            sizes = chunk(ticks, start, duration)
     return _group.encode(series_arr, sizes, params, ticks, unit_code, snap=False)
 
 
@@ -249,11 +250,9 @@ def update_time_blocks(
     time_rows = _group.read_time_rows(parsed, decoded)
     gathered = _gather(parsed, decoded, time_rows)
     if params.time_error > 0 and ticks.shape[0]:
-        ticks = _snap_new_ticks(
-            gathered, ticks, series_samples, new_ids, ranges, params.time_error, math.gcd(start, duration)
-        )
+        ticks = np.maximum(_snap_new_ticks(gathered, ticks, series_samples, new_ids, ranges, params.time_error), start)
         new_ids = block_ids(ticks, start, duration)
-        # A time rounded onto a boundary belongs to the next block: decode it too, if stored
+        # A time rounded across a boundary belongs to the next block: decode it too, if stored
         extra = np.setdiff1d(np.flatnonzero(_new_blocks_mask(new_ids, num_old_blocks, covered)), decoded)
         if extra.shape[0]:
             decoded = np.union1d(decoded, extra)
@@ -342,7 +341,6 @@ def _snap_new_ticks(
     new_ids: np.ndarray,
     ranges: np.ndarray,
     time_error: float,
-    boundary: int,
 ) -> np.ndarray:
     """Rounds new samples' ticks to the quanta of the blocks they fall in.
 
@@ -356,7 +354,6 @@ def _snap_new_ticks(
         new_ids: 1D int64 array of the new samples' blocks.
         ranges: 2D int64 array of the deletion ranges.
         time_error: The time error (> 0).
-        boundary: The block boundaries' GCD: every quantum divides it.
 
     Returns:
         1D int64 array of the new samples' rounded ticks (in order).
@@ -372,8 +369,8 @@ def _snap_new_ticks(
     )
     quanta = np.zeros(num_blocks, np.int64)
     _time.time_quanta(
-        merged_ticks[:num_merged], _group.sample_offsets(sizes), time_error, boundary,
-        np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
+        merged_ticks[:num_merged], _group.sample_offsets(sizes), time_error, np.empty(_time.CADENCE_SAMPLES, np.int64),
+        quanta, np.zeros(num_blocks, np.bool_),
     )
     snapped = np.empty_like(ticks)
     new_sizes = np.bincount(new_ids, minlength=num_blocks).astype(np.int64)

@@ -282,10 +282,15 @@ and decode time they add, irregular blocks of 60, and the largest move in median
 | Poisson events, mean 1 ms, ns | 164,661 B, +404/+187 µs, 60 | 57,146 B, +381/+143 µs, 60, 0.036 | 47,544 B, +371/+138 µs, 60, 0.072 | 39,711 B, +332/+129 µs, 60, 0.145 |
 | deadband logging, ms grid | 55,498 B, +567/+226 µs, 60 | unchanged, +613 µs | unchanged, +610 µs | 51,259 B, +575/+223 µs, 60, 0.100 |
 
-- **About 5× the jitter makes a clock regular.** A time stays on its grid point while its jitter
-  is under q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which
-  costs a few KB a minute instead of 63 B (2% jitter at e = 0.05: 2,530 B instead of 127 KB).
-  Below that the size falls smoothly with e: there's no threshold where it jumps.
+- **About 5× the jitter makes a clock regular**, if it ticks on round times (multiples of q from
+  the epoch; every clock above does). A time stays on its grid point while its jitter is under
+  q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which costs a few
+  KB a minute instead of 63 B (2% jitter at e = 0.05: 2,530 B instead of 127 KB). Below that the
+  size falls smoothly with e: there's no threshold where it jumps.
+- **A clock at another phase** (free-running acquisition) rounds each tick to whichever of two
+  grid points is nearer and stays irregular: 1 kHz with 10 µs jitter at e = 0.05: 43 B a minute on a round phase, 1.7 KB 25 µs off it, 13.6 KB 50 µs off (exact: 120 KB). At e = 0.1
+  (q = 200 µs) the 25 and 50 µs phases come back to 43 B and 123 µs costs 2.5 KB. Anchoring each
+  block's grid to the clock's own phase would remove this; it isn't done yet.
 - **Regular clocks are faster to encode and decode once rounded**: the regular time path, the
   plain noise estimate, the regular decode loop.
 - **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; finding

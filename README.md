@@ -43,8 +43,10 @@ type:
 * **Time error**: Optionally lets each timestamp move by up to a share of its block's interval
   (`time_error`, off by default): times round to a 1-2-5 step (1, 2, 5, 10, ... ticks) from the
   epoch, so a jittered clock lands back on its own grid and stores as a regular one. A time error
-  of about 5× the jitter (σ over the interval) does that: 0.05 for 1% jitter, 120 KB → 63 bytes a
-  minute at 1 kHz. Smaller ones still save most of the jitter's cost.
+  of about 5× the jitter (σ over the interval) does that for a clock ticking on round times
+  (multiples of the step from the epoch, as historians scan): 0.05 for 1% jitter, 120 KB → 63
+  bytes a minute at 1 kHz. Smaller ones, or a free-running clock at another phase, still save most
+  of the jitter's cost (13.6 KB at that clock's worst phase).
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -90,7 +92,8 @@ print(f"{8 * len(group) / x.size:.2f} bits/sample, max error {np.abs(y - x).max(
 price = np.round(20 + np.cumsum(rng.normal(0, 0.05, 5_000)), 2)
 assert np.array_equal(fluxcode.decode_group(fluxcode.encode_group(price).group).values, price)
 
-# Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly.
+# Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly
+# (or, with Params(time_error=...), within that share of an interval).
 stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(1, "ms")
 stamps[12_345:] += np.timedelta64(2, "s")                  # a gap: only its block pays for it
 values, times, _ = fluxcode.decode_group(fluxcode.encode_group(x, times=stamps).group)
@@ -123,7 +126,7 @@ which set the step to 0.25σ.
   8-byte header and a zstd frame) of blocks of `block_len` samples (1 to 65,535; the last block
   holds the rest). It also returns per-block min, max and mean (over finite samples) as summary
   statistics: they come free with encoding, and decoding doesn't need them. `times` optionally
-  stores one timestamp per sample, exactly: `datetime64[s|ms|us|ns]`, or integer ticks with
+  stores one timestamp per sample, exactly (or within `time_error`): `datetime64[s|ms|us|ns]`, or integer ticks with
   `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and non-decreasing; equal
   timestamps are fine. A regular grid costs about 65 bytes per block group.
 - `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one block group of blocks
@@ -225,8 +228,8 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   decode identically; without a size target, the updated block group is byte-identical to encoding
   the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
 - **Timestamps decode exactly** by default. With `time_error` = e, each moves by at most e times
-  its block's interval (2% more at most), they stay in order, and `update_time_blocks` never moves
-  a stored one.
+  its block's interval (2% more at most; an `update` clamped to a stored neighbour, by the
+  neighbour's), they stay in order, and `update_time_blocks` never moves a stored one.
 
 ## How it works
 
