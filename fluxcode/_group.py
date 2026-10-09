@@ -583,12 +583,7 @@ def _stored_quantum(parsed: ParsedGroup, time_rows: _format.TimeRows, block_idx:
         return quantum if quantum > 1 else 0
     offsets = parsed.layout.sample_offsets
     ticks = _block_ticks(parsed, time_rows, np.array([block_idx], np.int64))[offsets[block_idx]:offsets[block_idx + 1]]
-    quanta = np.zeros(1, np.int64)
-    _time.time_quanta(
-        ticks, np.array([0, ticks.shape[0]], np.int64), time_error, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
-        np.zeros(1, np.bool_),
-    )
-    return int(quanta[0])
+    return int(_time.block_quantum(ticks, time_error, np.empty(_time.CADENCE_SAMPLES, np.int64)))
 
 
 class StoredNeighbours(NamedTuple):
