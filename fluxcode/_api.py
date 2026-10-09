@@ -321,9 +321,10 @@ def update_time_blocks(
     included, is rounded again. So no time moves further than time_error intervals in all,
     however often its block is updated. A block without stored samples follows the block before
     it (a regular block's lattice if the times fit). Upsert and rounding are at odds: a new
-    sample that rounds onto a stored one replaces it, whether it re-sends that sample or is a distinct event a fraction of a step
-    away; with both, delete the range the new samples replace. So with only samples it is an
-    upsert, with only delete_ranges a deletion, and with both a range replacement
+    sample that rounds onto a stored one replaces it, whether it re-sends that sample or is a
+    distinct event a fraction of a step away; with both, delete the range the new samples
+    replace. So with only samples it is an upsert, with only delete_ranges a deletion, and with
+    both a range replacement
     (new samples may be timed anywhere; those in a deleted range are kept, as they're added
     after the deletion). start_time and block_duration must be the ones the block group was
     encoded with: they aren't stored in it, so they can't be checked.
