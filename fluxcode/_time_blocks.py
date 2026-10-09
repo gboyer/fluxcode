@@ -344,8 +344,8 @@ def _snap_new_ticks(
 ) -> np.ndarray:
     """Rounds new samples' ticks to the quanta of the blocks they fall in.
 
-    A block's quantum comes from its samples after the update as given (stored and new,
-    before rounding), so a few new samples round to the grid of the stored ones.
+    A block's quantum and phase come from its samples after the update as given (stored and
+    new, before rounding), so a few new samples round to the grid of the stored ones.
 
     Args:
         gathered: (ticks, values, blocks) of the decoded stored blocks (_gather).
@@ -368,12 +368,18 @@ def _snap_new_ticks(
         old_ticks, old_values, old_blocks, ticks, values, new_ids, ranges, changed, merged_ticks, merged_values, sizes
     )
     quanta = np.zeros(num_blocks, np.int64)
+    merged_offsets = _group.sample_offsets(sizes)
     _time.time_quanta(
-        merged_ticks[:num_merged], _group.sample_offsets(sizes), time_error, np.empty(_time.CADENCE_SAMPLES, np.int64),
-        quanta, np.zeros(num_blocks, np.bool_),
+        merged_ticks[:num_merged], merged_offsets, time_error, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
+        np.zeros(num_blocks, np.bool_),
+    )
+    # Phases from the stored and new samples too: stored ones on a grid hold it
+    phases = np.zeros(num_blocks, np.int64)
+    _time.time_phases(
+        merged_ticks[:num_merged], merged_offsets, quanta, np.full(num_blocks, _time.INT64_MIN, np.int64), phases
     )
     snapped = np.empty_like(ticks)
     new_sizes = np.bincount(new_ids, minlength=num_blocks).astype(np.int64)
-    status, _ = _time.snap_times(ticks, _group.sample_offsets(new_sizes), quanta, snapped)
+    status, _ = _time.snap_times(ticks, _group.sample_offsets(new_sizes), quanta, phases, snapped)
     assert status == _time.OK
     return snapped

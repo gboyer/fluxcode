@@ -114,8 +114,9 @@ def test_blocks_with_different_quanta_stay_in_order():
     group = fluxcode.encode_blocks(np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")).group
     decoded = fluxcode.decode_group(group).times.view(np.int64)
     assert (np.diff(decoded) >= 0).all()
-    assert decoded[19] == decoded[20] == START + 19 * MS + 60_000  # the slower block's last lowered
-    assert np.abs(decoded - ticks)[:20].max() <= 50_000 and np.abs(decoded - ticks)[20:].max() <= 5000
+    # The fast block is regular, so it keeps its times; the slower block's last is lowered to it
+    np.testing.assert_array_equal(decoded[20:], ticks[20:])
+    assert decoded[19] == ticks[20] and np.abs(decoded - ticks)[:20].max() <= 50_000
 
 
 def test_bulk_encode_keeps_block_groups_in_order():
@@ -281,3 +282,54 @@ def test_time_blocks_round_whatever_the_start():
     # On the 100 us grid, but for a time that would round below the start: raised to it
     assert decoded[0] == start and (decoded[1:] % 100_000 == 0).all()
     assert np.abs(decoded - ticks).max() <= 51_000
+
+
+@pytest.mark.parametrize("phase", [50_000, 25_000, 123_000])
+def test_a_free_running_clock_rounds_onto_its_own_phase(phase):
+    """Off the epoch's grid, at a candidate phase (50 us of q = 100 us) or between two (25 us):
+    every block regular, all at one phase, so the block starts stay evenly spaced."""
+    ticks = jittered(60_000, jitter=0.01, start=START + phase)
+    group, decoded = encoded_ticks(np.zeros(ticks.size), ticks, 0.05)
+    assert irregular_blocks(group) <= 1
+    assert len(set((decoded % 100_000).tolist())) == 1
+    assert np.abs(decoded - ticks).max() <= 51_000
+    exact, _ = encoded_ticks(np.zeros(ticks.size), ticks, 0)
+    assert len(group) < len(exact) / 100
+
+
+def test_a_drifting_jittered_clock_follows_its_phase():
+    rng = np.random.default_rng(12)
+    index = np.arange(60_000, dtype=np.int64)
+    ticks = np.maximum.accumulate(START + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64)
+                                  + np.round(rng.normal(0, 10_000, index.size)).astype(np.int64))
+    group, decoded = encoded_ticks(np.zeros(ticks.size), ticks, 0.05)
+    assert np.abs(decoded - ticks).max() <= 51_000 and irregular_blocks(group) <= 5
+
+
+def test_a_regular_block_keeps_its_times():
+    ticks = START + 12_345 + np.arange(5000, dtype=np.int64) * MS  # regular, off every grid
+    assert encoded_ticks(np.zeros(ticks.size), ticks, 0.1)[0] == encoded_ticks(np.zeros(ticks.size), ticks, 0)[0]
+
+
+def test_update_keeps_the_stored_phase():
+    """Re-sending a block of a clock between two candidate phases gives the block group back."""
+    ticks = jittered(10_000, jitter=0.01, seed=13, start=START + 25_000)
+    params = Params(noise_floor_sigma=0, time_error=0.05)
+    values = np.arange(ticks.size, dtype=np.float64)
+    group = fluxcode.encode_group(values, params, times=ticks.view("datetime64[ns]")).group
+    for block in (1, 5, 9):
+        part = np.s_[block * 1000:(block + 1) * 1000]
+        updated = fluxcode.update(group, {block: values[part]}, params, times={block: ticks[part].view("datetime64[ns]")})
+        assert updated.group == group
+
+
+def test_update_time_blocks_rounds_onto_the_stored_phase():
+    ticks = at_or_after(jittered(3000, jitter=0.01, seed=14, start=START + 50_000))
+    group = encode_seconds(np.zeros(ticks.size), ticks).group
+    _, stored = check_time_blocks(group)
+    phase = int(stored[1] % 100_000)
+    new = np.array([START + SECOND + 500 * MS + 512_345])  # between two scans of block 1
+    updated, *_ = update_seconds(group, np.ones(1), new)
+    _, after = check_time_blocks(updated)
+    added = np.setdiff1d(after, stored)
+    assert added.size == 1 and added[0] % 100_000 == phase and abs(added[0] - new[0]) <= 50_000

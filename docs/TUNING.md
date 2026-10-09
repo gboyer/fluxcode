@@ -268,36 +268,47 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
 ### Time error
 
 `time_error` = e lets each time move by up to e times its block's interval (ENCODER §4): times
-round to a 1-2-5 step of at most 2e intervals, from the epoch. Measured with
+round to a grid of a 1-2-5 step of at most 2e intervals, at the clock's own phase. Measured with
 `bench/time_axis.py --time-error 0.02,0.05,0.1` (one-minute block groups of 60 × 1000, Apple M3, AC
 power, single thread, Python without the Rust extension, 2026-10-08): bytes the times add, encode
 and decode time they add, irregular blocks of 60, and the largest move in median intervals.
 
 | timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
 |---|---|---|---|---|
-| jitter σ=10 µs, ns | 120,712 B, +465/+179 µs, 60 | 14,678 B, +367/+139 µs, 60, 0.010 | 63 B, +76/+4 µs, 0, 0.046 | 63 B, +75/+11 µs, 0, 0.046 |
-| jitter σ=10 µs, µs | 45,903 B, +369/+130 µs, 60 | 14,625 B, +362/+109 µs, 60, 0.010 | 63 B, +67/+13 µs, 0, 0.042 | 63 B, +66/+13 µs, 0, 0.042 |
-| noisy clock (σ=20 µs, µs) | 53,422 B, +366/+132 µs, 60 | 21,143 B, +379/+139 µs, 60, 0.010 | 3,010 B, +375/+98 µs, 60, 0.050 | 65 B, +65/+11 µs, 0, 0.088 |
-| drifting clock (0.99998 ms) | 339 B, +233/+96 µs, 60 | 272 B, +272/+67 µs, 38, 0.010 | 594 B, +118/+33 µs, 8, 0.050 | 543 B, +90/+27 µs, 4, 0.100 |
-| Poisson events, mean 1 ms, ns | 164,661 B, +404/+187 µs, 60 | 57,146 B, +381/+143 µs, 60, 0.036 | 47,544 B, +371/+138 µs, 60, 0.072 | 39,711 B, +332/+129 µs, 60, 0.145 |
-| deadband logging, ms grid | 55,498 B, +567/+226 µs, 60 | unchanged, +613 µs | unchanged, +610 µs | 51,259 B, +575/+223 µs, 60, 0.100 |
+| jitter σ=10 µs, ns | 120,712 B, +439/+174 µs, 60 | 14,726 B, +370/+121 µs, 60, 0.010 | 63 B, +75/+12 µs, 0, 0.046 | 63 B, +74/+11 µs, 0, 0.046 |
+| jitter σ=10 µs, µs | 45,903 B, +356/+125 µs, 60 | 14,702 B, +361/+122 µs, 60, 0.010 | 63 B, +75/+13 µs, 0, 0.042 | 63 B, +73/+11 µs, 0, 0.042 |
+| the same (ns), free-running: 25 µs off the epoch's grid | 120,653 B, +456/+156 µs, 60 | 14,712 B, +375/+121 µs, 60, 0.010 | 66 B, +89/+13 µs, 0, 0.045 | 103 B, +83/+14 µs, 0, 0.049 |
+| 50 µs off | 120,653 B, +456/+159 µs, 60 | 14,667 B, +373/+116 µs, 60, 0.010 | 66 B, +83/+12 µs, 0, 0.044 | 66 B, +82/+12 µs, 0, 0.054 |
+| 123 µs off | 120,653 B, +454/+158 µs, 60 | 14,702 B, +374/+129 µs, 60, 0.010 | 74 B, +82/+15 µs, 0, 0.047 | 74 B, +81/+12 µs, 0, 0.047 |
+| noisy clock (σ=20 µs, µs) | 53,422 B, +370/+133 µs, 60 | 21,124 B, +397/+105 µs, 60, 0.010 | 3,010 B, +397/+99 µs, 60, 0.050 | 65 B, +49/+1 µs, 0, 0.088 |
+| drifting clock (0.99998 ms) | 339 B, +228/+91 µs, 60 | 88 B, +73/+11 µs, 0, 0.007 | 101 B, +72/+13 µs, 0, 0.015 | 86 B, +72/+11 µs, 0, 0.021 |
+| drift and jitter σ=10 µs, 37 µs off | 120,648 B, +446/+144 µs, 60 | 14,661 B, +366/+120 µs, 60, 0.010 | 258 B, +89/+6 µs, 2, 0.049 | 108 B, +75/+1 µs, 0, 0.057 |
+| Poisson events, mean 1 ms, ns | 164,661 B, +397/+158 µs, 60 | 57,152 B, +407/+144 µs, 60, 0.036 | 47,567 B, +381/+145 µs, 60, 0.072 | 39,778 B, +360/+129 µs, 60, 0.145 |
+| deadband logging, ms grid | 55,498 B, +586/+225 µs, 60 | unchanged, +648 µs | unchanged, +646 µs | 51,270 B, +603/+216 µs, 60, 0.100 |
 
-- **About 5× the jitter makes a clock regular**, if it ticks on round times (multiples of q from
-  the epoch; every clock above does). A time stays on its grid point while its jitter is under
-  q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which costs a few
-  KB a minute instead of 63 B (2% jitter at e = 0.05: 2,530 B instead of 127 KB). Below that the
-  size falls smoothly with e: there's no threshold where it jumps.
-- **A clock at another phase** (free-running acquisition) rounds each tick to whichever of two
-  grid points is nearer and stays irregular: 1 kHz with 10 µs jitter at e = 0.05: 43 B a minute on a round phase, 1.7 KB 25 µs off it, 13.6 KB 50 µs off (exact: 120 KB). At e = 0.1
-  (q = 200 µs) the 25 and 50 µs phases come back to 43 B and 123 µs costs 2.5 KB. Anchoring each
-  block's grid to the clock's own phase would remove this; it isn't done yet.
+- **About 5× the jitter makes a clock regular.** A time stays on its grid point while its jitter
+  is under q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which
+  costs a few KB a minute instead of 63 B (2% jitter at e = 0.05: 2,530 B instead of 127 KB, the
+  noisy clock's 3,010 B). Below that the size falls smoothly with e: there's no threshold where
+  it jumps.
+- **Free-running clocks** round onto their own phase, a multiple of q/10: 66–108 B against 63 on
+  round times (a phase between two candidates is up to q/20 off, which takes a little of the
+  jitter margin; the 103 B at 25 µs and e = 0.1 is zstd compressing the sine's values differently
+  around other start bytes: on zero values both phases cost 47 B). With the grid fixed at the
+  epoch's phase they cost 1.2–13.6 KB at e = 0.05 and up to 2.5 KB at e = 0.1.
+- **A drifting clock** follows its phase block by block: 86–101 B against 339 exact (on the
+  epoch's grid it was 543–594 B at e ≥ 0.05, as times crossed to the next grid point).
+- **Choosing the phase** costs about 0.25 µs per block (64 sampled ticks, ten candidates, integer
+  sums so it vectorizes and doesn't depend on the machine). Per-block phases without the
+  hysteresis flipped between two candidates around a clock's phase (135 B instead of 47 on zero
+  values); one phase for the whole block group couldn't follow drift (4.6 KB for drift and
+  jitter); hysteresis relative to the score (5%) was too tight, since 64 noisy ticks put one
+  candidate up to 24% ahead of an equally good neighbour.
 - **Regular clocks are faster to encode and decode once rounded**: the regular time path, the
   plain noise estimate, the regular decode loop.
 - **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; finding
-  each block's quantum and rounding costs +22 µs per block group on a regular grid (a regular
-  block on its grid isn't rounded) and +50–65 µs on irregular ones.
-- **A drifting clock** stays regular for a few hundred samples at a time, then a time crosses to
-  the next grid point: a few hundred bytes, as exact.
+  each block's quantum costs +22 µs per block group on a regular grid (regular blocks aren't
+  rounded), and choosing phases and rounding +55–80 µs on irregular ones.
 - **Events and deadband logging** have no grid to land on. Events get 1.5–4× smaller (more in ns than in µs ticks); times on a
   1 ms grid already have a coarse GCD and gain only from e = 0.1. Without a cadence the interval
   is the median of 15, a rough estimate: times moved by up to 1.45 e of the overall median.

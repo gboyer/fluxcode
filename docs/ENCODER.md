@@ -171,14 +171,28 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
       block.
     - Any 1-2-5 step up to a fifth of a 1-2-5 period divides it: for e ≤ 0.1 a jittered clock
       rounds back onto its own grid.
-    - A block isn't rounded if q would be 1, it has fewer than 2 samples or a median interval of
-      0, or it is regular and already on q's grid.
-  - **Rounding:** to the nearest multiple of q counted from the epoch (ties up), so series on the
-    same clock share a grid. A tick moves by at most q/2 ≤ 1.02·e·c. The ticks' order is checked
-    before rounding, which could hide a decrease.
-    - **Phase:** a clock ticking on round times (multiples of q from the epoch, as historians
-      scan) rounds back onto its own grid. One at another phase rounds each tick to whichever of
-      the two grid points around it is nearer, so it stays irregular and saves less: 1 kHz with 10 µs jitter at e = 0.05: 43 B a minute on a round phase, 1.7 KB 25 µs off it, 13.6 KB 50 µs off (exact: 120 KB).
+    - A block isn't rounded if q would be 1, or it has fewer than 2 samples or a median
+      interval of 0, or it is regular: a regular block stores as cheaply as it can already, so
+      rounding could only move its times.
+  - **Phase** φ: the block's grid is φ + k·q from the epoch, with φ one of ten multiples of q/10
+    (q/10 is a 1-2-5 step too, so the times stay on a round grid, and series on the same clock
+    pick the same one).
+    - Each candidate is scored by the summed distance of 64 evenly spaced ticks to its grid. A
+      clock on round times (as historians scan) scores best at 0; a free-running one at its own
+      phase.
+    - A block keeps the previous block's phase (that of its last rounded tick, if a candidate;
+      the epoch's grid, 0, for the first) unless another scores better by more than half a
+      step per tick. Two candidates either side of a clock's phase both round it cleanly, and
+      noise would otherwise pick between them block by block, leaving the block starts uneven;
+      on a noisy clock it would pick a phase a step off. A drifting clock moves on by a step
+      once it has drifted about half of one.
+    - In `update` a new block after a stored one starts from the stored block's last tick; in
+      `update_time_blocks` the phase comes from the block's stored and new samples, so new
+      samples round onto the stored grid.
+    - Quanta of 2^56 ticks or more (over two years in ns) keep the epoch's grid: the integer
+      scores would overflow.
+  - **Rounding:** to the nearest point of the block's grid (ties up). A tick moves by at most
+    q/2 ≤ 1.02·e·c. The ticks' order is checked before rounding, which could hide a decrease.
   - **Order across blocks:** rounding with one quantum keeps ticks in order. Where neighbouring
     blocks' quanta differ and the earlier block's last ticks round past the later one's first,
     the block with the larger quantum gives way: the earlier block's trailing ticks are lowered
@@ -196,10 +210,14 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
     quantum comes from its columns (step × reference), an irregular one's from its expanded
     times. Re-sending a block's original times gives the original block group; larger overlaps
     are rejected as decreases.
-  - **`update_time_blocks`** rounds each new sample with the quantum of the block it falls in,
-    from that block's stored and new samples, then assigns and merges: "the same timestamp" is the
-    rounded one. Stored samples keep their times. A new sample that rounds into the next block
-    joins it (decoded if stored).
+  - **`update_time_blocks`** rounds each new sample with the quantum and phase of the block it
+    falls in, from that block's stored and new samples, then assigns and merges: "the same
+    timestamp" is the rounded one. Stored samples keep their times. A new sample that rounds into
+    the next block joins it (decoded if stored).
+    - Upsert and rounding are at odds: a new sample that rounds onto a stored one replaces it,
+      whether it re-sends that sample or is a distinct event a fraction of a quantum away (Poisson
+      events appended in small batches lose about 0.1% at e = 0.05). A caller using both should
+      delete the range the new samples replace.
   - **Without a cadence** (events, sparse archives) c is the median of 15 intervals, a rough
     estimate: on Poisson events times moved by up to 1.45·e of the overall median interval.
   - Measured sizes and times are in [TUNING.md](TUNING.md#time-error).
@@ -686,7 +704,11 @@ N their total samples.
     - time blocks: times rounding across a boundary land in the next block, every block's times
       stay in its range, and a `start_time` off the grid still rounds;
     - `update_time_blocks` replaces a sample at its rounded time, moves a new sample onto a stored
-      next block (keeping its other samples), and keeps stored times.
+      next block (keeping its other samples), and keeps stored times;
+    - free-running clocks (at a candidate phase, between two, and drifting) round onto their own
+      phase, every block at one phase; a regular block off every grid keeps its times; `update`
+      keeps a stored block's phase (re-sending gives the block group back) and
+      `update_time_blocks` rounds new samples onto it.
 
 ## References
 

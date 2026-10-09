@@ -41,12 +41,11 @@ type:
   (or with the noise floor off). It only applies to blocks of at least 256 samples, so a fixed
   `block_len` under 256 never gets one.
 * **Time error**: Optionally lets each timestamp move by up to a share of its block's interval
-  (`time_error`, off by default): times round to a 1-2-5 step (1, 2, 5, 10, ... ticks) from the
-  epoch, so a jittered clock lands back on its own grid and stores as a regular one. A time error
-  of about 5× the jitter (σ over the interval) does that for a clock ticking on round times
-  (multiples of the step from the epoch, as historians scan): 0.05 for 1% jitter, 120 KB → 63
-  bytes a minute at 1 kHz. Smaller ones, or a free-running clock at another phase, still save most
-  of the jitter's cost (13.6 KB at that clock's worst phase).
+  (`time_error`, off by default): times round to a grid of a 1-2-5 step (1, 2, 5, 10, ... ticks)
+  at the clock's own phase, so a jittered clock lands back on its own grid and stores as a regular
+  one. A time error of about 5× the jitter (σ over the interval) does that: 0.05 for 1% jitter,
+  120 KB → 63–74 bytes a minute at 1 kHz, on round times or free-running. Smaller ones still save
+  most of the jitter's cost.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -159,7 +158,9 @@ which set the step to 0.25σ.
   `delete_ranges` (`[start, end)` pairs: one pair, a list, or a `(k, 2)` array), then adds the new
   samples, which may be timed anywhere: an existing sample with the same timestamp as a new one is
   replaced, and new samples sharing a timestamp are all kept. Samples only is an upsert, ranges
-  only a deletion, both a range replacement. Blocks that no range meets and no new sample falls in
+  only a deletion, both a range replacement. With `time_error`, "the same timestamp" is the
+  rounded one: upsert and rounding are at odds (a distinct event a fraction of a step from a
+  stored one replaces it too), so with both, delete the range the new samples replace. Blocks that no range meets and no new sample falls in
   are carried over without being decoded; the others are decoded, merged and re-encoded: their kept samples are grid points, so they come back bit for
   bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
   used however often it is updated.

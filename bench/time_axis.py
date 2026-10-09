@@ -102,7 +102,15 @@ def compare_time_errors(time_errors, reps):
     errors = [0.0, *time_errors]
     print("| timestamps | " + " | ".join(f"e = {e:g}" for e in errors) + " |")
     print("|---|" + "---|" * len(errors))
-    for name, ticks in patterns(np.random.default_rng(0)):
+    rng = np.random.default_rng(1)
+    index = np.arange(MINUTE)
+    jitter = np.round(rng.normal(0, 10_000, MINUTE)).astype(np.int64)
+    free_running = [  # off the epoch's grid: the clock's own phase
+        (f"jitter σ=10 µs, ns, phase {phase // 1000} µs", np.maximum.accumulate(START_NS + phase + index * MS + jitter))
+        for phase in (25_000, 50_000, 123_000)
+    ] + [("drift + jitter σ=10 µs, phase 37 µs",
+          np.maximum.accumulate(START_NS + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter))]
+    for name, ticks in patterns(np.random.default_rng(0)) + free_running:
         times = ticks.view("datetime64[ns]")
         median = float(np.median(np.diff(ticks)))
         cells = []
@@ -111,7 +119,7 @@ def compare_time_errors(time_errors, reps):
             group = fluxcode.encode_group(values, params, times=times).group
             decoded = fluxcode.decode_group(group)
             moved = np.abs(decoded.times.view(np.int64) - ticks).max() / median
-            encode_time = best(lambda params=params: fluxcode.encode_group(values, params, times=times), reps) - plain_encode
+            encode_time = best(lambda params=params, times=times: fluxcode.encode_group(values, params, times=times), reps) - plain_encode
             decode_time = best(lambda group=group: fluxcode.decode_group(group), reps) - plain_decode
             parsed = _group.decompress(group)
             irregular = int(np.count_nonzero(parsed.block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME))
