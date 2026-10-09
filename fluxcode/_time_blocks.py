@@ -368,11 +368,16 @@ def _snap_new_ticks(
         old_ticks, old_values, old_blocks, ticks, values, new_ids, ranges, changed, merged_ticks, merged_values, sizes
     )
     quanta = np.zeros(num_blocks, np.int64)
+    regular = np.zeros(num_blocks, np.bool_)
     merged_offsets = _group.sample_offsets(sizes)
     _time.time_quanta(
         merged_ticks[:num_merged], merged_offsets, time_error, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
-        np.zeros(num_blocks, np.bool_),
+        regular,
     )
+    # A regular block is left as it is, as in snap_ticks
+    quanta[regular] = 0
+    if not quanta.any():
+        return ticks
     # Phases from the stored and new samples too: stored ones on a grid hold it
     phases = np.zeros(num_blocks, np.int64)
     _time.time_phases(

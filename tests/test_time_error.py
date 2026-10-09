@@ -333,3 +333,27 @@ def test_update_time_blocks_rounds_onto_the_stored_phase():
     _, after = check_time_blocks(updated)
     added = np.setdiff1d(after, stored)
     assert added.size == 1 and added[0] % 100_000 == phase and abs(added[0] - new[0]) <= 50_000
+
+
+def us_blocks(group_ticks, appended, time_error=0.1):
+    """Encodes 1000 us ticks in 1 s blocks, then appends one tick; returns (group, update result)."""
+    kwargs = dict(start_time=0, block_duration=10**6, time_unit="us")
+    params = Params(time_error=time_error)
+    group = fluxcode.encode_time_blocks(np.zeros(group_ticks.size), group_ticks, params, **kwargs).group
+    updated = fluxcode.update_time_blocks(group, [1.0], [appended], params, **kwargs)
+    return group, updated[0]
+
+
+def test_update_time_blocks_leaves_a_regular_block_as_it_is():
+    """A new tick on the grid of a regular block (at a phase no 1-2-5 grid has) is not rounded."""
+    ticks = np.arange(7, 7 + 1000 * 300, 1000)
+    group, updated = us_blocks(ticks, ticks[-1] + 1000)
+    assert not irregular_blocks(group)
+    assert not irregular_blocks(updated)
+    np.testing.assert_array_equal(fluxcode.decode_group(updated).times.view(np.int64)[-2:], ticks[-1] + [0, 1000])
+
+
+def test_update_time_blocks_rounds_a_jittered_append_to_a_regular_round_block():
+    ticks = np.arange(0, 1000 * 300, 1000)
+    _, updated = us_blocks(ticks, ticks[-1] + 1003)
+    assert fluxcode.decode_group(updated).times.view(np.int64)[-1] == ticks[-1] + 1000
