@@ -8,6 +8,8 @@
 
 **What changed during implementation:**
 
+- **Readers and writers.** `write_group` lives in `_bitpacking` and writes byte planes only;
+  `read_group` and the bit-plane writer are test oracles in `tests/_oracle.py`, not package code.
 - **Names.** The per-block "head byte" below is the `block_flags` field, and the SPEC sections
   it cites have been renumbered (the format is now SPEC §6, the algorithm ENCODER.md).
 - **Self-describing block groups.** A block group starts with a 16-byte header (version, block length, sample

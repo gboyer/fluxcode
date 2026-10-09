@@ -201,11 +201,13 @@ bodies are built in byte planes, which are what the carried blocks are copied be
 block group's residual region is converted once, by one transpose, before the copy), and the
 bit-plane body for the second candidate is derived from the byte-plane one by one more transpose of
 the whole region (`_bitpacking.to_bit_planes`): octets line up across the region, so no block is
-converted on its own. The same holds for `write_group` when a block group is encoded (3,600 blocks
-of 10: 195 µs in bit planes; 52 µs in byte planes plus the 24 µs transpose). In `update_time_blocks`
+converted on its own. The same holds for `write_group` when a block group is encoded, which is why it
+writes byte planes only (3,600 blocks of 10: writing bit planes directly took 195 µs; byte planes take
+52 µs plus the 24 µs transpose). In `update_time_blocks`
 the decoded and new samples are merged in one numba pass over both (they are sorted): which old
 samples go, where the new ones land, the changed blocks and their sizes, so the Python code around
-it does no per-block or per-sample work. Likewise `splice` checks the block order with array
+it does no per-sample work; with a time error, only blocks whose stored ticks must be weighed
+against the new ones (rules 2 and 3 of `_round_updates`) take a step of Python each. Likewise `splice` checks the block order with array
 operations and one batched call for the last ticks of carried neighbours. Before that pass the
 60-block straddle spent 150 µs of 540 in two `searchsorted` calls, and one sample in each of 3,600
 blocks cost 4.5 ms against 1.6 ms to encode (now 1.9 ms against 1.4). The 3,600-block rows depend on

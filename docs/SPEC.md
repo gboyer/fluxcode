@@ -292,9 +292,8 @@ has:
 **Worked example with a time axis** (`tests/test_time.py::test_worked_example_layout`):
 - 20 samples in blocks of 8, 8 and 4;
 - ns ticks (small, for readability);
-- bit planes (header flags bit 0 clear). The test asks for them (`planes="bit"`): with the
-  reference encoder's default layout choice the all-zero residuals tie, and it picks byte planes
-  (header flags 0x09).
+- bit planes (header flags bit 0 clear). The test forces them: the reference encoder's own
+  layout choice picks byte planes here, as the all-zero residuals tie (header flags 0x09).
 
 ```
 times   block 0: 1000 1010 1020 1030 1040 1050 1060 1070   regular
