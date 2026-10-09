@@ -8,7 +8,7 @@ Only the time axis: what exact timestamps add to one-minute block groups (60 blo
 nominally 1 kHz), for the common clock shapes (a perfect grid, a grid with a few gaps, a noisy
 clock) and a few harder ones. The values are fixed (a 4.12 Hz sine); every number is the block group
 with times minus the same block group without. Timings are single thread, best of --reps; run on AC
-power with nothing else busy.
+power with nothing else busy. The last section rounds the timestamps first (Params.time_error).
 """
 
 import argparse
@@ -41,7 +41,13 @@ OUT = Path(__file__).parent / "report"
 BLOCK, BLOCKS = 1000, 60
 SERIES = "#2a78d6"  # one series per panel: the reference palette's first slot
 IRREGULAR = "#f3c9b5"  # tint behind irregular blocks
+PALETTE = ["#2a78d6", "#eb6834", "#1a9e77", "#8f5bd6", "#c43c7a"]  # one per series on the sweep
 SEEDS = 64  # block groups per clock shape for the distributions
+MS = 1_000_000
+TIME_ERRORS = (0.0, 0.02, 0.05, 0.1)  # the table's columns
+SWEEP_ERRORS = tuple(np.round(np.arange(41) * 0.0025, 4))  # the chart's points: every 0.0025 from 0 to 0.1
+SWEPT = ("Noisy clock", "Jitter σ = 10 µs (1%), ns, on round times", "Drift and jitter σ = 10 µs, 37 µs off",
+         "Poisson events, mean 1 ms, ns", "Deadband logging, ms grid")  # the chart's lines
 SHAPE_LABELS = {
     "grid": "Perfect grid",
     "grid+gaps": "Grid with a few gaps",
@@ -127,6 +133,59 @@ def gaps_sweep(values, plain_group):
     return rows
 
 
+def rounding_cases(examples):
+    """(label, ticks) for the rounding section: the common shapes' examples, jittered clocks on round
+    times and free-running, drift, and two shapes without a grid (as in bench/time_axis.py)."""
+    harder = dict(patterns(np.random.default_rng(0)))
+    index = np.arange(MINUTE)
+    jitter = np.round(np.random.default_rng(1).normal(0, 10_000, MINUTE)).astype(np.int64)
+    start = 1_790_000_000_000_000_000
+    return [(SHAPE_LABELS[shape], ticks) for shape, ticks, _ in examples] + [
+        ("Jitter σ = 10 µs (1%), ns, on round times", harder["jitter σ=10 µs, ns resolution"]),
+        ("The same, free-running: 50 µs off the epoch's grid",
+         np.maximum.accumulate(start + 50_000 + index * MS + jitter)),
+        ("Drifting clock (0.99998 ms)", harder["drifting clock (0.99998 ms)"]),
+        ("Drift and jitter σ = 10 µs, 37 µs off",
+         np.maximum.accumulate(start + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter)),
+        ("Poisson events, mean 1 ms, ns", harder["Poisson events, mean 1 ms, ns"]),
+        ("Deadband logging, ms grid", harder["deadband logging, ms grid"]),
+    ]
+
+
+def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
+    """Bytes, irregular blocks, the largest move (in median intervals) and µs the timestamps add when
+    rounded to the time error."""
+    times = ticks.view("datetime64[ns]")
+    params = fluxcode.Params(time_error=time_error)
+    group = fluxcode.encode_group(values, params, times=times).group
+    decoded = fluxcode.decode_group(group)
+    rounded = decoded.times.view(np.int64)
+    assert np.all(np.diff(rounded) >= 0), "rounded times out of order"
+    irregular = (_group.decompress(group).block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME) != 0
+    row = {"bytes": len(group) - len(plain_group), "irregular": irregular,
+           "moved": float(np.abs(rounded - ticks).max() / np.median(np.diff(ticks)))}
+    if reps:
+        row["encode_us"] = best_us(lambda: fluxcode.encode_group(values, params, times=times), reps) - plain_times[0]
+        row["decode_us"] = best_us(lambda: fluxcode.decode_group(group), reps) - plain_times[1]
+    return row
+
+
+def plot_rounding(sweep):
+    """Bytes the timestamps add against the time error, one line per shape (log scale)."""
+    fig, ax = plt.subplots(figsize=(11, 4.2), layout="constrained")
+    for color, (label, sizes) in zip(PALETTE, sweep):
+        ax.step(SWEEP_ERRORS, sizes, where="post", color=color, lw=1.5, label=label)
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:,.0f}"))
+    ax.set_xlabel("time error e (Params.time_error): the largest move, as a share of the block's interval")
+    ax.set_ylabel("bytes the timestamps add")
+    ax.grid(color="0.9", lw=0.6)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.legend(frameon=False, fontsize=9)
+    return save_fig(fig, OUT, "time-rounding", "Bytes the timestamps add per block group against the time error")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reps", type=int, default=30)
@@ -153,16 +212,28 @@ def main():
         others.append((name, measure(values, ticks, plain_group, args.reps, plain_times)))
         print(f"{name}: {others[-1][1]['bytes']} bytes", flush=True)
     sweep = gaps_sweep(values, plain_group)
-    write_report(examples, others, sweep, len(plain_group), plain_times, args.reps)
+
+    cases = rounding_cases(examples)
+    rounded = []
+    for label, ticks in cases:
+        rounded.append((label, [measure_rounded(values, ticks, plain_group, e, args.reps, plain_times)
+                                for e in TIME_ERRORS]))
+        print(f"{label}: " + ", ".join(f"{row['bytes']} B" for row in rounded[-1][1]), flush=True)
+    rounding_sweep = [(label, [measure_rounded(values, ticks, plain_group, e, 0, None)["bytes"] for e in SWEEP_ERRORS])
+                      for label, ticks in cases if label in SWEPT]
+    write_report(examples, others, sweep, rounded, rounding_sweep, len(plain_group), plain_times, args.reps)
 
 
-def write_report(examples, others, sweep, plain_bytes, plain_times, reps):
+def write_report(examples, others, sweep, rounded, rounding_sweep, plain_bytes, plain_times, reps):
     clean_outputs(OUT, ("time.html", "time-*.svg"))
     chart = plot_shapes(examples)
+    rounding_chart = plot_rounding(rounding_sweep)
+    noisy_rounded = next(rows for label, rows in rounded if label == SHAPE_LABELS["noisy"])
     grid_bytes = examples[0][2]["bytes"]
     h = [f"""<p><a href="index.html">← codec comparison (index.html)</a> ·
 <a href="https://github.com/gboyer/fluxcode/blob/main/docs/SPEC.md#3-time-axis">SPEC §3: time axis</a></p>
-<p>fluxcode can store each sample's timestamp <b>exactly</b> next to its values. This page covers only that time
+<p>fluxcode can store each sample's timestamp <b>exactly</b> next to its values (by default; the
+<a href="#rounding">last section</a> lets them move by a share of an interval). This page covers only that time
 axis: what the timestamps add to a one-minute block group (60 blocks of 1,000 samples, nominally 1 kHz, int64 ns ticks).
 Every number here is the block group with times minus the same block group without them. For scale, that block group's values alone take
 {plain_bytes:,} bytes (a 4.12 Hz sine at the default settings), {plain_times[0]:.0f} µs to encode and
@@ -213,8 +284,9 @@ writes the 60,000 int64 ticks, and that is most of its cost.</li>
 planes are nearly all zero and it costs about 20 to 60 bytes (next section).</li>
 <li><b>Noisy clock:</b> the jitter is real entropy, and no lossless coder can remove it: σ = 20 µs at µs
 resolution carries about 6.4 bits per sample, and the block group spends 7.1. The rest comes from storing intervals
-(each the difference of two jitters) with each bit plane coded on its own. If the jitter is measurement noise rather than information, round the timestamps
-to the grid before encoding.</li>
+(each the difference of two jitters) with each bit plane coded on its own. If the jitter is measurement noise
+rather than information, let fluxcode round it away: with <code>Params(time_error=0.1)</code> the same clock
+costs {noisy_rounded[3]['bytes']:,} bytes (<a href="#rounding">last section</a>).</li>
 </ul>
 <h2 id="gaps">Cost per gap</h2>
 <p>A grid with <i>k</i> gaps per minute, each 5 ms to 3 s; median of 16 block groups per row.</p>
@@ -239,8 +311,58 @@ above.</p>
 <p class='muted'>1% dropped and a drifting clock stay cheap: their intervals take two or three values. Jitter,
 Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
 really is at ns resolution.</p>""")
+    h.append(f"""<h2 id="rounding">Rounding timestamps: Params.time_error</h2>
+<p>When the jitter is measurement noise, <code>Params(time_error=e)</code> lets each timestamp move by up to
+<i>e</i> times its block's interval (0 to 0.5; the default 0 keeps them exact). The values are kept as measured,
+and the format doesn't change: the decoder sees ordinary times.</p>
+<ul>
+<li><b>Per block: a step and a phase.</b> The interval is the mean of the one-scan intervals where the block
+has a cadence (90% of its intervals one scan), else the median of 15. The step is the largest 1-2-5 tick
+count (1, 2, 5, 10, 20, …) at most 2<i>e</i> intervals (2% slack), and the grid sits at the clock's own phase
+(a multiple of a tenth of the step, kept from the previous block unless another fits clearly better), so a
+free-running or drifting clock rounds onto its own grid, not the epoch's. Each time rounds to its nearest grid
+point.</li>
+<li><b>A jittered clock becomes regular</b> once <i>e</i> is about 5 times its jitter (σ over the interval):
+every time stays on its own grid point, and the block stores no residuals. Below that the size falls in steps,
+one at each 1-2-5 step (for a 1 ms clock at e = …, 0.005, 0.01, 0.025, 0.05, 0.1), and each step pays off on its own:
+there is no threshold below which rounding stops helping.</li>
+<li><b>Regular blocks are left alone,</b> and times already on a grid don't change.</li>
+<li><b>Order is kept</b> across blocks and block groups; <code>update</code> and <code>update_time_blocks</code>
+round new samples onto the stored blocks' grids and never move stored times.</li>
+</ul>
+{rounding_chart}
+<table><tr><th class='l'>timestamps</th>""" + "".join(
+        f"<th>{'exact' if e == 0 else f'e = {e:g}'}</th>" for e in TIME_ERRORS) + "</tr>")
+    for label, rows in rounded:
+        cells = []
+        for e, row in zip(TIME_ERRORS, rows):
+            moved = "" if e == 0 else f" · max {row['moved']:.3f}"
+            cells.append(f"<td>{row['bytes']:,} B · {int(row['irregular'].sum())}/60<br><span class='muted'>"
+                         f"{added(row['encode_us'], plain_times[0])}{moved}</span></td>")
+        h.append(f"<tr><td>{label}</td>{''.join(cells)}</tr>")
+    h.append(f"""</table>
+<p class='muted'>Each cell: bytes the timestamps add · irregular blocks of 60, then the encode time they add
+(percentage of the values-only encode, {plain_times[0]:.0f} µs) and the largest move in median intervals.
+Single thread, best of {reps}, Apple M3 on AC power. The chart samples e every 0.0025.</p>
+<ul>
+<li><b>Jittered clocks</b> drop from about 120 KB to 63–66 bytes once e reaches about 5σ (0.05 here), on
+round times or free-running. With drift as well, the phase follows the clock block by block: 258 bytes at 0.05
+and 108 at 0.1. Once regular they also encode faster: a regular block skips the residuals.</li>
+<li><b>Times already on a grid</b> don't change, but checking them costs time: about +25 µs per block group on a
+perfect grid (finding each block's step) and +60 µs with a few gaps (rounding the irregular blocks).</li>
+<li><b>The noisy clock</b> (σ = 20 µs, 2%) needs e = 0.1 to land on its grid; at 0.05 about 1% of its
+times fall to a neighbouring grid point.</li>
+<li><b>Events and deadband logging</b> have no grid to land on. Rounding still takes out the low bits
+(events get 3–4 times smaller), but a coarse grid (deadband logging's 1 ms) gains only once the step
+passes it. Without a cadence the interval is a rough estimate, so a time can move by more than <i>e</i> of
+the overall median (within about <i>e</i> of its block's own estimate).</li>
+</ul>
+<p class='muted'>Measurements behind the choices (1-2-5 steps over powers of two, no interpolation of values, no
+resampling, per-block phases): <a href="https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md#time-error">docs/TUNING.md,
+Time error</a>.</p>""")
     toc = [("how", "How timestamps are stored", []), ("shapes", "The common shapes", []),
-           ("gaps", "Cost per gap", []), ("harder", "Harder shapes", [])]
+           ("gaps", "Cost per gap", []), ("harder", "Harder shapes", []),
+           ("rounding", "Rounding timestamps: Params.time_error", [])]
     (OUT / "time.html").write_text(shell("fluxcode timestamps: the time axis", "", toc, "\n".join(h)))
     print(f"wrote {OUT / 'time.html'}")
 

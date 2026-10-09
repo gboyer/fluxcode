@@ -289,8 +289,9 @@ and decode time they add, irregular blocks of 60, and the largest move in median
 - **About 5× the jitter makes a clock regular.** A time stays on its grid point while its jitter
   is under q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which
   costs a few KB a minute instead of 63 B (2% jitter at e = 0.05: 2,530 B instead of 127 KB, the
-  noisy clock's 3,010 B). Below that the size falls smoothly with e: there's no threshold where
-  it jumps.
+  noisy clock's 3,010 B). Below that the size falls in steps, one per 1-2-5 step (for a 1 ms
+  clock at e = …, 0.005, 0.01, 0.025, 0.05, 0.1; chart in the time report), and each pays off on
+  its own: there's no threshold below which rounding stops helping.
 - **Free-running clocks** round onto their own phase, a multiple of q/10: 66–108 B against 63 on
   round times (a phase between two candidates is up to q/20 off, which takes a little of the
   jitter margin; the 103 B at 25 µs and e = 0.1 is zstd compressing the sine's values differently
