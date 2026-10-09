@@ -722,16 +722,7 @@ def unshuffle_time_residuals(
     for byte_idx in range(num_active_bytes):
         level_planes = _level_planes(short_planes, long_planes, short_offset, long_offset, byte_idx, 0, num_octets)
         for octet_idx in range(num_octets):
-            gathered_word = np.uint64(0)
-            for bit_idx in range(8):
-                gathered_word |= np.uint64(level_planes[bit_idx, octet_idx]) << np.uint64(8 * bit_idx)
-            # Transpose back: byte k of the result is byte byte_idx of sample 8 * octet_idx + k
-            transposed_word = _transpose8(gathered_word)
-            out_byte_idx = 64 * octet_idx + byte_idx
-            for sample_offset in range(8):
-                out_bytes[out_byte_idx + 8 * sample_offset] = np.uint8(
-                    (transposed_word >> np.uint64(8 * sample_offset)) & np.uint64(0xFF)
-                )
+            _get_time_octet(level_planes, octet_idx, byte_idx, out_bytes[64 * octet_idx:])
     if num_samples % 8:
         _unshuffle_time_tail(
             short_planes, long_planes, short_offset, long_offset, stride, num_active_bytes, out_time_residuals,
