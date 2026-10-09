@@ -439,7 +439,7 @@ def update_blocks(
     # Convert and validate samples for each block
     by_index = {int(idx): block for idx, block in blocks.items()}
     samples = [as_series(by_index[idx], allow_empty=True) for idx in indices]
-    sizes = as_block_sizes([block.shape[0] for block in samples]) if samples else np.zeros(0, np.int64)
+    sizes = as_block_sizes([block.shape[0] for block in samples])
     ticks = None
     # Convert and validate timestamps for each block if present
     if times is not None:

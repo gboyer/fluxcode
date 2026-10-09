@@ -240,8 +240,9 @@ def update_time_blocks(
         samples, times, start_time, block_duration, delete_ranges, time_unit, parsed.header.time_unit
     )
     new_ids = block_ids(ticks, start, duration)
-    if new_ids.shape[0] and (np.diff(ticks) < 0).any():
-        raise _args.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
+    steps = np.diff(ticks)
+    if new_ids.shape[0] and (steps < 0).any():
+        raise _args.decrease_error(ticks, int(np.flatnonzero(steps < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
     touched, covered = _block_masks(ranges, start, duration, num_old_blocks)
     touched &= ~covered

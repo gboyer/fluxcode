@@ -323,7 +323,7 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
 
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
     body = _bitpacking.write_group(
-        *(rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes),
+        rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
         byte_planes=True, time_rows=rows.time_rows, offsets=offsets,
     )
     return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)
