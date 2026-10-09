@@ -18,6 +18,8 @@ In an update_time_blocks a time moves at most twice: onto a block's own regular 
 half the time error), and onto a 1-2-5 grid, on which it then stays (_round_updates has the rules).
 """
 
+import math
+
 import numpy as np
 import numpy.typing as npt
 from numba import njit
@@ -389,6 +391,11 @@ def _merged_quantum(merged: np.ndarray, time_error: float) -> int:
     return int(quantum[0])
 
 
+def _merged_interval(merged: np.ndarray) -> float:
+    """The interval the time error is a share of (_time.block_interval)."""
+    return float(_time.block_interval(merged, np.empty(_time.CADENCE_SAMPLES, np.int64))[0])
+
+
 def _merged_phase(merged: np.ndarray, quantum: int) -> int:
     """The phase of a block's grid (_time.time_phases), chosen from the block alone."""
     phase = np.zeros(1, np.int64)
@@ -468,10 +475,14 @@ def _round_updates(
        all are within half the time error of it. Stored ticks stay.
     2. Stored ticks that lie on a 1-2-5 grid (_stored_grid): they stay, and the new ticks go to
        the coarsest 1-2-5 grid the merged block's quantum allows that nests with it.
-    3. Otherwise the whole block, stored ticks too, is rounded to the grid of its ticks after the
-       update (_time.time_quanta, time_phases). If the stored ticks lie on a lattice coarser than
-       that quantum, they may be on a lattice by rule 1, and the quantum is at most that of
-       half the time error.
+    3. Or the whole block, stored ticks too, is rounded to the grid of its ticks after the
+       update (_time.time_quanta, time_phases), at most as coarse as the error budget allows: a
+       stored tick may already have moved by half its grid's step, or by half the time error
+       intervals if it may have been snapped by rule 1 (the lattice is coarser than the
+       quantum); the quantum is at most twice what is left of time_error intervals. A tick's
+       total movement is then at most time_error intervals.
+    Rule 3 is taken if its quantum is at least the common step rule 2 would leave the block on
+    (raw ticks on a fine grid, like µs-precision ticks in ns, are rounded whole), else rule 2.
 
     Blocks without stored samples are rounded as in an encode, following the block before them
     (_group.snap_ticks).
@@ -517,6 +528,8 @@ def _round_updates(
     regular = np.zeros(active.shape[0], np.bool_)
     _time.regular_blocks(all_merged, merged_offsets[blocks[active]], merged_offsets[blocks[active] + 1], regular)
     active = active[~regular]
+    is_active = np.zeros(blocks.shape[0], np.bool_)
+    is_active[active] = True
     # Rule 1, for all blocks at once: a stored regular block's lattice takes the new ticks if they are all near it
     stored_ids = np.minimum(blocks, parsed.header.num_blocks - 1)
     interval = time_rows.steps[stored_ids] * time_rows.refs[stored_ids].astype(np.int64)
@@ -524,14 +537,14 @@ def _round_updates(
         (blocks < parsed.header.num_blocks) & ((flags[stored_ids] & _format.BLOCK_FLAG_IRREGULAR_TIME) == 0)
         & (parsed.block_sizes[stored_ids] >= 2) & (interval > 0)
     )
-    lattice[np.setdiff1d(np.arange(blocks.shape[0]), active)] = False
+    lattice &= is_active
     which = np.repeat(np.arange(blocks.shape[0]), counts)
     step_t = np.where(lattice, interval, 1)[which]
     snapped = _round_to_grid(ticks, step_t, (time_rows.starts[stored_ids][which] % step_t))
     near = np.abs(snapped - ticks) <= np.floor(0.5 * time_error * step_t).astype(np.int64)
     snapped_blocks = lattice & np.logical_and.reduceat(near, first)
     out[snapped_blocks[which]] = snapped[snapped_blocks[which]]
-    for idx in np.setdiff1d(active, np.flatnonzero(snapped_blocks)).tolist():
+    for idx in np.flatnonzero(is_active & ~snapped_blocks).tolist():
         block = int(blocks[idx])
         new_slice = slice(first[idx], first[idx] + counts[idx])
         new_t, old_t = ticks[new_slice], old_ticks[old_first[idx]:old_end[idx]]
@@ -542,16 +555,27 @@ def _round_updates(
         quantum = _merged_quantum(merged, time_error)
         if quantum <= 1:
             continue
+        # Rule 2 keeps the stored ticks and nests the new ones in their grid; rule 3 rounds the
+        # block whole, but only as far as the error budget allows: a tick's total movement is
+        # what the stored ticks may already have moved (prior) plus half the new quantum, at most
+        # time_error * interval. Whichever leaves the block on the coarser common step wins.
+        reference = _merged_interval(merged)
         grid, on_grid = _stored_grid(old_t)
-        if grid:
-            quantum = _nested_quantum(quantum, grid)
-            if quantum > 1:
-                out[new_slice] = _round_to_grid(new_t, quantum, on_grid % quantum)
-            continue
-        if (interval if not irregular else step) > quantum:
-            quantum = min(quantum, _merged_quantum(merged, 0.5 * time_error))
-            if quantum <= 1:
+        prior = grid / 2
+        lattice = interval if not irregular else step
+        if lattice > quantum:  # the stored ticks may lie on a lattice that new ticks snapped to
+            prior = max(prior, 0.5 * time_error * reference)
+        budget = int(2 * (time_error * _time.TIME_ERROR_SLACK * reference - prior))
+        whole = _nested_quantum(min(quantum, budget), 0)
+        nested = _nested_quantum(quantum, grid) if grid else 0
+        if nested > 1:
+            common = math.gcd(math.gcd(lattice, nested), abs(int(old_t[0]) - on_grid % nested))
+            if whole < max(common, 2):
+                out[new_slice] = _round_to_grid(new_t, nested, on_grid % nested)
                 continue
+        if whole <= 1:
+            continue
+        quantum = whole
         phase = _merged_phase(merged, quantum)
         out[new_slice] = _round_to_grid(new_t, quantum, phase)
         low = start + block * duration

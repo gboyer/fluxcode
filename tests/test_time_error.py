@@ -450,17 +450,40 @@ def test_a_rounded_block_takes_new_ticks_on_a_finer_nested_grid():
         assert np.abs(added - new).max() <= quantum // 2
 
 
-def test_a_rounded_block_on_a_fine_grid_takes_a_coarser_multiple():
+def test_a_rounded_block_on_a_fine_grid_takes_new_ticks_on_its_phase():
     rng = np.random.default_rng(4)
     ticks = 10_000 + 100 * np.arange(300) + rng.integers(-5, 6, 300)  # q = 20
     group = us_encode(ticks)
     stored = us_times(group)
     assert (stored % 20 == 0).all()
-    new = np.sort(stored[-1] + 2000 * np.arange(1, 601) + rng.integers(-15, 16, 600))  # merged interval 2000: q* = 200
+    new = np.sort(stored[-1] + 120 * np.arange(1, 601) + rng.integers(-2, 3, 600))  # q* = 20: no budget to re-round
     after = us_times(us_append(group, new))
     np.testing.assert_array_equal(after[:300], stored)
     added = after[300:]
-    assert ((added - stored[0]) % 200 == 0).all() and np.abs(added - new).max() <= 100
+    assert ((added - stored[0]) % 20 == 0).all() and np.abs(added - new).max() <= 10
+
+
+def test_a_much_coarser_merged_interval_rounds_the_block_whole_within_the_budget():
+    rng = np.random.default_rng(4)
+    ticks = 10_000 + 100 * np.arange(300) + rng.integers(-5, 6, 300)
+    given = np.sort(np.concatenate([ticks, ticks[-1] + 2000 * np.arange(1, 601) + rng.integers(-15, 16, 600)]))
+    after = us_times(us_append(us_encode(ticks), given[300:]))
+    assert (after % 200 == after[0] % 200).all() and np.abs(after - given).max() <= 0.1 * 2000 * 1.02
+
+
+def test_a_micro_second_clock_streamed_by_five_in_us_and_ns_ticks_equals_the_batch():
+    rng = np.random.default_rng(0)
+    n = 6000
+    clock = (100 + np.arange(n) * 1000 + np.round(rng.normal(0, 5, n))).astype(np.int64)
+    for unit, scale in [("us", 1), ("ns", 1000)]:
+        kwargs = {"start_time": 0, "block_duration": 60_000_000 * scale, "time_unit": unit}
+        t, x = clock * scale, np.zeros(n)
+        batch = fluxcode.encode_time_blocks(x, t, E01, **kwargs).group
+        group = fluxcode.encode_time_blocks(x[:5], t[:5], E01, **kwargs).group
+        for i in range(5, n, 5):
+            group = fluxcode.update_time_blocks(group, x[i:i + 5], t[i:i + 5], E01, **kwargs).group
+        assert not irregular_blocks(batch) and not irregular_blocks(group)
+        assert len(group) <= len(batch) + 2
 
 
 def test_a_block_continues_the_regular_clock_before_it():
@@ -507,14 +530,15 @@ def test_small_blocks_are_not_rounded_until_they_grow():
     assert (after % 200 == after[0] % 200).all() and np.abs(after - given).max() <= 100 * 1.02
 
 
-@pytest.mark.parametrize("kind", ["clock", "regular-1001", "poisson"])
-def test_repeated_updates_move_no_tick_further_than_the_time_error(kind):
+@pytest.mark.parametrize("kind,scale", [("clock", 1), ("clock", 1000), ("regular-1001", 1), ("regular-1001", 1000),
+                                        ("poisson", 1)])
+def test_repeated_updates_move_no_tick_further_than_the_time_error(kind, scale):
     """Every surviving sample stays within e * interval * 1.02 of the tick it was given, however often
     its blocks are updated."""
     rng = np.random.default_rng(11)
     interval = 1001 if kind == "regular-1001" else 1000
-    bound = 0.1 * interval * 1.02
-    kwargs = {"start_time": 0, "block_duration": 100_000, "time_unit": "us"}
+    bound = 0.1 * interval * 1.02 * scale
+    kwargs = {"start_time": 0, "block_duration": 100_000 * scale, "time_unit": "us" if scale == 1 else "ns"}
 
     def gaps(num):
         if kind == "regular-1001":
@@ -523,7 +547,7 @@ def test_repeated_updates_move_no_tick_further_than_the_time_error(kind):
             return np.round(rng.normal(interval, 0.02 * interval, num)).astype(np.int64)
         return np.maximum(1, rng.exponential(interval, num).astype(np.int64))
 
-    ticks = 1 + np.cumsum(gaps(400))
+    ticks = (1 + np.cumsum(gaps(400))) * scale
     given = dict(enumerate(ticks.tolist()))
     group = fluxcode.encode_time_blocks(np.arange(400.0), ticks, E01, **kwargs).group
     next_id = 400
@@ -532,12 +556,12 @@ def test_repeated_updates_move_no_tick_further_than_the_time_error(kind):
         choice = rng.random()
         if choice < 0.35:  # a jittered re-send of some stored samples
             pick = np.sort(rng.choice(times.size, min(int(rng.integers(1, 30)), times.size), replace=False))
-            new = np.maximum(times[pick] + rng.integers(-3, 4, pick.size), 0)
+            new = np.maximum(times[pick] + rng.integers(-3, 4, pick.size) * scale, 0)
         elif choice < 0.55:  # samples off the lattice
             pick = np.sort(rng.choice(times.size, 5, replace=False))
-            new = np.maximum(times[pick] + rng.integers(-interval // 2, interval // 2, 5), 0)
+            new = np.maximum(times[pick] + rng.integers(-interval // 2, interval // 2, 5) * scale, 0)
         else:  # an append
-            new = times[-1] + np.cumsum(gaps(int(rng.integers(1, 80))))
+            new = times[-1] + np.cumsum(gaps(int(rng.integers(1, 80)))) * scale
         new = np.sort(new)
         ids = np.arange(next_id, next_id + new.size)
         next_id += new.size

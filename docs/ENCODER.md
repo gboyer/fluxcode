@@ -620,9 +620,14 @@ N their total samples.
     2. Stored ticks on a 1-2-5 grid (90% of them, the coarsest step up to the block's
        interval): they stay; new ticks go to the coarsest 1-2-5 grid at most the merged block's
        quantum q* that nests with it (divides it or is a multiple), at its phase.
-    3. Otherwise the whole block, stored ticks included, is rounded as in an encode; if the
-       stored lattice step exceeds q* (the ticks may be on a lattice by rule 1) the quantum is at
-       most the one e/2 would give (≤ e·c).
+    3. Or the whole block, stored ticks included, is rounded as in an encode, to the coarsest
+       quantum within the error budget: a tick may have moved already (half the stored grid's
+       step, or e/2·d if the stored ticks lie on a lattice coarser than q* that rule 1 may have
+       snapped to), and the quantum is at most 2·(1.02·e·d − that).
+    Rule 3 is taken if its quantum is at least the common step rule 2 leaves the block on (so
+    raw µs-precision ticks in ns, which lie on a 1 µs grid, are rounded whole), else rule 2 (a
+    block already rounded to 200 µs has no budget left). A tick thus moves its prior movement plus
+    half the quantum, ≤ e·d in all.
     Blocks without stored samples are rounded as in an encode, following the block before them.
 - **Times** decode exactly at `time_error` 0. With e > 0 (§4):
   - each moves by at most half its block's quantum, ≤ 1.02·e times the block's interval (in an

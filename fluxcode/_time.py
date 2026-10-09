@@ -507,6 +507,29 @@ def time_quantum(interval: float, time_error: float) -> int:
     return best
 
 
+@njit(inline="always")
+def block_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[float, bool]:
+    """A block's interval for the time error: its scan interval (one_scan), or, if at least
+    CADENCE_SHARE of its intervals are one scan and the scan is below ONE_SCAN_SUM_LIMIT, their
+    mean: stable to about 0.2% on a 5% jittered clock, where the median of 15 wanders by 2%.
+
+    Args:
+        ticks: 1D int64 array of the block's ticks (at least 2).
+        scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
+
+    Returns:
+        A tuple of (interval, regular): the interval (0.0 if there is none) and whether every
+        interval is equal.
+    """
+    scan, _, _, num_one_scan, one_scan_total, regular = one_scan(ticks, scratch_pivots)
+    if scan == 0:
+        return 0.0, False
+    reference = float(scan)
+    if scan < ONE_SCAN_SUM_LIMIT and num_one_scan >= CADENCE_SHARE * (ticks.shape[0] - 1):
+        reference = one_scan_total / num_one_scan
+    return reference, regular
+
+
 @njit(nogil=True, cache=True)
 def time_quanta(
     ticks: np.ndarray,
@@ -540,13 +563,9 @@ def time_quanta(
         out_regular[block_idx] = False
         if block_len < MIN_ROUND_SAMPLES:
             continue
-        times = ticks[first_sample:first_sample + block_len]
-        scan, _, _, num_one_scan, one_scan_total, regular = one_scan(times, scratch_pivots)
-        if scan == 0:
+        reference, regular = block_interval(ticks[first_sample:first_sample + block_len], scratch_pivots)
+        if reference == 0.0:
             continue
-        reference = float(scan)
-        if scan < ONE_SCAN_SUM_LIMIT and num_one_scan >= CADENCE_SHARE * (block_len - 1):
-            reference = one_scan_total / num_one_scan
         quantum = time_quantum(reference, time_error)
         if quantum <= 1:
             continue
