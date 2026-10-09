@@ -7,8 +7,8 @@ updates (_group, _time_blocks). Samples become contiguous float64 arrays, times 
 with a time unit code, and block sizes int64 arrays.
 
 The argument errors of the public functions come from here, apart from the checks that
-need the data itself: non-decreasing times, and the block bounds of timed samples
-(_time_blocks.block_ids).
+need the data itself: non-decreasing times, and the block bounds and positive
+block_duration of timed samples (_time_blocks.block_ids).
 """
 
 import datetime

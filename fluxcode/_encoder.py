@@ -322,7 +322,7 @@ def plan_step(
         return 0
     # Start with finest allowed step at max_bits
     planned_exp = range_exponent(lower_bound, upper_bound, max_bits)
-    # Check noise gate: white noise gives rho < -0.6
+    # Check noise gate: white noise gives rho = -2/3; the gate is rho < NOISE_RHO
     if noise_factor > 0 and noise_rho < NOISE_RHO and noise_sigma > 0:
         # Coarsen the step up to noise_factor * noise_sigma
         planned_exp = max(planned_exp, math.floor(math.log2(noise_factor * noise_sigma)))

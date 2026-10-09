@@ -134,7 +134,8 @@ def dequantize_pow2(
 
     Args:
         quantized_samples: 1D int32 array of quantized grid offsets.
-        lower_bound: Minimum value of the block (exact reconstruction point for q = 0).
+        lower_bound: Anchor of the block: the grid point nearest its minimum (the minimum itself
+            for a constant block or a non-finite snapped anchor); the value for q = 0.
         quant_exp: Power-of-two quantization exponent.
         out_samples: Output 1D float64 array receiving reconstructed samples.
     """
@@ -281,7 +282,7 @@ def decode_group(
             continue
         flags = raw_group[block_idx]
         param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
-        # Anchor: float64 bits of the minimum (power-of-two blocks) or the decimal grid index
+        # Anchor: float64 bits of the grid point nearest the minimum (power-of-two blocks) or the decimal grid index
         anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
         block_residuals = scratch_residuals[:block_len]
         block_out = out_samples[first_sample:first_sample + block_len]

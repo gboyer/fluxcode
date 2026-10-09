@@ -151,7 +151,7 @@ def dequantize_pow2_wide(
 
     Args:
         quantized_samples: 1D int32 array of quantized integers.
-        lower_bound: Block minimum float64 value.
+        lower_bound: Anchor of the block (grid point nearest its minimum; the minimum for exempt blocks).
         quant_exp: Quantization exponent at or above E_WIDE (971).
         out_samples: Output 1D float64 array receiving reconstructed samples.
     """

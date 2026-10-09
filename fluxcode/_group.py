@@ -4,7 +4,8 @@
 
 A block group's blocks are handled as flat arrays (every sample of the block group, block after block)
 with per-block sizes, so blocks of any size share one code path. The public entry points
-in `_api` divide their input into blocks and call `encode`, `decode` or `splice` here.
+in `_api` divide their input into blocks and call `encode`, `encode_series`, `decode` and `update` here (`splice` is reached
+through `update` and `_time_blocks`).
 """
 
 from collections.abc import Mapping

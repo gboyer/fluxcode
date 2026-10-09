@@ -12,29 +12,29 @@ Typical usage:
 
     import fluxcode
 
-    # Encode a dense series into a single storage block group, in blocks of 1000 samples:
-    block group, block_min, block_max, block_mean = fluxcode.encode_group(x)
+    # Encode a dense series into a single block group, in blocks of 1000 samples:
+    group, block_min, block_max, block_mean = fluxcode.encode_group(x)
 
     # Decode the block group (lossy: within the error bound, exact for decimal data):
     x_rec, _, block_sizes = fluxcode.decode_group(group)
 
     # With timestamps (datetime64, or integer ticks with time_unit), stored exactly (or within
     # Params(time_error=...) of an interval):
-    block group, *_ = fluxcode.encode_group(x, times=t)
+    group, *_ = fluxcode.encode_group(x, times=t)
     x_rec, t_rec, _ = fluxcode.decode_group(group)
 
     # Explicit blocks of any size (a flat array and each block's size):
-    block group, *_ = fluxcode.encode_blocks(x, block_sizes=[1000, 998, 0, 1003])
+    group, *_ = fluxcode.encode_blocks(x, block_sizes=[1000, 998, 0, 1003])
 
     # Replace block 3 and append a block:
-    block group, indices, mins, maxs, means = fluxcode.update(group, {3: block3, 4: block4})
+    group, indices, mins, maxs, means = fluxcode.update(group, {3: block3, 4: block4})
 
     # An hour in one-minute blocks, then replace the data of a few minutes. New samples
     # replace existing ones with the same times; delete_ranges are deleted first (with
     # only samples it is an upsert, with only ranges a deletion):
     hour = dict(start_time=np.datetime64("2026-01-01T10:00"), block_duration=np.timedelta64(1, "m"))
-    block group, *_ = fluxcode.encode_time_blocks(x, t, **hour)
-    block group, *_ = fluxcode.update_time_blocks(group, x_new, t_new, delete_ranges=(t0, t1), **hour)
+    group, *_ = fluxcode.encode_time_blocks(x, t, **hour)
+    group, *_ = fluxcode.update_time_blocks(group, x_new, t_new, delete_ranges=(t0, t1), **hour)
 """
 
 from ._api import (
