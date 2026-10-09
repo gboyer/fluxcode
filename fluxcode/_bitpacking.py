@@ -766,7 +766,7 @@ def unshuffle_time_residuals(
     long_offset: int,
     out_time_residuals: np.ndarray,
     scratch_tail: np.ndarray,
-) -> int:
+) -> None:
     """Reconstructs a block's zigzagged uint64 time residuals from its time residual bit planes.
 
     Args:
@@ -776,9 +776,6 @@ def unshuffle_time_residuals(
         long_offset: The block's first byte in the long planes, or -1 for a short block.
         out_time_residuals: Output 1D uint64 array of the block's n residuals.
         scratch_tail: uint64 scratch array of 8 for a partial last octet.
-
-    Returns:
-        The number of byte levels with a nonzero plane byte (at most 4 for a short block).
     """
     num_samples = out_time_residuals.shape[0]
     # Full octets here; a partial last octet (its plane bytes after them) is unpacked separately
@@ -824,7 +821,6 @@ def unshuffle_time_residuals(
             short_planes, long_planes, short_offset, long_offset, stride, num_active_bytes, out_time_residuals,
             scratch_tail,
         )
-    return num_active_bytes
 
 
 @njit(nogil=True, cache=True)

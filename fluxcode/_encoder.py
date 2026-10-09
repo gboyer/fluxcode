@@ -653,7 +653,6 @@ def encode_block(
     quant_exp: int,
     decimal: bool,
     orders_mask: int,
-    pick_len: int,
     scratch_quantized: np.ndarray,
     out_residuals: np.ndarray,
 ) -> tuple[int, int, np.int64, float]:
@@ -666,7 +665,6 @@ def encode_block(
         quant_exp: Quantization exponent.
         decimal: Whether decimal detection is enabled.
         orders_mask: Allowed predictor orders bitmask.
-        pick_len: Sample count evaluated for order selection.
         scratch_quantized: Preallocated 1D int32 scratch buffer for quantized values.
         out_residuals: Output 1D int16 array receiving residuals.
 
@@ -694,7 +692,7 @@ def encode_block(
     if not decimal_detected:
         anchor = quantize_block(samples, lower_bound, upper_bound, quant_exp, scratch_quantized)
     # Select difference order minimizing residual variance
-    selected_order = pick_order(scratch_quantized, pick_len, orders_mask)
+    selected_order = pick_order(scratch_quantized, min(PICK_LEN, samples.shape[0]), orders_mask)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
     return flags | selected_order, param_val, decimal_base, anchor
@@ -791,7 +789,6 @@ def _apply_target_reallocation(
     estimated_bits_per_block: np.ndarray,
     decimal: bool,
     orders_mask: int,
-    pick_len: int,
     scratch_quantized: np.ndarray,
     scratch_held: np.ndarray,
     scratch_residuals: np.ndarray,
@@ -813,7 +810,6 @@ def _apply_target_reallocation(
         estimated_bits_per_block: 1D float64 array of estimated bits before coarsening.
         decimal: Whether decimal detection is active.
         orders_mask: Bitmask of allowable predictor difference orders.
-        pick_len: Sample count used for predictor order selection.
         scratch_quantized: 1D int32 scratch buffer.
         scratch_held: 1D float64 scratch buffer for imputed non-finite samples.
         scratch_residuals: 1D int16 scratch buffer for rolling back residuals.
@@ -848,7 +844,6 @@ def _apply_target_reallocation(
                 target_exp,
                 decimal,
                 orders_mask,
-                min(pick_len, block_len),
                 scratch_quantized[:block_len],
                 block_residuals,
             )
@@ -882,7 +877,6 @@ def encode_group(
     noise_factor: float,
     target_bits: float,
     decimal: bool,
-    pick_len: int,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
     out_value_anchors: np.ndarray,
@@ -912,7 +906,6 @@ def encode_group(
         noise_factor: Noise floor multiplier (0.0 if disabled).
         target_bits: Target bits per sample (0.0 if disabled).
         decimal: Whether decimal detection is active.
-        pick_len: Sample count used for predictor order selection.
         out_block_flags: Output 1D uint8 array of length num_blocks receiving header bytes.
         out_grid_params: Output 1D int64 array of length num_blocks receiving parameters.
         out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors (float64 bits of
@@ -1024,7 +1017,6 @@ def encode_group(
             planned_exp,
             decimal,
             orders_mask,
-            min(pick_len, block_len),
             block_quantized,
             block_residuals,
         )
@@ -1061,7 +1053,6 @@ def encode_group(
                 estimated_bits_per_block,
                 decimal,
                 orders_mask,
-                pick_len,
                 scratch_quantized,
                 scratch_held,
                 np.empty(max_len, np.int16),

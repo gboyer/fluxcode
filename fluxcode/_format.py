@@ -106,29 +106,17 @@ SHORT_BLOCK_LEN: int = 8
 (max_quantize_bits), on a decimal grid if one is detected, and order 0."""
 
 
-class NonFiniteCode(enum.IntEnum):
-    """Two-bit sample classification codes for non-finite values.
-
-    Kernels use the plain-int CODE_* constants below: numba can't lower IntEnum members in
-    all expressions.
-    """
-
-    FINITE = 0
-    NAN = 1
-    POS_INF = 2
-    NEG_INF = 3
-
-
-CODE_FINITE: int = int(NonFiniteCode.FINITE)
+# Two-bit codes of non-finite samples (plain ints: numba kernels use them)
+CODE_FINITE: int = 0
 """Two-bit code representing a finite sample (00b)."""
 
-CODE_NAN: int = int(NonFiniteCode.NAN)
+CODE_NAN: int = 1
 """Two-bit code representing a NaN sample (01b)."""
 
-CODE_POS_INF: int = int(NonFiniteCode.POS_INF)
+CODE_POS_INF: int = 2
 """Two-bit code representing positive infinity (+inf, 10b)."""
 
-CODE_NEG_INF: int = int(NonFiniteCode.NEG_INF)
+CODE_NEG_INF: int = 3
 """Two-bit code representing negative infinity (-inf, 11b)."""
 
 

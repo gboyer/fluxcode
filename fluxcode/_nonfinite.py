@@ -13,6 +13,7 @@ import math
 import numpy as np
 from numba import njit
 
+from . import _extreme_magnitudes as xm
 from ._bitpacking import get_code
 from ._format import (
     CODE_FINITE,
@@ -78,31 +79,8 @@ def fill_nonfinite(
     mean_val = accum_sum / finite_count
     # Sum overflowed float64 capacity: fall back to division before summation
     if not math.isfinite(mean_val):
-        mean_val = _mean_by_division_coded(samples, out_codes, finite_count)
+        mean_val = xm.mean_by_division(samples, finite_count)
     return min_val, max_val, mean_val, finite_count
-
-
-@njit(nogil=True, cache=True)
-def _mean_by_division_coded(samples: np.ndarray, codes: np.ndarray, finite_count: int) -> float:
-    """Computes mean over finite samples by division when direct sum overflows.
-
-    Filters samples by checking classification codes rather than isfinite, which keeps
-    the loop fast.
-
-    Args:
-        samples: 1D float64 array of samples.
-        codes: 1D uint8 array of 2-bit classification codes.
-        finite_count: Number of finite samples (must be > 0).
-
-    Returns:
-        Arithmetic mean of finite samples.
-    """
-    accum_mean = 0.0
-    for sample_idx in range(samples.shape[0]):
-        # Only accumulate samples classified as finite
-        if codes[sample_idx] == CODE_FINITE:
-            accum_mean += samples[sample_idx] / finite_count
-    return accum_mean
 
 
 @njit(inline="always")

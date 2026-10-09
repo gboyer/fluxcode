@@ -337,7 +337,7 @@ def test_update_time_blocks_rounds_onto_the_stored_phase():
 
 def us_blocks(group_ticks, appended, time_error=0.1):
     """Encodes 1000 us ticks in 1 s blocks, then appends one tick; returns (group, update result)."""
-    kwargs = dict(start_time=0, block_duration=10**6, time_unit="us")
+    kwargs = {"start_time": 0, "block_duration": 10**6, "time_unit": "us"}
     params = Params(time_error=time_error)
     group = fluxcode.encode_time_blocks(np.zeros(group_ticks.size), group_ticks, params, **kwargs).group
     updated = fluxcode.update_time_blocks(group, [1.0], [appended], params, **kwargs)

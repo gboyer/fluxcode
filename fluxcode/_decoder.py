@@ -8,7 +8,6 @@ decimal grid. Restores non-finite values (canonical quiet NaN and signed infinit
 when flagged.
 """
 
-import enum
 import math
 
 import numpy as np
@@ -40,26 +39,17 @@ from ._format import (
 )
 from ._nonfinite import restore_nonfinite
 
-
-class ValidationStatus(enum.IntEnum):
-    """Header and parameter validation status for uncompressed block groups."""
-
-    OK = 0
-    BAD_FLAGS = 1
-    BAD_PARAM = 2
-    BAD_ANCHOR = 3
-
-
-OK: int = int(ValidationStatus.OK)
+# Validation statuses of uncompressed block groups (plain ints: numba kernels use them)
+OK: int = 0
 """Validation status indicating block group headers and parameters are valid."""
 
-BAD_FLAGS: int = int(ValidationStatus.BAD_FLAGS)
+BAD_FLAGS: int = 1
 """Validation status indicating reserved or unsupported bits in a block header."""
 
-BAD_PARAM: int = int(ValidationStatus.BAD_PARAM)
+BAD_PARAM: int = 2
 """Validation status indicating an out-of-range exponent or parameter."""
 
-BAD_ANCHOR: int = int(ValidationStatus.BAD_ANCHOR)
+BAD_ANCHOR: int = 3
 """Validation status indicating a non-finite float anchor or an out-of-range decimal grid index."""
 
 MAX_DECIMAL_ANCHOR: int = 1 << 52

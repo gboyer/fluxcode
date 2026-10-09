@@ -16,7 +16,6 @@ With a time error e > 0 (Params.time_error) the encoder first rounds each block'
 clock lands back on its own grid and stores as a regular block. The format doesn't change.
 """
 
-import enum
 from collections.abc import Callable
 from typing import cast
 
@@ -50,29 +49,20 @@ little either side of a round period (999.98 us), and a nice time error times a 
 1-2-5 step (2 x 0.1 x 1 ms), so without slack the step would flip between blocks."""
 
 
-class TimeStatus(enum.IntEnum):
-    """Outcome of time axis analysis (encoding) or expansion (decoding)."""
-
-    OK = 0
-    DECREASING = 1
-    BAD_STEP = 2
-    BAD_FIRST_RESIDUAL = 3
-    OVERFLOW = 4
-
-
-OK: int = int(TimeStatus.OK)
+# Outcomes of time axis analysis (encoding) or expansion (decoding), as plain ints for numba
+OK: int = 0
 """The times are valid."""
 
-DECREASING: int = int(TimeStatus.DECREASING)
+DECREASING: int = 1
 """Encoding: a time is below the previous time in its block."""
 
-BAD_STEP: int = int(TimeStatus.BAD_STEP)
+BAD_STEP: int = 2
 """Decoding: a time step is negative, or zero on an irregular block."""
 
-BAD_FIRST_RESIDUAL: int = int(TimeStatus.BAD_FIRST_RESIDUAL)
+BAD_FIRST_RESIDUAL: int = 3
 """Decoding: an irregular block's first time residual is not 0."""
 
-OVERFLOW: int = int(TimeStatus.OVERFLOW)
+OVERFLOW: int = 4
 """Decoding: a time exceeds int64 maximum."""
 
 
