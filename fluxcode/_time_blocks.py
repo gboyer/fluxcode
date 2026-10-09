@@ -13,6 +13,9 @@ With a time error (Params.time_error), times are rounded with the quanta of the 
 fall in, then assigned to blocks: a time that rounds across a boundary belongs to the block it
 lands in, and one that would round below the start time is raised to it (still within half a
 quantum of where it was). Every block's times stay within its range.
+
+In an update_time_blocks a time moves at most twice: onto a block's own regular lattice (within
+half the time error), and onto a 1-2-5 grid, on which it then stays (_round_updates has the rules).
 """
 
 import numpy as np
@@ -251,14 +254,18 @@ def update_time_blocks(
     time_rows = _group.read_time_rows(parsed, decoded)
     gathered = _gather(parsed, decoded, time_rows)
     if params.time_error > 0 and ticks.shape[0]:
-        ticks = np.maximum(_snap_new_ticks(gathered, ticks, series_samples, new_ids, ranges, params.time_error), start)
+        ticks, edits = _round_updates(
+            parsed, time_rows, gathered, ticks, new_ids, ranges, params.time_error, start, duration, covered
+        )
         new_ids = block_ids(ticks, start, duration)
         # A time rounded across a boundary belongs to the next block: decode it too, if stored
         extra = np.setdiff1d(np.flatnonzero(_new_blocks_mask(new_ids, num_old_blocks, covered)), decoded)
-        if extra.shape[0]:
+        if extra.shape[0] or edits:
             decoded = np.union1d(decoded, extra)
             time_rows = _group.read_time_rows(parsed, decoded)
             gathered = _gather(parsed, decoded, time_rows)
+            for block_idx, block_ticks in edits.items():
+                gathered[0][gathered[2] == block_idx] = block_ticks
     gathered_ticks, gathered_values, gathered_blocks = gathered
     # Determine total block count including newly appended blocks
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
@@ -282,7 +289,7 @@ def update_time_blocks(
     if sizes.max() > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
     # Splice updated blocks into the block group while carrying unchanged blocks verbatim (the
-    # new samples are rounded; stored ones keep their times)
+    # ticks are rounded already)
     return _group.splice(
         parsed,
         indices,
@@ -335,57 +342,306 @@ def _gather(
     return all_ticks[positions], all_values[positions], np.repeat(decoded, run_sizes)
 
 
-def _snap_new_ticks(
+def _round_to_grid(ticks: np.ndarray, quantum: int | np.ndarray, phase: int | np.ndarray) -> np.ndarray:
+    """Rounds ticks to the nearest phase + k quantum, ties up (as _time.snap_times).
+
+    Args:
+        ticks: 1D int64 array of ticks.
+        quantum: The grid's step in ticks (> 1), or one per tick.
+        phase: The grid's phase, 0 <= phase < quantum, or one per tick.
+
+    Returns:
+        1D int64 array of the rounded ticks.
+    """
+    remainder = (ticks - phase) % quantum
+    down = ticks - remainder
+    return np.where(remainder < quantum - remainder, down, down + quantum)
+
+
+def _merged_ticks(old_ticks: np.ndarray, new_ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
+    """The ticks of one block after an update: its stored samples that survive, and the new ones.
+
+    Args:
+        old_ticks: 1D int64 array of the block's stored ticks.
+        new_ticks: 1D int64 array of its new ticks, non-decreasing.
+        ranges: 2D int64 array of the deletion ranges.
+
+    Returns:
+        1D int64 array of the merged ticks.
+    """
+    num_old, num_new = old_ticks.shape[0], new_ticks.shape[0]
+    out = np.empty(num_old + num_new, np.int64)
+    num_merged = _merge_samples(
+        old_ticks, np.zeros(num_old), np.zeros(num_old, np.int64), new_ticks, np.zeros(num_new),
+        np.zeros(num_new, np.int64), ranges, np.zeros(1, np.bool_), out, np.empty(num_old + num_new),
+        np.zeros(1, np.int64),
+    )
+    return out[:num_merged]
+
+
+def _merged_quantum(merged: np.ndarray, time_error: float) -> int:
+    """The quantum the time error gives a block's ticks (_time.time_quanta): 0 if none."""
+    quantum = np.zeros(1, np.int64)
+    _time.time_quanta(
+        merged, np.array([0, merged.shape[0]], np.int64), time_error, np.empty(_time.CADENCE_SAMPLES, np.int64),
+        quantum, np.zeros(1, np.bool_),
+    )
+    return int(quantum[0])
+
+
+def _merged_phase(merged: np.ndarray, quantum: int) -> int:
+    """The phase of a block's grid (_time.time_phases), chosen from the block alone."""
+    phase = np.zeros(1, np.int64)
+    _time.time_phases(
+        merged, np.array([0, merged.shape[0]], np.int64), np.array([quantum], np.int64),
+        np.full(1, _time.INT64_MIN, np.int64), phase,
+    )
+    return int(phase[0])
+
+
+def _nested_quantum(limit: int, step: int) -> int:
+    """The largest 1-2-5 x 10^k value of at most limit that nests with step (divides it or is
+    divided by it); any if step is 0. 1 if there is none."""
+    decade = 1
+    while decade * 10 <= limit:
+        decade *= 10
+    while decade >= 1:
+        for mantissa in (5, 2, 1):
+            value = mantissa * decade
+            if value <= limit and (step <= 0 or step % value == 0 or value % step == 0):
+                return value
+        decade //= 10
+    return 1
+
+
+def _stored_grid(ticks: np.ndarray) -> tuple[int, int]:
+    """Finds the 1-2-5 grid a stored block's ticks lie on.
+
+    The coarsest step of at most the block's median interval that CADENCE_SHARE of (up to 512
+    evenly spaced) ticks lie on, at the phase of the middle tick; the few ticks that order fixes
+    moved at the block's ends may be off it.
+
+    Args:
+        ticks: 1D int64 array of the block's stored ticks.
+
+    Returns:
+        A tuple of (step, tick): the step (0 if none >= 2) and a tick on the grid.
+    """
+    if ticks.shape[0] < 2:
+        return 0, 0
+    cap = int(np.median(np.diff(ticks)))
+    sample = ticks if ticks.shape[0] <= 512 else ticks[np.linspace(0, ticks.shape[0] - 1, 512).astype(np.int64)]
+    middle = int(ticks[ticks.shape[0] // 2])
+    relative = sample - middle
+    decade = 1
+    while decade * 10 <= cap:
+        decade *= 10
+    while decade >= 1:
+        for mantissa in (5, 2, 1):
+            step = mantissa * decade
+            if 2 <= step <= cap and np.count_nonzero(relative % step == 0) >= _time.CADENCE_SHARE * sample.shape[0]:
+                return step, middle
+        decade //= 10
+    return 0, 0
+
+
+def _round_updates(
+    parsed: _group.ParsedGroup,
+    time_rows: _format.TimeRows,
     gathered: tuple[np.ndarray, np.ndarray, np.ndarray],
     ticks: np.ndarray,
-    values: np.ndarray,
     new_ids: np.ndarray,
     ranges: np.ndarray,
     time_error: float,
-) -> np.ndarray:
-    """Rounds new samples' ticks to the quanta of the blocks they fall in.
+    start: int,
+    duration: int,
+    covered: np.ndarray,
+) -> tuple[np.ndarray, dict[int, np.ndarray]]:
+    """Rounds an update's new ticks so that no tick moves further than the time error in all.
 
-    A block's quantum and phase come from its samples after the update as given (stored and
-    new, before rounding), so a few new samples round to the grid of the stored ones.
+    A tick moves at most twice: onto a block's own regular lattice by up to half the time error,
+    and onto a 1-2-5 grid, after which it never moves again (later grids nest in it). For each
+    block that has stored samples left after the update:
+
+    0. Fewer than _time.MIN_ROUND_SAMPLES samples, or exactly regular: nothing is rounded.
+    1. A stored regular block: the new ticks go to its lattice (first tick + k interval) if
+       all are within half the time error of it. Stored ticks stay.
+    2. Stored ticks that lie on a 1-2-5 grid (_stored_grid): they stay, and the new ticks go to
+       the coarsest 1-2-5 grid the merged block's quantum allows that nests with it.
+    3. Otherwise the whole block, stored ticks too, is rounded to the grid of its ticks after the
+       update (_time.time_quanta, time_phases). If the stored ticks lie on a lattice coarser than
+       that quantum, they may be on a lattice by rule 1, and the quantum is at most that of
+       half the time error.
+
+    Blocks without stored samples are rounded as in an encode, following the block before them
+    (_group.snap_ticks).
 
     Args:
+        parsed: The block group.
+        time_rows: Its time rows (the columns at least).
         gathered: (ticks, values, blocks) of the decoded stored blocks (_gather).
         ticks: 1D int64 array of the new samples' ticks, non-decreasing.
-        values: 1D float64 array of the new samples.
         new_ids: 1D int64 array of the new samples' blocks.
         ranges: 2D int64 array of the deletion ranges.
         time_error: The time error (> 0).
+        start: Starting tick of block 0.
+        duration: Block duration in ticks.
+        covered: 1D bool array of the stored blocks the deletion ranges cover whole.
 
     Returns:
-        1D int64 array of the new samples' rounded ticks (in order).
+        A tuple of (ticks, edits): the new samples' rounded ticks (non-decreasing, none below
+        start), and the rounded stored ticks of each stored block that rule 3 changed.
     """
-    old_ticks, old_values, old_blocks = gathered
-    num_blocks = max(int(old_blocks[-1]) + 1 if old_blocks.shape[0] else 0, int(new_ids[-1]) + 1)
-    changed = np.zeros(num_blocks, np.bool_)
+    old_ticks, _, old_blocks = gathered
+    out = ticks.copy()
+    edits: dict[int, np.ndarray] = {}
+    blocks, first, counts = np.unique(new_ids, return_index=True, return_counts=True)
+    old_first = np.searchsorted(old_blocks, blocks, "left")
+    old_end = np.searchsorted(old_blocks, blocks, "right")
+    flags = parsed.block_flags
+    # Every block's ticks after the update, as given: one merge, sliced per block
+    num_blocks = int(blocks[-1]) + 1
+    if old_blocks.shape[0]:
+        num_blocks = max(num_blocks, int(old_blocks[-1]) + 1)
     sizes = np.zeros(num_blocks, np.int64)
-    num_total = old_ticks.shape[0] + ticks.shape[0]
-    merged_ticks, merged_values = np.empty(num_total, np.int64), np.empty(num_total)
-    num_merged = _merge_samples(
-        old_ticks, old_values, old_blocks, ticks, values, new_ids, ranges, changed, merged_ticks, merged_values, sizes
+    all_merged = np.empty(old_ticks.shape[0] + ticks.shape[0], np.int64)
+    _merge_samples(
+        old_ticks, np.zeros(old_ticks.shape[0]), old_blocks, ticks, np.zeros(ticks.shape[0]), new_ids, ranges,
+        np.zeros(num_blocks, np.bool_), all_merged, np.empty(all_merged.shape[0]), sizes,
     )
-    quanta = np.zeros(num_blocks, np.int64)
-    regular = np.zeros(num_blocks, np.bool_)
     merged_offsets = _group.sample_offsets(sizes)
-    _time.time_quanta(
-        merged_ticks[:num_merged], merged_offsets, time_error, np.empty(_time.CADENCE_SAMPLES, np.int64), quanta,
-        regular,
+    sizes = sizes[blocks]
+    fresh = sizes == counts  # no stored sample survives
+    # Rule 0: nothing is rounded below the minimum size or if the block is exactly regular
+    active = np.flatnonzero(~fresh & (sizes >= _time.MIN_ROUND_SAMPLES))
+    regular = np.zeros(active.shape[0], np.bool_)
+    _time.regular_blocks(all_merged, merged_offsets[blocks[active]], merged_offsets[blocks[active] + 1], regular)
+    active = active[~regular]
+    # Rule 1, for all blocks at once: a stored regular block's lattice takes the new ticks if they are all near it
+    stored_ids = np.minimum(blocks, parsed.header.num_blocks - 1)
+    interval = time_rows.steps[stored_ids] * time_rows.refs[stored_ids].astype(np.int64)
+    lattice = (
+        (blocks < parsed.header.num_blocks) & ((flags[stored_ids] & _format.BLOCK_FLAG_IRREGULAR_TIME) == 0)
+        & (parsed.block_sizes[stored_ids] >= 2) & (interval > 0)
     )
-    # A regular block is left as it is, as in snap_ticks
-    quanta[regular] = 0
-    if not quanta.any():
-        return ticks
-    # Phases from the stored and new samples too: stored ones on a grid hold it
-    phases = np.zeros(num_blocks, np.int64)
-    _time.time_phases(
-        merged_ticks[:num_merged], merged_offsets, quanta, np.full(num_blocks, _time.INT64_MIN, np.int64), phases
-    )
-    snapped = np.empty_like(ticks)
-    new_sizes = np.bincount(new_ids, minlength=num_blocks).astype(np.int64)
-    status, _ = _time.snap_times(ticks, _group.sample_offsets(new_sizes), quanta, phases, snapped)
-    assert status == _time.OK
-    return snapped
+    lattice[np.setdiff1d(np.arange(blocks.shape[0]), active)] = False
+    which = np.repeat(np.arange(blocks.shape[0]), counts)
+    step_t = np.where(lattice, interval, 1)[which]
+    snapped = _round_to_grid(ticks, step_t, (time_rows.starts[stored_ids][which] % step_t))
+    near = np.abs(snapped - ticks) <= np.floor(0.5 * time_error * step_t).astype(np.int64)
+    snapped_blocks = lattice & np.logical_and.reduceat(near, first)
+    out[snapped_blocks[which]] = snapped[snapped_blocks[which]]
+    for idx in np.setdiff1d(active, np.flatnonzero(snapped_blocks)).tolist():
+        block = int(blocks[idx])
+        new_slice = slice(first[idx], first[idx] + counts[idx])
+        new_t, old_t = ticks[new_slice], old_ticks[old_first[idx]:old_end[idx]]
+        merged = all_merged[merged_offsets[block]:merged_offsets[block + 1]]
+        irregular = bool(flags[block] & _format.BLOCK_FLAG_IRREGULAR_TIME)
+        step = int(time_rows.steps[block])
+        interval = step * int(time_rows.refs[block])
+        quantum = _merged_quantum(merged, time_error)
+        if quantum <= 1:
+            continue
+        grid, on_grid = _stored_grid(old_t)
+        if grid:
+            quantum = _nested_quantum(quantum, grid)
+            if quantum > 1:
+                out[new_slice] = _round_to_grid(new_t, quantum, on_grid % quantum)
+            continue
+        if (interval if not irregular else step) > quantum:
+            quantum = min(quantum, _merged_quantum(merged, 0.5 * time_error))
+            if quantum <= 1:
+                continue
+        phase = _merged_phase(merged, quantum)
+        out[new_slice] = _round_to_grid(new_t, quantum, phase)
+        low = start + block * duration
+        stored = np.clip(_round_to_grid(old_t, quantum, phase), low, low + duration - 1)
+        if (stored != old_t).any():
+            edits[block] = stored
+    fresh_idx = np.flatnonzero(fresh)
+    if fresh_idx.shape[0]:
+        fresh_counts = counts[fresh_idx]
+        positions = np.arange(int(fresh_counts.sum())) + np.repeat(
+            first[fresh_idx] - (np.cumsum(fresh_counts) - fresh_counts), fresh_counts
+        )
+        seed_ticks, seed_steps = _clock_before(
+            parsed, time_rows, blocks, fresh, fresh_idx, old_ticks, old_blocks, edits, out, first, counts, ranges,
+            covered,
+        )
+        out[positions], _ = _group.snap_ticks(ticks[positions], fresh_counts, time_error, seed_ticks, seed_steps)
+    return np.maximum.accumulate(np.maximum(out, start)), edits
+
+
+def _clock_before(
+    parsed: _group.ParsedGroup,
+    time_rows: _format.TimeRows,
+    blocks: np.ndarray,
+    fresh: np.ndarray,
+    fresh_idx: np.ndarray,
+    old_ticks: np.ndarray,
+    old_blocks: np.ndarray,
+    edits: dict[int, np.ndarray],
+    new_ticks: np.ndarray,
+    new_first: np.ndarray,
+    new_counts: np.ndarray,
+    ranges: np.ndarray,
+    covered: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The clock each block without stored samples follows: the last tick and regular interval of the
+    non-empty block before it, unless that is another such block (they are rounded in sequence).
+
+    A stored block that the update doesn't touch is read from its columns
+    (_group.stored_tails); one it does is read from its ticks as rounded.
+
+    Args:
+        parsed: The block group.
+        time_rows: Its time rows (the columns at least).
+        blocks: 1D int64 array of the blocks with new samples.
+        fresh: 1D bool array over blocks: no stored sample survives.
+        fresh_idx: 1D int64 array of the positions of the fresh blocks.
+        old_ticks: 1D int64 array of the decoded stored ticks.
+        old_blocks: 1D int64 array of their blocks.
+        edits: Rounded stored ticks by block (rule 3).
+        new_ticks: 1D int64 array of the new ticks as rounded so far.
+        new_first: 1D int64 array: each block's first new tick.
+        new_counts: 1D int64 array: each block's number of new ticks.
+        ranges: 2D int64 array of the deletion ranges.
+        covered: 1D bool array of the stored blocks the deletion ranges cover whole.
+
+    Returns:
+        A tuple of (seed_ticks, seed_steps) per fresh block (_group.snap_ticks).
+    """
+    num_old = parsed.header.num_blocks
+    # The blocks that are non-empty after the update: decoded ones by their surviving samples
+    nonempty = (parsed.block_sizes > 0) & ~covered
+    if old_blocks.shape[0]:
+        gone = np.zeros(old_ticks.shape[0], np.bool_)
+        if ranges.shape[0]:
+            position = np.minimum(np.searchsorted(ranges[:, 1], old_ticks, "right"), ranges.shape[0] - 1)
+            gone = (ranges[position, 1] > old_ticks) & (ranges[position, 0] <= old_ticks)
+        decoded = np.unique(old_blocks)
+        nonempty[decoded] = np.bincount(old_blocks[~gone], minlength=num_old)[decoded] > 0
+    nonempty = np.union1d(np.flatnonzero(nonempty), blocks)
+    seed_ticks = np.full(fresh_idx.shape[0], _time.INT64_MIN, np.int64)
+    seed_steps = np.zeros(fresh_idx.shape[0], np.int64)
+    before = np.searchsorted(nonempty, blocks[fresh_idx], "left") - 1
+    previous = np.where(before >= 0, nonempty[np.maximum(before, 0)], -1)
+    position = np.searchsorted(blocks, previous)
+    is_new = (previous >= 0) & (position < blocks.shape[0]) & (blocks[np.minimum(position, blocks.shape[0] - 1)] == previous)
+    follows = np.zeros(fresh_idx.shape[0], np.bool_)
+    follows[is_new] = fresh[position[is_new]]  # follows another such block: the sequence carries on
+    old_first = np.searchsorted(old_blocks, previous, "left")
+    old_end = np.searchsorted(old_blocks, previous, "right")
+    touched = (previous >= 0) & ((old_end > old_first) | is_new)
+    stored = np.flatnonzero((previous >= 0) & ~touched)
+    if stored.shape[0]:
+        seed_ticks[stored], seed_steps[stored] = _group.stored_tails(parsed, time_rows, previous[stored])
+    for row in np.flatnonzero(touched & ~follows).tolist():
+        block = int(previous[row])
+        old_t = edits.get(block, old_ticks[old_first[row]:old_end[row]])
+        idx = int(position[row])
+        new_t = new_ticks[new_first[idx]:new_first[idx] + new_counts[idx]] if is_new[row] else old_t[:0]
+        merged = _merged_ticks(old_t, new_t, ranges)
+        seed_ticks[row] = merged[-1]
+        seed_steps[row] = _time.regular_step(merged) if merged.shape[0] >= _time.MIN_ROUND_SAMPLES else 0
+    return seed_ticks, seed_steps

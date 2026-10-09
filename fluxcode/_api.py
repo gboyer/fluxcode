@@ -314,8 +314,13 @@ def update_time_blocks(
     First every existing sample timed within delete_ranges is discarded. Then the new
     samples are added: an existing sample with the same timestamp as a new one is replaced,
     and new samples sharing a timestamp are all kept (in their order). With params.time_error,
-    new times are rounded first (stored ones keep theirs), and "the same timestamp" is the
-    rounded one. Upsert and rounding are at odds: a new sample that rounds onto a stored one
+    new times are rounded first, and "the same timestamp" is the rounded one. A block of fewer
+    than 16 samples, or exactly regular, isn't rounded. Otherwise new times snap within half the
+    time error onto a stored regular block's lattice, or take a 1-2-5 grid that nests in the
+    grid the stored times lie on (they stay); failing both, the whole block, stored times
+    included, is rounded again. So no time moves further than time_error intervals in all,
+    however often its block is updated. A block without stored samples follows the block before
+    it (a regular block's lattice if the times fit). Upsert and rounding are at odds: a new sample that rounds onto a stored one
     replaces it, whether it re-sends that sample or is a distinct event a fraction of a step
     away; with both, delete the range the new samples replace. So with only samples it is an
     upsert, with only delete_ranges a deletion, and with both a range replacement

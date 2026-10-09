@@ -268,7 +268,11 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
 ### Time error
 
 `time_error` = e lets each time move by up to e times its block's interval (ENCODER §4): times
-round to a grid of a 1-2-5 step of at most 2e intervals, at the clock's own phase. Measured with
+round to a grid of a 1-2-5 step of at most 2e intervals, at the clock's own phase. Blocks of fewer
+than 16 samples aren't rounded. In `update_time_blocks`, new ticks snap within e/2 intervals onto a
+stored regular block's lattice, or take a 1-2-5 grid nested in the stored ticks' (which never move);
+otherwise the block is rounded whole, so a tick moves e intervals in all at most. A block after a
+regular one with ticks within e/2 of its lattice continues that clock. Measured with
 `bench/time_axis.py --time-error 0.02,0.05,0.1` (one-minute block groups of 60 × 1000, Apple M3, AC
 power, single thread, Python without the Rust extension, 2026-10-08): bytes the times add, encode
 and decode time they add, irregular blocks of 60, and the largest move in median intervals.

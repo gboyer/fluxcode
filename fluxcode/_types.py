@@ -131,7 +131,10 @@ class Params:
             most), at the clock's own phase: a jittered clock rounds back onto its own grid
             once time_error is about 5 times its jitter's standard deviation over its
             interval, and then stores as regular times. Smaller time errors still save most of
-            the jitter's cost. Regular blocks are left as they are.
+            the jitter's cost. Regular blocks, and blocks of fewer than 16 samples, are left as
+            they are. A block after a regular one is rounded onto its lattice if every time is
+            within half the time error of it. No time moves further than time_error in all,
+            however often its block is updated (update_time_blocks).
     """
 
     min_quantize_bits: int = 6

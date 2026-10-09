@@ -171,9 +171,10 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
       block.
     - Any 1-2-5 step up to a fifth of a 1-2-5 period divides it: for e ≤ 0.1 a jittered clock
       rounds back onto its own grid.
-    - A block isn't rounded if q would be 1, or it has fewer than 2 samples or a median
-      interval of 0, or it is regular: a regular block stores as cheaply as it can already, so
-      rounding could only move its times.
+    - A block isn't rounded if q would be 1, or it has fewer than 16 samples (the median of 15
+      intervals needs 16: a smaller block's grid would be a guess) or a median interval of 0, or
+      it is regular: a regular block stores as cheaply as it can already, so rounding could only
+      move its times.
   - **Phase** φ: the block's grid is φ + k·q from the epoch, with φ one of ten multiples of q/10
     (q/10 is a 1-2-5 step too, so the times stay on a round grid, and series on the same clock
     pick the same one).
@@ -186,13 +187,16 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
       noise would otherwise pick between them block by block, leaving the block starts uneven;
       on a noisy clock it would pick a phase a step off. A drifting clock moves on by a step
       once it has drifted about half of one.
-    - In `update` a new block after a stored one starts from the stored block's last tick; in
-      `update_time_blocks` the phase comes from the block's stored and new samples, so new
-      samples round onto the stored grid.
+    - A new block after a non-empty one (stored or earlier in the same encode) starts from that
+      block's last tick, so encoding at once and appending block by block agree.
     - Quanta of 2^56 ticks or more (over two years in ns) keep the epoch's grid: the integer
       scores would overflow.
   - **Rounding:** to the nearest point of the block's grid (ties up). A tick moves by at most
     q/2 ≤ 1.02·e·c. The ticks' order is checked before rounding, which could hide a decrease.
+  - **Following a regular clock:** a block of at least 16 samples after an exactly regular block
+    of at least 16 (interval d) whose ticks are all within e/2·d of that block's lattice (its
+    last tick + k·d, k ≥ 1) is rounded onto the lattice, so it is regular on the same clock
+    (also when d has no 1-2-5 grid, like 1001 µs). Otherwise it gets its own grid as above.
   - **Order across blocks:** rounding with one quantum keeps ticks in order. Where neighbouring
     blocks' quanta differ and the earlier block's last ticks round past the later one's first,
     the block with the larger quantum gives way: the earlier block's trailing ticks are lowered
@@ -606,13 +610,25 @@ N their total samples.
       coarsest grid the block has used;
     - decimal data on a decimal grid stays exact.
   - The result is byte-identical to `encode_time_blocks` of the resulting series when no block is
-    left empty at the end, and no time error is set (with one, the new samples' quanta come from
-    the blocks before rounding).
+    left empty at the end, and no time error is set. With one, a block that has stored samples
+    is rounded by its rule below, so a tick never moves further than e·c (+2%) in all, however
+    often the block is updated: a tick moves twice at most, once onto a regular block's own
+    lattice (by up to e/2·d), once onto a 1-2-5 grid, and a tick on a 1-2-5 grid stays.
+    For each block with stored samples left and at least 16 samples after the update that is not
+    exactly regular:
+    1. A stored regular block (interval d): new ticks all within e/2·d of its lattice go onto it.
+    2. Stored ticks on a 1-2-5 grid (90% of them, the coarsest step up to the block's
+       interval): they stay; new ticks go to the coarsest 1-2-5 grid at most the merged block's
+       quantum q* that nests with it (divides it or is a multiple), at its phase.
+    3. Otherwise the whole block, stored ticks included, is rounded as in an encode; if the
+       stored lattice step exceeds q* (the ticks may be on a lattice by rule 1) the quantum is at
+       most the one e/2 would give (≤ e·c).
+    Blocks without stored samples are rounded as in an encode, following the block before them.
 - **Times** decode exactly at `time_error` 0. With e > 0 (§4):
   - each moves by at most half its block's quantum, ≤ 1.02·e times the block's interval (in an
     `update`, a block clamped to a stored neighbour with a larger quantum: half of that one);
   - the series stays non-decreasing, and every time block's times stay in its range;
-  - `update_time_blocks` never moves a stored time.
+  - `update_time_blocks` moves a stored time only when it rounds the whole block (rule 3).
 
 ## 7. Conformance tests
 
@@ -704,7 +720,12 @@ N their total samples.
     - time blocks: times rounding across a boundary land in the next block, every block's times
       stay in its range, and a `start_time` off the grid still rounds;
     - `update_time_blocks` replaces a sample at its rounded time, moves a new sample onto a stored
-      next block (keeping its other samples), and keeps stored times;
+      next block (keeping its other samples);
+    - repeated `update_time_blocks` (jittered and 1001 µs clocks, Poisson events, re-sends, appends
+      and off-lattice samples) never move a tick further than 1.02·e·c from the time it was given;
+      a lattice snap within e instead of e/2 fails it; a block of fewer than 16 samples isn't
+      rounded until it grows; a block continues the regular clock before it, and appending
+      block by block gives the bytes of encoding at once;
     - free-running clocks (at a candidate phase, between two, and drifting) round onto their own
       phase, every block at one phase; a regular block off every grid keeps its times; `update`
       keeps a stored block's phase (re-sending gives the block group back) and
