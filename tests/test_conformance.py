@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """docs/SPEC.md §8 and docs/ENCODER.md §7 conformance tests, through the public API."""
 
+import _oracle
 import numpy as np
 import pytest
 import zstandard
@@ -351,7 +352,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _bitpacking.write_group(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
+    byte_body = _oracle.write_group(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
     lay = _format.layout(rows.block_flags, sizes)
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):

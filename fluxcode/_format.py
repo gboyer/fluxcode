@@ -636,19 +636,20 @@ class TimeRows(NamedTuple):
     residuals: np.ndarray
 
 
-def allocate_time_rows(num_blocks: int, num_samples: int, zero_residuals: bool = False) -> TimeRows:
+def allocate_time_rows(num_blocks: int, num_samples: int) -> TimeRows:
     """Allocates pre-sized arrays for time-axis rows.
 
     Args:
         num_blocks: Total number of blocks.
         num_samples: Total number of samples across all blocks.
-        zero_residuals: If True, residual array is zero-initialized; otherwise left uninitialized.
 
     Returns:
         A TimeRows tuple containing allocated arrays.
     """
-    residuals = (np.zeros if zero_residuals else np.empty)(num_samples, np.uint64)
-    return TimeRows(np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty(num_blocks, np.uint64), residuals)
+    return TimeRows(
+        np.empty(num_blocks, np.int64), np.empty(num_blocks, np.int64), np.empty(num_blocks, np.uint64),
+        np.empty(num_samples, np.uint64),
+    )
 
 
 class GroupRows(NamedTuple):

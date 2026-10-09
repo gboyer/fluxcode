@@ -18,7 +18,6 @@ from ._format import (
     BLOCK_FLAG_LONG_TIME,
     BLOCK_FLAG_NONFINITE,
     BYTES_PER_ANCHOR,
-    BYTES_PER_FLAGS,
     BYTES_PER_PARAM,
     BYTES_PER_RESIDUAL_SAMPLE,
     BYTES_PER_SIZE,
@@ -31,7 +30,6 @@ from ._format import (
     allocate_time_rows,
     block_sizes_start,
     code_planes_start,
-    get_int16,
     get_int64,
     grid_params_start,
     group_size,
@@ -39,7 +37,6 @@ from ._format import (
     plane_octets,
     put_int16,
     put_int64,
-    read_layout,
     residual_start,
     time_ref_start,
     time_start_start,
@@ -90,26 +87,20 @@ def planes_view(raw_group: np.ndarray, num_blocks: int, num_octets: int, has_tim
     return raw_group[start_offset:end_offset].reshape(16, num_octets)
 
 
-_POPCOUNT = np.array([byte.bit_count() for byte in range(256)], np.int64)
-"""Set bits of each byte value."""
-
-
 @njit(nogil=True, cache=True)
 def wide_share(
-    raw_group: np.ndarray, num_blocks: int, num_octets: int, has_time: bool, byte_planes: bool, bit_idx: int
+    raw_group: np.ndarray, num_blocks: int, num_octets: int, has_time: bool, bit_idx: int
 ) -> float:
     """Measures the share of residual slots whose zigzagged residual reaches 2^bit_idx.
 
     The slots are a block group's samples plus padding, 8 per octet. A residual reaches 2^bit_idx
-    if any of its bits bit_idx to 15 is set. Padding is zero, so bit planes and byte planes
-    give the same share.
+    if any of its bits bit_idx to 15 is set. Padding is zero.
 
     Args:
-        raw_group: 1D uint8 array of a body.
+        raw_group: 1D uint8 array of a body with byte planes.
         num_blocks: Total number of blocks.
         num_octets: Octets of all blocks.
         has_time: Whether the block group has a time axis.
-        byte_planes: Whether the body holds byte planes.
         bit_idx: The bit, 0 to 15.
 
     Returns:
@@ -117,28 +108,20 @@ def wide_share(
     """
     if not num_octets:
         return 0.0
+    bplanes = byte_planes_view(raw_group, num_blocks, num_octets, has_time)
+    # Eight slots per 64-bit word: mask each byte, fold its bits into bit 0, count the ones
+    low_words = bplanes[0].view(np.uint64)
+    high_words = bplanes[1].view(np.uint64)
+    low_mask = np.uint64(((0xFF << bit_idx) & 0xFF if bit_idx < 8 else 0) * 0x0101010101010101)
+    high_mask = np.uint64(((0xFF << max(bit_idx - 8, 0)) & 0xFF) * 0x0101010101010101)
+    ones = np.uint64(0x0101010101010101)
     count = 0
-    if byte_planes:
-        bplanes = byte_planes_view(raw_group, num_blocks, num_octets, has_time)
-        # Eight slots per 64-bit word: mask each byte, fold its bits into bit 0, count the ones
-        low_words = bplanes[0].view(np.uint64)
-        high_words = bplanes[1].view(np.uint64)
-        low_mask = np.uint64(((0xFF << bit_idx) & 0xFF if bit_idx < 8 else 0) * 0x0101010101010101)
-        high_mask = np.uint64(((0xFF << max(bit_idx - 8, 0)) & 0xFF) * 0x0101010101010101)
-        ones = np.uint64(0x0101010101010101)
-        for word_idx in range(num_octets):
-            word = (low_words[word_idx] & low_mask) | (high_words[word_idx] & high_mask)
-            word |= word >> np.uint64(4)
-            word |= word >> np.uint64(2)
-            word |= word >> np.uint64(1)
-            count += int(((word & ones) * ones) >> np.uint64(56))
-        return count / (8 * num_octets)
-    planes = planes_view(raw_group, num_blocks, num_octets, has_time)
-    wide = np.zeros(num_octets, np.uint8)
-    for plane_idx in range(bit_idx, 16):
-        wide |= planes[plane_idx]
-    for octet_idx in range(num_octets):
-        count += _POPCOUNT[wide[octet_idx]]
+    for word_idx in range(num_octets):
+        word = (low_words[word_idx] & low_mask) | (high_words[word_idx] & high_mask)
+        word |= word >> np.uint64(4)
+        word |= word >> np.uint64(2)
+        word |= word >> np.uint64(1)
+        count += int(((word & ones) * ones) >> np.uint64(56))
     return count / (8 * num_octets)
 
 
@@ -213,35 +196,6 @@ def shuffle_bytes(
             bit_planes[8 + bit_idx, octet_offset + octet_idx] = np.uint8(
                 (transposed_high >> np.uint64(8 * bit_idx)) & np.uint64(0xFF)
             )
-
-
-@njit(nogil=True, cache=True)
-def shuffle_block(
-    residuals: np.ndarray,
-    bit_planes: np.ndarray,
-    octet_offset: int,
-    scratch_low_bytes: np.ndarray,
-    scratch_high_bytes: np.ndarray,
-) -> None:
-    """Zigzag-encodes int16 residuals and packs them into block group bit planes.
-
-    Converts signed differences to unsigned integers via zigzag mapping, splits
-    them into low and high byte arrays, and packs those with shuffle_bytes.
-
-    Args:
-        residuals: 1D int16 array of n residual differences for the block.
-        bit_planes: 2D uint8 array of shape (16, total octets) holding bit planes.
-        octet_offset: The block's first byte in each plane.
-        scratch_low_bytes: uint8 scratch array of at least 8 * plane_octets(n).
-        scratch_high_bytes: uint8 scratch array of at least 8 * plane_octets(n).
-    """
-    num_samples = residuals.shape[0]
-    num_octets = plane_octets(num_samples)
-    zigzag_block(residuals, scratch_low_bytes, scratch_high_bytes)
-    # The padding past n is zero
-    scratch_low_bytes[num_samples:8 * num_octets] = 0
-    scratch_high_bytes[num_samples:8 * num_octets] = 0
-    shuffle_bytes(scratch_low_bytes, scratch_high_bytes, bit_planes, octet_offset, num_octets)
 
 
 @njit(nogil=True, cache=True)
@@ -1048,11 +1002,11 @@ def read_time_rows(
     out_time_steps: np.ndarray,
     out_time_refs: np.ndarray,
     out_time_residuals: np.ndarray,
-    block_ids: np.ndarray | None = None,
+    block_ids: np.ndarray,
 ) -> tuple[int, int]:
     """Deserializes the time fields: read_time_columns, then the time residuals of block_ids.
 
-    Reads time residuals for block_ids (or every block if None), unless the columns are invalid.
+    Reads time residuals for block_ids, unless the columns are invalid.
 
     Args:
         raw_group: 1D uint8 array of uncompressed body bytes.
@@ -1065,7 +1019,7 @@ def read_time_rows(
         out_time_steps: Destination 1D int64 array for block time steps.
         out_time_refs: Destination 1D uint64 array for block reference quotients.
         out_time_residuals: Destination 1D uint64 array for zigzagged time residuals.
-        block_ids: Optional 1D int64 array specifying which blocks' residuals to unpack.
+        block_ids: 1D int64 array specifying which blocks' residuals to unpack.
 
     Returns:
         A tuple of (status, failing_block_idx) matching read_time_columns.
@@ -1073,8 +1027,6 @@ def read_time_rows(
     offsets = (sample_offsets, octet_offsets, code_offsets, short_offsets, long_offsets)
     status = read_time_columns(raw_group, *offsets, out_time_starts, out_time_steps, out_time_refs)
     if status[0] == TIME_ROWS_OK:
-        if block_ids is None:
-            block_ids = np.arange(out_time_starts.shape[0], dtype=np.int64)
         read_time_residuals(raw_group, *offsets, block_ids, out_time_residuals)
     return status
 
@@ -1090,7 +1042,6 @@ def write_rows(
     sample_offsets: np.ndarray,
     octet_offsets: np.ndarray,
     code_offsets: np.ndarray,
-    byte_planes: bool,
     has_time: bool,
     out_raw_group: np.ndarray,
 ) -> None:
@@ -1107,19 +1058,12 @@ def write_rows(
         codes: 1D uint8 array of every sample's code (only flagged blocks' are read; may be
             empty if no block is flagged).
         sample_offsets, octet_offsets, code_offsets: The Layout's offsets.
-        byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
         has_time: Whether the block group has a time axis (time columns before the residuals).
-        out_raw_group: Output 1D uint8 array of length group_size(...).
+        out_raw_group: Output 1D uint8 array of length group_size(...), receiving the residuals as byte planes.
     """
     num_blocks = block_flags.shape[0]
-    max_len = 0
-    for block_idx in range(num_blocks):
-        max_len = max(max_len, block_sizes[block_idx])
-    scratch_low_bytes = np.empty(8 * plane_octets(max_len), np.uint8)
-    scratch_high_bytes = np.empty(8 * plane_octets(max_len), np.uint8)
     # Obtain views into residual and non-finite plane regions
     num_octets = int(octet_offsets[num_blocks])
-    planes = planes_view(out_raw_group, num_blocks, num_octets, has_time)
     bplanes = byte_planes_view(out_raw_group, num_blocks, num_octets, has_time)
     cplanes = code_planes_view(out_raw_group, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in range(num_blocks):
@@ -1131,85 +1075,17 @@ def write_rows(
         put_int16(out_raw_group, grid_params_start(num_blocks), num_blocks, block_idx, grid_params[block_idx])
         put_int64(out_raw_group, value_anchor_start(num_blocks), num_blocks, block_idx, value_anchors[block_idx])
         block_residuals = residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]]
-        if byte_planes:
-            # Zigzag and store the low and high bytes in place, then zero the padding
-            sample_start = 8 * octet_offsets[block_idx]
-            zigzag_block(
-                block_residuals,
-                bplanes[0, sample_start:sample_start + block_len],
-                bplanes[1, sample_start:sample_start + block_len],
-            )
-            bplanes[:, sample_start + block_len:8 * octet_offsets[block_idx + 1]] = 0
-        else:
-            # Zigzag, transpose, and store residual bit planes
-            shuffle_block(block_residuals, planes, octet_offsets[block_idx], scratch_low_bytes, scratch_high_bytes)
+        # Zigzag and store the low and high bytes in place, then zero the padding
+        sample_start = 8 * octet_offsets[block_idx]
+        zigzag_block(
+            block_residuals,
+            bplanes[0, sample_start:sample_start + block_len],
+            bplanes[1, sample_start:sample_start + block_len],
+        )
+        bplanes[:, sample_start + block_len:8 * octet_offsets[block_idx + 1]] = 0
         if block_flags[block_idx] & BLOCK_FLAG_NONFINITE:
             # Store 2-bit code planes for flagged blocks
             put_codes(codes[sample_offsets[block_idx]:sample_offsets[block_idx + 1]], cplanes, code_offsets[block_idx])
-
-
-@njit(nogil=True, cache=True)
-def read_rows(
-    raw_group: np.ndarray,
-    byte_planes: bool,
-    has_time: bool,
-    sample_offsets: np.ndarray,
-    octet_offsets: np.ndarray,
-    code_offsets: np.ndarray,
-    out_grid_params: np.ndarray,
-    out_value_anchors: np.ndarray,
-    out_residuals: np.ndarray,
-    out_codes: np.ndarray,
-) -> None:
-    """Deserializes the value fields of a block group from an uncompressed body buffer.
-
-    The block flags are read from the body (they say which blocks have code planes); the
-    block sizes come in through the Layout's offsets.
-
-    Args:
-        raw_group: 1D uint8 array containing uncompressed body bytes.
-        byte_planes: Whether the residuals are stored as byte planes (flags bit 0).
-        has_time: Whether the block group has a time axis (time columns before the residuals).
-        sample_offsets, octet_offsets, code_offsets: The Layout's offsets.
-        out_grid_params: Output 1D int64 array of length num_blocks receiving grid parameters.
-        out_value_anchors: Output 1D int64 array of length num_blocks receiving value anchors.
-        out_residuals: Output 1D int16 array of every sample receiving the residuals.
-        out_codes: Output 1D uint8 array of every sample receiving codes for flagged blocks
-            (unflagged blocks' samples are left unmodified).
-    """
-    num_blocks = out_grid_params.shape[0]
-    max_octets = 0
-    for block_idx in range(num_blocks):
-        max_octets = max(max_octets, octet_offsets[block_idx + 1] - octet_offsets[block_idx])
-    scratch_low_bytes = np.empty(8 * max_octets, np.uint8)
-    scratch_high_bytes = np.empty(8 * max_octets, np.uint8)
-    # Access views into bit plane sections
-    num_octets = int(octet_offsets[num_blocks])
-    planes = planes_view(raw_group, num_blocks, num_octets, has_time)
-    bplanes = byte_planes_view(raw_group, num_blocks, num_octets, has_time)
-    cplanes = code_planes_view(raw_group, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
-    for block_idx in range(num_blocks):
-        # Read the byte-planed grid parameter and value anchor
-        out_grid_params[block_idx] = get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx)
-        out_value_anchors[block_idx] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
-        first_sample = sample_offsets[block_idx]
-        block_len = sample_offsets[block_idx + 1] - first_sample
-        if byte_planes:
-            sample_start = 8 * octet_offsets[block_idx]
-            scratch_low_bytes[:block_len] = bplanes[0, sample_start:sample_start + block_len]
-            scratch_high_bytes[:block_len] = bplanes[1, sample_start:sample_start + block_len]
-        else:
-            # Unshuffle bit planes into zigzag low/high bytes
-            unshuffle_block(
-                planes, octet_offsets[block_idx], octet_offsets[block_idx + 1] - octet_offsets[block_idx],
-                scratch_low_bytes, scratch_high_bytes,
-            )
-        for sample_idx in range(block_len):
-            # Reverse zigzag mapping to recover signed residual differences
-            out_residuals[first_sample + sample_idx] = unzigzag16(scratch_low_bytes, scratch_high_bytes, sample_idx)
-        if raw_group[block_idx] & BLOCK_FLAG_NONFINITE:
-            # Unpack non-finite codes for flagged blocks
-            get_codes(cplanes, code_offsets[block_idx], out_codes[first_sample:first_sample + block_len])
 
 
 def write_group(
@@ -1218,12 +1094,11 @@ def write_group(
     grid_params: np.ndarray,
     value_anchors: np.ndarray,
     residuals: np.ndarray,
-    codes: np.ndarray | None = None,
-    byte_planes: bool = False,
-    time_rows: TimeRows | None = None,
-    offsets: Layout | None = None,
+    codes: np.ndarray,
+    time_rows: TimeRows | None,
+    offsets: Layout,
 ) -> np.ndarray:
-    """Serializes block group components into a newly allocated uncompressed body.
+    """Serializes block group components into a newly allocated uncompressed body (byte planes).
 
     Args:
         block_flags: 1D uint8 array of block flags.
@@ -1231,84 +1106,30 @@ def write_group(
         grid_params: 1D int64 array of block grid parameters.
         value_anchors: 1D int64 array of block value anchors.
         residuals: 1D int16 array of every sample's difference residual.
-        codes: Optional 1D uint8 array of every sample's code. Required if any block has the
-            BLOCK_FLAG_NONFINITE flag set.
-        byte_planes: Store the residuals as 2 byte planes instead of 16 bit planes.
+        codes: 1D uint8 array of every sample's code (only flagged blocks' are read; may be
+            empty if no block is flagged).
         time_rows: The time axis rows, or None for a block group without a time axis.
-        offsets: The block group's Layout if already computed.
+        offsets: The block group's Layout.
 
     Returns:
         1D uint8 array containing the serialized uncompressed body.
 
     Raises:
-        ValueError: If any block is flagged non-finite but codes are omitted, or flagged
-            irregular in a block group without a time axis.
+        ValueError: If any block is flagged irregular in a block group without a time axis.
     """
     num_blocks = block_flags.shape[0]
     block_sizes = np.asarray(block_sizes, np.int64)
-    if offsets is None:
-        offsets = layout(block_flags, block_sizes)
-    if codes is None:
-        if offsets.code_offsets[-1]:
-            raise ValueError("flagged blocks need codes")
-        codes = np.zeros(0, np.uint8)
     has_time = time_rows is not None
     if offsets.short_offsets[-1] and not has_time:
         raise ValueError("irregular time blocks need time rows")
     raw_group = np.empty(group_size(num_blocks, offsets, has_time), np.uint8)
     write_rows(
         block_flags, block_sizes, grid_params, value_anchors, residuals, codes, offsets.sample_offsets,
-        offsets.octet_offsets, offsets.code_offsets, byte_planes, has_time, raw_group,
+        offsets.octet_offsets, offsets.code_offsets, has_time, raw_group,
     )
     if time_rows is not None:
         write_time_rows(block_flags, *offsets, *time_rows, raw_group)
     return raw_group
-
-
-def read_group(
-    raw_group: bytes | np.ndarray,
-    num_blocks: int,
-    byte_planes: bool = False,
-    has_time: bool = False,
-) -> GroupRows:
-    """Deserializes an uncompressed body into constituent arrays.
-
-    Args:
-        raw_group: Byte buffer or uint8 array containing the uncompressed body.
-        num_blocks: Number of blocks in the block group.
-        byte_planes: Whether the residuals are stored as byte planes (flags bit 0).
-        has_time: Whether the block group has a time axis.
-
-    Returns:
-        The block group's rows.
-
-    Raises:
-        ValueError: If the buffer size does not match its block flags and sizes, or a time
-            column is invalid.
-    """
-    raw_arr = np.frombuffer(raw_group, np.uint8) if not isinstance(raw_group, np.ndarray) else raw_group
-    # The flags and sizes give the layout, so check they exist first
-    if raw_arr.shape[0] < (BYTES_PER_FLAGS + BYTES_PER_SIZE) * num_blocks:
-        raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold {num_blocks} blocks")
-    block_flags = raw_arr[:num_blocks].copy()
-    block_sizes, offsets = read_layout(raw_arr, num_blocks)
-    if raw_arr.shape[0] != group_size(num_blocks, offsets, has_time):
-        raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold its {num_blocks} blocks")
-    num_samples = int(offsets.sample_offsets[-1])
-    grid_params = np.empty(num_blocks, np.int64)
-    value_anchors = np.empty(num_blocks, np.int64)
-    residuals = np.empty(num_samples, np.int16)
-    codes = np.zeros(num_samples, np.uint8)
-    read_rows(
-        raw_arr, byte_planes, has_time, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets,
-        grid_params, value_anchors, residuals, codes,
-    )
-    time_rows = None
-    if has_time:
-        # Zeroed: read_time_rows leaves regular blocks' residuals untouched
-        time_rows = allocate_time_rows(num_blocks, num_samples, zero_residuals=True)
-        check_time_rows_status(*read_time_rows(raw_arr, *offsets, *time_rows))
-    return GroupRows(block_flags, block_sizes, grid_params, value_anchors, residuals, codes, time_rows)
 
 
 @njit(inline="always")

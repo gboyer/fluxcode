@@ -346,12 +346,12 @@ def decompress(group: bytes) -> ParsedGroup:
     return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets)
 
 
-def read_time_rows(parsed: ParsedGroup, block_ids: np.ndarray | None = None) -> _format.TimeRows:
+def read_time_rows(parsed: ParsedGroup, block_ids: np.ndarray) -> _format.TimeRows:
     """Reads a block group's time rows, validating the time columns.
 
     Args:
         parsed: A block group with a time axis.
-        block_ids: The blocks whose time residuals to unpack (every block if None; an empty
+        block_ids: 1D int64 array of the blocks whose time residuals to unpack (an empty
             array reads the columns only). Other blocks' residuals are left unwritten.
 
     Returns:
@@ -454,36 +454,6 @@ def decode(group: bytes) -> DecodedGroup:
     values, ticks = decode_blocks(parsed, np.arange(parsed.header.num_blocks, dtype=np.int64))
     times = None if ticks is None else ticks.view(time_dtype(parsed.header.time_unit))
     return DecodedGroup(values, times, parsed.block_sizes)
-
-
-def read_rows(parsed: ParsedGroup, time_rows: _format.TimeRows | None = None) -> _format.GroupRows:
-    """Reads every block's rows (residuals and codes, without dequantizing) and time rows.
-
-    Args:
-        parsed: Parsed block group container.
-        time_rows: Optional pre-read time rows; if None and the block group has time,
-            time rows are read from the block group.
-
-    Returns:
-        GroupRows namedtuple containing block flags, sizes, grid params, value anchors,
-        residuals, codes, and optional time rows.
-    """
-    num_blocks, num_samples = parsed.header.num_blocks, parsed.header.num_samples
-    offsets = parsed.layout
-    rows = _format.GroupRows(
-        parsed.block_flags.copy(),
-        parsed.block_sizes,
-        np.empty(num_blocks, np.int64),
-        np.empty(num_blocks, np.int64),
-        np.empty(num_samples, np.int16),
-        np.zeros(num_samples, np.uint8),
-        (time_rows if time_rows is not None else read_time_rows(parsed)) if parsed.has_time else None,
-    )
-    _bitpacking.read_rows(
-        parsed.raw_body, parsed.header.byte_planes, parsed.has_time, offsets.sample_offsets, offsets.octet_offsets,
-        offsets.code_offsets, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
-    )
-    return rows
 
 
 def _block_ticks(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np.ndarray) -> np.ndarray:

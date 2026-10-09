@@ -283,7 +283,7 @@ def pack(
 
     def byte_planes_predicted() -> bool:
         """Predicts whether byte planes compress better than bit planes."""
-        share = _bitpacking.wide_share(body, num_blocks, num_octets, has_time, True, BYTE_PLANES_BIT)
+        share = _bitpacking.wide_share(body, num_blocks, num_octets, has_time, BYTE_PLANES_BIT)
         return bool(share < BYTE_PLANES_MAX_SHARE)
 
     def bit_planes() -> np.ndarray:
@@ -324,6 +324,6 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
     body = _bitpacking.write_group(
         rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
-        byte_planes=True, time_rows=rows.time_rows, offsets=offsets,
+        rows.time_rows, offsets,
     )
     return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)

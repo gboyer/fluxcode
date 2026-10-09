@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Garry Boyer
 """update: untouched blocks decode identically; without a target, update == encoding the new data."""
 
+import _oracle
 import numpy as np
 import pytest
 import zstandard
@@ -9,7 +10,7 @@ from _series import encode_series, group_rows
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _format, _group
+from fluxcode import Params, _bitpacking, _format
 
 L = 1000
 
@@ -24,7 +25,7 @@ def rebuilt(group, edit):
     """block group with its body rows changed by edit(flags, sizes, param, anchor, resid, codes, time_rows), same header."""
     rows = group_rows(group)
     edit(*rows)
-    body = _bitpacking.write_group(*rows[:6], time_rows=rows.time_rows)
+    body = _oracle.write_group(*rows[:6], time_rows=rows.time_rows)
     return group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -70,9 +71,7 @@ def test_update_copies_carried_blocks_without_unpacking(monkeypatch):
     def unpack_everything(*args, **kwargs):
         raise AssertionError("unpacked every block")
 
-    monkeypatch.setattr(_bitpacking, "read_rows", unpack_everything)
     monkeypatch.setattr(_bitpacking, "unshuffle_block", unpack_everything)
-    monkeypatch.setattr(_group, "read_rows", unpack_everything)
     assert fluxcode.update(group, {1: x[L:2 * L] + 1}, times={1: t[L:2 * L]}).group == expected
 
 
@@ -169,7 +168,7 @@ def test_update_refuses_groups_it_cannot_read(head_bits):
     """A block group with reserved flags bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""
     _, group, _, _, _ = encoded()
-    raw_body = _bitpacking.write_group(*group_rows(group)[:6])
+    raw_body = _oracle.write_group(*group_rows(group)[:6])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
     bad = group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: block flags"):

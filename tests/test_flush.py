@@ -5,6 +5,7 @@ zstd level. The frame stays an ordinary one (content size recorded, one-shot dec
 blocks end where the planes do, the heuristic picks a layout from the residuals' high byte, and
 no effort changes the decoded values."""
 
+import _oracle
 import numpy as np
 import pytest
 import zstandard
@@ -12,7 +13,7 @@ from _series import group_rows, planes
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _compress, _format, _group
+from fluxcode import Params, _compress, _format, _group
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
 
 EFFORTS = range(MIN_EFFORT, MAX_EFFORT + 1)
@@ -127,7 +128,7 @@ def test_wide_share_is_the_same_in_both_layouts(kind):
     rows = group_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
     zigzag = ((rows << 1) ^ (rows >> 15)) & 0xFFFF
     for bit_idx in (0, 3, 7, 8, 12, 15):
-        shares = [_bitpacking.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.octet_offsets[-1]), p.has_time,
+        shares = [_oracle.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.octet_offsets[-1]), p.has_time,
                                          p.header.byte_planes, bit_idx) for p in bodies]
         slots = 8 * int(bodies[0].layout.octet_offsets[-1])
         assert shares[0] == shares[1] == np.count_nonzero(zigzag >> bit_idx) / slots, bit_idx

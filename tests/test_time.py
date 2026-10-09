@@ -3,6 +3,7 @@
 """docs/SPEC.md time axis: exact round trips, regular and irregular blocks, the layout, the
 encoder's input checks, the decoder's corrupt-group checks, and update with times."""
 
+import _oracle
 import numpy as np
 import pytest
 import zstandard
@@ -10,7 +11,7 @@ from _series import group_rows, planes
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _format
+from fluxcode import Params, _format
 from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_LONG_TIME
 
 INT64_MAX = np.iinfo(np.int64).max
@@ -291,7 +292,7 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
         np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(refs, np.uint64),
         zigzag(residuals),
     )
-    body = _bitpacking.write_group(
+    body = _oracle.write_group(
         block_flags, sizes, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
         np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
     )

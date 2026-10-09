@@ -368,7 +368,7 @@ def breakdown(wl, reps=200):
         offsets = _format.layout(group_rows.block_flags, sizes)
         num_octets = int(offsets.octet_offsets[-1])
         # As _compress.pack builds them: the byte-plane body, the bit-plane body derived from it
-        byte_body = _bitpacking.write_group(*group_rows[:6], byte_planes=True, offsets=offsets)
+        byte_body = _bitpacking.write_group(*group_rows[:6], group_rows.time_rows, offsets)
         bit_body = _bitpacking.to_bit_planes(byte_body, BLOCKS, num_octets, False)
         frame = cz.compress(bit_body.data)
         group = _format.pack_header(BLOCKS, x.size) + frame
@@ -386,7 +386,7 @@ def breakdown(wl, reps=200):
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(group) * 8 / x.size,
                      t(_group.encode_rows, x, sizes, p),
-                     t(_bitpacking.write_group, *group_rows[:6], True, None, offsets),
+                     t(_bitpacking.write_group, *group_rows[:6], group_rows.time_rows, offsets),
                      t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_octets, False),
                      t(compress_both, cz, byte_body, bit_body), t(fluxcode.encode_group, x, p),
                      t(dz.decompress, frame),

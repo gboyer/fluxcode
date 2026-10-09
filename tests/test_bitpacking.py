@@ -3,6 +3,7 @@
 """Packing rows into body bytes and back (_bitpacking): bit and byte planes, code planes, time
 residual planes, their padding, and the body writers and readers."""
 
+import _oracle
 import numpy as np
 import pytest
 
@@ -96,9 +97,9 @@ def test_round_trip(size, byte_planes, has_time):
     rng = np.random.default_rng(size)
     for _ in range(3):
         rows = random_rows(rng, [size, 5, size, 0, size, 9], has_time)
-        body = _bitpacking.write_group(*rows[:6], byte_planes=byte_planes, time_rows=rows.time_rows)
+        body = _oracle.write_group(*rows[:6], byte_planes=byte_planes, time_rows=rows.time_rows)
         assert body.shape[0] == _format.group_size(6, _format.layout(rows.block_flags, rows.block_sizes), has_time)
-        assert_rows_equal(_bitpacking.read_group(body, 6, byte_planes, has_time), rows)
+        assert_rows_equal(_oracle.read_group(body, 6, byte_planes, has_time), rows)
         assert_padding_zero(body, rows, byte_planes, has_time)
 
 
@@ -110,8 +111,8 @@ def test_round_trip_largest_block(byte_planes, has_time):
     assert rows.block_flags[0] & BLOCK_FLAG_NONFINITE
     if has_time:
         assert rows.block_flags[0] & BLOCK_FLAG_LONG_TIME and rows.block_flags[3] & BLOCK_FLAG_IRREGULAR_TIME
-    body = _bitpacking.write_group(*rows[:6], byte_planes=byte_planes, time_rows=rows.time_rows)
-    assert_rows_equal(_bitpacking.read_group(body, 4, byte_planes, has_time), rows)
+    body = _oracle.write_group(*rows[:6], byte_planes=byte_planes, time_rows=rows.time_rows)
+    assert_rows_equal(_oracle.read_group(body, 4, byte_planes, has_time), rows)
     assert_padding_zero(body, rows, byte_planes, has_time)
 
 
@@ -144,7 +145,7 @@ def test_shuffle_round_trip_and_layout(sizes):
     flags = np.array([1, 0 if not sizes[1] else 2, 3], np.uint8)
     param = np.array([-5, 0 if not sizes[1] else 17, -1074], np.int64)
     anchor = np.array([-1.5, 0.0 if not sizes[1] else 1e300, 0.0]).view(np.int64)
-    raw = _bitpacking.write_group(flags, sizes, param, anchor, resid)
+    raw = _oracle.write_group(flags, sizes, param, anchor, resid)
     lay = _format.layout(flags, sizes)
     assert raw.shape[0] == _format.group_size(N, lay)
     for got, want in zip(_columns(raw, N), (flags, sizes, param, anchor)):
@@ -159,11 +160,11 @@ def test_shuffle_round_trip_and_layout(sizes):
         block_u = u[offsets[b]:offsets[b + 1]]
         np.testing.assert_array_equal(bits[:, :sizes[b]], ((block_u[None] >> np.arange(16)[:, None]) & 1).astype(np.uint8))
         assert not bits[:, sizes[b]:].any()  # each block's last octet is padded with zero bits
-    rows = _bitpacking.read_group(raw, N)
+    rows = _oracle.read_group(raw, N)
     for got, want in zip(rows[:5], (flags, sizes, param, anchor, resid)):
         np.testing.assert_array_equal(got, want)
     with pytest.raises(ValueError, match="doesn't hold"):
-        _bitpacking.read_group(raw[:-1], N)
+        _oracle.read_group(raw[:-1], N)
 
 
 def test_byte_planes_round_trip_and_layout():
@@ -173,15 +174,15 @@ def test_byte_planes_round_trip_and_layout():
     flags = np.array([1, 2, 3], np.uint8)
     param = np.array([-5, 17, -1074], np.int64)
     anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
-    raw = _bitpacking.write_group(flags, sizes, param, anchor, resid, byte_planes=True)
+    raw = _oracle.write_group(flags, sizes, param, anchor, resid, byte_planes=True)
     assert raw.shape[0] == _format.group_size(N, _format.layout(flags, sizes))
-    np.testing.assert_array_equal(raw[:13 * N], _bitpacking.write_group(flags, sizes, param, anchor, resid)[:13 * N])
+    np.testing.assert_array_equal(raw[:13 * N], _oracle.write_group(flags, sizes, param, anchor, resid)[:13 * N])
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
     planes = raw[13 * N:].reshape(2, N * n)  # every low byte, then every high byte
     np.testing.assert_array_equal(planes[0], u & 0xFF)
     np.testing.assert_array_equal(planes[1], u >> 8)
-    rows = _bitpacking.read_group(raw, N, byte_planes=True)
+    rows = _oracle.read_group(raw, N, byte_planes=True)
     for got, want in zip(rows[:5], (flags, sizes, param, anchor, resid)):
         np.testing.assert_array_equal(got, want)
 
@@ -191,7 +192,7 @@ def test_bit_order_vector():
     v = np.zeros(8, np.int16)
     v[3] = 0x0010  # zigzag(16) = 32 = 0x0020
     v[6] = 0x0200  # zigzag(512) = 1024 = 0x0400
-    raw = _bitpacking.write_group(np.zeros(1, np.uint8), np.array([8]), np.zeros(1, np.int64), np.zeros(1, np.int64), v)
+    raw = _oracle.write_group(np.zeros(1, np.uint8), np.array([8]), np.zeros(1, np.int64), np.zeros(1, np.int64), v)
     planes = raw[13:].reshape(16, 1)  # after flags (1), size (2), param (2) and anchor (8)
     expect = np.zeros(16, np.uint8)
     expect[5], expect[10] = 0b00001000, 0b01000000
@@ -254,7 +255,7 @@ def sample_offsets(sizes):
 def test_splice_body_matches_write_group(seed, has_time):
     rng = np.random.default_rng(seed)
     old, new_ids, new = splice_case(rng, int(rng.integers(1, 12)), has_time)
-    old_body = _bitpacking.write_group(*old[:6], byte_planes=True, time_rows=old.time_rows)
+    old_body = _oracle.write_group(*old[:6], byte_planes=True, time_rows=old.time_rows)
     old_layout = _format.layout(old.block_flags, old.block_sizes)
     if has_time:
         # The splice reads only the old columns: check they come back from the body as given
@@ -264,7 +265,7 @@ def test_splice_body_matches_write_group(seed, has_time):
     body, offsets = _bitpacking.splice_body(old_body, old_layout, old.time_rows.starts if has_time else None, new_ids,
                                             new, sample_offsets(new.block_sizes))
     merged = merge_rows(old, new_ids, new)
-    expected = _bitpacking.write_group(*merged[:6], byte_planes=True, time_rows=merged.time_rows)
+    expected = _oracle.write_group(*merged[:6], byte_planes=True, time_rows=merged.time_rows)
     np.testing.assert_array_equal(body, expected)
     for got, want in zip(offsets, _format.layout(merged.block_flags, merged.block_sizes), strict=True):
         np.testing.assert_array_equal(got, want)
@@ -279,13 +280,13 @@ def test_splice_body_large_blocks():
     gap_fill = np.array([2, 5, 6], np.int64)
     new = random_rows(rng, [4000, 0, 1], True, nonfinite=1, irregular=1, long=1)
     new.time_rows.starts[:] = [2 * 10 ** 12 + 1, 0, 7 * 10 ** 12]
-    old_body = _bitpacking.write_group(*old[:6], byte_planes=True, time_rows=old.time_rows)
+    old_body = _oracle.write_group(*old[:6], byte_planes=True, time_rows=old.time_rows)
     old_layout = _format.layout(old.block_flags, old.block_sizes)
     body, _ = _bitpacking.splice_body(old_body, old_layout, old.time_rows.starts, gap_fill, new,
                                       sample_offsets(new.block_sizes))
     merged = merge_rows(old, gap_fill, new)
     np.testing.assert_array_equal(
-        body, _bitpacking.write_group(*merged[:6], byte_planes=True, time_rows=merged.time_rows))
+        body, _oracle.write_group(*merged[:6], byte_planes=True, time_rows=merged.time_rows))
     with pytest.raises(ValueError, match="past the old block group's end"):
         _bitpacking.splice_body(old_body, old_layout, old.time_rows.starts, new_ids,
                                 new._replace(block_flags=new.block_flags[:2]), sample_offsets(new.block_sizes))
@@ -297,8 +298,8 @@ def test_plane_conversion_matches_write_group(seed, has_time):
     """One transpose of the residual region gives the other layout's body, for all blocks at once."""
     rng = np.random.default_rng(seed)
     rows = random_rows(rng, rng.choice([0, 1, 7, 8, 9, 300], int(rng.integers(0, 12))), has_time)
-    byte_body = _bitpacking.write_group(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
-    bit_body = _bitpacking.write_group(*rows[:6], byte_planes=False, time_rows=rows.time_rows)
+    byte_body = _oracle.write_group(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
+    bit_body = _oracle.write_group(*rows[:6], byte_planes=False, time_rows=rows.time_rows)
     num_blocks = rows.block_flags.shape[0]
     num_octets = int(_format.layout(rows.block_flags, rows.block_sizes).octet_offsets[-1])
     np.testing.assert_array_equal(_bitpacking.to_bit_planes(byte_body, num_blocks, num_octets, has_time), bit_body)

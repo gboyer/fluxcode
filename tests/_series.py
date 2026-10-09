@@ -5,6 +5,7 @@ encode() with its per-block-group index lists joined into flat per-block arrays,
 
 from contextlib import contextmanager
 
+import _oracle
 import numpy as np
 
 import fluxcode
@@ -37,7 +38,7 @@ def planes(layout, flush=True, zstd_levels=(3,)):
 
 def group_rows(group):
     """GroupRows (block_flags, block_sizes, grid_params, value_anchors, residuals, codes, time_rows) of a block group."""
-    return _group.read_rows(_group.decompress(group))
+    return _oracle.read_rows(_group.decompress(group))
 
 
 def flags_params(groups):
