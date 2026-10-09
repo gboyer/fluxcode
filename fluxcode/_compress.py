@@ -20,7 +20,7 @@ import zstandard
 
 from . import _bitpacking, _format
 
-RUST_INTERFACE_VERSION: int = 2
+RUST_INTERFACE_VERSION: int = 3
 """Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 
@@ -68,7 +68,7 @@ class Effort(NamedTuple):
 
     Attributes:
         layout: "heuristic" (byte planes when few residuals reach 128, else bit planes, one
-            compression), "best" (both, the smaller kept), "bit" or "byte" (tests only).
+            compression), "best" (both, the smaller kept).
         flush: Whether a zstd block ends after the columns and each dense residual plane.
         zstd_levels: The zstd compression levels tried, the smallest frame kept.
     """
@@ -291,10 +291,8 @@ def pack(
         return _bitpacking.to_bit_planes(body, num_blocks, num_octets, has_time)
 
     # Build candidate layouts according to effort policy
-    if effort.layout == "byte" or (effort.layout == "heuristic" and byte_planes_predicted()):
-        candidates = [(True, body)]
-    elif effort.layout in ("bit", "heuristic"):
-        candidates = [(False, bit_planes())]
+    if effort.layout == "heuristic":
+        candidates = [(True, body)] if byte_planes_predicted() else [(False, bit_planes())]
     else:
         # Order candidates so the predicted winner runs first when flushes allow early cutoff
         bit_first = effort.flush and not byte_planes_predicted()

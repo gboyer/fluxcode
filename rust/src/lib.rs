@@ -30,10 +30,10 @@ use format::{Rows, Shape};
 
 /// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the
 /// extension.
-const INTERFACE_VERSION: u32 = 2;
+const INTERFACE_VERSION: u32 = 3;
 
 /// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress`
-/// builds it. `layout` is "byte", "bit", "heuristic" or "best" (`Effort.layout`).
+/// builds it. `layout` is "heuristic" or "best" (`Effort.layout`).
 #[pyfunction]
 #[pyo3(signature = (
     block_flags, block_sizes, grid_params, value_anchors, residuals, codes, layout, flush,

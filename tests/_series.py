@@ -9,7 +9,7 @@ import _oracle
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _args, _compress, _encoder, _group
+from fluxcode import Params, _api, _args, _bitpacking, _compress, _encoder, _group
 
 PER_GROUP = _api.DEFAULT_BLOCKS_PER_GROUP  # the helpers assume the default block group size
 
@@ -26,14 +26,25 @@ def decode_series(groups):
 
 @contextmanager
 def planes(layout, flush=True, zstd_levels=(3,)):
-    """Every Params.effort compresses with layout ("bit", "byte", "heuristic" or "best") while
-    inside: the effort picks the layout, and some tests need a particular one."""
-    saved = dict(_compress.EFFORTS)
-    _compress.EFFORTS.update(dict.fromkeys(saved, _compress.Effort(layout, flush, zstd_levels)))
+    """Every block group compresses with the residual layout "bit" or "byte" while inside, whatever
+    the effort picks: some tests need a particular one. The Python path is forced, since the Rust
+    extension has no such option."""
+    saved = _compress._rust, _compress.pack
+
+    def pack(body, offsets, num_blocks, num_samples, effort, time_unit):
+        if layout == "byte":
+            candidates = [(True, body)]
+        else:
+            candidates = [(False, _bitpacking.to_bit_planes(body, num_blocks, int(offsets.octet_offsets[-1]),
+                                                            time_unit != 0))]
+        return _compress._smallest_group(candidates, num_blocks, num_samples, offsets, time_unit,
+                                         effort._replace(flush=flush, zstd_levels=zstd_levels))
+
+    _compress._rust, _compress.pack = None, pack
     try:
         yield
     finally:
-        _compress.EFFORTS.update(saved)
+        _compress._rust, _compress.pack = saved
 
 
 def group_rows(group):

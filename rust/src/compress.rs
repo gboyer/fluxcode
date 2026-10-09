@@ -19,10 +19,6 @@ const DENSITY_CHUNK_BYTES: usize = 4096;
 /// Which residual layout(s) to compress (`Effort.layout` in `_compress.py`).
 #[derive(Clone, Copy)]
 pub enum Layout {
-    /// Byte planes only (tests).
-    Byte,
-    /// Bit planes only (tests).
-    Bit,
     /// Byte planes if few residuals reach 2^`BYTE_PLANES_BIT`, else bit planes: one compression.
     Heuristic,
     /// Both, the smaller kept.
@@ -32,8 +28,6 @@ pub enum Layout {
 impl Layout {
     pub fn parse(name: &str) -> Result<Self, String> {
         match name {
-            "byte" => Ok(Layout::Byte),
-            "bit" => Ok(Layout::Bit),
             "heuristic" => Ok(Layout::Heuristic),
             "best" => Ok(Layout::Best),
             _ => Err(format!("unknown layout {name:?}")),
@@ -236,8 +230,6 @@ pub fn pack(
     };
     let bit_body = || to_bit_planes(byte_body, num_blocks, num_octets, has_time);
     match layout {
-        Layout::Byte => smallest_group(shape, &[(true, byte_body)], flush, levels),
-        Layout::Bit => smallest_group(shape, &[(false, &bit_body())], flush, levels),
         Layout::Heuristic if byte_planes_predicted() => {
             smallest_group(shape, &[(true, byte_body)], flush, levels)
         }
