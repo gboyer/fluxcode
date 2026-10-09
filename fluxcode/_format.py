@@ -321,7 +321,7 @@ def read_layout(raw_group: np.ndarray, num_blocks: int) -> tuple[np.ndarray, Lay
     return block_sizes, offsets
 
 
-def group_size(num_blocks: int, offsets: Layout, has_time: bool = False) -> int:
+def group_size(num_blocks: int, offsets: Layout, has_time: bool) -> int:
     """Calculates the size in bytes of a block group's uncompressed body.
 
     Args:
@@ -383,7 +383,7 @@ class GroupHeader(NamedTuple):
     time_unit: int
 
 
-def pack_header(num_blocks: int, num_samples: int, byte_planes: bool = False, time_unit: int = 0) -> bytes:
+def pack_header(num_blocks: int, num_samples: int, byte_planes: bool, time_unit: int) -> bytes:
     """Builds the 8-byte block group header.
 
     Args:

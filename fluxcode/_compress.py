@@ -302,7 +302,7 @@ def pack(
     return _smallest_group(candidates, num_blocks, num_samples, offsets, time_unit, effort)
 
 
-def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_unit: int = 0) -> bytes:
+def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_unit: int) -> bytes:
     """Serializes block group rows and builds the block group: header plus zstd frame of the body.
 
     Args:

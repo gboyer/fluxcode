@@ -11,7 +11,7 @@ from fluxcode import _bitpacking, _format, _group
 from fluxcode._bitpacking import (
     byte_planes_view,
     code_planes_view,
-    get_codes,
+    get_code,
     planes_view,
     unshuffle_block,
     unzigzag16,
@@ -78,6 +78,14 @@ def wide_share(raw_group, num_blocks, num_octets, has_time, byte_planes, bit_idx
     planes = planes_view(raw_group, num_blocks, num_octets, has_time)
     wide = np.bitwise_or.reduce(planes[bit_idx:], axis=0)
     return int(np.unpackbits(wide).sum()) / (8 * num_octets)
+
+
+@njit(nogil=True)
+def get_codes(code_planes, plane_byte_offset, out_codes):
+    """Unpacks a flagged block's 2-bit non-finite codes from the code planes."""
+    for sample_idx in range(out_codes.shape[0]):
+        octet_idx = plane_byte_offset + sample_idx // 8
+        out_codes[sample_idx] = get_code(code_planes[0, octet_idx], code_planes[1, octet_idx], sample_idx % 8)
 
 
 @njit(nogil=True)

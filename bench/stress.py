@@ -371,7 +371,7 @@ def breakdown(wl, reps=200):
         byte_body = _bitpacking.write_group(*group_rows[:6], group_rows.time_rows, offsets)
         bit_body = _bitpacking.to_bit_planes(byte_body, BLOCKS, num_octets, False)
         frame = cz.compress(bit_body.data)
-        group = _format.pack_header(BLOCKS, x.size) + frame
+        group = _format.pack_header(BLOCKS, x.size, False, 0) + frame
         out = np.empty(x.size)
         block_ids = np.arange(BLOCKS)
 

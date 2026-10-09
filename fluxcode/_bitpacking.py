@@ -443,44 +443,6 @@ def get_code(plane0_byte: int, plane1_byte: int, bit_idx: int) -> int:
 
 
 @njit(inline="always")
-def _get_code_octet(
-    code_planes: np.ndarray, plane_byte_offset: int, octet_idx: int, num_valid: int, out_codes: np.ndarray
-) -> None:
-    """Unpacks codes of an 8-sample octet from one byte of each code plane.
-
-    Args:
-        code_planes: 2D uint8 array of shape (2, code_octets) holding code planes.
-        plane_byte_offset: Starting byte offset of the block in code planes.
-        octet_idx: Zero-based octet index within the block.
-        num_valid: Number of valid samples in this octet (1 to 8).
-        out_codes: Destination 1D uint8 array receiving unpacked codes.
-    """
-    plane0_byte = code_planes[0, plane_byte_offset + octet_idx]
-    plane1_byte = code_planes[1, plane_byte_offset + octet_idx]
-    for bit_idx in range(num_valid):
-        # Extract 2-bit code for each sample in the 8-sample octet
-        out_codes[8 * octet_idx + bit_idx] = get_code(plane0_byte, plane1_byte, bit_idx)
-
-
-@njit(nogil=True, cache=True)
-def get_codes(code_planes: np.ndarray, plane_byte_offset: int, out_codes: np.ndarray) -> None:
-    """Unpacks 2-bit non-finite sample codes for a flagged block.
-
-    Args:
-        code_planes: 2D uint8 array of shape (2, code octets) holding code planes.
-        plane_byte_offset: The block's first byte in each code plane.
-        out_codes: Output 1D uint8 array of length n receiving unpacked codes.
-    """
-    num_samples = out_codes.shape[0]
-    num_full_octets = num_samples // 8
-    # Full octets with a constant bit count (it vectorizes), then a partial last octet
-    for octet_idx in range(num_full_octets):
-        _get_code_octet(code_planes, plane_byte_offset, octet_idx, 8, out_codes)
-    if num_samples % 8:
-        _get_code_octet(code_planes, plane_byte_offset, num_full_octets, num_samples % 8, out_codes)
-
-
-@njit(inline="always")
 def _byte_word(
     val0: np.uint64,
     val1: np.uint64,

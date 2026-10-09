@@ -147,7 +147,7 @@ def test_shuffle_round_trip_and_layout(sizes):
     anchor = np.array([-1.5, 0.0 if not sizes[1] else 1e300, 0.0]).view(np.int64)
     raw = _oracle.write_group(flags, sizes, param, anchor, resid)
     lay = _format.layout(flags, sizes)
-    assert raw.shape[0] == _format.group_size(N, lay)
+    assert raw.shape[0] == _format.group_size(N, lay, False)
     for got, want in zip(_columns(raw, N), (flags, sizes, param, anchor)):
         np.testing.assert_array_equal(got, want)
     s = resid.astype(np.int32)
@@ -175,7 +175,7 @@ def test_byte_planes_round_trip_and_layout():
     param = np.array([-5, 17, -1074], np.int64)
     anchor = np.array([-1.5, 1e300, 0.0]).view(np.int64)
     raw = _oracle.write_group(flags, sizes, param, anchor, resid, byte_planes=True)
-    assert raw.shape[0] == _format.group_size(N, _format.layout(flags, sizes))
+    assert raw.shape[0] == _format.group_size(N, _format.layout(flags, sizes), False)
     np.testing.assert_array_equal(raw[:13 * N], _oracle.write_group(flags, sizes, param, anchor, resid)[:13 * N])
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
