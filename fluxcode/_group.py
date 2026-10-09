@@ -69,7 +69,10 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool]:
 
 
 def encode_rows(
-    samples: np.ndarray, block_sizes: np.ndarray, params: Params, ticks: np.ndarray | None = None
+    samples: np.ndarray,
+    block_sizes: np.ndarray,
+    params: Params,
+    ticks: np.ndarray | None = None,
 ) -> tuple[_format.GroupRows, BlockStats]:
     """Encodes blocks into their rows (and time rows, given ticks) and summary statistics.
 
@@ -144,24 +147,55 @@ def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_fl
     return time_rows
 
 
-def snap_ticks(
-    ticks: np.ndarray, block_sizes: np.ndarray, time_error: float, seed_ticks: np.ndarray | None = None
-) -> tuple[np.ndarray, np.ndarray]:
-    """Rounds each block's ticks to its grid (_time.time_quanta, time_phases, snap_times).
+def stored_tails(parsed: "ParsedGroup", time_rows: _format.TimeRows, blocks: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Finds the last tick and the regular interval of stored non-empty blocks.
 
-    The order of the ticks is checked only if a block is rounded (rounding could hide a
+    A regular block's last tick comes from its columns; an irregular block's residuals are
+    unpacked.
+
+    Args:
+        parsed: The block group.
+        time_rows: Its time rows (the columns at least; irregular blocks' residuals are unpacked).
+        blocks: 1D int64 array of non-empty stored blocks.
+
+    Returns:
+        A tuple of (last_ticks, steps): 1D int64 arrays; a step is the interval if the block is
+        regular with at least _time.MIN_ROUND_SAMPLES samples, else 0.
+    """
+    regular = ~(parsed.block_flags[blocks] & _format.BLOCK_FLAG_IRREGULAR_TIME).astype(bool)
+    interval = (time_rows.steps[blocks] * time_rows.refs[blocks].astype(np.int64))
+    sizes = parsed.block_sizes[blocks]
+    last = time_rows.starts[blocks] + (sizes - 1) * interval
+    irregular = np.flatnonzero(~regular)
+    last[irregular] = _last_ticks(parsed, time_rows, blocks[irregular])
+    steps = np.where(regular & (sizes >= _time.MIN_ROUND_SAMPLES) & (interval > 0), interval, 0)
+    return last, steps
+
+
+def snap_ticks(
+    ticks: np.ndarray,
+    block_sizes: np.ndarray,
+    time_error: float,
+    seed_ticks: np.ndarray | None = None,
+    seed_steps: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rounds each block's ticks (_time.round_blocks, then order_blocks to keep the blocks in order).
+
+    The order of the ticks is checked only if a tick is rounded (rounding could hide a
     decrease); otherwise they are returned as given, for encode_times to check.
 
     Args:
         ticks: 1D int64 array of every sample's tick.
         block_sizes: 1D int64 array of block sizes adding up to the tick count.
         time_error: The time error (Params.time_error); 0 keeps the ticks.
-        seed_ticks: Optional 1D int64 array per block: the last tick of a stored block before
-            it (whose phase it keeps if that fits), or INT64_MIN.
+        seed_ticks: Optional 1D int64 array per block: the last tick of the stored block before
+            it, or INT64_MIN to follow the block before it here.
+        seed_steps: Optional 1D int64 array per block: that stored block's interval if it is
+            regular (stored_tails), else 0.
 
     Returns:
-        A tuple of (ticks, quanta): the rounded ticks (a new array if any block was rounded,
-        else the given one) and each block's quantum (0 where its ticks were kept).
+        A tuple of (ticks, quanta): the rounded ticks (a new array if any tick moved, else the
+        given one) and each block's quantum (0 where it was kept or put on a lattice).
 
     Raises:
         ValueError: If the times contain NaT, or decrease anywhere when a block is rounded.
@@ -174,21 +208,20 @@ def snap_ticks(
     if ticks[0] == _time.INT64_MIN:
         raise ValueError("times contain NaT")
     offsets = sample_offsets(block_sizes)
-    regular = np.zeros(num_blocks, np.bool_)
-    _time.time_quanta(ticks, offsets, float(time_error), np.empty(_time.CADENCE_SAMPLES, np.int64), quanta, regular)
-    # A regular block stores as cheaply as it can already: rounding could only move it
-    quanta[regular] = 0
-    if not quanta.any():
-        return ticks, quanta
     if seed_ticks is None:
         seed_ticks = np.full(num_blocks, _time.INT64_MIN, np.int64)
+    if seed_steps is None:
+        seed_steps = np.zeros(num_blocks, np.int64)
+    kept = np.empty_like(ticks)
     phases = np.zeros(num_blocks, np.int64)
-    _time.time_phases(ticks, offsets, quanta, seed_ticks, phases)
-    snapped = np.empty_like(ticks)
-    status, sample_idx = _time.snap_times(ticks, offsets, quanta, phases, snapped)
+    status, sample_idx = _time.round_blocks(
+        ticks, offsets, float(time_error), seed_ticks, seed_steps, kept, quanta, phases
+    )
     if status != _time.OK:
         raise _args.decrease_error(ticks, sample_idx)
-    return snapped, quanta
+    if quanta.any():
+        _time.order_blocks(offsets, quanta, kept)
+    return (ticks if np.array_equal(kept, ticks) else kept), quanta
 
 
 def encode(
@@ -568,6 +601,8 @@ class StoredNeighbours(NamedTuple):
         stored_previous: 1D bool array: the previous one is stored (not new).
         stored_following: 1D bool array: the next one is stored.
         last_ticks: 1D int64 array of the stored previous blocks' last ticks (0 elsewhere).
+        steps: 1D int64 array of the stored previous blocks' regular intervals (stored_tails; 0
+            elsewhere).
     """
 
     rows: np.ndarray
@@ -576,6 +611,7 @@ class StoredNeighbours(NamedTuple):
     stored_previous: np.ndarray
     stored_following: np.ndarray
     last_ticks: np.ndarray
+    steps: np.ndarray
 
 
 def _stored_neighbours(
@@ -604,8 +640,9 @@ def _stored_neighbours(
     stored_previous = (previous >= 0) & ~is_new[np.maximum(previous, 0)]
     stored_following = (following >= 0) & (following < num_old_blocks) & ~is_new[np.maximum(following, 0)]
     last_ticks = np.zeros(rows.shape[0], np.int64)
-    last_ticks[stored_previous] = _last_ticks(parsed, time_rows, previous[stored_previous])
-    return StoredNeighbours(rows, previous, following, stored_previous, stored_following, last_ticks)
+    steps = np.zeros(rows.shape[0], np.int64)
+    last_ticks[stored_previous], steps[stored_previous] = stored_tails(parsed, time_rows, previous[stored_previous])
+    return StoredNeighbours(rows, previous, following, stored_previous, stored_following, last_ticks, steps)
 
 
 def _clamp_to_neighbours(
@@ -719,8 +756,10 @@ def splice(
         seed_ticks = np.full(indices.shape[0], _time.INT64_MIN, np.int64)
         seeded = neighbours.rows[neighbours.stored_previous]
         seed_ticks[seeded] = neighbours.last_ticks[neighbours.stored_previous]
+        seed_steps = np.zeros(indices.shape[0], np.int64)
+        seed_steps[seeded] = neighbours.steps[neighbours.stored_previous]
         raw_ticks = ticks
-        ticks, quanta = snap_ticks(ticks, block_sizes, params.time_error, seed_ticks)
+        ticks, quanta = snap_ticks(ticks, block_sizes, params.time_error, seed_ticks, seed_steps)
         if ticks is raw_ticks:
             ticks = ticks.copy()
         _clamp_to_neighbours(parsed, old_time_rows, neighbours, new_offsets, quanta, params.time_error, raw_ticks, ticks)

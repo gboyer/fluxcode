@@ -43,6 +43,12 @@ CADENCE_SHARE: float = 0.9
 """Share of a block's intervals that must be one scan for a cadence: a noise floor on irregular
 times, and the mean one-scan interval as the time error's reference."""
 
+MIN_ROUND_SAMPLES: int = CADENCE_SAMPLES + 1
+"""Fewest samples of a block that are rounded. The interval estimate is the median of
+CADENCE_SAMPLES evenly spaced intervals, which needs one more sample; a smaller block's grid
+would be a guess, and a guess would be locked in by BLOCK_FLAG_ROUNDED_TIME, while an unrounded
+block can still be rounded whole later."""
+
 TIME_ERROR_SLACK: float = 1.02
 """The time quantum may be up to 2% above 2 e times the interval: a clock's mean interval lands a
 little either side of a round period (999.98 us), and a nice time error times a nice period is a
@@ -522,7 +528,7 @@ def time_quanta(
         time_error: The time error e (> 0).
         scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
         out_quanta: Output 1D int64 array of the blocks' quanta: 0 where there is none
-            (fewer than 2 samples, a median interval of 0, or no step above 1).
+            (fewer than MIN_ROUND_SAMPLES samples, a median interval of 0, or no step above 1).
         out_regular: Output 1D bool array: the block is regular. It stores as cheaply as it can
             already, so rounding it could only move its times.
     """
@@ -532,7 +538,7 @@ def time_quanta(
         block_len = sample_offsets[block_idx + 1] - first_sample
         out_quanta[block_idx] = 0
         out_regular[block_idx] = False
-        if block_len < 2:
+        if block_len < MIN_ROUND_SAMPLES:
             continue
         times = ticks[first_sample:first_sample + block_len]
         scan, _, _, num_one_scan, one_scan_total, regular = one_scan(times, scratch_pivots)
@@ -659,6 +665,53 @@ either way, both within half a quantum."""
 
 
 @njit(nogil=True, cache=True)
+def order_blocks(sample_offsets: np.ndarray, quanta: np.ndarray, out_ticks: np.ndarray) -> None:
+    """Puts rounded blocks back in order where neighbouring blocks' grids differ.
+
+    Where the earlier block's last ticks rounded past the later one's first and its quantum is
+    the larger, they are lowered to it; any block's leading ticks still below the previous
+    block's last are raised to it. Either way a tick stays within half its own block's quantum
+    of where it was.
+
+    Args:
+        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
+        quanta: 1D int64 array of the blocks' quanta (0 or 1: not rounded).
+        out_ticks: In-out 1D int64 array of every sample's rounded tick.
+    """
+    num_blocks = sample_offsets.shape[0] - 1
+    # Rounding keeps each block in order: only ticks next to a boundary can cross it
+    previous_block = -1
+    for block_idx in range(num_blocks):
+        first_sample = sample_offsets[block_idx]
+        if sample_offsets[block_idx + 1] == first_sample:
+            continue
+        if previous_block >= 0:
+            previous_first = sample_offsets[previous_block]
+            sample_idx = first_sample - 1
+            # The earlier block rounded up past this one with the larger quantum: lower its
+            # trailing ticks
+            if out_ticks[sample_idx] > out_ticks[first_sample] and max(quanta[previous_block], 1) > max(
+                quanta[block_idx], 1
+            ):
+                while sample_idx >= previous_first and out_ticks[sample_idx] > out_ticks[first_sample]:
+                    out_ticks[sample_idx] = out_ticks[first_sample]
+                    sample_idx -= 1
+        previous_block = block_idx
+    # Then raise any block's leading ticks still below the previous block's last: this block
+    # rounded down past it (or, on blocks of a few ticks, the lowering went too far back)
+    previous = np.int64(INT64_MIN)
+    for block_idx in range(num_blocks):
+        first_sample = sample_offsets[block_idx]
+        end = sample_offsets[block_idx + 1]
+        sample_idx = first_sample
+        while sample_idx < end and out_ticks[sample_idx] < previous:
+            out_ticks[sample_idx] = previous
+            sample_idx += 1
+        if end > first_sample:
+            previous = out_ticks[end - 1]
+
+
+@njit(nogil=True, cache=True)
 def snap_times(
     ticks: np.ndarray, sample_offsets: np.ndarray, quanta: np.ndarray, phases: np.ndarray, out_ticks: np.ndarray
 ) -> tuple[int, int]:
@@ -721,34 +774,145 @@ def snap_times(
         else:
             for sample_idx in range(block_len):
                 out[sample_idx] = _round_tick(times[sample_idx], quantum, phase)
-    # Rounding keeps each block in order: only ticks next to a boundary can cross it
-    previous_block = -1
+    order_blocks(sample_offsets, quanta, out_ticks)
+    return OK, 0
+
+
+@njit(inline="always")
+def regular_step(times: np.ndarray) -> int:
+    """The common interval of a block of at least 2 ticks if all its intervals are equal and
+    positive, else 0."""
+    first = times[1] - times[0]
+    if first <= 0:
+        return 0
+    differing_bits = 0
+    for sample_idx in range(2, times.shape[0]):
+        differing_bits |= (times[sample_idx] - times[sample_idx - 1]) ^ first
+    return first if differing_bits == 0 else 0
+
+
+@njit(nogil=True, cache=True)
+def regular_blocks(ticks: np.ndarray, firsts: np.ndarray, ends: np.ndarray, out_regular: np.ndarray) -> None:
+    """Finds which of some runs of ticks have equal, positive intervals (regular_step).
+
+    Args:
+        ticks: 1D int64 array of ticks.
+        firsts: 1D int64 array of the runs' first positions in ticks.
+        ends: 1D int64 array of their end positions (at least 2 ticks each).
+        out_regular: Output 1D bool array of the runs.
+    """
+    for run_idx in range(firsts.shape[0]):
+        out_regular[run_idx] = regular_step(ticks[firsts[run_idx]:ends[run_idx]]) > 0
+
+
+@njit(nogil=True, cache=True)
+def round_blocks(
+    ticks: np.ndarray,
+    sample_offsets: np.ndarray,
+    time_error: float,
+    seed_ticks: np.ndarray,
+    seed_steps: np.ndarray,
+    out_ticks: np.ndarray,
+    out_quanta: np.ndarray,
+    out_phases: np.ndarray,
+) -> tuple[int, int]:
+    """Rounds the blocks' ticks in order, each to the clock of the block before it if it fits.
+
+    A block of fewer than MIN_ROUND_SAMPLES ticks, or one that is exactly regular, is kept.
+    Otherwise, if the previous non-empty block is regular (at least MIN_ROUND_SAMPLES ticks,
+    interval d) as rounded here, and every tick of this block is within time_error / 2 * d of the
+    lattice continuing it (its last tick + k d, k >= 1), the ticks are rounded onto that lattice
+    and the block is regular on the same clock. Else the block gets its own grid (time_quanta,
+    time_phases seeded with the previous block's last tick). The grids' ticks are not yet
+    reconciled across blocks: snap_times does that.
+
+    Args:
+        ticks: 1D int64 array of every sample's tick (no NaT).
+        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
+        time_error: The time error e (> 0).
+        seed_ticks: 1D int64 array: the last tick of a stored block before a block, or INT64_MIN
+            to carry on from the block before it here.
+        seed_steps: 1D int64 array: that stored block's interval if it is regular with at least
+            MIN_ROUND_SAMPLES ticks, else 0 (read where seed_ticks is set).
+        out_ticks: Output 1D int64 array of every sample's tick, kept or on a lattice or grid.
+        out_quanta: Output 1D int64 array of the blocks' quanta (0 where the block is kept or
+            on a lattice).
+        out_phases: Output 1D int64 array of the blocks' phases.
+
+    Returns:
+        A tuple of (status, sample_idx): OK, or DECREASING and the index of the first tick below
+        its predecessor.
+    """
+    num_samples = ticks.shape[0]
+    decreased = False
+    for sample_idx in range(1, num_samples):
+        decreased |= ticks[sample_idx] < ticks[sample_idx - 1]
+    if decreased:
+        for sample_idx in range(1, num_samples):
+            if ticks[sample_idx] < ticks[sample_idx - 1]:
+                return DECREASING, sample_idx
+    num_blocks = sample_offsets.shape[0] - 1
+    scratch = np.empty(CADENCE_SAMPLES, np.int64)
+    block_offsets = np.zeros(2, np.int64)
+    block_quantum = np.zeros(1, np.int64)
+    block_phase = np.zeros(1, np.int64)
+    block_seed = np.zeros(1, np.int64)
+    block_regular = np.zeros(1, np.bool_)
+    previous_last = np.int64(INT64_MIN)
+    previous_step = np.int64(0)
     for block_idx in range(num_blocks):
         first_sample = sample_offsets[block_idx]
-        if sample_offsets[block_idx + 1] == first_sample:
+        block_len = sample_offsets[block_idx + 1] - first_sample
+        out_quanta[block_idx] = 0
+        out_phases[block_idx] = 0
+        if seed_ticks[block_idx] != INT64_MIN:
+            previous_last = seed_ticks[block_idx]
+            previous_step = seed_steps[block_idx]
+        if block_len == 0:
             continue
-        if previous_block >= 0:
-            previous_first = sample_offsets[previous_block]
-            sample_idx = first_sample - 1
-            # The earlier block rounded up past this one with the larger quantum: lower its
-            # trailing ticks
-            if out_ticks[sample_idx] > out_ticks[first_sample] and max(quanta[previous_block], 1) > max(
-                quanta[block_idx], 1
-            ):
-                while sample_idx >= previous_first and out_ticks[sample_idx] > out_ticks[first_sample]:
-                    out_ticks[sample_idx] = out_ticks[first_sample]
-                    sample_idx -= 1
-        previous_block = block_idx
-    # Then raise any block's leading ticks still below the previous block's last: this block
-    # rounded down past it (or, on blocks of a few ticks, the lowering went too far back)
-    previous = np.int64(INT64_MIN)
-    for block_idx in range(num_blocks):
-        first_sample = sample_offsets[block_idx]
-        end = sample_offsets[block_idx + 1]
-        sample_idx = first_sample
-        while sample_idx < end and out_ticks[sample_idx] < previous:
-            out_ticks[sample_idx] = previous
-            sample_idx += 1
-        if end > first_sample:
-            previous = out_ticks[end - 1]
+        times = ticks[first_sample:first_sample + block_len]
+        out = out_ticks[first_sample:first_sample + block_len]
+        out[:] = times
+        step = np.int64(0)
+        if block_len >= MIN_ROUND_SAMPLES:
+            step = np.int64(regular_step(times))
+            # Exactly regular blocks stay as they are
+            if step == 0:
+                limit = np.int64(0.5 * time_error * previous_step)
+                on_lattice = previous_step > 0 and previous_step < (1 << 61) and times[0] >= previous_last
+                if on_lattice:
+                    for sample_idx in range(block_len):
+                        offset = times[sample_idx] - previous_last
+                        down = offset // previous_step
+                        remainder = offset - down * previous_step
+                        multiple = down
+                        distance = remainder
+                        if 2 * remainder >= previous_step:
+                            multiple = down + 1
+                            distance = previous_step - remainder
+                        if multiple < 1:
+                            multiple = 1
+                            distance = abs(offset - previous_step)
+                        if distance > limit:
+                            on_lattice = False
+                            break
+                        out[sample_idx] = previous_last + multiple * previous_step
+                if on_lattice:
+                    step = previous_step
+                else:
+                    out[:] = times
+                    block_offsets[1] = block_len
+                    time_quanta(times, block_offsets, time_error, scratch, block_quantum, block_regular)
+                    quantum = block_quantum[0]
+                    if quantum > 1:
+                        block_seed[0] = previous_last
+                        time_phases(times, block_offsets, block_quantum, block_seed, block_phase)
+                        status, sample_idx = snap_times(times, block_offsets, block_quantum, block_phase, out)
+                        if status != OK:
+                            return status, first_sample + sample_idx
+                        out_quanta[block_idx] = quantum
+                        out_phases[block_idx] = block_phase[0]
+                        step = np.int64(regular_step(out))
+        previous_last = out[block_len - 1]
+        previous_step = step
     return OK, 0
