@@ -273,8 +273,11 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
 - [docs/design/api-plan.md](docs/design/api-plan.md): the original API design plan (history).
 - [bench/](bench/): `bench_gb.py` (size, error and speed per signal), `estimate.py` (the size
   target's estimate against actual size), `decimal_near_miss.py` (the encode cost of a
-  decimal-detection near miss), `stress.py` (1000 channels × 1 day, multiple workers), and their
-  results.
+  decimal-detection near miss), `stress.py` (1000 channels × 1 day, multiple workers), `prune.py`
+  (fluxprune's speed), and their results.
+- [fluxprune/](fluxprune/README.md): a lossy prepass that keeps the points of a series that carry its
+  shape (automatic, with optional max_error and max_points guards) and, for periodic signals, its
+  peaks and troughs.
 
 ## Related work
 

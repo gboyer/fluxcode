@@ -48,6 +48,8 @@ def main():
     r = fluxprune.rank(t, x)
     td = baselines.top_down(t, x, 20, r.required)
     assert len(td) == 20 and baselines.exact_rmse(t, x, td) > 0
+    p = fluxprune.prune(t, x, max_error=1.0, max_points=50)
+    assert len(p) <= 50 and set(fluxprune.peaks(t, x, period=20)[[0, -1]].tolist()) == {0, 199}
     print("experimental smoke test passed")
 
 

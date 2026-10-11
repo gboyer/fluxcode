@@ -13,14 +13,18 @@ Every rule is a function of the curve only, so all of them run on the same ranki
                     blocks for a total number of points.
 - amortized(theta): the first k where e[k] / (points added beyond the required) < theta.
 - noisy(rule, ...):  the same rule with eps raised to the block's noise level, estimated from the curve:
-                    keeping the best half of white noise's points leaves 0.29 of its sigma
-                    (fluxprune.Ranking.noise).
+                    keeping the best half of white noise's points leaves 0.29 of its sigma (noise()).
 - knee(alpha, eps): the first k where doubling the points improves the error by less than a factor
                     2**alpha (or the error is already below eps). Scale free: it does not depend on the
                     value range, the sampling rate or the block length, only on the curve's shape.
 """
 
 import numpy as np
+
+NOISE_AT_HALF = 0.29
+"""The error of keeping half the points of white noise, over its standard deviation: 0.29 from 64 points
+(± 0.04) to 43,200 (± 0.002), regular or irregular times."""
+NOISE_MIN_POINTS = 64
 
 
 def _curve(r):
@@ -34,24 +38,28 @@ def count(r, K):
 
 
 def rmse(r, eps):
-    return r.count(rmse=eps)
+    """The fewest points whose relative RMSE, and that of every larger count, is at most eps."""
+    e = np.sqrt(np.maximum(r.sq_error, 0.0))  # e[j]: after j removals
+    over = np.flatnonzero(e > eps)
+    return r.n - (over[0] - 1 if len(over) else len(e) - 1)
 
 
 def geomean(r, K, eps):
-    return r.count(points=K, rmse=eps)
+    return count(r, round(np.sqrt(count(r, K) * rmse(r, eps))))
 
 
 def noise(r):
-    """The block's white-noise level relative to its range, from its own curve (fluxprune's estimate)."""
-    return r.noise()
+    """The block's white-noise level relative to its range, from its own curve: keeping the best half of white
+    noise's points leaves NOISE_AT_HALF of its sigma. Correlated noise reads lower; 0 below NOISE_MIN_POINTS."""
+    return r.rmse(r.n // 2) / NOISE_AT_HALF if r.n >= NOISE_MIN_POINTS else 0.0
 
 
 def rmse_noisy(r, eps):
-    return r.count(rmse=eps, noise_floor=True)
+    return rmse(r, max(eps, noise(r)))
 
 
 def geomean_noisy(r, K, eps):
-    return r.count(points=K, rmse=eps, noise_floor=True)
+    return geomean(r, K, max(eps, noise(r)))
 
 
 def marginal(r, lam):

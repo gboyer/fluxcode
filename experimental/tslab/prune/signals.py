@@ -9,17 +9,41 @@ cut into storage blocks of fixed duration.
 - OFFSET: signals whose small variations matter on a large offset (a furnace at ~2115 °F, grid
   frequency), the same ambient temperature in °C (crossing zero) and in K, a tank level that sits
   still for hours, and the furnace with thermocouple dropouts: what the error should be relative to.
+- PERIODIC: a vibration whose period and amplitude drift, and a pyrometer watching hot objects leave a furnace,
+  with the true peaks and troughs (periodic_scans), for fluxprune.peaks.
+- GUARD: a max_error per signal (the historian tags' CompDev, otherwise about what an engineer would set).
 
 All seeds are fixed.
 """
 
 import numpy as np
 
-from tslab.common.historian import DAY_S, DAY_START_NS, SECOND_NS, TAGS, _first_order, ou, setpoints, tag_day, tag_scans, tag_seed
+from tslab.common.historian import (
+    DAY_S,
+    DAY_START_NS,
+    SECOND_NS,
+    TAG_INFO,
+    TAGS,
+    _first_order,
+    ou,
+    setpoints,
+    tag_day,
+    tag_scans,
+    tag_seed,
+)
 
 EXTRA = ["totalizer", "batch", "vibration", "compressor", "white-noise", "sine"]
 SIGNALS = TAGS + EXTRA
 OFFSET = ["furnace", "furnace-dropout", "grid-frequency", "ambient-C", "ambient-K", "level-quiet"]
+PERIODIC = ["vibration-cycles", "pyrometer"]
+PERIOD_S = {"vibration-cycles": 60, "pyrometer": 60}  # the expected time between peaks
+PROMINENCE = {"vibration-cycles": 2.0, "pyrometer": 50.0}  # about 6σ of the noise or more
+GUARD = {
+    **{tag: TAG_INFO[tag][2] for tag in TAGS},
+    "totalizer": 1.0, "batch": 0.2, "vibration": 0.1, "compressor": 0.5, "white-noise": 1.0, "sine": 0.01,
+    "furnace": 1.0, "furnace-dropout": 1.0, "grid-frequency": 0.005, "ambient-C": 0.2, "ambient-K": 0.2,
+    "level-quiet": 0.1,
+}
 EXTRA_INFO = {
     "totalizer": "Flow totalizer: integral of a stepped flow, 0.1 resolution (piecewise straight)",
     "batch": "Batch reactor: heat ramp, soak, cool, ~2 h cycles + noise σ 0.05",
@@ -33,6 +57,9 @@ EXTRA_INFO = {
     "ambient-C": "Outdoor temperature, °C: −3 to 9 over the day, weather drift, 0.1 °C steps (crosses zero)",
     "ambient-K": "The same ambient temperature in kelvin (+273.15)",
     "level-quiet": "Tank level, %: held at 62.4 (±1 step of 0.01 dither) but for 3 fill/draw cycles a day",
+    "vibration-cycles": "Vibration, 1 s scans: a cycle every 40-80 s (drifting), amplitude 2-10 (drifting), noise σ 0.3",
+    "pyrometer": "Pyrometer at a furnace exit: an object every 45-75 s, 15-25 s in view at 900-1,100 °C (noise σ 3, "
+                 "cooling), background 40 °C (σ 1.5), 0.1 °C steps",
 }
 
 
@@ -118,10 +145,51 @@ def offset_scans(name, day):
     raise ValueError(name)
 
 
+def periodic_scans(name, day):
+    """(a day of 1 s scans, true peak indices, true trough indices): the highest scan of each cycle's upper half
+    (each object in view) and the lowest of each lower half (each gap between objects)."""
+    rng = np.random.default_rng(9800 + 100 * PERIODIC.index(name) + day)
+    n = DAY_S
+    s = np.arange(n, dtype=np.float64)
+    if name == "vibration-cycles":
+        period = 60 + 20 * np.sin(2 * np.pi * s / 7200 + rng.uniform(0, 2 * np.pi))
+        amp = 6 + 4 * np.sin(2 * np.pi * s / 5000 + rng.uniform(0, 2 * np.pi))
+        phase = np.cumsum(2 * np.pi / period) + rng.uniform(0, 2 * np.pi)
+        x = amp * np.sin(phase) + rng.normal(0, 0.3, n)
+        half = np.floor(phase / np.pi).astype(np.int64)  # half cycles: even ones are the upper halves
+        edges = np.flatnonzero(np.diff(half)) + 1
+        tops, bottoms = [], []
+        for a, b in zip(edges[:-1], edges[1:]):  # whole half cycles only
+            (tops if half[a] % 2 == 0 else bottoms).append(a + int(np.argmax(x[a:b]) if half[a] % 2 == 0 else np.argmin(x[a:b])))
+        return x, np.array(tops), np.array(bottoms)
+    if name == "pyrometer":
+        x = 40 + rng.normal(0, 1.5, n)
+        starts = []
+        k = int(rng.integers(10, 40))
+        while k < n - 30:
+            starts.append(k)
+            k += int(rng.integers(45, 76))
+        spans = []
+        for a in starts:
+            width = int(rng.integers(15, 26))
+            top = rng.uniform(900, 1100)
+            body = top - 0.8 * np.arange(width) + rng.normal(0, 3, width)
+            ramp = np.minimum(1, np.minimum(np.arange(width) + 1, width - np.arange(width)) / 2.5)
+            x[a:a + width] = 40 + (body - 40) * ramp
+            spans.append((a, a + width))
+        x = np.round(x, 1)
+        tops = [a + int(np.argmax(x[a:b])) for a, b in spans]
+        bottoms = [b + int(np.argmin(x[b:c])) for (_, b), (c, _) in zip(spans[:-1], spans[1:])]
+        return x, np.array(tops), np.array(bottoms)
+    raise ValueError(name)
+
+
 def scans(name, day):
     """A day of 1 s scans of a signal."""
     if name in TAGS:
         return tag_scans(name, tag_seed(name, day))
+    if name in PERIODIC:
+        return periodic_scans(name, day)[0]
     return offset_scans(name, day) if name in OFFSET else extra_scans(name, day)
 
 

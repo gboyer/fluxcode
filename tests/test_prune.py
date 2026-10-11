@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
+import itertools
+
 import numpy as np
 import pytest
 
@@ -95,20 +97,6 @@ def test_repeated_times_and_degenerate_inputs():
 
 
 @pytest.mark.parametrize("seed", range(3))
-def test_count_rules(seed):
-    t, x = series(seed)
-    r = fluxprune.rank(t, x)
-    assert r.count(points=50) == 50
-    k = r.count(rmse=0.02)
-    assert r.rmse(k) <= 0.02 and (k == r.min_points or r.rmse(k - 1) > 0.02)
-    assert all(r.rmse(j) <= 0.02 for j in range(k, 401))
-    assert r.count(points=50, rmse=0.02) == round(np.sqrt(50 * k))
-    assert r.count(rmse=1.0) == r.min_points and r.count(rmse=0) == 400
-    with pytest.raises(ValueError):
-        r.count()
-
-
-@pytest.mark.parametrize("seed", range(3))
 def test_refine_lowers_error_and_keeps_required(seed):
     t, x = series(seed)
     r = fluxprune.rank(t, x)
@@ -120,21 +108,8 @@ def test_refine_lowers_error_and_keeps_required(seed):
         assert r.error(keep) == pytest.approx(r.rmse(k), rel=1e-9, abs=1e-12)
         assert r.error(better) <= r.error(keep) + 1e-12
         assert r.error(better) == pytest.approx(np.sqrt(exact_mse(t - t[0], x, better)) / span, rel=1e-9, abs=1e-12)
-    assert np.array_equal(fluxprune.prune(t, x, points=40), r.refine(r.keep(40)))
-
-
-def test_noise_floor():
-    rng = np.random.default_rng(0)
-    t = np.cumsum(rng.integers(1, 5, 3600))
-    x = rng.normal(size=3600)
-    r = fluxprune.rank(t, x)
-    assert r.noise() * (x.max() - x.min()) == pytest.approx(1.0, rel=0.05)
-    assert r.count(rmse=0.01) > 2500  # chasing the noise keeps most of it
-    assert r.count(rmse=0.01, noise_floor=True) < 100
-    clean = fluxprune.rank(t, np.sin(t / 300))
-    assert clean.noise() < 1e-3
-    assert clean.count(rmse=0.01, noise_floor=True) == clean.count(rmse=0.01)
-    assert fluxprune.rank(t[:10], x[:10]).noise() == 0
+    k = r.count()
+    assert np.array_equal(fluxprune.prune(t, x).index, r.refine(r.keep(k)))
 
 
 def test_error_per_point():
@@ -147,20 +122,176 @@ def test_error_per_point():
         assert all(e[j] >= theta * (j - r.min_points + 1) for j in range(r.min_points, k))
     assert r.count(error_per_point=1e-3) > r.count(error_per_point=1e-2)
     with pytest.raises(ValueError):
-        r.count(points=10, error_per_point=1e-3)
+        r.count(error_per_point=0)
 
 
-def test_scale():
-    t, x = series(6)
-    span = x.max() - x.min()
-    r, s = fluxprune.rank(t, x), fluxprune.rank(t, x, scale=10 * span)
-    np.testing.assert_array_equal(r.removed, s.removed)  # the ranking doesn't depend on it
-    np.testing.assert_allclose(s.rmse()[r.min_points:], r.rmse()[r.min_points:] / 10, rtol=1e-12, atol=1e-15)
-    assert s.rmse(50) == pytest.approx(np.sqrt(exact_mse(t - t[0], x, r.keep(50))) / (10 * span), rel=1e-9)
-    assert s.count(rmse=0.001) == r.count(rmse=0.01)
-    # the same series on a large offset: the range is unchanged, a fixed scale gives the same answer
-    np.testing.assert_array_equal(fluxprune.prune(t, x + 2000, error_per_point=1e-3, scale=span),
-                                  fluxprune.prune(t, x, error_per_point=1e-3))
-    for bad in (0.0, -1.0, np.inf, np.nan):
-        with pytest.raises(ValueError):
-            fluxprune.rank(t, x, scale=bad)
+def max_deviation(t, x, keep):
+    """Largest distance in value of an input point from the kept points' lines, by brute force (a point at
+    the time of a vertical step: its distance from the step's span of values)."""
+    t = np.asarray(t, np.float64)
+    worst = 0.0
+    for a, b in itertools.pairwise(keep):
+        for j in range(a + 1, b):
+            if t[b] > t[a]:
+                d = abs(x[j] - (x[a] + (x[b] - x[a]) * (t[j] - t[a]) / (t[b] - t[a])))
+            else:
+                d = max(0.0, x[j] - max(x[a], x[b]), min(x[a], x[b]) - x[j])
+            worst = max(worst, d)
+    return worst
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_prune_reports_its_errors(seed):
+    t, x = series(seed)
+    p = fluxprune.prune(t, x)
+    assert isinstance(p, fluxprune.Pruned) and not p.capped and len(p) == len(p.index)
+    assert p.rmse == pytest.approx(np.sqrt(exact_mse(t - t[0], x, p.index)), rel=1e-9)
+    assert p.max_error == pytest.approx(max_deviation(t, x, p.index), rel=1e-9)
+    assert len(fluxprune.prune(t, x, error_per_point=1e-4)) > len(p) > len(fluxprune.prune(t, x, error_per_point=1e-2))
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_max_error(seed):
+    t, x = series(seed)
+    auto = fluxprune.prune(t, x)
+    previous = len(x) + 1
+    for tol in (0.5, 1.0, 2.0, 4.0):
+        p = fluxprune.prune(t, x, max_error=tol)
+        assert not p.capped
+        assert p.max_error <= tol and max_deviation(t, x, p.index) <= tol * (1 + 1e-9)
+        assert set(auto.index) <= set(p.index)  # it only adds points
+        assert len(p) >= len(auto) and len(p) <= previous
+        previous = len(p)
+    assert len(fluxprune.prune(t, x, max_error=0)) == len(x)  # a random walk has no straight stretch
+    assert np.array_equal(fluxprune.prune(t, x, max_error=1e9).index, auto.index)
+
+
+def test_max_points():
+    t, x = series(7)
+    want = fluxprune.prune(t, x, max_error=1.0)
+    alone = fluxprune.rank(t, x).prune(error_per_point=1e9, max_error=1.0)  # max_error with no automatic points
+    for cap in (4, 10, 50, len(alone) - 1):
+        p = fluxprune.prune(t, x, max_error=1.0, max_points=cap)
+        assert len(p) == cap and p.capped and p.max_error > 1.0  # the guard fills the cap, worst first
+    p = fluxprune.prune(t, x, max_error=1.0, max_points=len(want) - 1)
+    assert len(p) < len(want) and p.capped and p.max_error <= 1.0  # automatic points gave way
+    assert np.array_equal(fluxprune.prune(t, x, max_error=1.0, max_points=len(want)).index, want.index)
+    auto = fluxprune.prune(t, x)
+    p = fluxprune.prune(t, x, max_points=len(auto) - 3)
+    assert len(p) == len(auto) - 3 and p.capped
+    assert not fluxprune.prune(t, x, max_points=len(auto)).capped
+    # when the cap is reached, the automatic points give way to the max_error guard first
+    loose = fluxprune.prune(t, x, max_error=8.0)
+    p = fluxprune.prune(t, x, error_per_point=1e-4, max_error=8.0, max_points=len(loose) + 5)
+    assert p.max_error <= 8.0 and len(p) <= len(loose) + 5
+    with pytest.raises(ValueError):
+        fluxprune.prune(t, x, max_points=1)
+
+
+def test_required_points_beyond_the_cap():
+    t = np.arange(50.0)
+    x = np.sin(t)
+    x[10:40:3] = np.nan
+    p = fluxprune.prune(t, x, max_points=4)
+    assert len(p) == 4 and p.capped
+    assert set(p.index) == {0, 49, int(np.nanargmin(x)), int(np.nanargmax(x))}
+    p = fluxprune.prune(t, x, max_points=3, keep=[25])
+    assert set(p.index) == {0, 49, int(np.nanargmin(x))}
+    assert {9, 10, 11} <= set(fluxprune.prune(t, x).index)
+
+
+def test_keep():
+    t, x = series(8)
+    extra = [17, 123, 200, 333]
+    p = fluxprune.prune(t, x, keep=extra)
+    assert set(extra) <= set(p.index)
+    assert set(extra) <= set(fluxprune.rank(t, x, keep=extra).keep(0))
+    with pytest.raises(ValueError):
+        fluxprune.rank(t, x, keep=[400])
+
+
+def peaks_oracle(t, x, period, prominence):
+    """Brute force of peaks() without a cap."""
+    n = len(x)
+    t = np.asarray(t, np.float64)
+    half = period / 2 if period else 0.0
+
+    def extremes(y):
+        found = []
+        for i in range(1, n - 1):
+            if not y[i] > y[i - 1]:
+                continue
+            k = i + 1
+            while k < n - 1 and y[k] == y[i]:
+                k += 1
+            if not y[k] < y[i]:
+                continue
+            left = next((j for j in range(i - 1, -1, -1) if y[j] > y[i]), -1)
+            right = next((j for j in range(i + 1, n) if y[j] > y[i]), n)
+            bases = [y[left + 1:i + 1].min(), y[i:right].min()]
+            known = [b for b, side in zip(bases, (left >= 0, right < n)) if side]  # an end cuts a side
+            prom = y[i] - (max(known) if len(known) == 2 else known[0] if known else min(bases))
+            if prominence is None or prom >= prominence:
+                found.append(i)
+        kept = []
+        for i in sorted(found, key=lambda i: (-y[i], i)):  # highest first; ties: the earlier
+            if all(abs(t[i] - t[j]) >= half for j in kept):
+                kept.append(i)
+        return sorted(kept)
+
+    marks = sorted([(i, True) for i in extremes(x)] + [(i, False) for i in extremes(-x)])
+    out = {0, n - 1}
+    for s, (i, top) in enumerate(marks):
+        if s and marks[s - 1][1] == top and i - marks[s - 1][0] > 1:
+            a = marks[s - 1][0]
+            out.add(a + 1 + int(np.argmin(x[a + 1:i]) if top else np.argmax(x[a + 1:i])))
+        out.add(i)
+    return sorted(out)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_peaks_match_brute_force(seed):
+    rng = np.random.default_rng(seed)
+    n = 300
+    t = np.cumsum(rng.integers(1, 4, n)).astype(np.float64)
+    x = np.round(np.sin(t / 15) * 5 + rng.normal(0, 0.7, n))  # rounded: flat tops and ties
+    for period, prominence in ((None, None), (None, 2.0), (40.0, None), (40.0, 1.0), (90.0, 3.0)):
+        got = fluxprune.peaks(t, x, period=period, prominence=prominence)
+        assert list(got) == peaks_oracle(t, x, period, prominence), (period, prominence)
+
+
+def test_peaks_of_a_periodic_signal():
+    rng = np.random.default_rng(1)
+    t = np.arange(0, 3600, dtype=np.int64) * 1_000_000_000
+    period = 60 + 8 * np.sin(np.arange(3600) / 500)  # drifts between 52 and 68 s
+    phase = np.cumsum(2 * np.pi / period)
+    x = 10 * np.sin(phase) + rng.normal(0, 0.3, 3600)
+    got = fluxprune.peaks(t.view("datetime64[ns]"), x, period=np.timedelta64(60, "s"), prominence=5)
+    cycles = int(phase[-1] / (2 * np.pi))
+    assert abs(len(got) - 2 - 2 * cycles) <= 2  # a peak and a trough per cycle, nothing else
+    kinds = np.sign(x[got[1:-1]])
+    assert np.all(kinds[1:] != kinds[:-1])  # alternating
+    same = fluxprune.peaks(t / 1e9, x, period=60.0, prominence=5)
+    assert np.array_equal(got, same)
+    noisy = fluxprune.peaks(t / 1e9, x, period=60.0)
+    assert len(noisy) >= len(got)
+    with pytest.raises(ValueError):
+        fluxprune.peaks(t / 1e9, x, period=np.timedelta64(60, "s"))
+
+
+def test_peaks_cap_and_edges():
+    rng = np.random.default_rng(2)
+    t = np.arange(2000.0)
+    x = np.sin(t / 20) * np.linspace(1, 10, 2000) + rng.normal(0, 0.1, 2000)
+    full = fluxprune.peaks(t, x, period=100)
+    for cap in (2, 7, 20, len(full) - 1):
+        got = fluxprune.peaks(t, x, period=100, max_points=cap)
+        assert 2 <= len(got) <= cap and {0, 1999} <= set(got)
+    top = fluxprune.peaks(t, x, period=100, max_points=12)
+    assert np.mean(np.abs(x[top[1:-1]])) > np.mean(np.abs(x[full[1:-1]]))  # the most prominent win
+    x[[100, 500, 501]] = np.nan
+    got = fluxprune.peaks(t, x, period=100)
+    assert np.isfinite(x[got[1:-1]]).all()
+    assert list(fluxprune.peaks(t[:2], x[:2])) == [0, 1] and len(fluxprune.peaks([], [])) == 0
+    p = fluxprune.prune(t, x, keep=got)
+    assert set(got) <= set(p.index)

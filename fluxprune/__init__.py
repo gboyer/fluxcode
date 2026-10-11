@@ -3,28 +3,26 @@
 """Prune a time series to the points that carry its shape, read as straight lines between them.
 
 A prepass for storage and processing, not a codec: the output is a subset of the input points,
-far fewer of them, chosen to keep the time-weighted RMSE of the linear interpolation low. The
-first and last points (for stitching blocks back together) and the minimum and maximum are
-always kept.
+far fewer of them. By default the count adapts to the data: the time-weighted RMSE relative to
+the block's range traded against the points spent at a fixed rate. Two optional guards bound it:
+a hard cap on the points and a largest error for any point. The first and last points (for
+stitching blocks back together) and the minimum and maximum are always kept.
 
     import fluxprune
 
-    r = fluxprune.rank(t, x)          # one O(n log n) pass ranks every point
-    idx = r.keep(200)                 # the 200 most significant points, sorted
-    r.rmse(200)                       # their time-weighted RMSE, relative to max - min
+    p = fluxprune.prune(t, x)                         # automatic: p.index, p.max_error, p.rmse
+    p = fluxprune.prune(t, x, max_points=500, max_error=0.5)   # guarded: p.capped if the cap won
+    p = fluxprune.prune(t, x, error_per_point=0.0015 / 12)     # the same density for 12 h blocks
 
-    # or in one call, refined: 200 points, within 1% RMSE, or a balance of the two
-    idx = fluxprune.prune(t, x, points=200)
-    idx = fluxprune.prune(t, x, rmse=0.01)
-    idx = fluxprune.prune(t, x, points=200, rmse=0.01)
+    # periodic signals: keep each peak and trough, prune the rest
+    pk = fluxprune.peaks(t, x, period=np.timedelta64(60, "s"), prominence=2.0)
+    p = fluxprune.prune(t, x, keep=pk)
 
-    # adaptive, one knob: stop where the RMSE left falls below 0.0015 per point added
-    idx = fluxprune.prune(t, x, error_per_point=0.0015)
-
-    # adaptive, two knobs: the balance, but never chasing the series' own noise
-    idx = fluxprune.prune(t, x, points=200, rmse=0.01, noise_floor=True)
+    r = fluxprune.rank(t, x)        # step by step: one O(n log n) pass ranks every point
+    r.rmse()                        # the relative error of every count
+    r.keep(200)                     # the 200 most significant points, nested
 """
 
-from ._api import Ranking, prune, rank
+from ._api import ERROR_PER_POINT, Pruned, Ranking, peaks, prune, rank
 
-__all__ = ["Ranking", "prune", "rank"]
+__all__ = ["ERROR_PER_POINT", "Pruned", "Ranking", "peaks", "prune", "rank"]
