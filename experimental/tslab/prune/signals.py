@@ -6,16 +6,20 @@ cut into storage blocks of fixed duration.
 - The six process tags of tslab.common.historian (every scan, and what its swinging-door archive kept).
 - A few more shapes a store sees: a totalizer, batch cycles, vibration with bursts, an on/off
   compressor, pure white noise, and a clean sine (smooth, no noise: the case with no knee).
+- OFFSET: signals whose small variations matter on a large offset (a furnace at ~2115 °F, grid
+  frequency), the same ambient temperature in °C (crossing zero) and in K, a tank level that sits
+  still for hours, and the furnace with thermocouple dropouts: what the error should be relative to.
 
 All seeds are fixed.
 """
 
 import numpy as np
 
-from tslab.common.historian import DAY_S, DAY_START_NS, SECOND_NS, TAGS, _first_order, ou, tag_day, tag_scans, tag_seed
+from tslab.common.historian import DAY_S, DAY_START_NS, SECOND_NS, TAGS, _first_order, ou, setpoints, tag_day, tag_scans, tag_seed
 
 EXTRA = ["totalizer", "batch", "vibration", "compressor", "white-noise", "sine"]
 SIGNALS = TAGS + EXTRA
+OFFSET = ["furnace", "furnace-dropout", "grid-frequency", "ambient-C", "ambient-K", "level-quiet"]
 EXTRA_INFO = {
     "totalizer": "Flow totalizer: integral of a stepped flow, 0.1 resolution (piecewise straight)",
     "batch": "Batch reactor: heat ramp, soak, cool, ~2 h cycles + noise σ 0.05",
@@ -23,6 +27,12 @@ EXTRA_INFO = {
     "compressor": "Compressor power: on/off cycles (5-15 min) with start-up overshoot + noise",
     "white-noise": "White noise only, σ 1",
     "sine": "One 20 min sine, nothing else (smooth: error falls as k⁻² with no floor)",
+    "furnace": "Furnace temperature, °F: setpoints 2100-2130 with ramps, control cycling ±0.3-1.5 °F, 0.1 °F steps",
+    "furnace-dropout": "The furnace with 6 thermocouple dropouts a day (reads 0 for 2-20 s)",
+    "grid-frequency": "Grid frequency, Hz: 60 ± ~10 mHz, 4 generator trips a day (−40 to −150 mHz), 1 mHz steps",
+    "ambient-C": "Outdoor temperature, °C: −3 to 9 over the day, weather drift, 0.1 °C steps (crosses zero)",
+    "ambient-K": "The same ambient temperature in kelvin (+273.15)",
+    "level-quiet": "Tank level, %: held at 62.4 (±1 step of 0.01 dither) but for 3 fill/draw cycles a day",
 }
 
 
@@ -71,9 +81,48 @@ def extra_scans(name, day):
     raise ValueError(name)
 
 
+def offset_scans(name, day):
+    if name == "ambient-K":
+        return offset_scans("ambient-C", day) + 273.15
+    if name == "furnace-dropout":
+        x = offset_scans("furnace", day)
+        rng = np.random.default_rng(9900 + day)
+        for start in rng.integers(0, DAY_S - 20, 6):
+            x[start:start + rng.integers(2, 20)] = 0.0
+        return x
+    rng = np.random.default_rng(9500 + 100 * OFFSET.index(name) + day)
+    n = DAY_S
+    s = np.arange(n, dtype=np.float64)
+    if name == "furnace":
+        sp = setpoints(rng, n, 6, 2100, 2130, 5.0)
+        sp = _first_order(sp, 1 / 600, sp[0])  # the load follows a setpoint change over ~10 min
+        amp = 0.3 + 1.2 * rng.random(n // 3600 + 1)[(s // 3600).astype(int)]  # cycling amplitude, per hour
+        cyc = amp * np.sin(2 * np.pi * s / rng.uniform(480, 900) + rng.uniform(0, 2 * np.pi))
+        return np.round(sp + cyc + ou(rng, n, 1200, 0.5) + rng.normal(0, 0.1, n), 1)
+    if name == "grid-frequency":
+        x = 60 + ou(rng, n, 30, 0.008) + 0.004 * np.sin(2 * np.pi * s / 3600)  # hourly schedule changes
+        for start in rng.integers(0, n - 1200, 4):
+            drop, recover = rng.uniform(0.04, 0.15), rng.uniform(60, 300)
+            k = np.arange(n - start, dtype=np.float64)
+            x[start:] -= drop * np.minimum(k / 5, 1) * np.exp(-np.maximum(k - 5, 0) / recover)
+        return np.round(x, 3)
+    if name == "ambient-C":
+        return np.round(3 + 6 * np.sin(2 * np.pi * (s / DAY_S - 0.35)) + ou(rng, n, 3600, 1.0)
+                        + rng.normal(0, 0.03, n), 1)
+    if name == "level-quiet":
+        x = np.full(n, 62.4)
+        for start in rng.integers(0, n - 7200, 3):
+            fill = np.concatenate([np.linspace(0, 1, 1800), np.ones(int(rng.integers(600, 2400))), np.linspace(1, 0, 2400)])
+            x[start:start + len(fill)] += rng.uniform(5, 20) * fill
+        return np.round(x + rng.normal(0, 0.006, n), 2)
+    raise ValueError(name)
+
+
 def scans(name, day):
     """A day of 1 s scans of a signal."""
-    return tag_scans(name, tag_seed(name, day)) if name in TAGS else extra_scans(name, day)
+    if name in TAGS:
+        return tag_scans(name, tag_seed(name, day))
+    return offset_scans(name, day) if name in OFFSET else extra_scans(name, day)
 
 
 def blocks(name, day, hours, archive=False):

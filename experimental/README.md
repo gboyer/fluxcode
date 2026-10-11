@@ -48,7 +48,7 @@ last: `[cw<bits>-|quant<bits>-|ratectl-]<predictor>-<coder or step mapping>[-<va
 | `tslab/constwidth/delta_bfp.py` | `cw8-delta1-bfp-e2`, `cw8-delta1-bfp-e4`, `cw6-…`, `cw4-…` | closed-loop delta1 with a block-floating-point exponent per 16-sample frame |
 | `tslab/constwidth/delta_tree.py` | `cw-delta1-tree-N` | delta1 with hierarchical block floating point over the deltas |
 | `tslab/flux/proto.py` | `fluxproto-B[-nfF]` | the fluxcode prototype: power-of-two step, decimal detection, byte/bit/nibble planes, noise floor |
-| `tslab/prune/signals.py`, `baselines.py`, `rules.py` | — | fluxprune's experiments: slow signals (1 s scans, a day each), the methods it is compared with (top-down, optimal DP, swinging door, LTTB, min/max buckets, even spacing), and the stopping rules |
+| `tslab/prune/signals.py`, `baselines.py`, `rules.py` | — | fluxprune's experiments: slow signals (1 s scans, a day each; and the offset set), the methods it is compared with (top-down, optimal DP, swinging door, LTTB, min/max buckets, even spacing), and the stopping rules |
 | `tslab/flux/adapters.py` | `fluxcode-B[-fF]` | the real fluxcode package as a block group codec, and its sweeps |
 
 ## The report
@@ -58,7 +58,7 @@ uv run python make_report.py        # report/index.html and its SVGs    (~3 min)
 uv run python make_rate_report.py   # report/rate.html                   (~3 min)
 uv run python make_time_report.py   # report/time.html                   (~5 s)
 uv run python make_sdt_report.py    # report/sdt.html and its SVGs       (~4 min)
-uv run python make_prune_report.py  # report/prune.html and its SVGs     (~1.5 min)
+uv run python make_prune_report.py  # report/prune.html and its SVGs     (~1.2 min)
 ```
 
 `make_report.py` runs every codec on the report's block groups (`tslab.common.datasets.groups()`: 12 kinds ×
@@ -86,8 +86,9 @@ per archived point against zstd and Gorilla, error against the archived points a
 resampled exports, and SDT against storing every scan. `make_prune_report.py` writes `report/prune.html`: the
 [fluxprune](../fluxprune/README.md) prepass (keep the points that matter for linear interpolation) on 12 slow signals
 in 1 h blocks (`tslab/prune/`): its ranking against the optimum, swinging door, LTTB and others at the same count,
-eight rules for how many points to keep, their stability under sampling rate and block length, swinging-door archives
-as input, and timings (they need a quiet machine). `report/` is generated, and committed so it can be read without rerunning.
+eight rules for how many points to keep, their stability under sampling rate and block length, what errors should be
+relative to (range, largest |value|, a known span; six more signals with small variations on a large offset),
+swinging-door archives as input, and timings (they need a quiet machine). `report/` is generated, and committed so it can be read without rerunning.
 
 ## Benchmarks
 

@@ -13,6 +13,8 @@ This page measures, on a day of 1 s scans per signal-day cut into 1 h storage bl
   swinging door, LTTB, min/max buckets and even spacing at the same point count;
 - how many points each stopping rule keeps where (tslab.prune.rules), each calibrated to the same total;
 - whether the rules hold up when the sampling rate or the block length changes;
+- what errors should be relative to: the block's range, its largest |value|, the geometric mean of the
+  two, or a known span per series, on signals with small variations on a large offset;
 - what it does to swinging-door archives as input; and how long it takes.
 """
 
@@ -36,7 +38,7 @@ import numpy as np
 from tslab.common.historian import TAG_INFO, TAGS
 from tslab.prune import baselines as B
 from tslab.prune import rules as R
-from tslab.prune.signals import EXTRA_INFO, SIGNALS, blocks, scans
+from tslab.prune.signals import EXTRA_INFO, OFFSET, SIGNALS, blocks, scans
 from tslab.report.page import clean_outputs, save_fig, shell
 
 OUT = Path(__file__).parent / "report"
@@ -70,7 +72,8 @@ RULES = {
     "marginal": (lambda r, lam, h, b=BUDGET: R.marginal(r, lam), "λ", 1e-14, 1e-1, "minimise e² + λk"),
     "marginal (RMSE)": (lambda r, lam, h, b=BUDGET: R.marginal_rmse(r, lam), "λ", 1e-9, 1.0,
                         "minimise e + λk: the least mean RMSE for the total"),
-    "amortized": (lambda r, th, h, b=BUDGET: R.amortized(r, th), "θ", 1e-9, 1.0, "first k with e / (points added) < θ"),
+    "amortized": (lambda r, th, h, b=BUDGET: R.amortized(r, th / h), "θ", 1e-9, 1.0,
+                  "first k with e / (points added) < θ / hours"),
     "tolerance+noise": (lambda r, eps, h, b=BUDGET: R.rmse_noisy(r, eps), "ε", 1e-6, 0.5,
                         "tolerance, ε raised to the noise σ"),
     "balance+noise": (lambda r, eps, h, b=BUDGET: R.geomean_noisy(r, b * h, eps), "ε", 1e-6, 0.5,
@@ -218,6 +221,121 @@ def invariance(params):
     return rate, length
 
 
+# what errors are relative to: name -> scale(x finite values, signal) in the values' units
+SCALES = {
+    "range": lambda f, name: f.max() - f.min(),
+    "√(range·max|x|)": lambda f, name: np.sqrt((f.max() - f.min()) * np.abs(f).max()),
+    "max|x|": lambda f, name: np.abs(f).max(),
+    "span (known)": lambda f, name: SPAN[name],
+}
+SPAN = {}  # each signal's range over all its days (the furnace's for the furnace with dropouts): a known span
+SCALE_RULES = {  # name -> k(r, param, factor = scale / range, hours)
+    "tolerance": lambda r, p, f, h: r.count(rmse=p * f),
+    "balance": lambda r, p, f, h: r.count(points=BUDGET * h, rmse=p * f),
+    "amortized": lambda r, p, f, h: r.count(error_per_point=p * f / h),
+}
+
+
+def scale_corpus(hours=1):
+    """Blocks of the main and the offset signals, with each scale over the block's range."""
+    names = SIGNALS + OFFSET
+    if not SPAN:
+        for name in names:
+            x = np.concatenate([scans("furnace" if name == "furnace-dropout" else name, d) for d in range(DAYS)])
+            SPAN[name] = float(x.max() - x.min())
+    items = corpus(hours, names=names)
+    for it in items:
+        f = it["x"][np.isfinite(it["x"])]
+        it["range"] = float(f.max() - f.min())
+        it["f"] = {sc: fn(f, it["name"]) / it["range"] if it["range"] > 0 else 1.0 for sc, fn in SCALES.items()}
+    return items
+
+
+def abs_error(it, keep):
+    """RMSE in the values' units; for the furnace with dropouts, over the samples that aren't dropouts (a dropout
+    is meant to be kept as a glitch, not traced)."""
+    if it["name"] != "furnace-dropout":
+        return it["r"].error(keep) * it["range"]
+    t = (it["t"] - it["t"][0]).astype(float)
+    d = np.interp(t, t[keep], it["x"][keep]) - it["x"]
+    return float(np.sqrt(np.mean(d[it["x"] != 0] ** 2)))
+
+
+def scale_study():
+    """Per rule and scale, calibrated to BUDGET per hour over the main and offset signals: points and RMSE over the
+    signal's span per block; the least mean RMSE over span possible for the total (e + λk on errors over the span); and
+    k of a 12 h block over the sum of k of its twelve 1 h blocks."""
+    items = scale_corpus(1)
+    target = BUDGET * len(items)
+    out = {}
+    combos = [(rule, sc) for rule in SCALE_RULES for sc in SCALES] + [("least mean RMSE", "span (known)")]
+    for rule, sc in combos:
+        k_of = SCALE_RULES.get(rule) or (lambda r, p, f, h: R.marginal_rmse(r, p * f))
+        lo, hi = np.log(1e-12), np.log(10.0)
+        for _ in range(45):
+            mid = (lo + hi) / 2
+            total = sum(k_of(it["r"], np.exp(mid), it["f"][sc], 1) for it in items)
+            lo, hi = (mid, hi) if total > target else (lo, mid)
+        p = float(np.exp((lo + hi) / 2))
+        ks, es = [], []
+        for it in items:
+            r = it["r"]
+            keep = r.refine(r.keep(k_of(r, p, it["f"][sc], 1)), PASSES)
+            ks.append(len(keep))
+            es.append(abs_error(it, keep) / SPAN[it["name"]])
+        out[rule, sc] = {"p": p, "k": np.array(ks), "e": np.array(es), "k_of": k_of}
+    names = np.array([it["name"] for it in items])
+    items12 = scale_corpus(12)
+    names12 = np.array([it["name"] for it in items12])
+    length = {}
+    for (rule, sc), d in out.items():
+        if rule not in ("amortized", "least mean RMSE"):
+            continue
+        k1 = np.array([d["k_of"](it["r"], d["p"], it["f"][sc], 1) for it in items])
+        k12 = np.array([d["k_of"](it["r"], d["p"], it["f"][sc], 12) for it in items12])
+        length[rule, sc] = {n: k12[names12 == n].sum() / k1[names == n].sum() for n in SIGNALS + OFFSET}
+    return items, names, out, length
+
+
+def plot_scales(items, study):
+    """An hour of day 0 of each offset signal (09:00, but the first with a dropout for the furnace with dropouts and the
+    first quiet one for the quiet level): the points the amortized rule keeps with errors relative to the range and to
+    max|x| (each calibrated to the same total)."""
+    def shows(it):
+        if it["name"] == "furnace-dropout":
+            return bool(np.any(it["x"] == 0))
+        return it["range"] < 0.1 if it["name"] == "level-quiet" else it["block"] == 9
+    day0 = [it for it in items if it["name"] in OFFSET and it["day"] == 0 and shows(it)]
+    picks = [next(it for it in day0 if it["name"] == name) for name in OFFSET]
+    fig, axes = plt.subplots(3, 2, figsize=(12, 6.6), layout="constrained")
+    for ax, it in zip(axes.T.ravel(), picks):
+        t, x, r = it["t"], it["x"], it["r"]
+        minutes = (t - t[0]) / 6e10
+        ax.plot(minutes, x, color=SCANS, lw=0.6, label="1 s scans")
+        title = [it["name"]]
+        for j, sc in enumerate(("range", "max|x|")):
+            d = study["amortized", sc]
+            keep = r.refine(r.keep(d["k_of"](r, d["p"], it["f"][sc], 1)), PASSES)
+            ax.plot(minutes[keep], x[keep], "-o", color=C[j], lw=1.2, ms=3, label=f"kept, errors relative to {sc}")
+            title.append(f"{sc} {len(keep)}")
+        off = ""
+        if it["name"] == "furnace-dropout":
+            ok = x != 0
+            ax.set_ylim(x[ok].min() - 1, x[ok].max() + 1)
+            off = f" (dropout to 0 at {minutes[~ok][0]:.0f} min, off the scale)"
+        ax.set_title(f"{title[0]}, {int(it['block']):02d}:00: {', '.join(title[1:])} points{off}", loc="left", fontsize=9)
+        ax.set_xlim(0, 60)
+        ax.tick_params(labelsize=8)
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+        tidy(ax)
+    for ax in axes[-1]:
+        ax.set_xlabel("minutes into the hour", fontsize=8)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside upper right", ncols=3, frameon=False, fontsize=9)
+    return save_fig(fig, OUT, f"{PREFIX}scales", "One hour of each offset signal with the points the amortized rule keeps "
+                    "when errors are relative to the range or to the largest |value|")
+
+
 def timings():
     """Seconds for rank and for refine (2 passes, at k = 1% of n), best of 3, by n: a 1 s temperature trace and
     white noise, days concatenated."""
@@ -349,7 +467,7 @@ def shade(ratio):
     return "" if ratio < 1.05 else "r1" if ratio < 1.25 else "r2" if ratio < 1.6 else "r3" if ratio < 2.5 else "r4"
 
 
-def write(items, params, res, sw, qual, opt, rate, length, archive_res, archive_items, times):
+def write(items, params, res, sw, qual, opt, rate, length, scale, archive_res, archive_items, times):
     names = SIGNALS
     by = np.array([it["name"] for it in items])
     sections = []
@@ -457,6 +575,43 @@ def write(items, params, res, sw, qual, opt, rate, length, archive_res, archive_
              + table(["rule", *names], length_rows))
     section("rules", "How many points: the stopping rules", body)
 
+    # scale
+    s_items, s_names, study, slength = scale
+    all_names = SIGNALS + OFFSET
+    rows = [[n, ("l", html.escape(describe(n)))] for n in OFFSET]
+    body = ("<p>Errors so far are relative to each block's range, so a block's precision follows its own range whatever "
+            "the units or the offset: an hour of furnace that moves 4 °F around 2,115 °F gets the same relative precision "
+            "as an hour of a valve that moves 0-100%. The alternatives are the block's largest absolute value, the "
+            "geometric mean of the two, and a known span per series (here each signal's range over all its days, as a "
+            "historian's per-tag span would give, but which a store that knows nothing of the series lacks). The ranking "
+            "doesn't depend on the scale, only the rules' thresholds do (<code>fluxprune.rank(t, x, scale=)</code>). "
+            "Six more signals where it matters:</p>" + table(["signal", "what it is"], rows))
+    shown = SIGNALS + OFFSET
+    rows = []
+    for (rule, sc), d in study.items():
+        cells = [rule, sc]
+        per = []
+        for n in shown:
+            sel = s_names == n
+            per.append(d["e"][sel].mean())
+            cells.append(f"{d['k'][sel].mean():.0f}<br><span class='muted'>{pct(per[-1])}</span>")
+        cells += [pct(d["e"].mean()), pct(max(per)), f"{d['k'].max():,}"]
+        rows.append(cells)
+    body += (f"<p>Each rule and scale calibrated to {BUDGET} points per hour over all {len(s_items):,} blocks of the "
+             f"{len(all_names)} signals (5 days each). Cells are the mean points kept per hour and, below, the mean RMSE "
+             f"<i>relative to the signal's span</i>: a measure that doesn't depend on the units, the offset or the block, "
+             f"so the scales can be compared (the furnace with dropouts is measured off its dropouts). The last row is the "
+             f"least mean RMSE over span possible for the total, which needs the span.</p>"
+             + table(["rule", "errors relative to", *shown, "mean", "worst signal", "max k"], rows)
+             + plot_scales(s_items, study))
+    rows = [[rule, sc] + [f"{slength[rule, sc][n]:.2f}" for n in shown]
+            + [f"<b>{gmean([slength[rule, sc][n] for n in shown]):.2f}</b>"] for rule, sc in slength]
+    body += ("<p>Block length: k of a 12 h block over the sum of k of its twelve 1 h blocks (all days), with θ / hours "
+             "for the amortized rule. A ratio below 1 is partly right: twelve blocks keep twelve sets of required points, "
+             "and a longer block can spend its points where they matter most.</p>"
+             + table(["rule", "errors relative to", *shown, "geometric mean"], rows))
+    section("scale", "Relative to what?", body)
+
     # archives
     rows = []
     for name in TAGS:
@@ -495,7 +650,7 @@ FINDINGS = """
 <li><b>Ranking: bottom-up, then refine.</b> Removing the cheapest point repeatedly (exact time-weighted L2, a heap,
 O(n log n)) gives a nested ranking of every point and the whole error curve in one pass, but greedy merging is myopic:
 25-35% above the optimum. Two O(n) passes that slide each kept point to its best spot between its neighbours bring
-it to about 6% above the optimum on 600-point windows (worst 1.3×), for +10-15% of the ranking's time. Top-down
+it to about 6% above the optimum on 600-point windows (worst 1.3×), for +5-15% of the ranking's time. Top-down
 splitting is better than plain bottom-up on step-like signals and much worse on others (worst 7× the optimum).
 At the same number of points, swinging door's RMSE is 1.3-1.5× fluxprune's, LTTB's 2-2.5×, and min/max buckets' and
 even spacing's 2-4×: the plotting downsamplers keep shape for the eye, not the interpolation.</li>
@@ -524,16 +679,33 @@ sublinearly (k ∝ c^⅓ for a smooth signal's k⁻² curve, ∝ σ for noise). 
 <li><b>Knee detection</b> (stop when doubling the points stops paying) is unusable: periodic signals have plateaus at
 small k (12 h of a sine: 4 points) and random walks never stop (temperature: 3,061 of 3,600).</li>
 <li><b>Block length.</b> Every rule but the fixed count keeps fewer points in one 12 h block than in twelve 1 h blocks,
-mostly because errors are relative to the block's range, and a longer block has a wider one. A store that wants the
-same fidelity across block lengths should give an absolute tolerance (rmse = tolerance / (max - min)).</li>
+for two reasons. A parameter per block is spread over a longer block: θ / hours for the amortized rule (as K · hours for
+a count) takes its geometric mean over the 18 signals from 0.09 to 0.30 (θ per block: 0.01-0.48; θ / hours: 0.01-0.93,
+the low end the quiet level and the dropouts, whose range a single event sets). And a longer block has a
+wider range: with a known span per series instead, the same rule reaches 0.70. The rest is as it should be: twelve
+blocks keep twelve sets of required points, and one block can place its points where they matter most.</li>
+<li><b>Relative to what?</b> Of the scales that need no knowledge of the series, the block's own range is the best:
+with the amortized rule at 36/h, the mean error over each signal's span is 1.3%, against 1.1% with known spans and 1.0%
+the least possible. It gives small variations on a large offset the precision they need by itself: the furnace (4 °F
+an hour around 2,115) and the grid frequency keep 27 and 57 points per hour, where known spans give 16 and 62.
+<b>The largest |value|</b> depends on where zero is: the same ambient temperature keeps 38 points per hour in °C and 5
+in kelvin, and it starves exactly the signals that have little range for their offset (furnace and grid frequency: 4
+per hour, at 2.8% and 9% of their span, against 0.34% and 2%). <b>√(range · max|x|)</b> halves both effects but keeps
+them (41 against 12 points for °C and K, grid 4% of span), and it helps block length less than a known span (0.43
+against 0.70). The range has two costs: a quiet block makes its own dither look like signal (the quiet level keeps 74
+points per hour tracing one 0.01 step, against 5 with its span), and a glitch that sets the range takes its block's
+precision (furnace with dropouts: 1.1% of span against 0.34%). A known span fixes both:
+<code>scale=</code>.</li>
 <li><b>Swinging-door archives as input</b> prune further, depending on what the archive kept: a tag whose CompDev is
 below its noise (flow, motor current: 1,300-3,000 archived points per hour) drops to 0.6-6% of the archive at the
 same settings, a smooth tag (temperature, pH: ~330/h) to 2-11%, and an archive that already has two points per hour
 stays as it is.</li>
 </ol>
-<p><b>Recommendation.</b> Use <code>prune(t, x, error_per_point=θ)</code> as the default adaptive mode (θ ≈ 0.0015
-gives ~1% of 1 s scans on this corpus), <code>points=</code> where memory must be predictable, and <code>points=,
-rmse=, noise_floor=True</code> where a hard per-block ceiling (√(K·n)) matters more than sampling-rate stability.</p>
+<p><b>Recommendation.</b> Use <code>prune(t, x, error_per_point=θ / H)</code> for blocks of H hours as the default
+adaptive mode (θ ≈ 0.0015 gives ~1% of 1 s scans on this corpus), with <code>scale=</code> the series' span when the
+store knows one (a historian's per-tag span, an instrument range): errors are then absolute, so quiet blocks, glitches
+and the block length matter less. Use <code>points=</code> where memory must be predictable, and <code>points=, rmse=,
+noise_floor=True</code> where a hard per-block ceiling (√(K·n)) matters more than sampling-rate stability.</p>
 """
 
 
@@ -551,11 +723,13 @@ def main():
     opt = optimality([it for it in items if it["day"] == 0 and it["block"] % 4 == 1])
     print(f"optimum: {time.time() - t0:.0f} s", flush=True)
     rate, length = invariance(params)
+    scale = scale_study()
+    print(f"scale: {time.time() - t0:.0f} s", flush=True)
     archive_items = corpus(archive=True, names=TAGS)
     archive_res = apply_rules(archive_items, params)
     times = timings()
     print(f"done: {time.time() - t0:.0f} s", flush=True)
-    write(items, params, res, sw, qual, opt, rate, length, archive_res, archive_items, times)
+    write(items, params, res, sw, qual, opt, rate, length, scale, archive_res, archive_items, times)
 
 
 if __name__ == "__main__":

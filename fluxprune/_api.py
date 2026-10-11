@@ -26,7 +26,8 @@ class Ranking:
     subset of a larger one.
 
     Errors are time-weighted RMSE of the kept points' straight lines against the input's,
-    relative to the range of the finite values (max - min): `rmse(k)`.
+    relative to the range of the finite values (max - min), or to the `scale` given to rank():
+    `rmse(k)`.
     """
 
     n: int
@@ -35,7 +36,7 @@ class Ranking:
     removed: np.ndarray
     """The other indices in removal order: least significant first."""
     sq_error: np.ndarray
-    """sq_error[r]: mean squared error (relative to the range squared) after the first r removals."""
+    """sq_error[r]: mean squared error (relative to the scale squared) after the first r removals."""
     _tau: np.ndarray = field(repr=False)
     _y: np.ndarray = field(repr=False)
 
@@ -61,7 +62,7 @@ class Ranking:
         return np.flatnonzero(mask)
 
     def noise(self):
-        """The white-noise level of the series relative to its range, estimated from its own error curve:
+        """The white-noise level of the series relative to its scale, estimated from its own error curve:
         keeping the best half of white noise's points leaves NOISE_AT_HALF of its standard deviation.
         Correlated noise reads lower (it partly looks like signal); a swinging-door archive reads about
         its CompDev. 0 below NOISE_MIN_POINTS points."""
@@ -77,7 +78,8 @@ class Ranking:
         - error_per_point (alone): the first count k where the RMSE falls below error_per_point times
           the points added beyond the required ones, i.e. where the error left and the points spent,
           at that exchange rate, meet. One parameter, no noise estimate, and it hardly depends on the
-          sampling rate (report/prune.html, "amortized").
+          sampling rate (report/prune.html, "amortized"). For blocks H times longer, pass error_per_point / H
+          (as points * H for a count) to keep about the same density of points.
 
         noise_floor: never aim below the noise (rmse is raised to noise()), so that noise doesn't take
         points for nothing.
@@ -113,7 +115,7 @@ class Ranking:
         return keep
 
     def error(self, keep):
-        """Relative time-weighted RMSE of any sorted subset that includes the first and last points."""
+        """Relative time-weighted RMSE (to the scale) of any sorted subset that includes the first and last points."""
         if not len(self._tau):
             return 0.0
         tau, y = self._tau, self._y
@@ -132,13 +134,19 @@ class Ranking:
         return int(min(max(int(k), self.min_points), self.n))
 
 
-def rank(times, values):
+def rank(times, values, scale=None):
     """Rank the points (times[i], values[i]) of a series read as straight lines between them.
 
     times: non-decreasing, datetime64 or numbers (repeated times are allowed: a vertical step).
     values: floats, same length; non-finite values are kept with their neighbours, and no
     straight line spans them.
+    scale: what errors are relative to, in the values' units: by default the block's own range
+    (max - min), which needs no knowledge of the series but gives a quiet block, or one whose range
+    a glitch sets, a different precision in absolute terms; a fixed span per series (an instrument
+    or historian span) makes errors absolute instead. The ranking itself doesn't depend on it.
     """
+    if scale is not None and not (np.isfinite(scale) and scale > 0):
+        raise ValueError("scale must be positive and finite")
     x = np.asarray(values, dtype=np.float64)
     t = np.asarray(times)
     if t.shape != x.shape or x.ndim != 1:
@@ -177,19 +185,19 @@ def rank(times, values):
         req = np.flatnonzero(required)
         rest = np.flatnonzero(~required)
         return Ranking(n, req, rest, np.zeros(len(rest) + 1), np.empty(0), np.empty(0))
-    y = np.where(finite, (x - lo) / (hi - lo), 0.0)
+    y = np.where(finite, (x - lo) / (hi - lo if scale is None else scale), 0.0)
     tau = tau / duration
     order, delta = rank_kernel(tau, y, ~required)
     return Ranking(n, np.flatnonzero(required), order, np.concatenate(([0.0], np.cumsum(delta))), tau, y)
 
 
-def prune(times, values, points=None, rmse=None, noise_floor=False, error_per_point=None, passes=2):
+def prune(times, values, points=None, rmse=None, noise_floor=False, error_per_point=None, passes=2, scale=None):
     """Sorted indices of the points to keep: Ranking.count(...) of them, refined.
 
     points: how many points to keep; rmse: the time-weighted RMSE to stay within, relative to the
-    range of the values (max - min); both: their geometric mean; noise_floor: raise rmse to the
-    series' own noise level; error_per_point: stop where the RMSE left is below this many times the
-    points added. The first, last, minimum and maximum points are always kept.
+    range of the values (max - min) or to scale; both: their geometric mean; noise_floor: raise rmse
+    to the series' own noise level; error_per_point: stop where the RMSE left is below this many
+    times the points added. The first, last, minimum and maximum points are always kept.
     """
-    r = rank(times, values)
+    r = rank(times, values, scale)
     return r.refine(r.keep(r.count(points, rmse, noise_floor, error_per_point)), passes)

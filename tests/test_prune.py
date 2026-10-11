@@ -148,3 +148,19 @@ def test_error_per_point():
     assert r.count(error_per_point=1e-3) > r.count(error_per_point=1e-2)
     with pytest.raises(ValueError):
         r.count(points=10, error_per_point=1e-3)
+
+
+def test_scale():
+    t, x = series(6)
+    span = x.max() - x.min()
+    r, s = fluxprune.rank(t, x), fluxprune.rank(t, x, scale=10 * span)
+    np.testing.assert_array_equal(r.removed, s.removed)  # the ranking doesn't depend on it
+    np.testing.assert_allclose(s.rmse()[r.min_points:], r.rmse()[r.min_points:] / 10, rtol=1e-12, atol=1e-15)
+    assert s.rmse(50) == pytest.approx(np.sqrt(exact_mse(t - t[0], x, r.keep(50))) / (10 * span), rel=1e-9)
+    assert s.count(rmse=0.001) == r.count(rmse=0.01)
+    # the same series on a large offset: the range is unchanged, a fixed scale gives the same answer
+    np.testing.assert_array_equal(fluxprune.prune(t, x + 2000, error_per_point=1e-3, scale=span),
+                                  fluxprune.prune(t, x, error_per_point=1e-3))
+    for bad in (0.0, -1.0, np.inf, np.nan):
+        with pytest.raises(ValueError):
+            fluxprune.rank(t, x, scale=bad)
