@@ -34,9 +34,11 @@ class FluxCodec:
 
     def encode_group(self, X):
         group = self.group(X)
-        rows = _group.read_rows(_group.decompress(group))  # the package's own reader: no layout assumptions here
+        parsed = _group.decompress(group)  # the package's own reader: no layout assumptions here
+        nb = parsed.header.num_blocks
+        params = [int(_format.get_int16(parsed.raw_body, _format.grid_params_start(nb), nb, b)) for b in range(nb)]
         infos = [{"order": int(f & _format.BLOCK_FLAG_ORDER), "decimal": bool(f & _format.BLOCK_FLAG_DECIMAL),
-                  "param": int(p)} for f, p in zip(rows.block_flags, rows.grid_params)]
+                  "param": p} for f, p in zip(parsed.block_flags, params)]
         return group, infos
 
     def decode_group(self, data, nb, n):
@@ -87,8 +89,12 @@ def ideal_quantum(mins):
             head[b] = _encoder.pick_order(q, 1000, 0b1111)
             _encoder.residual(q, head[b], resid[b])
         anchors = np.ascontiguousarray(lo, np.float64).view(np.int64)  # where each block's grid starts
-        total += len(zc.compress(_bitpacking.write_group(head, np.full(nb, 1000), np.zeros(nb, np.int64), anchors,
-                                                        resid.ravel())))
+        sizes = np.full(nb, 1000)
+        offsets = _format.layout(head, sizes)
+        byte_body = _bitpacking.write_group(head, sizes, np.zeros(nb, np.int64), anchors, resid.ravel(),
+                                            np.zeros(0, np.uint8), None, offsets)
+        bit_body = _bitpacking.to_bit_planes(byte_body, nb, int(offsets.octet_offsets[-1]), False)
+        total += len(zc.compress(bit_body))
         nblocks += nb
     return 8 * total / (nblocks * 1000)
 
