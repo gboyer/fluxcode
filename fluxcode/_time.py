@@ -762,14 +762,17 @@ def snap_to_lattice(
 @njit(inline="always")
 def lattice_origin(times: np.ndarray, period: np.int64, quantum: np.int64) -> np.int64:
     """A point of a clock's lattice of the given period: the mean offset from the lattice through
-    the first tick of the ticks within a quarter period of it (a late or early tick doesn't pull
-    it, and the first tick's own jitter cancels out), rounded to a multiple of quantum /
-    PHASE_STEPS from the epoch, so the times stay round. Float sums: an estimate, checked by
-    snap_to_lattice."""
+    the first tick of PHASE_SAMPLES evenly spaced ticks within a quarter period of it (a late or
+    early tick doesn't pull it, and the first tick's own jitter cancels out), rounded to a
+    multiple of quantum / PHASE_STEPS from the epoch, so the times stay round. Float sums: an
+    estimate, checked by snap_to_lattice."""
     first = times[0]
     period_float = np.float64(period)
+    block_len = times.shape[0]
+    num_sampled = min(PHASE_SAMPLES, block_len)
     total, count = 0.0, 0
-    for sample_idx in range(times.shape[0]):
+    for sampled_idx in range(num_sampled):
+        sample_idx = sampled_idx * (block_len - 1) // max(num_sampled - 1, 1)
         offset = np.float64(times[sample_idx] - first)
         residual = offset - np.round(offset / period_float) * period_float
         near = abs(residual) < 0.25 * period_float
@@ -786,6 +789,8 @@ def fit_lattice(
 ) -> bool:
     """Puts a clock's ticks on its own lattice, origin + k period, if every tick is within limit
     of it: a clock whose period no 1-2-5 grid divides (1024 Hz, 60 Hz) stores as regular.
+    round_blocks tries it only where the grid leaves the one-scan intervals unequal
+    (scans_equal).
 
     The period is the interval rounded to a multiple of the quantum (a 1-2-5 period, or 3 ms, is
     then exact although the mean of a jittered clock's intervals is off by a few ns), or failing
@@ -817,6 +822,27 @@ def fit_lattice(
     if drifting == period:
         return False
     return snap_to_lattice(times, lattice_origin(times, drifting, quantum), drifting, limit, np.int64(INT64_MIN), out)
+
+
+@njit(inline="always")
+def scans_equal(times: np.ndarray, interval: float) -> bool:
+    """Whether all of a block's one-scan intervals (strictly between interval / 2 and 3 interval /
+    2) are equal: its ticks are a regular clock with gaps, which no lattice makes more regular."""
+    lower, upper = 0.5 * interval, 1.5 * interval
+    num_intervals = times.shape[0] - 1
+    ticks_next, ticks_prev = times[1:], times[:num_intervals]
+    scan = np.int64(-1)
+    for interval_idx in range(num_intervals):
+        delta = ticks_next[interval_idx] - ticks_prev[interval_idx]
+        if lower < delta < upper:
+            scan = delta
+            break
+    differing_bits = np.int64(0)
+    for interval_idx in range(num_intervals):
+        delta = ticks_next[interval_idx] - ticks_prev[interval_idx]
+        is_scan = (delta > lower) & (delta < upper)
+        differing_bits |= (delta ^ scan) * is_scan
+    return differing_bits == 0
 
 
 @njit(inline="always")
@@ -970,7 +996,7 @@ def round_blocks(
                         step = np.int64(regular_step(out))
                         # A clock still irregular on the grid: its own lattice, if every tick is
                         # within time_error / 2 intervals of it (as a lattice snap in an update)
-                        if step == 0 and clock:
+                        if step == 0 and clock and not scans_equal(out, interval):
                             if fit_lattice(times, interval, quantum, np.int64(0.5 * time_error * interval), out):
                                 out_quanta[block_idx] = 0
                                 out_phases[block_idx] = 0

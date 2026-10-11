@@ -100,6 +100,9 @@ def compare_time_errors(time_errors, reps):
     plain_decode = best(lambda: fluxcode.decode_group(plain_group), reps)
     plain_bytes = len(plain_group)
     errors = [0.0, *time_errors]
+    print(f"values only: {plain_bytes} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per block group; "
+          "cells: bytes the times add, encode/decode time they add (share of values-only), irregular blocks, "
+          "largest move in median intervals\n")
     print("| timestamps | " + " | ".join(f"e = {e:g}" for e in errors) + " |")
     print("|---|" + "---|" * len(errors))
     rng = np.random.default_rng(1)
@@ -128,7 +131,8 @@ def compare_time_errors(time_errors, reps):
             decode_time = best(lambda group=group: fluxcode.decode_group(group), reps) - plain_decode
             parsed = _group.decompress(group)
             irregular = int(np.count_nonzero(parsed.block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME))
-            cell = f"{len(group) - plain_bytes} B, +{encode_time:.0f}/+{decode_time:.0f} µs, {irregular}/60"
+            cell = (f"{len(group) - plain_bytes} B, +{encode_time:.0f}/+{decode_time:.0f} µs "
+                    f"(+{100 * encode_time / plain_encode:.0f}%/+{100 * decode_time / plain_decode:.0f}%), {irregular}/60")
             cells.append(cell if time_error == 0 else f"{cell}, max {moved:.3f}")
         print(f"| {name} | " + " | ".join(cells) + " |")
 
