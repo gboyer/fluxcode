@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Kernels for the error of a kept subset and for the max_error guard (a swinging-door fill).
+"""Kernels for the error of a kept subset and for the max_error guard (a farthest-reach fill).
 
 The deviation of an input point is its distance, in value, from the straight line between the
 kept points around it. Where kept points share a time (a vertical step), the line is the step,
@@ -54,46 +54,43 @@ def errors_kernel(tau, y, keep):
 
 
 @njit(cache=True)
-def _door(tau, y, a, b, tol, out, m):
-    """Swinging door between kept points a and b: from each anchor, the longest chord whose line stays
-    within tol of every point it spans (slope bounds from the anchor, O(1) per point); the point before
-    the first that breaks it becomes the next anchor. Writes the anchors after a to out[m:]; returns
-    the new m. A point at the anchor's time ends the chord there."""
+def _reach(tau, y, a, b, tol, out, m):
+    """The farthest-reach fill between kept points a and b: from each anchor, scan on while some
+    line from the anchor could still pass within tol of every point so far (the slope bounds each
+    point sets, as in swinging door, still overlap), remember the last point whose own chord is
+    such a line, and make it the next anchor. Writes the anchors after a to out[m:]; returns the
+    new m. A point at the anchor's time (a vertical step) is always the next anchor."""
     anchor = a
-    lo, hi = -np.inf, np.inf
-    j = a + 1
-    while j <= b:
-        du = tau[j] - tau[anchor]
-        if du <= 0.0:
-            if j - 1 > anchor:
-                out[m] = j - 1
-                m += 1
-            if j < b:
-                out[m] = j
-                m += 1
-            anchor = j
-            lo, hi = -np.inf, np.inf
-            j += 1
-            continue
-        s = (y[j] - y[anchor]) / du
-        if s < lo or s > hi:
-            # j can't be reached from the anchor: the point before it becomes the anchor
-            anchor = j - 1
-            out[m] = anchor
-            m += 1
-            lo, hi = -np.inf, np.inf
-            continue
-        if j < b:
+    while True:
+        lo, hi = -np.inf, np.inf
+        last = anchor + 1  # the next point is always reachable: no point lies between
+        j = anchor + 1
+        while j <= b:
+            du = tau[j] - tau[anchor]
+            if du <= 0.0:  # only the next point can share the anchor's time
+                break
+            s = (y[j] - y[anchor]) / du
+            if lo <= s <= hi:
+                last = j
             lo = max(lo, (y[j] - tol - y[anchor]) / du)
             hi = min(hi, (y[j] + tol - y[anchor]) / du)
-        j += 1
-    return m
+            if lo > hi:  # no line from the anchor passes every point so far: none reaches further
+                break
+            j += 1
+        if last >= b:
+            return m
+        out[m] = last
+        m += 1
+        anchor = last
 
 
 @njit(cache=True)
 def fill_kernel(tau, y, keep, tol):
-    """keep (sorted) with every segment that strays more than tol from the input filled by swinging door,
-    so that no input point does: about the fewest points that bound the error of each segment."""
+    """keep (sorted) with every segment that strays more than tol from the input filled by the
+    farthest-reach fill (_reach), so that no input point does. On slow process data it keeps 4% more
+    points than the fewest that would (up to 20% on noisy signals; report/prune.html, "The fill"), and
+    1-3x fewer than swinging door's rule, which ends each line at the first point it can't reach
+    although a later one often can be."""
     out = np.empty(len(tau), np.int64)
     m = 0
     for s in range(len(keep) - 1):
@@ -101,6 +98,6 @@ def fill_kernel(tau, y, keep, tol):
         out[m] = a
         m += 1
         if _worst(tau, y, a, b)[0] > tol:
-            m = _door(tau, y, a, b, tol, out, m)
+            m = _reach(tau, y, a, b, tol, out, m)
     out[m] = keep[-1]
     return out[: m + 1].copy()

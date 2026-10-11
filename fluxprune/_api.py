@@ -147,7 +147,7 @@ class Ranking:
         return self._result(idx, True)
 
     def _relax(self, tol, cap):
-        """The swinging-door fill of the required points at about the smallest tolerance above tol that fits
+        """The fill of the required points at about the smallest tolerance above tol that fits
         in cap points (a bisection to 0.1%; the fill's count isn't quite monotone in the tolerance): about
         the tightest bound on every point's error the cap allows."""
         base = self.keep(self.min_points)
@@ -250,11 +250,13 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
         density of points.
     max_points: a hard cap on the points kept (at least 2).
     max_error: no input point strays further than this, in value units, from the kept lines: each
-        segment of the automatic points that strays further is filled by swinging door (about the
-        fewest points that bound its error). If that exceeds max_points, the automatic points give
+        segment of the automatic points that strays further is filled with the farthest-reach fill
+        (from each kept point, the line to the farthest point it can reach within max_error; 4% more
+        than the fewest points on slow process data). If that exceeds max_points, the automatic points give
         way, least significant first, while max_error still holds; if max_error can't be met within
         max_points even without them, it is relaxed to the smallest bound the cap allows (no automatic
-        points; `max_error` of the result reports the bound, and `capped` says so).
+        points; `max_error` of the result reports the bound, and `capped` says so). fluxprune/README.md,
+        "How the guards work", has the details and their costs.
     keep: indices that are kept whatever else is (peaks(), for example).
 
     The first, last, minimum and maximum points are always kept (within max_points, in that order),

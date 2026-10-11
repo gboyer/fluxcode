@@ -18,6 +18,7 @@ and `exact_rmse`: the relative time-weighted RMSE of any subset, by brute force.
 import heapq
 
 import numpy as np
+from fluxprune._guard import _worst
 from fluxprune._rank import chord_errors
 from numba import njit
 
@@ -171,3 +172,91 @@ def _optimal_with(tau, y, k, req):
         out[j - 1] = arg[j, out[j]]
     return out
 
+
+
+# ---------------------------------------------------------------------------
+# Fills for max_error, against fluxprune's farthest reach (fluxprune._guard.fill_kernel)
+# ---------------------------------------------------------------------------
+
+@njit(cache=True)
+def _door_segment(tau, y, a, b, tol, out, m):
+    """Swinging door's rule: each line ends at the first point the chord from the anchor can't reach."""
+    anchor = a
+    lo, hi = -np.inf, np.inf
+    j = a + 1
+    while j <= b:
+        du = tau[j] - tau[anchor]
+        if du <= 0.0:
+            if j - 1 > anchor:
+                out[m] = j - 1
+                m += 1
+            if j < b:
+                out[m] = j
+                m += 1
+            anchor, lo, hi = j, -np.inf, np.inf
+            j += 1
+            continue
+        s = (y[j] - y[anchor]) / du
+        if s < lo or s > hi:
+            anchor = j - 1
+            out[m] = anchor
+            m += 1
+            lo, hi = -np.inf, np.inf
+            continue
+        if j < b:
+            lo = max(lo, (y[j] - tol - y[anchor]) / du)
+            hi = min(hi, (y[j] + tol - y[anchor]) / du)
+        j += 1
+    return m
+
+
+@njit(cache=True)
+def _fewest_segment(tau, y, a, b, tol, out, m):
+    """The fewest points between a and b whose lines stay within tol: BFS over every feasible chord, O(len²)."""
+    L = b - a + 1
+    dist = np.full(L, L + 1, np.int64)
+    par = np.full(L, -1, np.int64)
+    dist[0] = 0
+    for i in range(L):
+        p = a + i
+        lo, hi = -np.inf, np.inf
+        for q in range(p + 1, b + 1):
+            du = tau[q] - tau[p]
+            if du <= 0.0:
+                if dist[i] + 1 < dist[q - a]:
+                    dist[q - a], par[q - a] = dist[i] + 1, i
+                break
+            s = (y[q] - y[p]) / du
+            if lo <= s <= hi and dist[i] + 1 < dist[q - a]:
+                dist[q - a], par[q - a] = dist[i] + 1, i
+            lo = max(lo, (y[q] - tol - y[p]) / du)
+            hi = min(hi, (y[q] + tol - y[p]) / du)
+            if lo > hi:
+                break
+    path = np.empty(L, np.int64)
+    c = 0
+    i = par[L - 1]
+    while i > 0:
+        path[c] = a + i
+        c += 1
+        i = par[i]
+    for s in range(c - 1, -1, -1):
+        out[m] = path[s]
+        m += 1
+    return m
+
+
+@njit(cache=True)
+def other_fill(tau, y, keep, tol, fewest):
+    """keep with each segment that strays more than tol filled by swinging door's rule, or (fewest) by the fewest
+    points: what fluxprune's farthest-reach fill is measured against."""
+    out = np.empty(len(tau), np.int64)
+    m = 0
+    for s in range(len(keep) - 1):
+        a, b = keep[s], keep[s + 1]
+        out[m] = a
+        m += 1
+        if _worst(tau, y, a, b)[0] > tol:
+            m = _fewest_segment(tau, y, a, b, tol, out, m) if fewest else _door_segment(tau, y, a, b, tol, out, m)
+    out[m] = keep[-1]
+    return out[: m + 1].copy()

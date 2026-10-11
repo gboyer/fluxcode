@@ -30,7 +30,7 @@ import html
 import _fresh_numba_cache  # noqa: E402, F401  (before numba kernels: a cache keyed on the sources)
 import fluxprune
 import matplotlib
-from fluxprune._guard import errors_kernel
+from fluxprune._guard import errors_kernel, fill_kernel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -368,6 +368,55 @@ def guard_study():
     return names, {m: {key: np.array(v) for key, v in d.items()} for m, d in out.items()}
 
 
+FILLS = ["swinging door's rule", "farthest reach (fluxprune)", "fewest points (exact)"]
+
+
+def fill_study():
+    """Per block of the main and offset signals: the automatic points (refined) filled at max_error = GUARD by each
+    fill: points, RMSE over the span and the fill's time."""
+    items = scale_corpus(1)
+    out = {m: {"k": [], "rmse": [], "ms": []} for m in FILLS}
+    for it in items:
+        r = it["r"]
+        if not len(r._tau):
+            continue
+        tol = GUARD[it["name"]] / it["range"]
+        base = r.refine(r.keep(r.count()), PASSES)
+        calls = {FILLS[0]: lambda: B.other_fill(r._tau, r._y, base, tol, False),
+                 FILLS[1]: lambda: fill_kernel(r._tau, r._y, base, tol),
+                 FILLS[2]: lambda: B.other_fill(r._tau, r._y, base, tol, True)}
+        for m, call in calls.items():
+            call()  # compiled and warm
+            t0 = time.perf_counter()
+            idx = call()
+            out[m]["ms"].append(1e3 * (time.perf_counter() - t0))
+            out[m]["k"].append(len(idx))
+            out[m]["rmse"].append(abs_error(it, idx) / SPAN[it["name"]])
+    names = np.array([it["name"] for it in items if len(it["r"]._tau)])
+    return names, {m: {key: np.array(v) for key, v in d.items()} for m, d in out.items()}
+
+
+def fill_section(fills):
+    f_names, f = fills
+    rows = []
+    for name in SIGNALS + OFFSET:
+        sel = f_names == name
+        rows.append([name] + [f"{d['k'][sel].mean():.0f} · {pct(d['rmse'][sel].mean())}" for d in f.values()])
+    rows.append(["<b>all</b>"] + [f"<b>{d['k'].mean():.0f} · {pct(d['rmse'].mean())}</b><br><span class='muted'>"
+                                  f"{1e3 * d['ms'].mean():.0f} µs per block, at most {1e3 * d['ms'].max():,.0f} µs</span>"
+                                  for d in f.values()])
+    return ("<h3>The fill</h3><p>How <code>max_error</code> is met. Each segment of the automatic points that strays "
+            "further than max_error is filled from its left end. Every scan after an anchor bounds the slope of a line "
+            "from the anchor that passes within max_error of it, from below and above. <i>Swinging door's rule</i> ends "
+            "the line at the first scan its chord can't reach. <i>Farthest reach</i>, fluxprune's, scans on while the "
+            "bounds still overlap (some line could still pass every scan so far), notes the last scan whose own chord "
+            "satisfies them, and when they cross makes that scan the next anchor: with noise, a scan after one the "
+            "chord can't reach is often reachable again. <i>Fewest points</i> is the exact minimum (dynamic "
+            "programming over every feasible chord). Cells: points per hour · RMSE over the span; the automatic "
+            "points the same in each column; below, the fill's time per 1 h block.</p>"
+            + table(["signal", *f.keys()], rows))
+
+
 def windows(t, x, period_ns):
     """The forcing rule: the lowest and highest point of every consecutive window of one period, and the ends."""
     w = (t - t[0]) // period_ns
@@ -559,7 +608,8 @@ def shade(ratio):
     return "" if ratio < 1.05 else "r1" if ratio < 1.25 else "r2" if ratio < 1.6 else "r3" if ratio < 2.5 else "r4"
 
 
-def write(items, params, res, sw, qual, opt, rate, length, scale, guards, peaks_res, archive_res, archive_items, times):
+def write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills, peaks_res, archive_res, archive_items,
+          times):
     names = SIGNALS
     by = np.array([it["name"] for it in items])
     sections = []
@@ -720,12 +770,13 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, guards, peaks_
             "<p>The automatic rule (θ = 0.0015) alone, then with <code>max_error</code> set to an engineer's value per "
             "signal (the historian tags' CompDev, otherwise about what matters), then with a safety cap of "
             f"<code>max_points</code> = {CAP} per hour (10% of the scans) as well. <code>max_error</code> fills each "
-            "segment of the automatic points that strays further with swinging door's chords (the longest from each "
-            "anchor that stays within max_error of every scan). Swinging door at CompDev = max_error / 2 has the same "
+            "segment of the automatic points that strays further with the farthest-reach fill (below). Swinging door at "
+            "CompDev = max_error / 2 has the same "
             "guarantee: its doors pivot about the archived point, so at CompDev = max_error (last column) its line "
             "strays up to twice that. Cells: mean points per hour · the largest error of any "
             "block over max_error · mean RMSE over the signal's span; below, the share of blocks the cap bound.</p>"
-            + table(["signal", "max_error", *g.keys()], rows))
+            + table(["signal", "max_error", *g.keys()], rows)
+            + fill_section(fills))
 
     # peaks
     rows = []
@@ -843,21 +894,25 @@ below its noise (flow, motor current: 1,300-3,000 archived points per hour) drop
 same settings, a smooth tag (temperature, pH: ~330/h) to 2-11%, and an archive that already has two points per hour
 stays as it is.</li>
 <li><b>max_error</b> only adds points: each segment of the automatic choice that strays further than max_error from the
-scans is filled with swinging door's chords. At the same guarantee (swinging door at CompDev = max_error / 2, since at
-CompDev = max_error its line strays up to 1.6-2× that) it keeps fewer points on 11 of the 18 signals (temperature 766
-against 1,136 per hour, vibration 170 against 422, grid frequency 378 against 597) and as many on three; it keeps more
-only where the automatic rule already wanted more than the guard needs (the quiet level's dither: 77 against 2).
-Splitting the worst segment at its worst point instead (Douglas-Peucker) kept within ±20% as many points, but costs a
-scan of the segment per point added; the fill is one O(n) pass. A max_error below a signal's noise keeps most of the
-scans, as swinging door does (motor current: 3,171 per hour); <b>max_points</b> (here 360 per hour) caps that. The
-budget goes in a fixed order: the required points; then max_error, if it can be met within the cap, with the
-automatic points taking what is left (the least significant give way first); and if it can't, max_error relaxed to
-about the tightest bound the cap allows, by a bisection over the fill, with no automatic points. In the worst capped
-block that bound is 1.06× max_error for the grid frequency, 1.5× for temperature and pH, and 15× for motor current,
-whose noise is five times max_error. Spending the cap by splitting the worst segment at its worst point instead left
-1.3-1.7× larger worst-block errors on these signals (19× for motor current) and a higher RMSE on the noisy
-ones (white noise 12% of its span against 11%): it anchors on noise spikes. The cap bound only on the five
-noise-dominated signals and on 90% of the grid frequency's hours.</li>
+scans is filled with the farthest-reach fill: from each anchor, the line to the farthest scan it can reach while every
+scan between stays within max_error. Swinging door's rule (the line ends at the first scan the chord can't reach) keeps
+1.1-3× as many points on the noisy signals (vibration 170 against 66 per hour, batch 72 against 23, temperature 766
+against 510), the exact minimum 4% fewer overall at about 35× the time (12 against 440 µs per block, up to 8 ms). At the same guarantee as
+swinging door (CompDev = max_error / 2, since at CompDev = max_error its line strays up to 1.6-2× that), fluxprune keeps
+fewer points on 12 of the 18 signals (batch 23 against 228 per hour, vibration 66 against 422, temperature 510 against
+1,136, grid frequency 282 against 597) and as many on two; more only where the automatic rule already wanted more than
+the guard needs (the quiet level's dither: 77 against 2). A max_error below a signal's noise keeps most of the scans,
+as swinging door does (motor current: 3,160 per hour); <b>max_points</b> (here 360 per hour) caps that. The budget goes
+in a fixed order: the required points; then max_error, if it can be met within the cap, with the automatic points
+taking what is left (the least significant give way first, by a bisection on their number); and if it can't,
+max_error relaxed to about the tightest bound the cap allows (a bisection over the fill), with no automatic points.
+The fill always comes last, since adding a point can make the error worse. The cap bound only on the five
+noise-dominated signals; in their worst block the bound reached is 1.2× max_error for temperature, 1.3× for pH, 2.1×
+for white noise, 2.7× for flow and 11× for motor current, whose noise is five times max_error. Measured and not
+adopted: splitting the worst segment at its worst point when the cap binds (1.3-1.7× larger errors: it anchors on
+noise spikes); filling first and ranking again with the fill fixed (the same RMSE at the same number of points, 3-5×
+slower); a secant search for the relaxed bound (9.4 fills on average against 12.8, but up to 28 against 14); trying
+every number of automatic points instead of bisecting (0.4% lower RMSE on average).</li>
 <li><b>Peaks are a different job</b>, so they have their own function. With a 60 s period and a prominence of about
 6σ of the noise or more, <code>peaks()</code> keeps every true peak and trough of a vibration whose period drifts from 40
 to 80 s and whose amplitude drifts fivefold, and of a pyrometer's objects and the gaps between them, with 0.3 and 1.4
@@ -899,13 +954,15 @@ def main():
     scale = scale_study()
     print(f"scale: {time.time() - t0:.0f} s", flush=True)
     guards = guard_study()
+    fills = fill_study()
     peaks_res = peak_study()
     print(f"guards and peaks: {time.time() - t0:.0f} s", flush=True)
     archive_items = corpus(archive=True, names=TAGS)
     archive_res = apply_rules(archive_items, params)
     times = timings()
     print(f"done: {time.time() - t0:.0f} s", flush=True)
-    write(items, params, res, sw, qual, opt, rate, length, scale, guards, peaks_res, archive_res, archive_items, times)
+    write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills, peaks_res, archive_res, archive_items,
+          times)
 
 
 if __name__ == "__main__":

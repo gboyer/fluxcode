@@ -317,3 +317,60 @@ def test_peaks_cap_and_edges():
     assert list(fluxprune.peaks(t[:2], x[:2])) == [0, 1] and len(fluxprune.peaks([], [])) == 0
     p = fluxprune.prune(t, x, keep=got)
     assert set(got) <= set(p.index)
+
+
+def chords(t, x, tol, a):
+    """(j, whether the chord a -> j stays within tol of every point between) for j after a, until no line from a
+    could (the slope bounds cross)."""
+    lo, hi = -np.inf, np.inf
+    for j in range(a + 1, len(x)):
+        du = t[j] - t[a]
+        s = (x[j] - x[a]) / du
+        yield j, lo <= s <= hi
+        lo, hi = max(lo, (x[j] - tol - x[a]) / du), min(hi, (x[j] + tol - x[a]) / du)
+        if lo > hi:
+            return
+
+
+def door_count(t, x, tol):
+    """Points swinging door's rule keeps between the ends: each line ends at the first point it can't reach."""
+    a, count = 0, 1
+    while a < len(x) - 1:
+        reach = a + 1
+        for j, ok in chords(t, x, tol, a):
+            if not ok:
+                break
+            reach = j
+        a, count = reach, count + 1
+    return count
+
+
+def fewest_count(t, x, tol):
+    """The fewest points, the ends included, whose lines stay within tol of every point (BFS over chords)."""
+    dist = [1] + [len(x) + 1] * (len(x) - 1)
+    for a in range(len(x)):
+        for j, ok in chords(t, x, tol, a):
+            if ok:
+                dist[j] = min(dist[j], dist[a] + 1)
+    return dist[-1]
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_fill_reaches_far(seed):
+    rng = np.random.default_rng(seed)
+    t = np.cumsum(rng.integers(1, 4, 300)).astype(np.float64)
+    x = np.sin(t / 40) * 5 + rng.normal(0, 0.5, 300)
+    r = fluxprune.rank(t, x)
+    for tol in (0.5, 1.0, 2.0):
+        got = r.prune(error_per_point=1e9, max_error=tol)  # the required points and the fill
+        assert got.max_error <= tol and max_deviation(t, x, got.index) <= tol * (1 + 1e-9)
+        assert len(got) >= fewest_count(t, x, tol)
+        assert len(got) <= door_count(t, x, tol) + 2  # the min and max are kept as well
+
+
+def test_fill_with_repeated_times():
+    t = np.array([0, 1, 1, 2, 3, 3, 3, 4, 5, 6], np.int64)
+    x = np.array([0, 0, 4, 4, 1, 3, 0, 0, 2, 0.0])
+    for tol in (0.1, 0.5, 1.5):
+        p = fluxprune.prune(t, x, error_per_point=1e9, max_error=tol)
+        assert p.max_error <= tol and max_deviation(t, x, p.index) <= tol + 1e-12
