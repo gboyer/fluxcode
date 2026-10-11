@@ -49,10 +49,10 @@ requires = ["hatchling>=1.27"]  # PEP 639 license metadata
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["fluxcode"]
+packages = ["fluxcode", "fluxprune"]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["fluxcode", "tests", "bench", "docs", "rust", "README.md", "LICENSE", "pyproject.toml"]
+only-include = ["fluxcode", "fluxprune", "tests", "bench", "docs", "rust", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
 """Smoke test for the research code that reaches into fluxcode's private modules (_format, _group,
-_encoder, _bitpacking): run each such path on a tiny input, so a rename or layout change in the
+_encoder, _bitpacking) and fluxprune's (_rank): run each such path on a tiny input, so a rename or layout change in the
 package fails CI here instead of when the report is next regenerated.
 
     uv run --project experimental python experimental/smoke.py
@@ -18,6 +18,7 @@ sys.path[:0] = [str(HERE), str(HERE.parent / "tests"), str(HERE.parent / "bench"
 import fluxcode  # noqa: E402
 import make_time_report  # noqa: E402
 from tslab.flux.adapters import FluxCodec, ideal_quantum  # noqa: E402
+from tslab.prune import baselines  # noqa: E402
 
 
 def main():
@@ -41,6 +42,12 @@ def main():
     plain = fluxcode.encode_group(values).group
     row = make_time_report.measure(values, ticks, plain, 0, (0.0, 0.0))
     assert row["irregular"].tolist() == [False, False, True, False], row
+    x = np.cumsum(rng.normal(size=200))
+    t = np.arange(200) * 1_000_000_000
+    import fluxprune  # noqa: E402
+    r = fluxprune.rank(t, x)
+    td = baselines.top_down(t, x, 20, r.required)
+    assert len(td) == 20 and baselines.exact_rmse(t, x, td) > 0
     print("experimental smoke test passed")
 
 

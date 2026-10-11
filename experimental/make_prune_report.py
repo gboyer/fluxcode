@@ -1,0 +1,562 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Garry Boyer
+"""fluxprune on slow series -> report/prune.html.
+
+    uv run python make_prune_report.py
+
+fluxprune (../fluxprune) keeps a subset of a series' points, read as straight lines between them:
+the first, last, minimum and maximum, then the points that matter most for the time-weighted RMSE.
+This page measures, on a day of 1 s scans per signal-day cut into 1 h storage blocks
+(tslab.prune.signals):
+
+- how close its ranking (bottom-up, then refined) gets to the optimum, against top-down splitting,
+  swinging door, LTTB, min/max buckets and even spacing at the same point count;
+- how many points each stopping rule keeps where (tslab.prune.rules), each calibrated to the same total;
+- whether the rules hold up when the sampling rate or the block length changes;
+- what it does to swinging-door archives as input; and how long it takes.
+"""
+
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+import html
+
+import _fresh_numba_cache  # noqa: E402, F401  (before numba kernels: a cache keyed on the sources)
+import fluxprune
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.ticker
+import numpy as np
+
+from tslab.common.historian import TAG_INFO, TAGS
+from tslab.prune import baselines as B
+from tslab.prune import rules as R
+from tslab.prune.signals import EXTRA_INFO, SIGNALS, blocks, scans
+from tslab.report.page import clean_outputs, save_fig, shell
+
+OUT = Path(__file__).parent / "report"
+PREFIX = "prune-"
+C = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]  # fixed order
+SCANS = "0.72"
+DAYS = 5
+BUDGET = 36  # points per hour on average: 1% of the 1 s scans
+REF_EPS = 0.005  # a reference line on the error curves
+PASSES = 2
+KNEE_ALPHA = 0.25
+QUALITY_KS = (12, 36, 108)
+SWEEP_BUDGETS = (12, 36, 108, 324)  # points per hour
+OPT_WINDOW, OPT_KS = 600, (12, 24)
+
+
+def describe(name):
+    return TAG_INFO[name][0] if name in TAG_INFO else EXTRA_INFO[name]
+
+
+# ---------------------------------------------------------------------------
+# Rules, with one scale parameter each (calibrated) and the fixed ones bound in
+# ---------------------------------------------------------------------------
+
+# name -> (k(r, param, hours), parameter label, lo, hi, description); a parameter that lowers the count as it rises
+RULES = {
+    "count": (lambda r, K, h, b=BUDGET: R.count(r, K * h), "K", None, None, "K points per hour"),
+    "tolerance": (lambda r, eps, h, b=BUDGET: R.rmse(r, eps), "ε", 1e-6, 0.5, "fewest points within RMSE ε"),
+    "balance": (lambda r, eps, h, b=BUDGET: R.geomean(r, b * h, eps), "ε", 1e-6, 0.5,
+                "√(K·k_ε), K = the budget per hour: the geometric mean of the two"),
+    "marginal": (lambda r, lam, h, b=BUDGET: R.marginal(r, lam), "λ", 1e-14, 1e-1, "minimise e² + λk"),
+    "marginal (RMSE)": (lambda r, lam, h, b=BUDGET: R.marginal_rmse(r, lam), "λ", 1e-9, 1.0,
+                        "minimise e + λk: the least mean RMSE for the total"),
+    "amortized": (lambda r, th, h, b=BUDGET: R.amortized(r, th), "θ", 1e-9, 1.0, "first k with e / (points added) < θ"),
+    "tolerance+noise": (lambda r, eps, h, b=BUDGET: R.rmse_noisy(r, eps), "ε", 1e-6, 0.5,
+                        "tolerance, ε raised to the noise σ"),
+    "balance+noise": (lambda r, eps, h, b=BUDGET: R.geomean_noisy(r, b * h, eps), "ε", 1e-6, 0.5,
+                      "balance, ε raised to the noise σ"),
+    "knee": (lambda r, a, h, b=BUDGET: R.knee(r, a), "α", None, None,
+             f"first k where 2k points don't improve e by 2^α (α = {KNEE_ALPHA}, not calibrated)"),
+}
+FIXED = {"count": BUDGET, "knee": KNEE_ALPHA}
+
+
+def calibrate(rule, ranks, target, budget=BUDGET):
+    """The parameter at which the rule keeps `target` points over all blocks (bisection in log space)."""
+    k_of, _, lo, hi, _ = RULES[rule]
+    if rule == "count":
+        return budget
+    if rule in FIXED:
+        return FIXED[rule]
+    lo, hi = np.log(lo), np.log(hi)
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        total = sum(k_of(r, np.exp(mid), 1, budget) for r in ranks)
+        lo, hi = (mid, hi) if total > target else (lo, mid)
+    return float(np.exp((lo + hi) / 2))
+
+
+# ---------------------------------------------------------------------------
+# Measurements
+# ---------------------------------------------------------------------------
+
+def corpus(hours=1, days=DAYS, archive=False, step=1, names=SIGNALS):
+    out = []
+    for name in names:
+        for day in range(days):
+            for b, (t, x) in enumerate(blocks(name, day, hours, archive)):
+                out.append(dict(name=name, day=day, block=b, t=t, x=x, r=fluxprune.rank(t, x)))
+    return out
+
+
+def apply_rules(items, params, hours=1):
+    """k and refined RMSE / max error of every rule on every block."""
+    res = {rule: {"k": [], "rmse": [], "max": []} for rule in RULES}
+    for it in items:
+        r = it["r"]
+        for rule, (k_of, *_) in RULES.items():
+            k = k_of(r, params[rule], hours)
+            keep = r.refine(r.keep(k), PASSES)
+            res[rule]["k"].append(len(keep))
+            res[rule]["rmse"].append(r.error(keep))
+            res[rule]["max"].append(B.exact_rmse(it["t"], it["x"], keep, max_err=True)[1])
+    return {rule: {key: np.array(v) for key, v in d.items()} for rule, d in res.items()}
+
+
+def sweep(items):
+    """Per budget and calibrated rule: mean and median RMSE (refined), and the most points one block got."""
+    out = {}
+    for budget in SWEEP_BUDGETS:
+        for rule, (k_of, *_) in RULES.items():
+            if rule == "knee":
+                continue
+            p = calibrate(rule, [it["r"] for it in items], budget * len(items), budget)
+            ks, es = [], []
+            for it in items:
+                r = it["r"]
+                keep = r.refine(r.keep(k_of(r, p, 1, budget)), PASSES)
+                ks.append(len(keep))
+                es.append(r.error(keep))
+            es = np.array(es)
+            out[budget, rule] = {"mean": es.mean(), "median": np.median(es), "maxk": max(ks)}
+        print(f"sweep {budget}/h done", flush=True)
+    return out
+
+
+def plot_sweep(sw):
+    rules = [rule for rule in RULES if rule != "knee"]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.6), layout="constrained")
+    for ax, key, title in zip(axes, ("mean", "median", "maxk"),
+                              ("mean RMSE / range", "median RMSE / range", "most points in one block")):
+        for j, rule in enumerate(rules):
+            ax.loglog(SWEEP_BUDGETS, [sw[b, rule][key] for b in SWEEP_BUDGETS], marker="o", ms=4, lw=1.5,
+                      color=C[j % len(C)], ls="-" if j < len(C) else "--", label=rule)
+        ax.set_title(title, loc="left", fontsize=10)
+        ax.set_xlabel("points per hour (corpus average)", fontsize=8)
+        ax.set_xticks(SWEEP_BUDGETS, [str(b) for b in SWEEP_BUDGETS])
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
+            (lambda v, _: f"{v:g}") if key == "maxk" else (lambda v, _: f"{100 * v:g}%")))
+        ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.tick_params(labelsize=8)
+        tidy(ax, "both")
+    axes[0].legend(fontsize=7, frameon=False)
+    return save_fig(fig, OUT, f"{PREFIX}sweep", "Mean and median RMSE and the largest block against the budget, per rule")
+
+
+def quality(items):
+    """RMSE and max error of each method at each k, per block (fluxprune refined is the reference)."""
+    methods = ["fluxprune", "bottom-up (nested)", "top-down", "swinging door", "LTTB", "min/max buckets", "uniform"]
+    out = {k: {m: {"rmse": [], "max": [], "name": []} for m in methods} for k in QUALITY_KS}
+    for it in items:
+        t, x, r = it["t"], it["x"], it["r"]
+        for k in QUALITY_KS:
+            picks = {"fluxprune": r.refine(r.keep(k), PASSES), "bottom-up (nested)": r.keep(k),
+                     "top-down": B.top_down(t, x, k, r.required), "swinging door": B.sdt(t, x, k),
+                     "LTTB": B.lttb(t, x, k), "min/max buckets": B.minmax(t, x, k), "uniform": B.uniform(t, x, k)}
+            for m, keep in picks.items():
+                e, mx = B.exact_rmse(t, x, keep, max_err=True)
+                out[k][m]["rmse"].append(e)
+                out[k][m]["max"].append(mx)
+                out[k][m]["name"].append(it["name"])
+    return out
+
+
+def optimality(items):
+    """On OPT_WINDOW-point windows: each greedy method's RMSE over the optimum's (same required points)."""
+    out = {k: {"fluxprune": [], "bottom-up (nested)": [], "top-down": []} for k in OPT_KS}
+    for it in items:
+        t, x = it["t"][:OPT_WINDOW], it["x"][:OPT_WINDOW]
+        if x.max() == x.min():
+            continue
+        r = fluxprune.rank(t, x)
+        for k in OPT_KS:
+            best = B.exact_rmse(t, x, B.optimal_with(t, x, k, r.required))
+            if best < 1e-9:
+                continue
+            for m, keep in (("fluxprune", r.refine(r.keep(k), PASSES)), ("bottom-up (nested)", r.keep(k)),
+                            ("top-down", B.top_down(t, x, k, r.required))):
+                out[k][m].append(B.exact_rmse(t, x, keep) / best)
+    return out
+
+
+def invariance(params):
+    """Per rule and signal: median k with 10 s sampling over k with 1 s (same 1 h blocks), and k of a 12 h
+    block over the sum of k of its twelve 1 h blocks (day 0)."""
+    rate = {rule: {} for rule in RULES}
+    length = {rule: {} for rule in RULES}
+    for name in SIGNALS:
+        hour = blocks(name, 0, 1)
+        half = blocks(name, 0, 12)
+        for rule, (k_of, *_) in RULES.items():
+            p = params[rule]
+            ks = [k_of(fluxprune.rank(t, x), p, 1) for t, x in hour]
+            ks10 = [k_of(fluxprune.rank(t[::10], x[::10]), p, 1) for t, x in hour]
+            rate[rule][name] = float(np.median(np.array(ks10) / np.array(ks)))
+            k12 = [k_of(fluxprune.rank(t, x), p, 12) for t, x in half]
+            length[rule][name] = float(np.mean([k12[j] / sum(ks[12 * j:12 * j + 12]) for j in range(2)]))
+    return rate, length
+
+
+def timings():
+    """Seconds for rank and for refine (2 passes, at k = 1% of n), best of 3, by n: a 1 s temperature trace and
+    white noise, days concatenated."""
+    rows = []
+    for name in ("temperature", "white-noise"):
+        x_all = np.concatenate([scans(name, d) for d in range(12)])
+        for n in (3_600, 43_200, 86_400, 1_000_000):
+            x = x_all[:n]
+            t = np.arange(n, dtype=np.int64) * 1_000_000_000
+            fluxprune.rank(t[:100], x[:100])
+            best_rank = best_refine = np.inf
+            for _ in range(3):
+                t0 = time.perf_counter()
+                r = fluxprune.rank(t, x)
+                t1 = time.perf_counter()
+                r.refine(r.keep(n // 100), PASSES)
+                t2 = time.perf_counter()
+                best_rank, best_refine = min(best_rank, t1 - t0), min(best_refine, t2 - t1)
+            rows.append((name, n, best_rank, best_refine))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Charts
+# ---------------------------------------------------------------------------
+
+def tidy(ax, grid="y"):
+    ax.grid(axis=grid, color="0.9", lw=0.6)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+
+
+def plot_examples(items, params, rule):
+    """One 1 h block of each signal (day 0, 09:00): the scans and the points the rule keeps."""
+    picks = [it for it in items if it["day"] == 0 and it["block"] == 9]
+    fig, axes = plt.subplots(len(picks) // 2, 2, figsize=(12, 1.7 * len(picks) // 2), layout="constrained")
+    k_of = RULES[rule][0]
+    for ax, it in zip(axes.T.ravel(), picks):
+        t, x, r = it["t"], it["x"], it["r"]
+        keep = r.refine(r.keep(k_of(r, params[rule], 1)), PASSES)
+        minutes = (t - t[0]) / 6e10
+        ax.plot(minutes, x, color=SCANS, lw=0.6, label="1 s scans")
+        ax.plot(minutes[keep], x[keep], "-o", color=C[0], lw=1.2, ms=3, label=f"kept ({rule})")
+        ax.set_title(f"{it['name']}: {len(keep)} of {len(x):,} points, RMSE {100 * r.error(keep):.2g}% of range",
+                     loc="left", fontsize=9)
+        ax.set_xlim(0, 60)
+        ax.tick_params(labelsize=8)
+        tidy(ax)
+    for ax in axes[-1]:
+        ax.set_xlabel("minutes into 09:00-10:00", fontsize=8)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside upper right", ncols=2, frameon=False, fontsize=9)
+    return save_fig(fig, OUT, f"{PREFIX}examples", f"One hour of each signal with the points the {rule} rule keeps")
+
+
+def plot_curves(items):
+    """Relative RMSE against points kept for the 09:00 block of day 0 of each signal, log-log."""
+    picks = [it for it in items if it["day"] == 0 and it["block"] == 9]
+    fig, axes = plt.subplots(3, 4, figsize=(12, 7), layout="constrained", sharex=True)
+    for ax, it in zip(axes.ravel(), picks):
+        e = it["r"].rmse()
+        k = np.arange(len(e))
+        ok = np.isfinite(e) & (e > 0)
+        ax.loglog(k[ok], e[ok], color=C[0], lw=1.5)
+        ax.axhline(REF_EPS, color=C[1], lw=0.8, ls="--")
+        ax.set_ylim(1e-6, 1)
+        ax.set_xlim(2, 4000)
+        ax.set_title(it["name"], loc="left", fontsize=9)
+        ax.tick_params(labelsize=8)
+        tidy(ax, "both")
+    for ax in axes[-1]:
+        ax.set_xlabel("points kept", fontsize=8)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("RMSE / range", fontsize=8)
+    for ax in axes.ravel():
+        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    return save_fig(fig, OUT, f"{PREFIX}curves", "Error against points kept for one hour of each signal")
+
+
+def plot_sublinear(res):
+    """k of each rule against k of the tolerance rule at the same budget (every block): how far a rule follows the
+    complexity the tolerance sees. The slope of a log-log fit: 0 is a fixed count, 1 is the tolerance."""
+    c = res["tolerance"]["k"].astype(float)
+    shown = ["count", "balance", "balance+noise", "marginal (RMSE)", "amortized", "tolerance+noise"]
+    slopes = {rule: np.polyfit(np.log(c), np.log(res[rule]["k"].astype(float)), 1)[0] for rule in RULES if rule != "knee"}
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7), layout="constrained", sharex=True, sharey=True)
+    for ax, rule in zip(axes.ravel(), shown):
+        ax.loglog(c, res[rule]["k"], "o", ms=2.5, color=C[0], alpha=0.35, mec="none")
+        lim = [2, 4000]
+        ax.plot(lim, lim, color="0.6", lw=0.8, ls=":")
+        ax.set_title(f"{rule}: slope {slopes[rule]:.2f}", loc="left", fontsize=10)
+        ax.tick_params(labelsize=8)
+        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+        tidy(ax, "both")
+    for ax in axes[-1]:
+        ax.set_xlabel("points the tolerance rule keeps (same budget)", fontsize=8)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("points kept", fontsize=8)
+    img = save_fig(fig, OUT, f"{PREFIX}sublinear", "Points kept per block against what the tolerance rule keeps, per rule")
+    return img, slopes
+
+
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
+
+def gmean(v):
+    v = np.asarray(v, float)
+    v = v[v > 0]
+    return float(np.exp(np.mean(np.log(v)))) if len(v) else 0.0
+
+
+def pct(v, digits=2):
+    return f"{100 * v:.{digits}g}%"
+
+
+def table(head, rows):
+    """Cells are HTML strings, or (class, HTML) pairs."""
+    def td(c):
+        return f"<td class='{c[0]}'>{c[1]}</td>" if isinstance(c, tuple) else f"<td>{c}</td>"
+    th = "".join(f"<th>{html.escape(h)}</th>" for h in head)
+    body = "".join("<tr>" + "".join(td(c) for c in row) + "</tr>" for row in rows)
+    return f"<table><tr>{th}</tr>{body}</table>"
+
+
+def shade(ratio):
+    """Cell class for an error ratio against fluxprune."""
+    return "" if ratio < 1.05 else "r1" if ratio < 1.25 else "r2" if ratio < 1.6 else "r3" if ratio < 2.5 else "r4"
+
+
+def write(items, params, res, sw, qual, opt, rate, length, archive_res, archive_items, times):
+    names = SIGNALS
+    by = np.array([it["name"] for it in items])
+    sections = []
+    toc = []
+
+    def section(anchor, title, body):
+        toc.append((anchor, title, []))
+        sections.append(f"<h2 id='{anchor}'>{html.escape(title)}</h2>\n{body}")
+
+    n_blocks = len(items)
+    intro = (f"<p><b>fluxprune</b> keeps a subset of a series' points, read as straight lines between them, for "
+             f"storage and processing rather than for compression: the first and last points (to stitch blocks), the "
+             f"minimum and maximum, then whichever points lower the <i>time-weighted RMSE</i> of the interpolation most. "
+             f"One O(n log n) pass ranks every point (bottom-up: repeatedly drop the point whose removal costs least, exact "
+             f"integrals per input segment); a rule picks how many to keep from the error curve that pass records; then "
+             f"{PASSES} O(n) refinement passes move each kept point to where it fits best between its neighbours.</p>"
+             f"<p class='muted'>Data: {len(names)} synthetic signals × {DAYS} days of 1 s scans, cut into 1 h storage blocks "
+             f"({n_blocks:,} blocks of 3,600 points; <code>tslab/prune/signals.py</code>). Errors are relative to each block's "
+             f"range (max − min). Regenerate with <code>uv run python make_prune_report.py</code> in "
+             f"<code>experimental/</code>.</p>")
+
+    # signals
+    rows = [[n, ("l", html.escape(describe(n)))] for n in names]
+    section("signals", "The signals", table(["signal", "what it is"], rows)
+            + plot_examples(items, params, "amortized"))
+
+    # quality
+    body = ("<p>Every method picks the same number of points per 1 h block (day 0, every 4th hour, so 6 blocks per "
+            "signal); cells are the geometric mean of the block's RMSE over fluxprune's (refined). fluxprune and "
+            "top-down keep the required points within k; swinging door's CompDev is searched for k points (the nearest "
+            "count at or above k); LTTB and min/max buckets are the plotting downsamplers.</p>")
+    methods = list(qual[QUALITY_KS[0]].keys())
+    for k in QUALITY_KS:
+        rows = []
+        for m in methods:
+            cells = [m]
+            for name in names:
+                d = qual[k][m]
+                sel = np.array(d["name"]) == name
+                ref = np.array(qual[k]["fluxprune"]["rmse"])[sel]
+                mine = np.array(d["rmse"])[sel]
+                ok = ref > 1e-12
+                if not ok.any():
+                    cells.append("<span class='muted'>exact</span>" if np.all(mine < 1e-12) else ("r4", "∞"))
+                    continue
+                ratio = gmean(mine[ok] / ref[ok])
+                cells.append((shade(ratio), f"{ratio:.2f}"))
+            all_ref = np.array(qual[k]["fluxprune"]["rmse"])
+            mine = np.array(qual[k][m]["rmse"])
+            ok = all_ref > 1e-12
+            cells.append(f"<b>{gmean(mine[ok] / all_ref[ok]):.2f}</b>")
+            mx_ref = np.array(qual[k]["fluxprune"]["max"])
+            cells.append(f"{gmean(np.array(qual[k][m]['max'])[ok] / mx_ref[ok]):.2f}")
+            rows.append(cells)
+        body += f"<h3>{k} points per hour</h3>" + table(["method", *names, "all (RMSE)", "all (max error)"], rows)
+    opt_rows = [[m] + [f"{gmean(opt[k][m]):.2f} (worst {max(opt[k][m]):.2f})" for k in OPT_KS] for m in opt[OPT_KS[0]]]
+    body += (f"<h3>Against the optimum</h3><p>On the first {OPT_WINDOW} points of the same blocks, the optimal choice of "
+             f"k points that include the required ones (dynamic programming, O(n²k)); each greedy method's RMSE over "
+             f"the optimum's, geometric mean.</p>"
+             + table(["method", *[f"k = {k}" for k in OPT_KS]], opt_rows))
+    section("quality", "Ranking quality at a fixed count", body)
+
+    # curves
+    section("curves", "Error curves", "<p>What a rule sees: the relative RMSE of keeping k points (the ranking, "
+            f"before refinement), one hour of each signal. Smooth signals fall as k⁻² (sine), random walks as k⁻½ "
+            f"(temperature, pH), and white noise hardly at all until most points are kept; a step or ramp signal falls "
+            f"off a cliff and then sits on its noise. The dashed line is {pct(REF_EPS)} for scale.</p>" + plot_curves(items))
+
+    # rules
+    rows = []
+    for rule, (_, label, *_rest, desc) in RULES.items():
+        d = res[rule]
+        p = params[rule]
+        cells = [rule, ("l", html.escape(desc)), f"{label} = {p:.3g}"]
+        for name in names:
+            sel = by == name
+            cells.append(f"{d['k'][sel].mean():.0f}<br><span class='muted'>{pct(gmean(d['rmse'][sel]))}</span>")
+        cells += [f"{d['k'].sum() / n_blocks:.1f}", pct(np.mean(d["rmse"])), pct(np.median(d["rmse"])),
+                  f"{d['k'].max():,}"]
+        rows.append(cells)
+    img, slopes = plot_sublinear(res)
+    body = (f"<p>Each rule's one parameter is set so that all {n_blocks:,} blocks together keep {BUDGET} points per hour on "
+            f"average (1% of the scans), except knee, which can't be calibrated (its total is what its α gives). Cells are "
+            f"the mean points kept per hour and, below, the geometric mean RMSE of the blocks. The corpus columns are "
+            f"the mean points per block, the mean and median block RMSE, and the most points one block got.</p>"
+            + table(["rule", "what it does", "parameter", *names, "points/h", "mean", "median", "max k"], rows)
+            + "<h3>Sublinear?</h3><p>Each rule's points per block against the tolerance rule's at the same budget "
+            "(the tolerance rule follows complexity linearly by definition), every block of the corpus, and the slope "
+            "of a log-log fit: 0 is a fixed count, 1 the tolerance, ½ the plain geometric mean. All slopes: "
+            + ", ".join(f"{rule} {s:.2f}" for rule, s in slopes.items()) + ".</p>" + img)
+    sw_rows = [[rule] + [f"{pct(sw[b, rule]['mean'])} / {pct(sw[b, rule]['median'])}<br><span class='muted'>"
+                         f"max k {sw[b, rule]['maxk']:,}</span>" for b in SWEEP_BUDGETS] for rule in RULES if rule != "knee"]
+    body += ("<h3>Other budgets</h3><p>The same calibration at other averages: mean / median block RMSE and, below, "
+             "the most points one block got.</p>"
+             + table(["rule", *[f"{b}/h" for b in SWEEP_BUDGETS]], sw_rows) + plot_sweep(sw))
+    rate_rows = [[rule] + [f"{rate[rule][n]:.2f}" for n in names] for rule in RULES]
+    length_rows = [[rule] + [f"{length[rule][n]:.2f}" for n in names] for rule in RULES]
+    body += ("<h3>Sampling rate and block length</h3><p>A rule that adapts to the data, not to how it was stored, "
+             "should keep about as many points of an hour sampled every 10 s as of the same hour sampled every second "
+             "(ratio 1 when the signal is captured at both rates; noise can't be), and about as many in one 12 h block "
+             "as in twelve 1 h blocks (count and balance scale K with the block's hours). Median over day 0's hours "
+             "of k at 10 s over k at 1 s:</p>"
+             + table(["rule", *names], rate_rows)
+             + "<p>k of a 12 h block over the sum of k of its twelve 1 h blocks (day 0, mean of the two halves):</p>"
+             + table(["rule", *names], length_rows))
+    section("rules", "How many points: the stopping rules", body)
+
+    # archives
+    rows = []
+    for name in TAGS:
+        sel = np.array([it["name"] == name for it in archive_items])
+        n_in = sum(len(it["x"]) for it, s in zip(archive_items, sel) if s)
+        cells = [name, f"{n_in / (DAYS * 24):.0f}"]
+        for rule in ("count", "tolerance", "balance", "tolerance+noise", "balance+noise"):
+            k = archive_res[rule]["k"][sel]
+            cells.append(f"{k.sum() / (DAYS * 24):.0f} ({pct(k.sum() / n_in)})<br>"
+                         f"<span class='muted'>{pct(gmean(archive_res[rule]['rmse'][sel]))}</span>")
+        rows.append(cells)
+    section("archives", "Swinging-door archives as input",
+            "<p>The same rules with the same parameters on what each tag's swinging-door historian archived "
+            "(<code>tslab/common/historian.py</code>: exception + swinging-door filters at the tag's CompDev), in 1 h "
+            "blocks: points per hour in and kept (share of the archive), and below, the geometric-mean RMSE against "
+            "the archive's own straight lines (relative to the block's range).</p>"
+            + table(["tag", "archived/h", "count", "tolerance", "balance", "tolerance+noise", "balance+noise"], rows))
+
+    # speed
+    rows = []
+    for name, n, tr, tf in times:
+        rows.append([name, f"{n:,}", f"{1e3 * tr:.1f} ms", f"{1e9 * tr / n:.0f} ns",
+                     f"+{1e3 * tf:.1f} ms (+{100 * tf / tr:.0f}%)"])
+    power = ("" if "AC Power" in subprocess.run(["pmset", "-g", "ps"], capture_output=True, text=True).stdout
+             else "<b>Measured on battery power: indicative only, rerun on AC.</b> ") if sys.platform == "darwin" else ""
+    section("speed", "Speed", f"<p>{power}Apple M3, one thread, best of 3; rank is the O(n log n) pass, refine the two O(n) passes at "
+            "k = 1% of n, shown as the time it adds to rank. Only the ranking depends on n log n; picking k from the "
+            "curve is O(n).</p>" + table(["signal", "n", "rank", "per point", "refine"], rows))
+
+    section("findings", "Findings", FINDINGS)
+    (OUT / "prune.html").write_text(shell("fluxprune: keeping the points that matter", intro, toc, "\n".join(sections)))
+
+
+FINDINGS = """
+<ol>
+<li><b>Ranking: bottom-up, then refine.</b> Removing the cheapest point repeatedly (exact time-weighted L2, a heap,
+O(n log n)) gives a nested ranking of every point and the whole error curve in one pass, but greedy merging is myopic:
+25-35% above the optimum. Two O(n) passes that slide each kept point to its best spot between its neighbours bring
+it to about 6% above the optimum on 600-point windows (worst 1.3×), for +10-15% of the ranking's time. Top-down
+splitting is better than plain bottom-up on step-like signals and much worse on others (worst 7× the optimum).
+At the same number of points, swinging door's RMSE is 1.3-1.5× fluxprune's, LTTB's 2-2.5×, and min/max buckets' and
+even spacing's 2-4×: the plotting downsamplers keep shape for the eye, not the interpolation.</li>
+<li><b>The error curve tells the signal apart from the noise.</b> Smooth signals fall as k⁻², random walks as k⁻½,
+noise stays flat until most points are kept. The curve at k = n/2 measures the white noise: it is 0.29σ for white
+noise at every block size (fluxprune's <code>Ranking.noise()</code>), regular or irregular times.</li>
+<li><b>Fixed count</b> spends the same on a valve that two points describe exactly as on white noise, and <b>fixed
+tolerance</b> is the opposite: calibrated to the same total it hands noise blocks everything (white noise 194 points/h
+against 36 average, a block up to 432) and its ε ends at 13% of the range for all the others: the worst mean
+error of all rules. Neither alone is a rate control for mixed data.</li>
+<li><b>The geometric mean of the two</b> (balance, √(K·k_ε)) is a real compromise (slope ~0.6 against the tolerance's
+counts) and bounded by √(K·n), but noise is still the most "complex" thing it sees: white noise gets 4× the average.
+<b>Raising ε to the block's own noise level</b> (balance+noise) fixes that and reaches nearly the least mean RMSE
+possible for the total at 36/h (3.4% vs 3.3%) with the smallest largest block of the adaptive rules (132); at large
+budgets it stops early on purpose (it won't trace noise), so its mean levels off. Its weakness is the noise estimate:
+correlated noise (flow: τ 5 s at 1 s scans) partly reads as signal, so the count depends on the sampling rate there (×0.25).</li>
+<li><b>The marginal rules</b> (stop when a point gains less than λ) give the least mean error for the total by
+construction (e + λk) but depend on the sampling rate: a noise point's gain scales as 1/n, so the same λ keeps
+13-25× more noise points at 10 s than at 1 s. The user's prediction holds: on noise they either give up at once or
+never.</li>
+<li><b>The amortized rule</b> (stop at the first k where the error left is under θ per point added) is the best
+one-knob rule here: within 4-21% of the least mean RMSE at every budget, largest block 2.5-3.7× the average, no noise
+estimate, and the most stable under a change of sampling rate (×0.80-0.98 for every signal). It stops where the error
+curve meets the line θ·k: in effect error and points traded at a fixed rate, so it grows with complexity
+sublinearly (k ∝ c^⅓ for a smooth signal's k⁻² curve, ∝ σ for noise). It is <code>error_per_point</code> in the API.</li>
+<li><b>Knee detection</b> (stop when doubling the points stops paying) is unusable: periodic signals have plateaus at
+small k (12 h of a sine: 4 points) and random walks never stop (temperature: 3,061 of 3,600).</li>
+<li><b>Block length.</b> Every rule but the fixed count keeps fewer points in one 12 h block than in twelve 1 h blocks,
+mostly because errors are relative to the block's range, and a longer block has a wider one. A store that wants the
+same fidelity across block lengths should give an absolute tolerance (rmse = tolerance / (max - min)).</li>
+<li><b>Swinging-door archives as input</b> prune further, depending on what the archive kept: a tag whose CompDev is
+below its noise (flow, motor current: 1,300-3,000 archived points per hour) drops to 0.6-6% of the archive at the
+same settings, a smooth tag (temperature, pH: ~330/h) to 2-11%, and an archive that already has two points per hour
+stays as it is.</li>
+</ol>
+<p><b>Recommendation.</b> Use <code>prune(t, x, error_per_point=θ)</code> as the default adaptive mode (θ ≈ 0.0015
+gives ~1% of 1 s scans on this corpus), <code>points=</code> where memory must be predictable, and <code>points=,
+rmse=, noise_floor=True</code> where a hard per-block ceiling (√(K·n)) matters more than sampling-rate stability.</p>
+"""
+
+
+def main():
+    clean_outputs(OUT, [f"{PREFIX}*.svg", "prune.html"])
+    t0 = time.time()
+    items = corpus()
+    print(f"corpus: {len(items)} blocks, {time.time() - t0:.0f} s", flush=True)
+    params = {rule: calibrate(rule, [it["r"] for it in items], BUDGET * len(items)) for rule in RULES}
+    print("params:", params, flush=True)
+    res = apply_rules(items, params)
+    sw = sweep(items)
+    qual = quality([it for it in items if it["day"] == 0 and it["block"] % 4 == 1])
+    print(f"quality: {time.time() - t0:.0f} s", flush=True)
+    opt = optimality([it for it in items if it["day"] == 0 and it["block"] % 4 == 1])
+    print(f"optimum: {time.time() - t0:.0f} s", flush=True)
+    rate, length = invariance(params)
+    archive_items = corpus(archive=True, names=TAGS)
+    archive_res = apply_rules(archive_items, params)
+    times = timings()
+    print(f"done: {time.time() - t0:.0f} s", flush=True)
+    write(items, params, res, sw, qual, opt, rate, length, archive_res, archive_items, times)
+
+
+if __name__ == "__main__":
+    main()
