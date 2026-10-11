@@ -133,7 +133,9 @@ class Params:
             interval, and then stores as regular times. Smaller time errors still save most of
             the jitter's cost. Regular blocks, and blocks of fewer than 16 samples, are left as
             they are. A block after a regular one is rounded onto its lattice if every time is
-            within half the time error of it. No time moves further than time_error in all,
+            within half the time error of it, and a clock whose period no 1-2-5 step divides
+            (1024 Hz, 60 Hz) onto a lattice of its own on the same condition. No time moves
+            further than time_error in all,
             however often its block is updated (update_time_blocks).
     """
 

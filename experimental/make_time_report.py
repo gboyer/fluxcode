@@ -348,16 +348,35 @@ block, within the same bound in all.</li>
             cells.append(f"<td>{row['bytes']:,} B · {int(row['irregular'].sum())}/60<br><span class='muted'>"
                          f"{added(row['encode_us'], plain_times[0])}{moved}</span></td>")
         h.append(f"<tr><td>{label}</td>{''.join(cells)}</tr>")
+    by_label = dict(rounded)
+    col = {e: idx for idx, e in enumerate(TIME_ERRORS)}
+
+    def cell(label, e, key="bytes"):
+        return by_label[label][col[e]][key]
+
+    def check_cost(label):  # what rounding adds over exact times on a block group already on a grid
+        return added(cell(label, 0.05, "encode_us") - cell(label, 0.0, "encode_us"), plain_times[0])
+    jitter_bytes = [cell(label, 0.05) for label in ("Jitter σ = 10 µs (1%), ns, on round times",
+                                                   "The same, free-running: 50 µs off the epoch's grid")]
+    drift = "Drift and jitter σ = 10 µs, 37 µs off"
+    lattice_labels = [label for label in by_label if "no 1-2-5 step" in label]
+    lattice_text = "; ".join(
+        f"{label.split(',')[0]}: {cell(label, 0.0):,} → {cell(label, 0.05):,} bytes at 0.05 and {cell(label, 0.1):,} at 0.1"
+        for label in lattice_labels)
     h.append(f"""</table>
 <p class='muted'>Each cell: bytes the timestamps add · irregular blocks of 60, then the encode time they add
 (percentage of the values-only encode, {plain_times[0]:.0f} µs) and the largest move in median intervals.
 Single thread, best of {reps}, Apple M3 on AC power. The chart samples e every 0.0025.</p>
 <ul>
-<li><b>Jittered clocks</b> drop from about 120 KB to 63–66 bytes once e reaches about 5σ (0.05 here), on
-round times or free-running. With drift as well, the phase follows the clock block by block: 258 bytes at 0.05
-and 108 at 0.1. Once regular they also encode faster: a regular block skips the residuals.</li>
-<li><b>Times already on a grid</b> don't change, but checking them costs time: about +25 µs per block group on a
-perfect grid (finding each block's step) and +60 µs with a few gaps (rounding the irregular blocks).</li>
+<li><b>Jittered clocks</b> drop from about 120 KB to {min(jitter_bytes)}–{max(jitter_bytes)} bytes once e reaches
+about 5σ (0.05 here), on round times or free-running. With drift as well, the phase follows the clock block by
+block: {cell(drift, 0.05):,} bytes at 0.05 and {cell(drift, 0.1):,} at 0.1. Once regular they also encode faster:
+a regular block skips the residuals.</li>
+<li><b>Clocks no 1-2-5 step divides</b> go onto lattices of their own once e/2 covers the jitter (about 10σ):
+{lattice_text}. A noisy clock that no lattice fits costs the attempt: up to about +90 µs (+30%) per block group.</li>
+<li><b>Times already on a grid</b> don't change, but checking them costs time: {check_cost("Perfect grid")} per
+block group on a perfect grid (finding each block's step) and {check_cost("Grid with a few gaps")} with a few gaps
+(rounding the irregular blocks).</li>
 <li><b>The noisy clock</b> (σ = 20 µs, 2%) needs e = 0.1 to land on its grid; at 0.05 about 1% of its
 times fall to a neighbouring grid point.</li>
 <li><b>Events and deadband logging</b> have no grid to land on. Rounding still takes out the low bits

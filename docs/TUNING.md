@@ -268,27 +268,32 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
 ### Time error
 
 `time_error` = e lets each time move by up to e times its block's interval (ENCODER §4): times
-round to a grid of a 1-2-5 step of at most 2e intervals, at the clock's own phase. Blocks of fewer
-than 16 samples aren't rounded. In `update_time_blocks`, new ticks snap within e/2 intervals onto a
-stored regular block's lattice, or take a 1-2-5 grid nested in the stored ticks' (which never move);
-otherwise the block is rounded whole, so a tick moves e intervals in all at most. A block after a
-regular one with ticks within e/2 of its lattice continues that clock. Measured with
+round to a grid of a 1-2-5 step of at most 2e intervals, at the clock's own phase. A clock that is
+still irregular on that grid because no 1-2-5 step divides its period (1024 Hz, 60 Hz) goes onto a
+lattice of its own if every time is within e/2 intervals of it. Blocks of fewer than 16 samples
+aren't rounded. In `update_time_blocks`, new ticks snap within e/2 intervals onto a stored regular
+block's lattice, or take a 1-2-5 grid nested in the stored ticks' (which never move); otherwise the
+block is rounded whole, so a tick moves e intervals in all at most. A block after a regular one
+with ticks within e/2 of its lattice continues that clock. Measured with
 `bench/time_axis.py --time-error 0.02,0.05,0.1` (one-minute block groups of 60 × 1000, Apple M3, AC
-power, single thread, Python without the Rust extension, 2026-10-08): bytes the times add, encode
-and decode time they add, irregular blocks of 60, and the largest move in median intervals.
+power, single thread, Python without the Rust extension, best of three runs, 2026-10-10): bytes the
+times add, encode/decode time they add (and its share of the values-only 322/111 µs), irregular
+blocks of 60, and the largest move in median intervals.
 
 | timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
 |---|---|---|---|---|
-| jitter σ=10 µs, ns | 120,712 B, +439/+174 µs, 60 | 14,726 B, +370/+121 µs, 60, 0.010 | 63 B, +75/+12 µs, 0, 0.046 | 63 B, +74/+11 µs, 0, 0.046 |
-| jitter σ=10 µs, µs | 45,903 B, +356/+125 µs, 60 | 14,702 B, +361/+122 µs, 60, 0.010 | 63 B, +75/+13 µs, 0, 0.042 | 63 B, +73/+11 µs, 0, 0.042 |
-| the same (ns), free-running: 25 µs off the epoch's grid | 120,653 B, +456/+156 µs, 60 | 14,712 B, +375/+121 µs, 60, 0.010 | 66 B, +89/+13 µs, 0, 0.045 | 103 B, +83/+14 µs, 0, 0.049 |
-| 50 µs off | 120,653 B, +456/+159 µs, 60 | 14,667 B, +373/+116 µs, 60, 0.010 | 66 B, +83/+12 µs, 0, 0.044 | 66 B, +82/+12 µs, 0, 0.054 |
-| 123 µs off | 120,653 B, +454/+158 µs, 60 | 14,702 B, +374/+129 µs, 60, 0.010 | 74 B, +82/+15 µs, 0, 0.047 | 74 B, +81/+12 µs, 0, 0.047 |
-| noisy clock (σ=20 µs, µs) | 53,422 B, +370/+133 µs, 60 | 21,124 B, +397/+105 µs, 60, 0.010 | 3,010 B, +397/+99 µs, 60, 0.050 | 65 B, +49/+1 µs, 0, 0.088 |
-| drifting clock (0.99998 ms) | 339 B, +228/+91 µs, 60 | 88 B, +73/+11 µs, 0, 0.007 | 101 B, +72/+13 µs, 0, 0.015 | 86 B, +72/+11 µs, 0, 0.021 |
-| drift and jitter σ=10 µs, 37 µs off | 120,648 B, +446/+144 µs, 60 | 14,661 B, +366/+120 µs, 60, 0.010 | 258 B, +89/+6 µs, 2, 0.049 | 108 B, +75/+1 µs, 0, 0.057 |
-| Poisson events, mean 1 ms, ns | 164,661 B, +397/+158 µs, 60 | 57,152 B, +407/+144 µs, 60, 0.036 | 47,567 B, +381/+145 µs, 60, 0.072 | 39,778 B, +360/+129 µs, 60, 0.145 |
-| deadband logging, ms grid | 55,498 B, +586/+225 µs, 60 | unchanged, +648 µs | unchanged, +646 µs | 51,270 B, +603/+216 µs, 60, 0.100 |
+| jitter σ=10 µs, ns | 120,712 B, +417/+170 µs (+130%/+153%), 60 | 14,726 B, +483/+122 µs (+150%/+110%), 60, 0.010 | 63 B, +165/+11 µs (+51%/+10%), 0, 0.046 | 63 B, +136/+9 µs (+42%/+8%), 0, 0.046 |
+| jitter σ=10 µs, µs | 45,903 B, +310/+122 µs (+96%/+110%), 60 | 14,702 B, +483/+124 µs (+150%/+112%), 60, 0.010 | 63 B, +170/+12 µs (+53%/+11%), 0, 0.042 | 63 B, +134/+10 µs (+42%/+9%), 0, 0.042 |
+| the same (ns), free-running: 25 µs off the epoch's grid | 120,653 B, +424/+165 µs (+132%/+149%), 60 | 14,712 B, +497/+132 µs (+154%/+119%), 60, 0.010 | 66 B, +177/+2 µs (+55%/+2%), 0, 0.045 | 103 B, +142/+2 µs (+44%/+2%), 0, 0.049 |
+| 50 µs off | 120,653 B, +425/+161 µs (+132%/+145%), 60 | 14,667 B, +490/+118 µs (+152%/+106%), 60, 0.010 | 66 B, +186/+1 µs (+58%/+1%), 0, 0.044 | 66 B, +144/+1 µs (+45%/+1%), 0, 0.054 |
+| 123 µs off | 120,653 B, +442/+161 µs (+137%/+145%), 60 | 14,702 B, +500/+129 µs (+155%/+116%), 60, 0.010 | 74 B, +180/+1 µs (+56%/+1%), 0, 0.047 | 74 B, +143/+0 µs (+44%/+0%), 0, 0.047 |
+| noisy clock (σ=20 µs, µs) | 53,422 B, +317/+128 µs (+98%/+115%), 60 | 21,124 B, +499/+122 µs (+155%/+110%), 60, 0.010 | 3,010 B, +495/+105 µs (+154%/+95%), 60, 0.050 | 65 B, +166/+9 µs (+52%/+8%), 0, 0.088 |
+| drifting clock (0.99998 ms) | 339 B, +192/+86 µs (+60%/+77%), 60 | 88 B, +198/+11 µs (+61%/+10%), 0, 0.007 | 89 B, +168/+10 µs (+52%/+9%), 0, 0.023 | 98 B, +157/+10 µs (+49%/+9%), 0, 0.050 |
+| drift and jitter σ=10 µs, 37 µs off | 120,648 B, +443/+158 µs (+138%/+142%), 60 | 14,661 B, +482/+131 µs (+150%/+118%), 60, 0.010 | 258 B, +181/+14 µs (+56%/+13%), 2, 0.049 | 102 B, +209/+1 µs (+65%/+1%), 0, 0.057 |
+| 1024 Hz, jitter 0.5% | 112,889 B, +392/+150 µs (+122%/+135%), 60 | 10,618 B, +551/+130 µs (+171%/+117%), 60, 0.010 | 530 B, +283/+6 µs (+88%/+5%), 2, 0.026 | 151 B, +222/+1 µs (+69%/+1%), 0, 0.048 |
+| 60 Hz, jitter 0.5% | 144,082 B, +403/+175 µs (+125%/+158%), 60 | 6,678 B, +525/+125 µs (+163%/+113%), 60, 0.015 | 1,180 B, +363/+15 µs (+113%/+14%), 5, 0.030 | 184 B, +262/+10 µs (+81%/+9%), 0, 0.050 |
+| Poisson events, mean 1 ms, ns | 164,661 B, +388/+194 µs (+120%/+175%), 60 | 57,152 B, +469/+142 µs (+146%/+128%), 60, 0.036 | 47,567 B, +442/+140 µs (+137%/+126%), 60, 0.072 | 39,778 B, +421/+121 µs (+131%/+109%), 60, 0.145 |
+| deadband logging, ms grid | 55,498 B, +530/+203 µs (+165%/+183%), 60 | 55,498 B, +699/+218 µs (+217%/+196%), 60, 0.000 | 55,498 B, +698/+224 µs (+217%/+202%), 60, 0.000 | 51,270 B, +654/+212 µs (+203%/+191%), 60, 0.100 |
 
 - **About 5× the jitter makes a clock regular.** A time stays on its grid point while its jitter
   is under q/2 = e intervals: at 5σ, 6 in 10 million fall outside. At 2.5σ about 1% do, which
@@ -301,8 +306,17 @@ and decode time they add, irregular blocks of 60, and the largest move in median
   jitter margin; the 103 B at 25 µs and e = 0.1 is zstd compressing the sine's values differently
   around other start bytes: on zero values both phases cost 47 B). With the grid fixed at the
   epoch's phase they cost 1.2–13.6 KB at e = 0.05 and up to 2.5 KB at e = 0.1.
-- **A drifting clock** follows its phase block by block: 86–101 B against 339 exact (on the
+- **A drifting clock** follows its phase block by block: 88–98 B against 339 exact (on the
   epoch's grid it was 543–594 B at e ≥ 0.05, as times crossed to the next grid point).
+- **Clocks no 1-2-5 step divides** (1024 Hz: 976.5625 µs; 60 Hz) can't land on a grid: the
+  rounded intervals alternate, and on main before the lattice fit 1024 Hz with 0.5% jitter stored
+  3,863 B at e = 0.05 and 2,546 B at e = 0.1 (60 Hz: 2,444 and 275 B). On lattices of their own:
+  530 and 151 B (60 Hz: 1,180 and 184), and encoding is faster too, by 159 and 196 µs (−53%, −65%
+  of the values-only encode), as the blocks become regular. A lattice needs every time within e/2,
+  so about 10σ of jitter; below that the grid's rounding stands (e = 0.02 here). The attempt is
+  only made on clocks the grid leaves with unequal one-scan intervals (not on gaps alone), from
+  64 sampled ticks, and stops at the first tick that doesn't fit; on noisy clocks it fails it
+  costs about +20–90 µs per block group (+6–28%) against main, measured alternately with it.
 - **Choosing the phase** costs about 0.25 µs per block (64 sampled ticks, ten candidates, integer
   sums so it vectorizes and doesn't depend on the machine). Per-block phases without the
   hysteresis flipped between two candidates around a clock's phase (135 B instead of 47 on zero
@@ -311,9 +325,9 @@ and decode time they add, irregular blocks of 60, and the largest move in median
   candidate up to 24% ahead of an equally good neighbour.
 - **Regular clocks are faster to encode and decode once rounded**: the regular time path, the
   plain noise estimate, the regular decode loop.
-- **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; finding
-  each block's quantum costs +22 µs per block group on a regular grid (regular blocks aren't
-  rounded), and choosing phases and rounding +55–80 µs on irregular ones.
+- **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; checking
+  them costs about +80 µs per block group (+26%) on a regular grid (regular blocks aren't
+  rounded) and +87 µs (+29%) with a few gaps (time report, 2026-10-10).
 - **Events and deadband logging** have no grid to land on. Events get 1.5–4× smaller (more in ns than in µs ticks); times on a
   1 ms grid already have a coarse GCD and gain only from e = 0.1. Without a cadence the interval
   is the median of 15, a rough estimate: times moved by up to 1.45 e of the overall median.
@@ -337,6 +351,29 @@ and decode time they add, irregular blocks of 60, and the largest move in median
   at the same step: as small on jittered clocks with 3× the error against the input, and 6–150×
   the samples on bursts and deadband logging, 2× when a 1-2-5 grid falls under a clock running
   slightly fast.
+- **The lattice limit is e/2, not e** (2026-10-10): the other lattice snaps (a block continuing
+  the clock before it, an update onto a stored regular block) use e/2 so that `update_time_blocks`
+  can still round such a block whole within e (rule 3). With the full e the lattice also takes
+  more jitter (60 Hz at e = 0.05: 269 B against 1,456; 1024 Hz at e = 0.02: 3.3 KB against 11 KB),
+  but rule 3 would then have no budget left for any stored regular block, and a block fitted
+  with a lattice phase between grid steps passed that phase on to the next block's grid (σ=30 µs
+  at e = 0.1: 1,146 B against 678).
+- **Alternatives measured and dropped** (prototypes, 2026-10-10, same block groups):
+  - An octave (bit-length) histogram of the intervals with the 5th percentile as the interval:
+    on a jittered clock the 5th percentile is below the period, so the step falls a rung (σ=10 µs
+    at e = 0.05: 3,076 B against 63), and it costs a full pass.
+  - A ladder of coarser 1-2-5 steps, each kept if 95% of times stay within e of their own
+    interval and all within 2e: noisy clocks become regular (σ=20 µs at e = 0.05: 3,010 → 65 B)
+    only by moving their jitter tails beyond e, it moves genuine off-clock stamps onto the clock
+    (up to 0.42 intervals without the 2e cap), misses non-decimal clocks, and costs +15–38% encode
+    on blocks it doesn't help. Its gain requires a looser guarantee (95% within e), which was not
+    taken.
+  - A one-sided cadence test (90% of intervals above c/2, else the smallest of the 15 sampled as
+    the interval) keeps 95% of event times within e of their own interval (22% are moved further
+    now) but makes Poisson events 60–80% larger: a change of what e means, not taken.
+  - The epoch's grid or the first tick as the phase instead of the phase search: 594–4,916 B on
+    free-running and drifting clocks against 74–258 (epoch), 215–222 B against 63–74 (first
+    tick); the search costs about 15 µs per block group.
 - **The cadence stays the median of 15:** a geometric mean of the intervals took 2.33 µs per block
   against 0.33, and counts 1×/2× mixes with 42% or more two-scan intervals as one scan (a 50% mix
   scored 100%).
