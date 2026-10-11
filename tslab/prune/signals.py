@@ -1,0 +1,211 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Garry Boyer
+"""Slow series for the pruning experiments (report/prune.html): a day of 1 s scans per signal-day,
+cut into storage blocks of fixed duration.
+
+- The six process tags of tslab.common.historian (every scan, and what its swinging-door archive kept).
+- A few more shapes a store sees: a totalizer, batch cycles, vibration with bursts, an on/off
+  compressor, pure white noise, and a clean sine (smooth, no noise: the case with no knee).
+- OFFSET: signals whose small variations matter on a large offset (a furnace at ~2115 °F, grid
+  frequency), the same ambient temperature in °C (crossing zero) and in K, a tank level that sits
+  still for hours, and the furnace with thermocouple dropouts: what the error should be relative to.
+- PERIODIC: a vibration whose period and amplitude drift, and a pyrometer watching hot objects leave a furnace,
+  with the true peaks and troughs (periodic_scans), for fluxprune.peaks.
+- GUARD: a max_error per signal (the historian tags' CompDev, otherwise about what an engineer would set).
+
+All seeds are fixed.
+"""
+
+import numpy as np
+
+from tslab.common.historian import (
+    DAY_S,
+    DAY_START_NS,
+    SECOND_NS,
+    TAG_INFO,
+    TAGS,
+    _first_order,
+    ou,
+    setpoints,
+    tag_day,
+    tag_scans,
+    tag_seed,
+)
+
+EXTRA = ["totalizer", "batch", "vibration", "compressor", "white-noise", "sine"]
+SIGNALS = TAGS + EXTRA
+OFFSET = ["furnace", "furnace-dropout", "grid-frequency", "ambient-C", "ambient-K", "level-quiet"]
+PERIODIC = ["vibration-cycles", "pyrometer"]
+PERIOD_S = {"vibration-cycles": 60, "pyrometer": 60}  # the expected time between peaks
+PROMINENCE = {"vibration-cycles": 2.0, "pyrometer": 50.0}  # about 6σ of the noise or more
+GUARD = {
+    **{tag: TAG_INFO[tag][2] for tag in TAGS},
+    "totalizer": 1.0, "batch": 0.2, "vibration": 0.1, "compressor": 0.5, "white-noise": 1.0, "sine": 0.01,
+    "furnace": 1.0, "furnace-dropout": 1.0, "grid-frequency": 0.005, "ambient-C": 0.2, "ambient-K": 0.2,
+    "level-quiet": 0.1,
+}
+EXTRA_INFO = {
+    "totalizer": "Flow totalizer: integral of a stepped flow, 0.1 resolution (piecewise straight)",
+    "batch": "Batch reactor: heat ramp, soak, cool, ~2 h cycles + noise σ 0.05",
+    "vibration": "Vibration RMS: slow drift + rare bursts (seconds to minutes) + noise",
+    "compressor": "Compressor power: on/off cycles (5-15 min) with start-up overshoot + noise",
+    "white-noise": "White noise only, σ 1",
+    "sine": "One 20 min sine, nothing else (smooth: error falls as k⁻² with no floor)",
+    "furnace": "Furnace temperature, °F: setpoints 2100-2130 with ramps, control cycling ±0.3-1.5 °F, 0.1 °F steps",
+    "furnace-dropout": "The furnace with 6 thermocouple dropouts a day (reads 0 for 2-20 s)",
+    "grid-frequency": "Grid frequency, Hz: 60 ± ~10 mHz, 4 generator trips a day (−40 to −150 mHz), 1 mHz steps",
+    "ambient-C": "Outdoor temperature, °C: −3 to 9 over the day, weather drift, 0.1 °C steps (crosses zero)",
+    "ambient-K": "The same ambient temperature in kelvin (+273.15)",
+    "level-quiet": "Tank level, %: held at 62.4 (±1 step of 0.01 dither) but for 3 fill/draw cycles a day",
+    "vibration-cycles": "Vibration, 1 s scans: a cycle every 40-80 s (drifting), amplitude 2-10 (drifting), noise σ 0.3",
+    "pyrometer": "Pyrometer at a furnace exit: an object every 45-75 s, 15-25 s in view at 900-1,100 °C (noise σ 3, "
+                 "cooling), background 40 °C (σ 1.5), 0.1 °C steps",
+}
+
+
+def extra_scans(name, day):
+    rng = np.random.default_rng(9000 + 100 * EXTRA.index(name) + day)
+    n = DAY_S
+    s = np.arange(n, dtype=np.float64)
+    if name == "totalizer":
+        changes = np.sort(rng.integers(1, n, 12))
+        flow = rng.uniform(0, 3, 13)[np.searchsorted(changes, np.arange(n), side="right")]
+        flow[rng.random(13)[np.searchsorted(changes, np.arange(n), side="right")] < 0.25] = 0  # some stops
+        return np.round(np.cumsum(flow), 1)
+    if name == "batch":
+        out = np.empty(n)
+        k = 0
+        while k < n:
+            heat, soak, cool = (int(rng.integers(a, b)) for a, b in ((900, 1800), (1800, 3600), (1200, 2400)))
+            top = rng.uniform(70, 90)
+            seg = np.concatenate([np.linspace(25, top, heat), np.full(soak, top),
+                                  25 + (top - 25) * np.exp(-np.arange(cool) / 400)])
+            out[k:k + len(seg)] = seg[: n - k]
+            k += len(seg)
+        return np.round(_first_order(out, 1 / 30, out[0]) + rng.normal(0, 0.05, n), 2)
+    if name == "vibration":
+        x = 2 + 0.3 * np.sin(2 * np.pi * s / DAY_S) + ou(rng, n, 3600, 0.1)
+        for start in rng.integers(0, n - 600, 8):
+            length = int(rng.integers(5, 300))
+            x[start:start + length] += rng.uniform(2, 8) * np.exp(-np.arange(length) / (length / 3))
+        return np.round(x + np.abs(rng.normal(0, 0.05, n)), 3)
+    if name == "compressor":
+        out = np.empty(n)
+        k, on = 0, False
+        while k < n:
+            length = int(rng.integers(300, 900))
+            seg = np.full(length, 0.2)
+            if on:
+                seg = 15 + 10 * np.exp(-np.arange(length) / 20)
+            out[k:k + length] = seg[: n - k]
+            k += length
+            on = not on
+        return np.round(out + rng.normal(0, 0.1, n), 2)
+    if name == "white-noise":
+        return rng.normal(0, 1, n)
+    if name == "sine":
+        return np.sin(2 * np.pi * s / 1200 + rng.uniform(0, 2 * np.pi))
+    raise ValueError(name)
+
+
+def offset_scans(name, day):
+    if name == "ambient-K":
+        return offset_scans("ambient-C", day) + 273.15
+    if name == "furnace-dropout":
+        x = offset_scans("furnace", day)
+        rng = np.random.default_rng(9900 + day)
+        for start in rng.integers(0, DAY_S - 20, 6):
+            x[start:start + rng.integers(2, 20)] = 0.0
+        return x
+    rng = np.random.default_rng(9500 + 100 * OFFSET.index(name) + day)
+    n = DAY_S
+    s = np.arange(n, dtype=np.float64)
+    if name == "furnace":
+        sp = setpoints(rng, n, 6, 2100, 2130, 5.0)
+        sp = _first_order(sp, 1 / 600, sp[0])  # the load follows a setpoint change over ~10 min
+        amp = 0.3 + 1.2 * rng.random(n // 3600 + 1)[(s // 3600).astype(int)]  # cycling amplitude, per hour
+        cyc = amp * np.sin(2 * np.pi * s / rng.uniform(480, 900) + rng.uniform(0, 2 * np.pi))
+        return np.round(sp + cyc + ou(rng, n, 1200, 0.5) + rng.normal(0, 0.1, n), 1)
+    if name == "grid-frequency":
+        x = 60 + ou(rng, n, 30, 0.008) + 0.004 * np.sin(2 * np.pi * s / 3600)  # hourly schedule changes
+        for start in rng.integers(0, n - 1200, 4):
+            drop, recover = rng.uniform(0.04, 0.15), rng.uniform(60, 300)
+            k = np.arange(n - start, dtype=np.float64)
+            x[start:] -= drop * np.minimum(k / 5, 1) * np.exp(-np.maximum(k - 5, 0) / recover)
+        return np.round(x, 3)
+    if name == "ambient-C":
+        return np.round(3 + 6 * np.sin(2 * np.pi * (s / DAY_S - 0.35)) + ou(rng, n, 3600, 1.0)
+                        + rng.normal(0, 0.03, n), 1)
+    if name == "level-quiet":
+        x = np.full(n, 62.4)
+        for start in rng.integers(0, n - 7200, 3):
+            fill = np.concatenate([np.linspace(0, 1, 1800), np.ones(int(rng.integers(600, 2400))), np.linspace(1, 0, 2400)])
+            x[start:start + len(fill)] += rng.uniform(5, 20) * fill
+        return np.round(x + rng.normal(0, 0.006, n), 2)
+    raise ValueError(name)
+
+
+def periodic_scans(name, day):
+    """(a day of 1 s scans, true peak indices, true trough indices): the highest scan of each cycle's upper half
+    (each object in view) and the lowest of each lower half (each gap between objects)."""
+    rng = np.random.default_rng(9800 + 100 * PERIODIC.index(name) + day)
+    n = DAY_S
+    s = np.arange(n, dtype=np.float64)
+    if name == "vibration-cycles":
+        period = 60 + 20 * np.sin(2 * np.pi * s / 7200 + rng.uniform(0, 2 * np.pi))
+        amp = 6 + 4 * np.sin(2 * np.pi * s / 5000 + rng.uniform(0, 2 * np.pi))
+        phase = np.cumsum(2 * np.pi / period) + rng.uniform(0, 2 * np.pi)
+        x = amp * np.sin(phase) + rng.normal(0, 0.3, n)
+        half = np.floor(phase / np.pi).astype(np.int64)  # half cycles: even ones are the upper halves
+        edges = np.flatnonzero(np.diff(half)) + 1
+        tops, bottoms = [], []
+        for a, b in zip(edges[:-1], edges[1:]):  # whole half cycles only
+            (tops if half[a] % 2 == 0 else bottoms).append(a + int(np.argmax(x[a:b]) if half[a] % 2 == 0 else np.argmin(x[a:b])))
+        return x, np.array(tops), np.array(bottoms)
+    if name == "pyrometer":
+        x = 40 + rng.normal(0, 1.5, n)
+        starts = []
+        k = int(rng.integers(10, 40))
+        while k < n - 30:
+            starts.append(k)
+            k += int(rng.integers(45, 76))
+        spans = []
+        for a in starts:
+            width = int(rng.integers(15, 26))
+            top = rng.uniform(900, 1100)
+            body = top - 0.8 * np.arange(width) + rng.normal(0, 3, width)
+            ramp = np.minimum(1, np.minimum(np.arange(width) + 1, width - np.arange(width)) / 2.5)
+            x[a:a + width] = 40 + (body - 40) * ramp
+            spans.append((a, a + width))
+        x = np.round(x, 1)
+        tops = [a + int(np.argmax(x[a:b])) for a, b in spans]
+        bottoms = [b + int(np.argmin(x[b:c])) for (_, b), (c, _) in zip(spans[:-1], spans[1:])]
+        return x, np.array(tops), np.array(bottoms)
+    raise ValueError(name)
+
+
+def scans(name, day):
+    """A day of 1 s scans of a signal."""
+    if name in TAGS:
+        return tag_scans(name, tag_seed(name, day))
+    if name in PERIODIC:
+        return periodic_scans(name, day)[0]
+    return offset_scans(name, day) if name in OFFSET else extra_scans(name, day)
+
+
+def blocks(name, day, hours, archive=False):
+    """[(times ns, values)] of one signal-day cut into blocks of `hours`: every scan, or with archive=True the
+    points the tag's swinging-door archive kept (tags only)."""
+    if archive:
+        x, idx = tag_day(name, day)
+    else:
+        x = scans(name, day)
+        idx = np.arange(DAY_S)
+    t = DAY_START_NS + idx * SECOND_NS
+    out = []
+    width = int(hours * 3600)
+    for start in range(0, DAY_S, width):
+        sel = (idx >= start) & (idx < start + width)
+        if np.count_nonzero(sel) >= 2:
+            out.append((t[sel], x[idx[sel]]))
+    return out
