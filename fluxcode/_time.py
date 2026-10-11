@@ -13,7 +13,9 @@ residuals. Any other block is irregular and stores them.
 
 With a time error e > 0 (Params.time_error) the encoder first rounds each block's ticks to a
 1-2-5 step of at most 2 e times the block's interval (`round_blocks`): a jittered
-clock lands back on its own grid and stores as a regular block. The format doesn't change.
+clock lands back on its own grid and stores as a regular block. A clock whose period no such
+step divides (1024 Hz, 60 Hz) goes onto its own lattice instead, within e/2 intervals. The format
+doesn't change.
 """
 
 from collections.abc import Callable
@@ -518,16 +520,15 @@ def block_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[float
         scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
 
     Returns:
-        A tuple of (interval, regular): the interval (0.0 if there is none) and whether every
-        interval is equal.
+        A tuple of (interval, clock): the interval (0.0 if there is none) and whether it is the
+        mean of one-scan intervals (the block has a cadence).
     """
-    scan, _, _, num_one_scan, one_scan_total, regular = one_scan(ticks, scratch_pivots)
+    scan, _, _, num_one_scan, one_scan_total, _ = one_scan(ticks, scratch_pivots)
     if scan == 0:
         return 0.0, False
-    reference = float(scan)
     if scan < ONE_SCAN_SUM_LIMIT and num_one_scan >= CADENCE_SHARE * (ticks.shape[0] - 1):
-        reference = one_scan_total / num_one_scan
-    return reference, regular
+        return one_scan_total / num_one_scan, True
+    return float(scan), False
 
 
 @njit(nogil=True, cache=True)
@@ -758,6 +759,78 @@ def snap_to_lattice(
     return True
 
 
+@njit(inline="always")
+def lattice_origin(times: np.ndarray, period: np.int64, quantum: np.int64) -> np.int64:
+    """A point of a clock's lattice of the given period: the mean offset from the lattice through
+    the first tick of the ticks within a quarter period of it (a late or early tick doesn't pull
+    it, and the first tick's own jitter cancels out), rounded to a multiple of quantum /
+    PHASE_STEPS from the epoch, so the times stay round. Float sums: an estimate, checked by
+    snap_to_lattice."""
+    first = times[0]
+    period_float = np.float64(period)
+    total, count = 0.0, 0
+    for sample_idx in range(times.shape[0]):
+        offset = np.float64(times[sample_idx] - first)
+        residual = offset - np.round(offset / period_float) * period_float
+        near = abs(residual) < 0.25 * period_float
+        total += residual * near
+        count += near
+    origin = first + np.int64(np.round(total / max(count, 1)))
+    step = max(quantum // PHASE_STEPS, np.int64(1))
+    return _round_tick(origin, step, np.int64(0)) if step > 1 else origin
+
+
+@njit(inline="always")
+def fit_lattice(
+    times: np.ndarray, interval: float, quantum: np.int64, limit: np.int64, out: np.ndarray
+) -> bool:
+    """Puts a clock's ticks on its own lattice, origin + k period, if every tick is within limit
+    of it: a clock whose period no 1-2-5 grid divides (1024 Hz, 60 Hz) stores as regular.
+
+    The period is the interval rounded to a multiple of the quantum (a 1-2-5 period, or 3 ms, is
+    then exact although the mean of a jittered clock's intervals is off by a few ns), or failing
+    that, to the coarsest 1-2-5 step that drifts by at most limit / 2 over the block. The origin
+    is lattice_origin.
+
+    Args:
+        times: 1D int64 array of the block's ticks (at least 2).
+        interval: Its interval: the mean of its one-scan intervals (block_interval).
+        quantum: Its quantum (> 1).
+        limit: Largest distance a tick may move.
+        out: In-out 1D int64 array: the ticks on the lattice if they fit; otherwise the
+            ticks (snap_to_lattice).
+
+    Returns:
+        Whether every tick fitted.
+    """
+    num_intervals = times.shape[0] - 1
+    period = np.int64(max(np.round(interval / quantum), 1.0) * quantum)
+    if snap_to_lattice(times, lattice_origin(times, period, quantum), period, limit, np.int64(INT64_MIN), out):
+        return True
+    step = quantum
+    drifting = period
+    while step > 1:
+        step = _finer_step(step)
+        drifting = np.int64(max(np.round(interval / step), 1.0) * step)
+        if abs(interval - drifting) * num_intervals <= 0.5 * limit:
+            break
+    if drifting == period:
+        return False
+    return snap_to_lattice(times, lattice_origin(times, drifting, quantum), drifting, limit, np.int64(INT64_MIN), out)
+
+
+@njit(inline="always")
+def _finer_step(step: np.int64) -> np.int64:
+    """The next 1-2-5 x 10^k step below step (a 1-2-5 step above 1)."""
+    decade = np.int64(1)
+    while step >= 10 * decade:
+        decade *= 10
+    mantissa = step // decade
+    if mantissa == 1:
+        return decade // 2 if decade >= 10 else np.int64(1)
+    return decade if mantissa == 2 else 2 * decade
+
+
 @njit(nogil=True, cache=True)
 def snap_lattices(
     ticks: np.ndarray, firsts: np.ndarray, ends: np.ndarray, origins: np.ndarray, steps: np.ndarray,
@@ -828,8 +901,12 @@ def round_blocks(
     interval d) as rounded here, and every tick of this block is within time_error / 2 * d of the
     lattice continuing it (its last tick + k d, k >= 1), the ticks are put on that lattice and
     the block is regular on the same clock. Else the block gets its own grid (block_quantum,
-    block_phase from the previous block's last tick, snap_block). Neighbouring blocks' grids
-    are not reconciled here: order_blocks does that.
+    block_phase from the previous block's last tick, snap_block). A block with a cadence that is
+    still irregular on its grid (a clock whose period the grid doesn't divide, like 1024 Hz) is
+    put on its own lattice instead if every tick is within time_error / 2 intervals of it
+    (fit_lattice): like the lattice of the block before, this leaves an update half the time
+    error to round with. Neighbouring blocks' grids are not reconciled here: order_blocks does
+    that.
 
     Args:
         ticks: 1D int64 array of every sample's tick (no NaT).
@@ -841,7 +918,7 @@ def round_blocks(
             MIN_ROUND_SAMPLES ticks, else 0 (read where seed_ticks is set).
         out_ticks: Output 1D int64 array of every sample's tick, kept or on a lattice or grid.
         out_quanta: Output 1D int64 array of the blocks' quanta (0 where the block is kept or
-            on a lattice).
+            on a lattice, the previous block's or its own).
         out_phases: Output 1D int64 array of the blocks' phases.
 
     Returns:
@@ -883,13 +960,23 @@ def round_blocks(
                 ):
                     step = previous_step
                 else:
-                    quantum = np.int64(block_quantum(times, time_error, scratch))
+                    interval, clock = block_interval(times, scratch)
+                    quantum = np.int64(time_quantum(interval, time_error)) if interval > 0.0 else np.int64(1)
                     if quantum > 1:
                         phase = block_phase(times, quantum, previous_last)
                         snap_block(times, quantum, phase, out)
                         out_quanta[block_idx] = quantum
                         out_phases[block_idx] = phase
                         step = np.int64(regular_step(out))
+                        # A clock still irregular on the grid: its own lattice, if every tick is
+                        # within time_error / 2 intervals of it (as a lattice snap in an update)
+                        if step == 0 and clock:
+                            if fit_lattice(times, interval, quantum, np.int64(0.5 * time_error * interval), out):
+                                out_quanta[block_idx] = 0
+                                out_phases[block_idx] = 0
+                                step = np.int64(regular_step(out))
+                            else:
+                                snap_block(times, quantum, phase, out)
         previous_last = out[block_len - 1]
         previous_step = step
     return OK, 0

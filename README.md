@@ -45,7 +45,8 @@ type:
   at the clock's own phase, so a jittered clock lands back on its own grid and stores as a regular
   one. A time error of about 5× the jitter (σ over the interval) does that: 0.05 for 1% jitter,
   120 KB → 63–74 bytes a minute at 1 kHz, on round times or free-running. Smaller ones still save
-  most of the jitter's cost.
+  most of the jitter's cost. A clock whose period no 1-2-5 step divides (1024 Hz, 60 Hz) goes onto
+  a lattice of its own instead, at about 10× the jitter.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -230,7 +231,8 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
 - **Timestamps decode exactly** by default. With `time_error` = e, each moves by at most e times
   its block's interval (2% more at most; an `update` clamped to a stored neighbour, by the
-  neighbour's), they stay in order, and `update_time_blocks` never moves a stored one.
+  neighbour's), they stay in order, and `update_time_blocks` moves a stored one only when it
+  rounds a whole block, within the same bound in all.
 
 ## How it works
 

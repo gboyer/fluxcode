@@ -306,6 +306,42 @@ def test_a_drifting_jittered_clock_follows_its_phase():
     assert np.abs(decoded - ticks).max() <= 51_000 and irregular_blocks(group) <= 5
 
 
+def non_decimal_clock(num_samples, hz, jitter, seed=0):
+    """ns ticks of a clock of hz (a period no 1-2-5 step divides) with Gaussian jitter (share of period)."""
+    period = 1e9 / hz
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0, jitter * period, num_samples) if jitter else 0
+    return np.maximum.accumulate(START + 777_777 + np.round(np.arange(num_samples) * period + noise).astype(np.int64))
+
+
+@pytest.mark.parametrize("hz,jitter,time_error", [(1024, 0, 0.05), (1024, 0.005, 0.05), (60, 0.005, 0.1),
+                                                  (30, 0.005, 0.1), (1024, 0.005, 0.1)])
+def test_a_non_decimal_clock_goes_onto_its_own_lattice(hz, jitter, time_error):
+    """No 1-2-5 grid divides the period, so on one the intervals alternate; each block fits a lattice
+    of its own (period and origin) within e / 2 intervals instead, and stores as regular."""
+    ticks = non_decimal_clock(30_000, hz, jitter)
+    group, decoded = encoded_ticks(np.zeros(ticks.size), ticks, time_error)
+    assert irregular_blocks(group) == 0
+    assert (np.diff(decoded) >= 0).all()
+    assert np.abs(decoded - ticks).max() <= 0.5 * time_error * 1e9 / hz
+    if jitter:
+        exact, _ = encoded_ticks(np.zeros(ticks.size), ticks, 0)
+        assert len(group) < len(exact) / 10
+
+
+def test_fit_lattice_keeps_a_block_with_a_tick_beyond_the_limit():
+    ticks = non_decimal_clock(1000, 1024, 0)
+    limit = np.int64(0.025 * 1e9 / 1024)
+    out = ticks.copy()
+    assert _time.fit_lattice(ticks, 1e9 / 1024, np.int64(50_000), limit, out)
+    assert (np.diff(out) == np.diff(out)[0]).all() and np.abs(out - ticks).max() <= limit
+    late = ticks.copy()
+    late[500] += 2 * limit
+    out = late.copy()
+    assert not _time.fit_lattice(late, 1e9 / 1024, np.int64(50_000), limit, out)
+    assert (out == late).all()
+
+
 def test_a_regular_block_keeps_its_times():
     ticks = START + 12_345 + np.arange(5000, dtype=np.int64) * MS  # regular, off every grid
     assert encoded_ticks(np.zeros(ticks.size), ticks, 0.1)[0] == encoded_ticks(np.zeros(ticks.size), ticks, 0)[0]
@@ -531,12 +567,12 @@ def test_small_blocks_are_not_rounded_until_they_grow():
 
 
 @pytest.mark.parametrize("kind,scale", [("clock", 1), ("clock", 1000), ("regular-1001", 1), ("regular-1001", 1000),
-                                        ("poisson", 1)])
+                                        ("poisson", 1), ("1024hz", 1), ("1024hz", 1000)])
 def test_repeated_updates_move_no_tick_further_than_the_time_error(kind, scale):
     """Every surviving sample stays within e * interval * 1.02 of the tick it was given, however often
     its blocks are updated."""
     rng = np.random.default_rng(11)
-    interval = 1001 if kind == "regular-1001" else 1000
+    interval = {"regular-1001": 1001, "1024hz": 977}.get(kind, 1000)
     bound = 0.1 * interval * 1.02 * scale
     kwargs = {"start_time": 0, "block_duration": 100_000 * scale, "time_unit": "us" if scale == 1 else "ns"}
 
@@ -545,6 +581,8 @@ def test_repeated_updates_move_no_tick_further_than_the_time_error(kind, scale):
             return np.full(num, 1001)
         if kind == "clock":
             return np.round(rng.normal(interval, 0.02 * interval, num)).astype(np.int64)
+        if kind == "1024hz":  # a jittered 1024 Hz clock in us: blocks fit lattices of their own
+            return np.diff(np.round(np.arange(num + 1) * 976.5625 + rng.normal(0, 4, num + 1))).astype(np.int64)
         return np.maximum(1, rng.exponential(interval, num).astype(np.int64))
 
     ticks = (1 + np.cumsum(gaps(400))) * scale

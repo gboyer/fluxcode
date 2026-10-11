@@ -139,6 +139,7 @@ def rounding_cases(examples):
     harder = dict(patterns(np.random.default_rng(0)))
     index = np.arange(MINUTE)
     jitter = np.round(np.random.default_rng(1).normal(0, 10_000, MINUTE)).astype(np.int64)
+    lattice_jitter = np.random.default_rng(2).normal(0, 0.005, MINUTE)
     start = 1_790_000_000_000_000_000
     return [(SHAPE_LABELS[shape], ticks) for shape, ticks, _ in examples] + [
         ("Jitter σ = 10 µs (1%), ns, on round times", harder["jitter σ=10 µs, ns resolution"]),
@@ -149,7 +150,9 @@ def rounding_cases(examples):
          np.maximum.accumulate(start + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter)),
         ("Poisson events, mean 1 ms, ns", harder["Poisson events, mean 1 ms, ns"]),
         ("Deadband logging, ms grid", harder["deadband logging, ms grid"]),
-    ]
+    ] + [(f"{hz} Hz clock, jitter 0.5% (no 1-2-5 step divides the period)",
+          np.maximum.accumulate(start + np.round(index * 1e9 / hz + lattice_jitter * 1e9 / hz).astype(np.int64)))
+         for hz in (1024, 60)]
 
 
 def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
@@ -322,13 +325,18 @@ count (1, 2, 5, 10, 20, …) at most 2<i>e</i> intervals (2% slack), and the gri
 (a multiple of a tenth of the step, kept from the previous block unless another fits clearly better), so a
 free-running or drifting clock rounds onto its own grid, not the epoch's. Each time rounds to its nearest grid
 point.</li>
+<li><b>A clock no 1-2-5 step divides</b> (1024 Hz, 60 Hz) can't land on a grid: its rounded intervals alternate.
+Such a block goes onto a lattice of its own instead (its mean interval as the period, rounded as coarsely as
+drift allows, and its mean phase) if every time is within <i>e</i>/2 intervals of it, which leaves an update
+room to round it again. That takes about 10 times the jitter.</li>
 <li><b>A jittered clock becomes regular</b> once <i>e</i> is about 5 times its jitter (σ over the interval):
 every time stays on its own grid point, and the block stores no residuals. Below that the size falls in steps,
 one at each 1-2-5 step (for a 1 ms clock at e = …, 0.005, 0.01, 0.025, 0.05, 0.1), and each step pays off on its own:
 there is no threshold below which rounding stops helping.</li>
 <li><b>Regular blocks are left alone,</b> and times already on a grid don't change.</li>
 <li><b>Order is kept</b> across blocks and block groups; <code>update</code> and <code>update_time_blocks</code>
-round new samples onto the stored blocks' grids and never move stored times.</li>
+round new samples onto the stored blocks' grids (or lattices), and move stored times only to round a whole
+block, within the same bound in all.</li>
 </ul>
 {rounding_chart}
 <table><tr><th class='l'>timestamps</th>""" + "".join(

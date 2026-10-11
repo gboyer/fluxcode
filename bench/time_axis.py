@@ -109,7 +109,12 @@ def compare_time_errors(time_errors, reps):
         (f"jitter σ=10 µs, ns, phase {phase // 1000} µs", np.maximum.accumulate(START_NS + phase + index * MS + jitter))
         for phase in (25_000, 50_000, 123_000)
     ] + [("drift + jitter σ=10 µs, phase 37 µs",
-          np.maximum.accumulate(START_NS + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter))]
+          np.maximum.accumulate(START_NS + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter))] + [
+        # periods no 1-2-5 step divides: each block fits a lattice of its own
+        (f"{hz} Hz, jitter 0.5%", np.maximum.accumulate(
+            START_NS + np.round(index * 1e9 / hz + rng.normal(0, 0.005e9 / hz, MINUTE)).astype(np.int64)))
+        for hz in (1024, 60)
+    ]
     for name, ticks in patterns(np.random.default_rng(0)) + free_running:
         times = ticks.view("datetime64[ns]")
         median = float(np.median(np.diff(ticks)))
