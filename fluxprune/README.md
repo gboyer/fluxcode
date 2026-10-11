@@ -31,8 +31,10 @@ p = fluxprune.prune(t, x, keep=pk)                          # every peak and tro
   swinging door's chords. At the same guarantee it keeps fewer points than swinging door on most
   signals, and it also covers what a range-relative error can't (a quiet block's own dither, a
   glitch that sets a block's range, the block length).
-- **`max_points`**: a hard cap. Over it, the automatic points give way first; if `max_error` alone
-  needs more, the cap is spent where the error is largest, and `capped` says so.
+- **`max_points`**: a hard cap. `max_error` takes precedence over the automatic points: over the
+  cap, they give way (least significant first) while `max_error` still holds; if `max_error` can't
+  be met within the cap even without them, it is relaxed to the smallest bound that fits, and
+  `capped` says so (`max_error` of the result is the bound reached).
 - **`keep`**: indices kept whatever else is, such as `peaks()`.
 - **`peaks(t, x, period, prominence, max_points)`**: for periodic signals, where each peak and trough
   matters as a sample of its own. A peak is a local maximum at least `prominence` above the higher

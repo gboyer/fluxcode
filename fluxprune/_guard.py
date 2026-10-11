@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Kernels for the error of a kept subset and for the max_error guard.
+"""Kernels for the error of a kept subset and for the max_error guard (a swinging-door fill).
 
 The deviation of an input point is its distance, in value, from the straight line between the
 kept points around it. Where kept points share a time (a vertical step), the line is the step,
 and a point at that time deviates by its distance from the step's span of values.
 """
-
-import heapq
 
 import numpy as np
 from numba import njit
@@ -106,29 +104,3 @@ def fill_kernel(tau, y, keep, tol):
             m = _door(tau, y, a, b, tol, out, m)
     out[m] = keep[-1]
     return out[: m + 1].copy()
-
-
-@njit(cache=True)
-def repair_kernel(tau, y, keep, tol, budget):
-    """Add points to `keep` (sorted) until no input point deviates by more than tol from the kept
-    lines, splitting the segment with the largest deviation at its worst point first, but adding at
-    most `budget` points. Returns (the new sorted keep, whether every point is within tol)."""
-    heap = [(0.0, 0, 0, 0)]  # (-deviation, worst point, a, b), typed by the first item
-    heap.pop()
-    for s in range(len(keep) - 1):
-        d, j = _worst(tau, y, keep[s], keep[s + 1])
-        if d > tol:
-            heapq.heappush(heap, (-d, j, keep[s], keep[s + 1]))
-    added = np.empty(min(budget, len(tau)), np.int64)
-    count = 0
-    while len(heap) and count < budget:
-        _, j, a, b = heapq.heappop(heap)
-        added[count] = j
-        count += 1
-        for p, q in ((a, j), (j, b)):
-            d, m = _worst(tau, y, p, q)
-            if d > tol:
-                heapq.heappush(heap, (-d, m, p, q))
-    out = np.concatenate((keep, added[:count]))
-    out.sort()
-    return out, len(heap) == 0

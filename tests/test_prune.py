@@ -169,10 +169,16 @@ def test_max_error(seed):
 def test_max_points():
     t, x = series(7)
     want = fluxprune.prune(t, x, max_error=1.0)
-    alone = fluxprune.rank(t, x).prune(error_per_point=1e9, max_error=1.0)  # max_error with no automatic points
-    for cap in (4, 10, 50, len(alone) - 1):
+    r = fluxprune.rank(t, x)
+    alone = r.prune(error_per_point=1e9, max_error=1.0)  # max_error with no automatic points
+    worse = []
+    for cap in (6, 10, 25, 50, len(alone) - 1):
         p = fluxprune.prune(t, x, max_error=1.0, max_points=cap)
-        assert len(p) == cap and p.capped and p.max_error > 1.0  # the guard fills the cap, worst first
+        assert len(p) <= cap and p.capped and p.max_error > 1.0
+        # relaxed to about the tightest bound that fits (the fill's count isn't quite monotone in the bound)
+        assert len(r.prune(error_per_point=1e9, max_error=0.9 * p.max_error)) > cap
+        worse.append(worst_first(t, x, r.required, cap) / p.max_error)
+    assert np.mean(worse) > 1  # tighter than splitting the worst segment at its worst point
     p = fluxprune.prune(t, x, max_error=1.0, max_points=len(want) - 1)
     assert len(p) < len(want) and p.capped and p.max_error <= 1.0  # automatic points gave way
     assert np.array_equal(fluxprune.prune(t, x, max_error=1.0, max_points=len(want)).index, want.index)
@@ -186,6 +192,22 @@ def test_max_points():
     assert p.max_error <= 8.0 and len(p) <= len(loose) + 5
     with pytest.raises(ValueError):
         fluxprune.prune(t, x, max_points=1)
+
+
+def worst_first(t, x, required, cap):
+    """Largest error after splitting the segment that strays furthest at its worst point until there are cap points
+    (Douglas-Peucker, worst first): the reference a binding cap is compared with."""
+    keep = sorted(int(i) for i in required)
+    while len(keep) < cap:
+        worst = (0.0, None)
+        for a, b in itertools.pairwise(keep):
+            for j in range(a + 1, b):
+                d = abs(x[j] - (x[a] + (x[b] - x[a]) * (t[j] - t[a]) / (t[b] - t[a])))
+                worst = max(worst, (d, j), key=lambda w: w[0])
+        if worst[1] is None:
+            break
+        keep = sorted([*keep, worst[1]])
+    return max_deviation(t, x, np.array(keep))
 
 
 def test_required_points_beyond_the_cap():

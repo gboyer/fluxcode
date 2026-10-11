@@ -88,7 +88,7 @@ def main():
         "",
         ("rank: the O(n log n) ranking pass. prune: rank + the automatic count + 2 refinement passes. max_error: prune "
          "with max_error = 1% of the range (the swinging-door fill). + cap: the same with max_points = n / 100, which "
-         "binds on the noisy signals (then a bisection over the automatic count, and the worst-first repair). peaks: a "
+         "binds on the noisy signals (then max_error is relaxed to the tightest bound that fits: a bisection over the fill). peaks: a "
          "60 s period and a prominence of 5% of the range. Times added to rank are against rank; peaks is a separate "
          "call. Each call is timed on its own, so a difference below ~0.05 ms at 3,600 points is run-to-run noise."),
         "",

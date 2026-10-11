@@ -778,7 +778,7 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, guards, peaks_
              else "<b>Measured on battery power: indicative only, rerun on AC.</b> ") if sys.platform == "darwin" else ""
     section("speed", "Speed", f"<p>{power}Apple M3, one thread, best of 3, 1 s scans. rank is the O(n log n) pass; "
             "prune adds picking k (O(n)) and the two O(n) refinement passes, shown as the time it adds to rank; "
-            "max_error (1% of the range) adds the repair on top of that, also against rank; peaks (60 s period, "
+            "max_error (1% of the range) adds the swinging-door fill on top of that, also against rank; peaks (60 s period, "
             "prominence 5% of the range) is separate and O(n). <code>bench/prune.py</code> has the same per call "
             "for more signals.</p>"
             + table(["signal", "n", "rank", "per point", "prune (automatic)", "prune, max_error", "peaks"], rows))
@@ -848,11 +848,16 @@ CompDev = max_error its line strays up to 1.6-2× that) it keeps fewer points on
 against 1,136 per hour, vibration 170 against 422, grid frequency 378 against 597) and as many on three; it keeps more
 only where the automatic rule already wanted more than the guard needs (the quiet level's dither: 77 against 2).
 Splitting the worst segment at its worst point instead (Douglas-Peucker) kept within ±20% as many points, but costs a
-scan of the segment per point added; the fill is one O(n) pass, and the splitting is what spends a binding cap. A
-max_error below a signal's noise keeps most of the scans, as swinging door does (motor
-current: 3,171 per hour); <b>max_points</b> (here 360 per hour) caps that, and then the cap is spent where the error is
-largest: the automatic points give way first, then max_error is met as far as it goes (motor current: 19× max_error at
-the cap). The cap bound only on the five noise-dominated signals and on 90% of the grid frequency's hours.</li>
+scan of the segment per point added; the fill is one O(n) pass. A max_error below a signal's noise keeps most of the
+scans, as swinging door does (motor current: 3,171 per hour); <b>max_points</b> (here 360 per hour) caps that. The
+budget goes in a fixed order: the required points; then max_error, if it can be met within the cap, with the
+automatic points taking what is left (the least significant give way first); and if it can't, max_error relaxed to
+about the tightest bound the cap allows, by a bisection over the fill, with no automatic points. In the worst capped
+block that bound is 1.06× max_error for the grid frequency, 1.5× for temperature and pH, and 15× for motor current,
+whose noise is five times max_error. Spending the cap by splitting the worst segment at its worst point instead left
+1.3-1.7× larger worst-block errors on these signals (19× for motor current) and a higher RMSE on the noisy
+ones (white noise 12% of its span against 11%): it anchors on noise spikes. The cap bound only on the five
+noise-dominated signals and on 90% of the grid frequency's hours.</li>
 <li><b>Peaks are a different job</b>, so they have their own function. With a 60 s period and a prominence of about
 6σ of the noise or more, <code>peaks()</code> keeps every true peak and trough of a vibration whose period drifts from 40
 to 80 s and whose amplitude drifts fivefold, and of a pyrometer's objects and the gaps between them, with 0.3 and 1.4

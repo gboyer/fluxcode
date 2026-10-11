@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ._guard import errors_kernel, fill_kernel, repair_kernel
+from ._guard import errors_kernel, fill_kernel
 from ._peaks import alternate_kernel, distance_kernel, maxima_kernel, prominence_kernel
 from ._rank import rank_kernel, refine_kernel
 
@@ -125,18 +125,17 @@ class Ranking:
             return self._result(self.refine(self.keep(k), passes), k < wanted)
         tol = max_error / self._span
 
-        def build(k):
+        def build(k, tol=tol):
             return fill_kernel(self._tau, self._y, self.refine(self.keep(k), passes), tol)
 
-        idx = build(k)
-        if len(idx) <= cap:
-            return self._result(idx, k < wanted)
-        # over the cap: the automatic points give way first (the largest k whose filled set fits)
+        # 1. can max_error be met within the cap at all, from the required points alone?
         idx = build(self.min_points)
         if len(idx) > cap:
-            # max_error can't be met: spend the cap where the error is largest, worst first
-            idx, _ = repair_kernel(self._tau, self._y, self.keep(self.min_points), tol, cap - self.min_points)
-            return self._result(idx, True)
+            return self._result(self._relax(tol, cap), True)
+        # 2. it can: the automatic points take the rest, the least significant giving way first
+        full = build(k)
+        if len(full) <= cap:
+            return self._result(full, k < wanted)
         lo, hi = self.min_points, k
         while hi - lo > 1:
             mid = (lo + hi) // 2
@@ -146,6 +145,23 @@ class Ranking:
             else:
                 hi = mid
         return self._result(idx, True)
+
+    def _relax(self, tol, cap):
+        """The swinging-door fill of the required points at about the smallest tolerance above tol that fits
+        in cap points (a bisection to 0.1%; the fill's count isn't quite monotone in the tolerance): about
+        the tightest bound on every point's error the cap allows."""
+        base = self.keep(self.min_points)
+        hi = errors_kernel(self._tau, self._y, base)[1]  # the fill adds nothing at the required points' error
+        best = base
+        lo = tol if tol > 0 else hi * 1e-12
+        while hi > lo * 1.001:
+            mid = np.sqrt(lo * hi)
+            idx = fill_kernel(self._tau, self._y, base, mid)
+            if len(idx) <= cap:
+                hi, best = mid, idx
+            else:
+                lo = mid
+        return best
 
     def _result(self, idx, capped):
         if not len(self._tau):
@@ -236,8 +252,9 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
     max_error: no input point strays further than this, in value units, from the kept lines: each
         segment of the automatic points that strays further is filled by swinging door (about the
         fewest points that bound its error). If that exceeds max_points, the automatic points give
-        way first; if max_error alone exceeds it, the cap is spent where the error is largest, worst
-        first, and `capped` says so.
+        way, least significant first, while max_error still holds; if max_error can't be met within
+        max_points even without them, it is relaxed to the smallest bound the cap allows (no automatic
+        points; `max_error` of the result reports the bound, and `capped` says so).
     keep: indices that are kept whatever else is (peaks(), for example).
 
     The first, last, minimum and maximum points are always kept (within max_points, in that order),
