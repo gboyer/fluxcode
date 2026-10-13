@@ -197,7 +197,7 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
          of its seven steps (the first is always tried, the last passes); on Poisson events
          about one step in ten.
        - A step that isn't ruled out is rounded, clamped and checked in one pass, in chunks of
-         64 ticks: a failing step stops at the chunk it fails in.
+         64 ticks: a failing step stops at the chunk it fails in. So are the lattices in 1 and 3.
     3. **Its own lattice:** a block with a cadence (90% of intervals one scan) still irregular
        after 1 and 2, because no 1-2-5 step divides its period (1024 Hz: 976,562.5 ns; 60 Hz) and
        the rounded intervals alternate, is put on a lattice of its own if that passes.

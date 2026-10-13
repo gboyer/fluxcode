@@ -555,21 +555,40 @@ def _round_tick(tick: np.int64, quantum: np.int64, phase: np.int64) -> np.int64:
 
 
 @njit(inline="always")
-def block_phase(times: np.ndarray, quantum: np.int64, previous: np.int64, scratch: np.ndarray) -> np.int64:
+def phase_samples(times: np.ndarray, out: np.ndarray) -> np.ndarray:
+    """The PHASE_SAMPLES evenly spaced ticks of a block (all of them if fewer) that choose its
+    phase (block_phase), gathered once for every quantum tried.
+
+    Args:
+        times: 1D int64 array of the block's ticks (at least 1).
+        out: 1D int64 array of at least PHASE_SAMPLES.
+
+    Returns:
+        The leading part of out holding them.
+    """
+    block_len = times.shape[0]
+    num_sampled = min(PHASE_SAMPLES, block_len)
+    for sampled_idx in range(num_sampled):
+        out[sampled_idx] = times[sampled_idx * (block_len - 1) // max(num_sampled - 1, 1)]
+    return out[:num_sampled]
+
+
+@njit(inline="always")
+def block_phase(sampled_ticks: np.ndarray, quantum: np.int64, previous: np.int64, scratch: np.ndarray) -> np.int64:
     """Chooses a rounded block's phase: its grid is phase + k quantum.
 
     Each of the PHASE_STEPS candidates (multiples of quantum / PHASE_STEPS) is scored by the
-    ticks' mean distance to its grid, over PHASE_SAMPLES evenly spaced ticks. A clock on round
-    times scores best at 0, the epoch's grid; a free-running one at its own phase. The block
-    keeps the previous block's phase (that of its last rounded tick, if a candidate; the epoch's
-    grid for the first) unless another scores better by more than half a step per tick: two
+    ticks' mean distance to its grid, over PHASE_SAMPLES evenly spaced ticks (phase_samples). A
+    clock on round times scores best at 0, the epoch's grid; a free-running one at its own phase.
+    The block keeps the previous block's phase (that of its last rounded tick, if a candidate; the
+    epoch's grid for the first) unless another scores better by more than half a step per tick: two
     candidates either side of a clock's phase both round it cleanly, and noise would pick
     between them block by block, leaving the block starts uneven; on a noisy clock, it would
     pick a phase a step off. A drifting clock moves on by a step when it has drifted half of
     one.
 
     Args:
-        times: 1D int64 array of the block's ticks (at least 1).
+        sampled_ticks: 1D int64 array of the block's phase_samples.
         quantum: The block's quantum (> 1).
         previous: The previous block's last tick as rounded, or INT64_MIN if there is none.
         scratch: 1D int64 scratch array of at least PHASE_SAMPLES.
@@ -579,14 +598,27 @@ def block_phase(times: np.ndarray, quantum: np.int64, previous: np.int64, scratc
     """
     if quantum >= PHASE_QUANTUM_LIMIT:
         return np.int64(0)
-    block_len = times.shape[0]
     step = max(quantum // PHASE_STEPS, np.int64(1))
     num_candidates = quantum // step
-    num_sampled = min(PHASE_SAMPLES, block_len)
-    # The sampled ticks' offsets into the grid of phase 0, once
+    num_sampled = sampled_ticks.shape[0]
+    # The sampled ticks' offsets into the grid of phase 0, once: from the first one's, in float64
+    # (exact below 2^52, and it vectorizes) unless they span too far
     sampled = scratch[:num_sampled]
-    for sampled_idx in range(num_sampled):
-        sampled[sampled_idx] = times[sampled_idx * (block_len - 1) // max(num_sampled - 1, 1)] % quantum
+    first = sampled_ticks[0]
+    first_residue = first % quantum
+    if _float_offset(sampled_ticks[num_sampled - 1], first) < FLOAT_ROUNDING_SPAN and quantum < FLOAT_ROUNDING_SPAN:
+        quantum_float = np.float64(quantum)
+        inverse = 1.0 / quantum_float
+        for sampled_idx in range(num_sampled):
+            offset = np.float64(sampled_ticks[sampled_idx] - first + first_residue)
+            residue = offset - np.floor(offset * inverse) * quantum_float
+            # The float quotient may be a step off near a multiple
+            residue += quantum_float if residue < 0.0 else 0.0
+            residue -= quantum_float if residue >= quantum_float else 0.0
+            sampled[sampled_idx] = np.int64(residue)
+    else:
+        for sampled_idx in range(num_sampled):
+            sampled[sampled_idx] = sampled_ticks[sampled_idx] % quantum
     # The previous block's phase if it is a candidate; with none, the epoch's grid (phase 0)
     previous_phase = np.int64(0) if previous == INT64_MIN else np.int64(-1)
     if previous != INT64_MIN and (previous % quantum) % step == 0:
@@ -608,19 +640,12 @@ def block_phase(times: np.ndarray, quantum: np.int64, previous: np.int64, scratc
     return best_phase
 
 
-FLOAT_ROUNDING_SPAN: int = 1 << 48
-"""Largest span of a block's ticks (from its first, rounded) that rounds in float64. The float64
-quotient offset/quantum is off by at most about offset x 2^-52 quanta, so its rounded multiple is
-off by at most offset x 2^-52 ticks: under 1/16 tick below 2^48. A tick that isn't a tie is at
-least half a tick from the rounding point, so it rounds as exact arithmetic would; a tie may go
-either way, both within half a quantum."""
-
-
 @njit(inline="always")
 def snap_block(times: np.ndarray, quantum: np.int64, phase: np.int64, out: np.ndarray) -> None:
     """Rounds a block's ticks to the nearest point of its grid: phase + k quantum from tick 0
     (the epoch), so series on the same clock share a grid; ties round up. A tick that can't be
     rounded without leaving the int64 range stays as it is. Rounding keeps the ticks in order.
+    In integers, for the blocks lattice_error can't round in float64.
 
     Args:
         times: 1D int64 array of the block's ticks (at least 1, no NaT).
@@ -628,23 +653,8 @@ def snap_block(times: np.ndarray, quantum: np.int64, phase: np.int64, out: np.nd
         phase: Its phase (block_phase), 0 <= phase < quantum.
         out: Output 1D int64 array of the rounded ticks.
     """
-    block_len = times.shape[0]
-    first, last = times[0], times[block_len - 1]
-    base = _round_tick(first, quantum, phase)
-    if (np.int64(INT64_MIN) + quantum <= first and last <= np.int64(INT64_MAX) - quantum
-            and last - base < FLOAT_ROUNDING_SPAN):
-        # Offsets from the rounded first tick, in float64: exact here, and it vectorizes
-        # (NEON has no 64-bit integer vector multiply; the rounded offset is an integer
-        # below 2^48, so its float64 product is exact). Every offset is at least
-        # -quantum/2, so truncating offset/quantum + 0.5 floors.
-        quantum_float = np.float64(quantum)
-        inverse = 1.0 / quantum_float
-        for sample_idx in range(block_len):
-            multiple = np.trunc(np.float64(times[sample_idx] - base) * inverse + 0.5)
-            out[sample_idx] = base + np.int64(multiple * quantum_float)
-    else:
-        for sample_idx in range(block_len):
-            out[sample_idx] = _round_tick(times[sample_idx], quantum, phase)
+    for sample_idx in range(times.shape[0]):
+        out[sample_idx] = _round_tick(times[sample_idx], quantum, phase)
 
 
 @njit(inline="always")
@@ -699,11 +709,11 @@ def lattice_origin(times: np.ndarray, period: np.int64, quantum: np.int64) -> np
 
 
 @njit(inline="always")
-def fit_lattice(times: np.ndarray, interval: float, quantum: np.int64, max_move: float, out: np.ndarray) -> bool:
-    """Puts a clock's ticks on its own lattice, origin + k period: a clock whose period no 1-2-5
-    grid divides (1024 Hz, 60 Hz) can then store as regular. round_blocks tries it only where
-    the grid leaves the one-scan intervals unequal (scans_equal), and keeps it only if it passes
-    within_error.
+def fit_lattice(times: np.ndarray, interval: float, quantum: np.int64, max_move: float) -> tuple[np.int64, np.int64]:
+    """A clock's own lattice, origin + k period: a clock whose period no 1-2-5 grid divides
+    (1024 Hz, 60 Hz) can then store as regular. round_blocks tries it only where the grid
+    leaves the one-scan intervals unequal (scans_equal), and keeps it only if it keeps to the
+    time error.
 
     The period is the interval rounded to a multiple of the coarsest 1-2-5 step of at most the
     quantum that drifts by at most max_move / 4 over the block (leaving the rest to jitter): a
@@ -715,10 +725,9 @@ def fit_lattice(times: np.ndarray, interval: float, quantum: np.int64, max_move:
         interval: Its clock period (clock_interval).
         quantum: Its largest quantum (time_quantum of its mean interval, >= 1).
         max_move: Largest distance a tick may move.
-        out: Output 1D int64 array of the ticks on the lattice.
 
     Returns:
-        Whether the ticks were put on a lattice.
+        A tuple of (origin, period).
     """
     num_intervals = times.shape[0] - 1
     step = quantum
@@ -726,7 +735,7 @@ def fit_lattice(times: np.ndarray, interval: float, quantum: np.int64, max_move:
     while step > 1 and abs(interval - period) * num_intervals > 0.25 * max_move:
         step = _finer_step(step)
         period = np.int64(max(np.round(interval / step), 1.0) * step)
-    return snap_lattice(times, lattice_origin(times, period, quantum), period, np.int64(INT64_MIN), out)
+    return lattice_origin(times, period, quantum), period
 
 
 @njit(inline="always")
@@ -763,7 +772,7 @@ def _finer_step(step: np.int64) -> np.int64:
 
 
 CHECK_CHUNK: int = 64
-"""Ticks the branch-free checks (regular_step, within_error, grid_error) take between looks at
+"""Ticks the branch-free checks (regular_step, within_error, lattice_error) take between looks at
 whether they can stop."""
 
 
@@ -824,7 +833,8 @@ def within_allowances(times: np.ndarray, out: np.ndarray, allowed: np.ndarray, m
     # an inner loop over a range of the whole arrays); a failing block stops at the chunk it fails in
     for chunk_start in range(0, block_len, CHECK_CHUNK):
         chunk_end = min(chunk_start + CHECK_CHUNK, block_len)
-        given, rounded, chunk_allowed = times[chunk_start:chunk_end], out[chunk_start:chunk_end], allowed[chunk_start:chunk_end]
+        given, rounded = times[chunk_start:chunk_end], out[chunk_start:chunk_end]
+        chunk_allowed = allowed[chunk_start:chunk_end]
         for chunk_idx in range(chunk_end - chunk_start):
             move = abs(rounded[chunk_idx] - given[chunk_idx])
             move_float = np.float64(move)
@@ -866,28 +876,56 @@ def _float_offset(bound: np.int64, base: np.int64) -> float:
     return -min(np.float64(np.uint64(base) - np.uint64(bound)), limit)
 
 
+FLOAT_ROUNDING_SPAN: int = 1 << 48
+"""Largest distance of a tick from a lattice's origin (and largest step) that lattice_error
+rounds in float64. The float64 quotient offset/step is off by at most about offset x 2^-52 steps,
+so its rounded multiple is off by at most offset x 2^-52 ticks: under 1/16 tick below 2^48. A
+tick that isn't a tie is at least half a tick from the rounding point, so it rounds as exact
+arithmetic would; an eighth of a tick added before flooring puts every tie above it (ties up)."""
+
+
 @njit(inline="always")
-def grid_error(times: np.ndarray, quantum: np.int64, phase: np.int64, low: np.int64, high: np.int64,
-               allowed: np.ndarray, max_move: float, out: np.ndarray) -> int:
-    """Rounds the ticks as snap_block and _clamp would, checking them as it goes
-    (within_allowances): a failing grid stops at the chunk it fails in, and a passing one is
-    read once.
+def lattice_error(times: np.ndarray, origin: np.int64, step: np.int64, min_multiple: np.int64, low: np.int64,
+                  high: np.int64, allowed: np.ndarray, max_move: float, out: np.ndarray) -> int:
+    """Puts a block's ticks on the nearest point of the lattice origin + k step (k >= min_multiple,
+    ties up, as snap_lattice; a grid is the lattice through its rounded first tick, as
+    snap_block), clamped to the block's bounds (_clamp), checking them as it goes
+    (within_allowances): one pass in float64 that vectorizes, and stops at the chunk a failing
+    lattice fails in.
+
+    Args:
+        times: 1D int64 array of a block's ticks (at least 1).
+        origin: A point of the lattice.
+        step: Its step (> 0).
+        min_multiple: Smallest k (INT64_MIN for any).
+        low: Smallest tick the block may round to.
+        high: Largest tick the block may round to.
+        allowed: 1D float64 array of the ticks' allowed moves (tick_allowances).
+        max_move: Largest distance any tick may move.
+        out: Output 1D int64 array of the ticks on the lattice.
 
     Returns:
-        The largest move if they keep to it (out holds the ticks rounded), else -1 (out partly
-        written); -2 if snap_block wouldn't round in float64 here (out not written: the caller
-        rounds and checks instead).
+        The largest move if they keep to the time error (out holds the ticks rounded), else -1
+        (out partly written); -2 if float64 can't round them exactly (out not written: the
+        caller rounds in integers and checks instead).
     """
     block_len = times.shape[0]
     first, last = times[0], times[block_len - 1]
-    base = _round_tick(first, quantum, phase)
-    if not (np.int64(INT64_MIN) + quantum <= first and last <= np.int64(INT64_MAX) - quantum
-            and last - base < FLOAT_ROUNDING_SPAN):
+    first_offset, last_offset = _float_offset(first, origin), _float_offset(last, origin)
+    if not (np.int64(INT64_MIN) + step <= first and last <= np.int64(INT64_MAX) - step and step < FLOAT_ROUNDING_SPAN
+            and -FLOAT_ROUNDING_SPAN < first_offset and last_offset < FLOAT_ROUNDING_SPAN):
         return -2
-    # As snap_block, in offsets from base: every value below 2^53, so each move is exact
-    quantum_float = np.float64(quantum)
-    inverse = 1.0 / quantum_float
-    low_offset, high_offset = _float_offset(low, base), _float_offset(high, base)
+    # Offsets from the origin: every value below 2^53, so each move is exact
+    step_float = np.float64(step)
+    inverse = 1.0 / step_float
+    half_up = 0.5 + 0.125 * inverse
+    min_offset = max(np.float64(min_multiple), -2.0 * FLOAT_ROUNDING_SPAN * inverse) * step_float
+    low_offset, high_offset = _float_offset(low, origin), _float_offset(high, origin)
+    floored = min_multiple != np.int64(INT64_MIN)
+    # Rounded offsets stay within a step of the ticks', or above min_offset: bounds beyond them
+    # clamp nothing, and the loop runs without the clamp (LLVM takes these tests out of it)
+    clamps = (low_offset > min(first_offset - step_float, min_offset)
+              or high_offset < max(last_offset, min_offset) + step_float)
     max_outliers = block_len // TIME_ERROR_OUTLIERS
     outliers, largest, too_far = 0, 0, 0
     # Chunks over slices of their own, as in within_allowances
@@ -896,9 +934,13 @@ def grid_error(times: np.ndarray, quantum: np.int64, phase: np.int64, low: np.in
         given, chunk_allowed = times[chunk_start:chunk_end], allowed[chunk_start:chunk_end]
         rounded_ticks = out[chunk_start:chunk_end]
         for chunk_idx in range(chunk_end - chunk_start):
-            offset = np.float64(given[chunk_idx] - base)
-            rounded = min(max(np.trunc(offset * inverse + 0.5) * quantum_float, low_offset), high_offset)
-            rounded_ticks[chunk_idx] = base + np.int64(rounded)
+            offset = np.float64(given[chunk_idx] - origin)
+            rounded = np.floor(offset * inverse + half_up) * step_float
+            if floored:
+                rounded = max(rounded, min_offset)
+            if clamps:
+                rounded = min(max(rounded, low_offset), high_offset)
+            rounded_ticks[chunk_idx] = origin + np.int64(rounded)
             move = abs(offset - rounded)
             too_far += move > max_move
             outliers += move > chunk_allowed[chunk_idx]
@@ -922,6 +964,27 @@ def _clamp(out: np.ndarray, low: np.int64, high: np.int64) -> None:
     while sample_idx >= 0 and out[sample_idx] > high:
         out[sample_idx] = high
         sample_idx -= 1
+
+
+@njit(inline="always")
+def _clamped_error(times: np.ndarray, out: np.ndarray, low: np.int64, high: np.int64, allowed: np.ndarray,
+                   max_move: float) -> int:
+    """_clamp then within_allowances: lattice_error's check, for ticks rounded in integers."""
+    _clamp(out, low, high)
+    return within_allowances(times, out, allowed, max_move)
+
+
+@njit(inline="always")
+def _lattice_error_any(times: np.ndarray, origin: np.int64, step: np.int64, min_multiple: np.int64, low: np.int64,
+                       high: np.int64, allowed: np.ndarray, max_move: float, out: np.ndarray) -> int:
+    """lattice_error, in integers (snap_lattice) where float64 can't round the ticks exactly:
+    the largest move, or -1 if the lattice doesn't keep to the time error (or can't be used)."""
+    largest_move = lattice_error(times, origin, step, min_multiple, low, high, allowed, max_move, out)
+    if largest_move != -2:
+        return largest_move
+    if not snap_lattice(times, origin, step, min_multiple, out):
+        return -1
+    return _clamped_error(times, out, low, high, allowed, max_move)
 
 
 GRID_TEST_CHUNK: int = 64
@@ -1008,7 +1071,7 @@ def round_blocks(
 
     1. The lattice continuing the previous non-empty block, if that is regular with interval d
        (as rounded here) and m rounds to d (the same clock): its last tick + k d, k >= 1.
-    2. Its own grid (block_phase, snap_block), of the coarsest 1-2-5 step of at most 2 time_error
+    2. Its own grid (block_phase), of the coarsest 1-2-5 step of at most 2 time_error
        m (time_quantum) that keeps to the time error.
     3. A lattice of its own (fit_lattice), for a clock the grid leaves irregular (one whose
        period no 1-2-5 step divides, like 1024 Hz).
@@ -1045,6 +1108,7 @@ def round_blocks(
                 return DECREASING, sample_idx
     pivots = np.empty(CADENCE_SAMPLES, np.int64)
     phase_scratch = np.empty(PHASE_SAMPLES, np.int64)
+    phase_ticks = np.empty(PHASE_SAMPLES, np.int64)
     trial_ticks = np.empty(num_samples, np.int64)
     allowances = np.empty(num_samples, np.float64)
     # Blocks left as they are aren't copied to out_ticks unless another block moves
@@ -1080,9 +1144,9 @@ def round_blocks(
         largest_move = -1
         # 1. The lattice of the block before, if it is the same clock
         same_clock = previous_step > 0 and times[0] >= previous_last and np.round(mean / previous_step) == 1.0
-        if same_clock and snap_lattice(times, previous_last, previous_step, np.int64(1), out):
-            _clamp(out, low, high)
-            largest_move = within_allowances(times, out, allowed, max_move)
+        if same_clock:
+            largest_move = _lattice_error_any(times, previous_last, previous_step, np.int64(1), low, high, allowed,
+                                              max_move, out)
         # 2. Its own grid, the coarsest that keeps to the time error. Once a grid has failed, the
         # steps below it are first tested on the intervals of the ticks no bound or int64 limit
         # can clamp (grid_fails), which rules most failing steps out without a phase
@@ -1098,15 +1162,17 @@ def round_blocks(
             while safe_last >= 0 and times[safe_last] > safe_high:
                 safe_last -= 1
         grid_failed = False
+        sampled_ticks = phase_samples(times, phase_ticks)
         while largest_move < 0 and quantum > 1:
             if not (grid_failed and safe_last - safe_first >= 1
                     and grid_fails(times[safe_first:safe_last + 1], block_len, quantum, time_error)):
-                phase = block_phase(times, quantum, previous_last, phase_scratch)
-                largest_move = grid_error(times, quantum, phase, low, high, allowed, max_move, out)
+                phase = block_phase(sampled_ticks, quantum, previous_last, phase_scratch)
+                base = _round_tick(times[0], quantum, phase)
+                largest_move = lattice_error(times, base, quantum, np.int64(INT64_MIN), low, high, allowed, max_move,
+                                             out)
                 if largest_move == -2:
                     snap_block(times, quantum, phase, out)
-                    _clamp(out, low, high)
-                    largest_move = within_allowances(times, out, allowed, max_move)
+                    largest_move = _clamped_error(times, out, low, high, allowed, max_move)
                 grid_failed = True
             quantum = _finer_step(quantum)
         if largest_move < 0:
@@ -1117,9 +1183,10 @@ def round_blocks(
         if out_step == 0:
             interval = clock_interval(times, pivots, max_move)
             clock = interval > 0.0 and not scans_equal(out, interval)
-            if clock and fit_lattice(times, interval, largest, max_move, trial):
-                _clamp(trial, low, high)
-                lattice_move = within_allowances(times, trial, allowed, max_move)
+            if clock:
+                origin, period = fit_lattice(times, interval, largest, max_move)
+                lattice_move = _lattice_error_any(times, origin, period, np.int64(INT64_MIN), low, high, allowed,
+                                                  max_move, trial)
                 if lattice_move >= 0:
                     out[:] = trial
                     largest_move = lattice_move
