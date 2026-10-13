@@ -40,11 +40,11 @@ def test_rmse_matches_brute_force(seed):
     r = fluxprune.rank(t, x)
     span = x.max() - x.min()
     for k in (r.min_points, 5, 20, 50, 200, 399, 400):
-        keep = r.keep(k)
+        keep = r.top(k)
         assert len(keep) == k
         want = np.sqrt(exact_mse(t - t[0], x, keep)) / span
-        assert r.rmse(k) == pytest.approx(want, rel=1e-9, abs=1e-12)
-    curve = r.rmse()
+        assert r.relative_rmse(k) == pytest.approx(want, rel=1e-9, abs=1e-12)
+    curve = r.relative_rmse()
     assert np.isnan(curve[: r.min_points]).all() and curve[400] == 0
 
 
@@ -52,10 +52,10 @@ def test_required_and_nested():
     t, x = series(9)
     r = fluxprune.rank(t, x)
     assert set(r.required) == {0, len(x) - 1, int(np.argmin(x)), int(np.argmax(x))}
-    prev = set(r.keep(r.min_points))
+    prev = set(r.top(r.min_points))
     assert prev == set(r.required)
     for k in range(r.min_points + 1, len(x) + 1, 7):
-        cur = set(r.keep(k))
+        cur = set(r.top(k))
         assert prev <= cur
         prev = cur
 
@@ -64,8 +64,8 @@ def test_straight_lines_cost_nothing():
     t = np.arange(100.0)
     x = np.where(t < 50, t, 100 - t)  # a tent: 3 points describe it
     r = fluxprune.rank(t, x)
-    assert r.rmse(3) == 0
-    assert list(r.keep(3)) == [0, 50, 99]
+    assert r.relative_rmse(3) == 0
+    assert list(r.top(3)) == [0, 50, 99]
 
 
 def test_datetime_and_float_times_agree():
@@ -80,7 +80,7 @@ def test_non_finite_values_are_kept_with_neighbours():
     x[[10, 60]] = [np.nan, np.inf]
     r = fluxprune.rank(t, x)
     assert {9, 10, 11, 59, 60, 61} <= set(r.required)
-    assert np.isfinite(r.rmse()[r.min_points:]).all()
+    assert np.isfinite(r.relative_rmse()[r.min_points:]).all()
 
 
 def test_repeated_times_and_degenerate_inputs():
@@ -88,10 +88,10 @@ def test_repeated_times_and_degenerate_inputs():
     x = np.array([0, 0, 5, 5, 1, 0, 0.0])
     r = fluxprune.rank(t, x)
     for k in range(r.min_points, 8):
-        assert r.rmse(k) == pytest.approx(np.sqrt(exact_mse(t, x, r.keep(k))) / 5, abs=1e-12)
+        assert r.relative_rmse(k) == pytest.approx(np.sqrt(exact_mse(t, x, r.top(k))) / 5, abs=1e-12)
     for t, x in [([], []), ([0], [1.0]), ([0, 1], [1.0, 2.0]), ([0, 1, 2], [3.0, 3, 3]), ([5, 5, 5, 5], [1.0, 2, 3, 4])]:
         r = fluxprune.rank(np.array(t, np.int64), np.array(x))
-        assert set(r.keep(0)) >= {0, len(x) - 1} - {-1} if len(x) else len(r.keep(0)) == 0
+        assert set(r.top(0)) >= {0, len(x) - 1} - {-1} if len(x) else len(r.top(0)) == 0
     with pytest.raises(ValueError):
         fluxprune.rank(np.array([0, 2, 1]), np.zeros(3))
 
@@ -102,27 +102,34 @@ def test_refine_lowers_error_and_keeps_required(seed):
     r = fluxprune.rank(t, x)
     span = x.max() - x.min()
     for k in (10, 40, 120):
-        keep = r.keep(k)
+        keep = r.top(k)
         better = r.refine(keep)
         assert len(better) == k and np.all(np.diff(better) > 0) and set(r.required) <= set(better)
-        assert r.error(keep) == pytest.approx(r.rmse(k), rel=1e-9, abs=1e-12)
-        assert r.error(better) <= r.error(keep) + 1e-12
-        assert r.error(better) == pytest.approx(np.sqrt(exact_mse(t - t[0], x, better)) / span, rel=1e-9, abs=1e-12)
+        assert r.relative_error(keep) == pytest.approx(r.relative_rmse(k), rel=1e-9, abs=1e-12)
+        assert r.relative_error(better) <= r.relative_error(keep) + 1e-12
+        assert r.relative_error(better) == pytest.approx(np.sqrt(exact_mse(t - t[0], x, better)) / span, rel=1e-9, abs=1e-12)
     k = r.count()
-    assert np.array_equal(fluxprune.prune(t, x).index, r.refine(r.keep(k)))
+    assert np.array_equal(fluxprune.prune(t, x).index, r.refine(r.top(k)))
 
 
 def test_error_per_point():
     t, x = series(5)
     r = fluxprune.rank(t, x)
-    e = r.rmse()
+    e = r.relative_rmse()
     for theta in (1e-4, 1e-3, 1e-2):
         k = r.count(error_per_point=theta)
         assert e[k] < theta * (k - r.min_points + 1)
         assert all(e[j] >= theta * (j - r.min_points + 1) for j in range(r.min_points, k))
     assert r.count(error_per_point=1e-3) > r.count(error_per_point=1e-2)
-    with pytest.raises(ValueError):
-        r.count(error_per_point=0)
+    assert r.count(error_per_point=0) == r.n and r.count(error_per_point=np.inf) == r.min_points
+    for bad in (-1e-3, np.nan):
+        with pytest.raises(ValueError):
+            r.count(error_per_point=bad)
+    # the ends of the range: the best max_points, and max_error's fill alone
+    assert np.array_equal(fluxprune.prune(t, x, error_per_point=0, max_points=30).index, r.refine(r.top(30)))
+    alone = fluxprune.prune(t, x, error_per_point=np.inf, max_error=2.0)
+    assert set(alone.index) >= set(r.required) and alone.max_error <= 2.0
+    assert len(alone) < len(fluxprune.prune(t, x, max_error=2.0))
 
 
 def max_deviation(t, x, keep):
@@ -170,13 +177,13 @@ def test_max_points():
     t, x = series(7)
     want = fluxprune.prune(t, x, max_error=1.0)
     r = fluxprune.rank(t, x)
-    alone = r.prune(error_per_point=1e9, max_error=1.0)  # max_error with no automatic points
+    alone = r.prune(error_per_point=np.inf, max_error=1.0)  # max_error with no automatic points
     worse = []
     for cap in (6, 10, 25, 50, len(alone) - 1):
         p = fluxprune.prune(t, x, max_error=1.0, max_points=cap)
         assert len(p) <= cap and p.capped and p.max_error > 1.0
         # relaxed to about the tightest bound that fits (the fill's count isn't quite monotone in the bound)
-        assert len(r.prune(error_per_point=1e9, max_error=0.9 * p.max_error)) > cap
+        assert len(r.prune(error_per_point=np.inf, max_error=0.9 * p.max_error)) > cap
         worse.append(worst_first(t, x, r.required, cap) / p.max_error)
     assert np.mean(worse) > 1  # tighter than splitting the worst segment at its worst point
     p = fluxprune.prune(t, x, max_error=1.0, max_points=len(want) - 1)
@@ -227,7 +234,7 @@ def test_keep():
     extra = [17, 123, 200, 333]
     p = fluxprune.prune(t, x, keep=extra)
     assert set(extra) <= set(p.index)
-    assert set(extra) <= set(fluxprune.rank(t, x, keep=extra).keep(0))
+    assert set(extra) <= set(fluxprune.rank(t, x, keep=extra).top(0))
     with pytest.raises(ValueError):
         fluxprune.rank(t, x, keep=[400])
 
@@ -362,7 +369,7 @@ def test_fill_reaches_far(seed):
     x = np.sin(t / 40) * 5 + rng.normal(0, 0.5, 300)
     r = fluxprune.rank(t, x)
     for tol in (0.5, 1.0, 2.0):
-        got = r.prune(error_per_point=1e9, max_error=tol)  # the required points and the fill
+        got = r.prune(error_per_point=np.inf, max_error=tol)  # the required points and the fill
         assert got.max_error <= tol and max_deviation(t, x, got.index) <= tol * (1 + 1e-9)
         assert len(got) >= fewest_count(t, x, tol)
         assert len(got) <= door_count(t, x, tol) + 2  # the min and max are kept as well
@@ -372,5 +379,5 @@ def test_fill_with_repeated_times():
     t = np.array([0, 1, 1, 2, 3, 3, 3, 4, 5, 6], np.int64)
     x = np.array([0, 0, 4, 4, 1, 3, 0, 0, 2, 0.0])
     for tol in (0.1, 0.5, 1.5):
-        p = fluxprune.prune(t, x, error_per_point=1e9, max_error=tol)
+        p = fluxprune.prune(t, x, error_per_point=np.inf, max_error=tol)
         assert p.max_error <= tol and max_deviation(t, x, p.index) <= tol + 1e-12

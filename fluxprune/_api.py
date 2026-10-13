@@ -14,8 +14,10 @@ from ._rank import rank_kernel, refine_kernel
 
 ERROR_PER_POINT = 0.0015
 """The default exchange rate of error for points: about 1% of the points of 1 s scans in 1 h blocks of
-slow process data (report/prune.html). For blocks H times as long, error_per_point / H keeps about the
-same density of points."""
+slow process data (report/prune.html). It is per block: for blocks H times as long, start from
+error_per_point / H. That keeps fewer points per hour, not the same density (about a third as many in
+12 h blocks as in 1 h blocks on the report's corpus): a longer block has a wider range, which the error
+is relative to, and it needs one set of required points instead of H."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -44,8 +46,9 @@ class Ranking:
     rank(), and any non-finite value with its neighbours) and the k - len(required) last removed;
     a smaller set is always a subset of a larger one.
 
-    Errors are time-weighted RMSE of the kept points' straight lines against the input's, relative
-    to the range of the finite values (max - min): `rmse(k)`.
+    Errors here are time-weighted RMSE of the kept points' straight lines against the input's,
+    relative to the range of the finite values (max - min), as the error_per_point rule reads them:
+    `relative_rmse(k)`, `relative_error(keep)`. prune() reports them in value units.
     """
 
     n: int
@@ -65,7 +68,7 @@ class Ranking:
     def min_points(self) -> int:
         return len(self.required)
 
-    def rmse(self, k=None):
+    def relative_rmse(self, k=None):
         """Relative RMSE of keeping k points (min_points <= k <= n), or of every count as an array
         indexed by k (nan below min_points)."""
         e = np.sqrt(np.maximum(self.sq_error, 0.0))
@@ -75,7 +78,7 @@ class Ranking:
         out[self.min_points:] = e[::-1]
         return out
 
-    def keep(self, k):
+    def top(self, k):
         """Sorted indices of the k most significant points (k is clipped to [min_points, n])."""
         k = self._clip(k)
         mask = np.ones(self.n, bool)
@@ -86,10 +89,11 @@ class Ranking:
         """The first count k where the relative RMSE falls below error_per_point times the points added
         beyond the required ones: where the error left and the points spent, at that exchange rate,
         meet. More points for a complex block, fewer for a simple one, sublinearly; it hardly depends
-        on the sampling rate (report/prune.html, "amortized")."""
-        if not error_per_point > 0:
-            raise ValueError("error_per_point must be positive")
-        e = self.rmse()[self.min_points:]
+        on the sampling rate (report/prune.html, "amortized"). At 0 points are free: every point (n);
+        at inf none is worth its price: the required points alone (min_points)."""
+        if not error_per_point >= 0:
+            raise ValueError("error_per_point must be non-negative (0 to inf)")
+        e = self.relative_rmse()[self.min_points:]
         ok = np.flatnonzero(e < error_per_point * np.arange(1, len(e) + 1))
         return self.min_points + int(ok[0]) if len(ok) else self.n
 
@@ -104,13 +108,13 @@ class Ranking:
             refine_kernel(self._tau, self._y, keep, fixed, passes)
         return keep
 
-    def error(self, keep):
+    def relative_error(self, keep):
         """Relative time-weighted RMSE of any sorted subset that includes the first and last points."""
         if not len(self._tau):
             return 0.0
         return float(np.sqrt(errors_kernel(self._tau, self._y, np.asarray(keep, np.int64))[0]))
 
-    def prune(self, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, passes=2):
+    def prune(self, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None):
         """The points prune() keeps (see there), from this ranking."""
         cap = self.n if max_points is None else int(max_points)
         if cap < 2:
@@ -122,11 +126,11 @@ class Ranking:
         wanted = self.count(error_per_point)
         k = min(wanted, cap)
         if max_error is None or not len(self._tau):
-            return self._result(self.refine(self.keep(k), passes), k < wanted)
+            return self._result(self.refine(self.top(k)), k < wanted)
         tol = max_error / self._span
 
         def build(k, tol=tol):
-            return fill_kernel(self._tau, self._y, self.refine(self.keep(k), passes), tol)
+            return fill_kernel(self._tau, self._y, self.refine(self.top(k)), tol)
 
         # 1. can max_error be met within the cap at all, from the required points alone?
         idx = build(self.min_points)
@@ -150,7 +154,7 @@ class Ranking:
         """The fill of the required points at about the smallest tolerance above tol that fits
         in cap points (a bisection to 0.1%; the fill's count isn't quite monotone in the tolerance): about
         the tightest bound on every point's error the cap allows."""
-        base = self.keep(self.min_points)
+        base = self.top(self.min_points)
         hi = errors_kernel(self._tau, self._y, base)[1]  # the fill adds nothing at the required points' error
         best = base
         lo = tol if tol > 0 else hi * 1e-12
@@ -240,14 +244,15 @@ def rank(times, values, keep=None):
                    priority, float(hi - lo))
 
 
-def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, keep=None, passes=2):
+def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, keep=None):
     """The points to keep of a series read as straight lines between them: a Pruned with their
     sorted indices, the largest and the RMS error they leave, and whether max_points capped them.
 
     error_per_point: how many points, automatically: the first count where the time-weighted RMSE
         left, relative to the block's range (max - min), falls below this many times the points
-        added. For blocks H times as long as another, error_per_point / H keeps about the same
-        density of points.
+        added. 0 keeps every point (with max_points: the best max_points); inf none beyond the
+        required ones (with max_error: the fill alone). It is per block: for blocks H times as long,
+        start from error_per_point / H (ERROR_PER_POINT has how far that is from the same density).
     max_points: a hard cap on the points kept (at least 2).
     max_error: no input point strays further than this, in value units, from the kept lines: each
         segment of the automatic points that strays further is filled with the farthest-reach fill
@@ -260,10 +265,10 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
     keep: indices that are kept whatever else is (peaks(), for example).
 
     The first, last, minimum and maximum points are always kept (within max_points, in that order),
-    as are non-finite values with their neighbours; `passes` refinement passes then move each
-    automatic point to where it fits best between its neighbours.
+    as are non-finite values with their neighbours; two refinement passes then move each automatic
+    point to where it fits best between its neighbours.
     """
-    return rank(times, values, keep).prune(error_per_point, max_points, max_error, passes)
+    return rank(times, values, keep).prune(error_per_point, max_points, max_error)
 
 
 def _period(period, unit):

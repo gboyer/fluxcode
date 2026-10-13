@@ -28,7 +28,7 @@ NOISE_MIN_POINTS = 64
 
 
 def _curve(r):
-    e = r.rmse()
+    e = r.relative_rmse()
     e[: r.min_points] = np.inf
     return e
 
@@ -51,7 +51,7 @@ def geomean(r, K, eps):
 def noise(r):
     """The block's white-noise level relative to its range, from its own curve: keeping the best half of white
     noise's points leaves NOISE_AT_HALF of its sigma. Correlated noise reads lower; 0 below NOISE_MIN_POINTS."""
-    return r.rmse(r.n // 2) / NOISE_AT_HALF if r.n >= NOISE_MIN_POINTS else 0.0
+    return r.relative_rmse(r.n // 2) / NOISE_AT_HALF if r.n >= NOISE_MIN_POINTS else 0.0
 
 
 def rmse_noisy(r, eps):

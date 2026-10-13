@@ -12,15 +12,15 @@ stitching blocks back together) and the minimum and maximum are always kept.
 
     p = fluxprune.prune(t, x)                         # automatic: p.index, p.max_error, p.rmse
     p = fluxprune.prune(t, x, max_points=500, max_error=0.5)   # guarded: p.capped if the cap won
-    p = fluxprune.prune(t, x, error_per_point=0.0015 / 12)     # the same density for 12 h blocks
+    p = fluxprune.prune(t, x, error_per_point=0.0015 / 12)     # 12 h blocks (fewer per hour)
 
     # periodic signals: keep each peak and trough, prune the rest
     pk = fluxprune.peaks(t, x, period=np.timedelta64(60, "s"), prominence=2.0)
     p = fluxprune.prune(t, x, keep=pk)
 
     r = fluxprune.rank(t, x)        # step by step: one O(n log n) pass ranks every point
-    r.rmse()                        # the relative error of every count
-    r.keep(200)                     # the 200 most significant points, nested
+    r.relative_rmse()               # the error of every count, relative to the block's range
+    r.top(200)                      # the 200 most significant points, nested
 """
 
 from ._api import ERROR_PER_POINT, Pruned, Ranking, peaks, prune, rank

@@ -121,9 +121,9 @@ def apply_rules(items, params, hours=1):
         r = it["r"]
         for rule, (k_of, *_) in RULES.items():
             k = k_of(r, params[rule], hours)
-            keep = r.refine(r.keep(k), PASSES)
+            keep = r.refine(r.top(k), PASSES)
             res[rule]["k"].append(len(keep))
-            res[rule]["rmse"].append(r.error(keep))
+            res[rule]["rmse"].append(r.relative_error(keep))
             res[rule]["max"].append(B.exact_rmse(it["t"], it["x"], keep, max_err=True)[1])
     return {rule: {key: np.array(v) for key, v in d.items()} for rule, d in res.items()}
 
@@ -139,9 +139,9 @@ def sweep(items):
             ks, es = [], []
             for it in items:
                 r = it["r"]
-                keep = r.refine(r.keep(k_of(r, p, 1, budget)), PASSES)
+                keep = r.refine(r.top(k_of(r, p, 1, budget)), PASSES)
                 ks.append(len(keep))
-                es.append(r.error(keep))
+                es.append(r.relative_error(keep))
             es = np.array(es)
             out[budget, rule] = {"mean": es.mean(), "median": np.median(es), "maxk": max(ks)}
         print(f"sweep {budget}/h done", flush=True)
@@ -176,7 +176,7 @@ def quality(items):
     for it in items:
         t, x, r = it["t"], it["x"], it["r"]
         for k in QUALITY_KS:
-            picks = {"fluxprune": r.refine(r.keep(k), PASSES), "bottom-up (nested)": r.keep(k),
+            picks = {"fluxprune": r.refine(r.top(k), PASSES), "bottom-up (nested)": r.top(k),
                      "top-down": B.top_down(t, x, k, r.required), "swinging door": B.sdt(t, x, k),
                      "LTTB": B.lttb(t, x, k), "min/max buckets": B.minmax(t, x, k), "uniform": B.uniform(t, x, k)}
             for m, keep in picks.items():
@@ -199,7 +199,7 @@ def optimality(items):
             best = B.exact_rmse(t, x, B.optimal_with(t, x, k, r.required))
             if best < 1e-9:
                 continue
-            for m, keep in (("fluxprune", r.refine(r.keep(k), PASSES)), ("bottom-up (nested)", r.keep(k)),
+            for m, keep in (("fluxprune", r.refine(r.top(k), PASSES)), ("bottom-up (nested)", r.top(k)),
                             ("top-down", B.top_down(t, x, k, r.required))):
                 out[k][m].append(B.exact_rmse(t, x, keep) / best)
     return out
@@ -257,7 +257,7 @@ def abs_error(it, keep):
     """RMSE in the values' units; for the furnace with dropouts, over the samples that aren't dropouts (a dropout
     is meant to be kept as a glitch, not traced)."""
     if it["name"] != "furnace-dropout":
-        return it["r"].error(keep) * it["range"]
+        return it["r"].relative_error(keep) * it["range"]
     t = (it["t"] - it["t"][0]).astype(float)
     d = np.interp(t, t[keep], it["x"][keep]) - it["x"]
     return float(np.sqrt(np.mean(d[it["x"] != 0] ** 2)))
@@ -282,7 +282,7 @@ def scale_study():
         ks, es = [], []
         for it in items:
             r = it["r"]
-            keep = r.refine(r.keep(k_of(r, p, it["f"][sc], 1)), PASSES)
+            keep = r.refine(r.top(k_of(r, p, it["f"][sc], 1)), PASSES)
             ks.append(len(keep))
             es.append(abs_error(it, keep) / SPAN[it["name"]])
         out[rule, sc] = {"p": p, "k": np.array(ks), "e": np.array(es), "k_of": k_of}
@@ -317,7 +317,7 @@ def plot_scales(items, study):
         title = [it["name"]]
         for j, sc in enumerate(("range", "max|x|")):
             d = study["amortized", sc]
-            keep = r.refine(r.keep(d["k_of"](r, d["p"], it["f"][sc], 1)), PASSES)
+            keep = r.refine(r.top(d["k_of"](r, d["p"], it["f"][sc], 1)), PASSES)
             ax.plot(minutes[keep], x[keep], "-o", color=C[j], lw=1.2, ms=3, label=f"kept, errors relative to {sc}")
             title.append(f"{sc} {len(keep)}")
         off = ""
@@ -381,7 +381,7 @@ def fill_study():
         if not len(r._tau):
             continue
         tol = GUARD[it["name"]] / it["range"]
-        base = r.refine(r.keep(r.count()), PASSES)
+        base = r.refine(r.top(r.count()), PASSES)
         calls = {FILLS[0]: lambda: B.other_fill(r._tau, r._y, base, tol, False),
                  FILLS[1]: lambda: fill_kernel(r._tau, r._y, base, tol),
                  FILLS[2]: lambda: B.other_fill(r._tau, r._y, base, tol, True)}
@@ -467,7 +467,7 @@ def peak_study():
                         res[m][kind][1] += len(truth[kind])
                     res[m]["extra"] += len(kept - every - {0, len(x) - 1})
                     res[m]["k"] += len(idx)
-                    res[m]["rmse"].append(r.error(idx) * np.ptp(x) / span)
+                    res[m]["rmse"].append(r.relative_error(idx) * np.ptp(x) / span)
         out[name] = res
     return out
 
@@ -516,11 +516,11 @@ def plot_examples(items, params, rule):
     k_of = RULES[rule][0]
     for ax, it in zip(axes.T.ravel(), picks):
         t, x, r = it["t"], it["x"], it["r"]
-        keep = r.refine(r.keep(k_of(r, params[rule], 1)), PASSES)
+        keep = r.refine(r.top(k_of(r, params[rule], 1)), PASSES)
         minutes = (t - t[0]) / 6e10
         ax.plot(minutes, x, color=SCANS, lw=0.6, label="1 s scans")
         ax.plot(minutes[keep], x[keep], "-o", color=C[0], lw=1.2, ms=3, label=f"kept ({rule})")
-        ax.set_title(f"{it['name']}: {len(keep)} of {len(x):,} points, RMSE {100 * r.error(keep):.2g}% of range",
+        ax.set_title(f"{it['name']}: {len(keep)} of {len(x):,} points, RMSE {100 * r.relative_error(keep):.2g}% of range",
                      loc="left", fontsize=9)
         ax.set_xlim(0, 60)
         ax.tick_params(labelsize=8)
@@ -537,7 +537,7 @@ def plot_curves(items):
     picks = [it for it in items if it["day"] == 0 and it["block"] == 9]
     fig, axes = plt.subplots(3, 4, figsize=(12, 7), layout="constrained", sharex=True)
     for ax, it in zip(axes.ravel(), picks):
-        e = it["r"].rmse()
+        e = it["r"].relative_rmse()
         k = np.arange(len(e))
         ok = np.isfinite(e) & (e > 0)
         ax.loglog(k[ok], e[ok], color=C[0], lw=1.5)

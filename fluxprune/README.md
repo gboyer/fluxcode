@@ -10,7 +10,9 @@ import fluxprune
 p = fluxprune.prune(t, x)                                   # automatic
 p.index, p.max_error, p.rmse                                # kept indices and the errors they leave
 p = fluxprune.prune(t, x, max_points=360, max_error=0.5)    # with guards; p.capped if the cap won
-p = fluxprune.prune(t, x, error_per_point=0.0015 / 12)      # the same density for 12 h blocks
+p = fluxprune.prune(t, x, error_per_point=0.0015 / 12)      # 12 h blocks (fewer per hour)
+p = fluxprune.prune(t, x, error_per_point=0, max_points=36) # the best 36 points
+p = fluxprune.prune(t, x, error_per_point=np.inf, max_error=0.5)  # the fill alone
 
 pk = fluxprune.peaks(t, x, period=np.timedelta64(60, "s"), prominence=50.0)
 p = fluxprune.prune(t, x, keep=pk)                          # every peak and trough, the rest pruned
@@ -24,8 +26,13 @@ p = fluxprune.prune(t, x, keep=pk)                          # every peak and tro
   simple ones, sublinearly, and nearly independent of the sampling rate. Two O(n) refinement passes
   then move each point to where it fits best between its neighbours (about 6% above the optimal
   choice). The first and last points (to stitch blocks back together), the minimum and the maximum
-  are always kept, as are non-finite values with their neighbours. For blocks H times as long,
-  `error_per_point / H` keeps the same density.
+  are always kept, as are non-finite values with their neighbours. The rate is per block: for
+  blocks H times as long, start from `error_per_point / H`. That keeps fewer points per hour, not the
+  same density: about a third as many in 12 h blocks as in 1 h blocks on the report's corpus
+  (geometric mean over 18 signals), since a longer block has a wider range for the error to be
+  relative to, and needs one set of required points instead of H. `error_per_point=0` makes every
+  point worth keeping (with `max_points`: the best `max_points`); `np.inf` keeps only the required
+  points (with `max_error`: the fill alone).
 - **`max_error`**: no input point strays further than this, in value units, from the kept lines.
   It only adds points (see below). At the same guarantee it keeps far fewer points than swinging
   door, and it also covers what a range-relative error can't (a quiet block's own dither, a glitch
@@ -50,7 +57,7 @@ p = fluxprune.prune(t, x, keep=pk)                          # every peak and tro
 2. **`max_error`, if it can be met within the cap.** The fill below, run from the required points
    alone, says whether it can.
 3. **The automatic points take what is left.** The k most significant points of the ranking
-   (`keep(k)`, k from `error_per_point`), refined, then filled at `max_error`. If that exceeds the
+   (`top(k)`, k from `error_per_point`), refined, then filled at `max_error`. If that exceeds the
    cap, k is lowered by bisection to the largest that fits; since the ranking is nested, the least
    significant automatic points give way first, and the fill is recomputed each time.
 4. **If `max_error` can't be met within the cap** even without automatic points, it is relaxed:
@@ -73,7 +80,7 @@ against 766) at the same cost, and 4% more than the fewest points that meet `max
 20% more on the noisiest signals; exact by dynamic programming over all feasible lines, about 35x
 slower).
 
-**Cost.** Each step is linear: `keep(k)` is a mask over the removal order (one pass); a refine pass
+**Cost.** Each step is linear: `top(k)` is a mask over the removal order (one pass); a refine pass
 scans each point between its kept neighbours twice; the fill scans each segment once for its worst
 point and once more where it strays (points between a jump target and where the bounds crossed are
 scanned again, so a pathological signal can cost more). Without a binding cap, `max_error` adds
@@ -87,8 +94,9 @@ splitting the worst segment at its worst point when the cap binds (1.3-1.7x larg
 
 ## Step by step
 
-`rank(t, x)` gives the ranking step by step: `r.rmse()` (the error of every count), `r.keep(k)`
-(nested), `r.refine(...)`, `r.prune(...)`.
+`rank(t, x)` gives the ranking step by step: `r.relative_rmse()` (the error of every count,
+relative to the block's range, as `error_per_point` reads it), `r.top(k)` (nested), `r.refine(...)`,
+`r.prune(...)`.
 
 The experiments behind the choices are in
 [experimental/make_prune_report.py](../experimental/make_prune_report.py) (`report/prune.html`):
