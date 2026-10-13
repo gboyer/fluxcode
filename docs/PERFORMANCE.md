@@ -264,6 +264,9 @@ None of these change the format.
 - **`q[i - k]` in a loop** keeps numba's negative-index wraparound check, and the loop runs
   scalar: residual orders 2 and 3 took 1.4–1.7 µs. Index offset views from 0 (`a, b = q[k:], q[:n-k]`
   and `a[i] − b[i]`): 0.2 µs.
+- **Chunked loops** (`for i in range(start, min(start + 64, n))` over whole arrays, to stop
+  early between chunks) stay scalar for the same reason; slice each chunk and index the slices
+  from 0. The time-error check (`_time.grid_error`, `within_allowances`): 0.82 → 0.33 µs.
 - **int64 products** have no NEON multiply. Compute differences in int32 (they fit: |d3| < 2^19)
   and widen for the square: the order pick went from 0.47 to 0.15 µs.
 - **Float min/max reductions** don't vectorize even with fastmath: use four independent chains

@@ -591,6 +591,36 @@ def test_clamp_raises_and_lowers_only_the_ends():
         np.testing.assert_array_equal(out, np.clip(ticks, low, high))
 
 
+def test_grid_error_matches_rounding_then_checking():
+    """grid_error rounds and checks in one pass, chunk by chunk: the same move and ticks as
+    snap_block, _clamp and within_error, across bounds, failing chunks and ticks near the int64 limits."""
+    rng = np.random.default_rng(6)
+    big = np.iinfo(np.int64).max
+    for _ in range(400):
+        block_len = int(rng.integers(3, 300))
+        start = int(rng.choice([START, 0, -big + 10**6, big - 10**9]))
+        ticks = start + np.sort(rng.integers(0, 2 * block_len * 10**4, block_len)).astype(np.int64)
+        quantum = np.int64(rng.choice([2, 5, 100, 2000, 10**4, 5 * 10**4]))
+        phase = np.int64(rng.integers(0, quantum))
+        time_error = float(rng.choice([0.01, 0.05, 0.2, 0.5]))
+        low = ticks[0] - np.int64(rng.integers(0, 2 * quantum)) if rng.random() < 0.5 else np.int64(_time.INT64_MIN)
+        high = ticks[-1] + np.int64(rng.integers(0, 2 * quantum)) if rng.random() < 0.5 else np.int64(big)
+        max_move = time_error * float(ticks[-1] - ticks[0]) / (block_len - 1)
+        expected = np.empty_like(ticks)
+        _time.snap_block(ticks, quantum, phase, expected)
+        _time._clamp(expected, low, high)
+        expected_move = _time.within_error(ticks, expected, time_error, max_move)
+        allowed = np.empty(block_len)
+        _time.tick_allowances(ticks, time_error, allowed)
+        out = np.empty_like(ticks)
+        move = _time.grid_error(ticks, quantum, phase, low, high, allowed, max_move, out)
+        if move == -2:  # outside the float64 range: the caller rounds and checks
+            continue
+        assert move == expected_move
+        if move >= 0:
+            np.testing.assert_array_equal(out, expected)
+
+
 def multi_rate_blocks(rng, block_len):
     """Blocks of different clocks one after another: regular, jittered, Poisson, bursts, 1024 Hz."""
     parts, t = [], 10**6
