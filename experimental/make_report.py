@@ -470,7 +470,7 @@ def plot_rd(results, curves):
 
 
 def write_report(results):
-    clean_outputs(OUT, ("*.png", "*.svg", "index.html"), keep_prefix=("rate", "time", "historian-"))  # the other scripts' pages and charts
+    clean_outputs(OUT, ("*.png", "*.svg", "index.html"), keep_prefix=("rate", "time", "historian-", "prune-"))  # the other scripts' pages and charts
     body = []
     body.append("<h2 id='legend'>Codec legend</h2><p>One row per codec, in the order used by every table and chart: family "
                 "(classic, constant width, entropy, fluxcode), then nominal bits per sample. The colored bar is the family's "

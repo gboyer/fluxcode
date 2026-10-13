@@ -212,26 +212,27 @@ shapes, and [experimental/report/time.html](../experimental/report/time.html) sh
 
 | timestamps | irregular blocks | bytes | bits/sample | encode time added | decode time added |
 |---|---|---|---|---|---|
-| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +19 µs (+6%) | +13 µs (+11%) |
-| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +21 µs (+6%) | +19 µs (+16%) |
-| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +364 µs (+111%) | +140 µs (+119%) |
-| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +99 µs (+30%) | +66 µs (+56%) |
-| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +278 µs (+85%) | +120 µs (+102%) |
-| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +232 µs (+71%) | +96 µs (+81%) |
-| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +442 µs (+135%) | +192 µs (+163%) |
-| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +356 µs (+109%) | +133 µs (+113%) |
-| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +359 µs (+110%) | +182 µs (+154%) |
-| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +399 µs (+122%) | +210 µs (+178%) |
-| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +566 µs (+173%) | +241 µs (+204%) |
-| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +130 µs (+40%) | +100 µs (+85%) |
+| grid: regular 1 kHz | 0/60 | 65 | 0.009 | +20 µs (+6%) | +4 µs (+3%) |
+| grid + a few gaps (2 per minute) | 2/60 | 177 | 0.024 | +6 µs (+2%) | +9 µs (+8%) |
+| noisy clock (σ=20 µs, µs resolution) | 60/60 | 53422 | 7.123 | +355 µs (+110%) | +121 µs (+102%) |
+| 1 kHz, 20 gaps | 19/60 | 1094 | 0.146 | +102 µs (+32%) | +44 µs (+37%) |
+| 1 kHz, 1% dropped | 60/60 | 1461 | 0.195 | +279 µs (+86%) | +106 µs (+89%) |
+| drifting clock (0.99998 ms) | 60/60 | 339 | 0.045 | +224 µs (+69%) | +80 µs (+67%) |
+| jitter σ=10 µs, ns resolution | 60/60 | 120712 | 16.095 | +445 µs (+138%) | +159 µs (+134%) |
+| jitter σ=10 µs, µs resolution | 60/60 | 45903 | 6.120 | +358 µs (+111%) | +123 µs (+103%) |
+| Poisson events, mean 1 ms, µs | 60/60 | 87889 | 11.719 | +360 µs (+111%) | +158 µs (+133%) |
+| Poisson events, mean 1 ms, ns | 60/60 | 164661 | 21.955 | +403 µs (+125%) | +182 µs (+153%) |
+| deadband logging, ms grid | 60/60 | 55498 | 7.400 | +572 µs (+177%) | +220 µs (+185%) |
+| bursts 10 kHz / idle | 60/60 | 102 | 0.014 | +132 µs (+41%) | +84 µs (+71%) |
 
-For scale, the same block group's values take 17,976 bytes, 327 µs to encode (default effort, with
-both layouts compressed, which compresses the time fields twice too) and 118 µs to decode; the
-percentages are of those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-07,
-at 4e89772). The noise floor runs on block groups with times: the encode time includes, on regular
-blocks, the noise estimate (about 7 µs for 60 blocks), and on irregular ones the cadence check (the
-median of 15 intervals and one counting pass), then, where 90% of the intervals are one scan, the
-estimate on consecutive scans. Against the previous cadence (a 1st-percentile scan interval with a
+For scale, the same block group's values take 17,976 bytes, 323 µs to encode (default effort, with
+both layouts compressed, which compresses the time fields twice too) and 119 µs to decode; the
+percentages are of those times (bench/time_axis.py, Apple M3, AC power, single thread, 2026-10-13,
+at 7fa0991; against the 2026-10-07 run at 4e89772 the encode times are within run-to-run noise,
+and decoding irregular times adds 10–30% less). The noise floor runs on block groups with times:
+the encode time includes, on regular blocks, the noise estimate (about 7 µs for 60 blocks), and on
+irregular ones the cadence check (the median of 15 intervals and one counting pass), then, where 90%
+of the intervals are one scan, the estimate on consecutive scans. Against the previous cadence (a 1st-percentile scan interval with a
 histogram fallback, at 0581c29) the added encode time is 6–9% lower on jittered and noisy clocks
 (the noisy clock 399 → 364 µs), 23% lower on Poisson events (468 → 359 µs, which took the histogram)
 and half on bursts (267 → 130 µs). The values come out the same with and without times here.
@@ -314,11 +315,43 @@ largest move in median intervals; "(was …)" is the rule before 2026-10-12, whe
   slots; the times taking both neighbouring intervals as their own also makes jittered clocks
   near the limit drop a step (σ = 5% at e = 0.05: 5.6% of times over e of their own interval at
   q = 100 µs, against 2.9% with the previous interval alone; 1M-sample test, +14% bytes).
-- **Encode time** (indicative, on battery, single thread, 1M samples, e = 0.05, 2026-10-12):
-  about +3–4 ms on clocks (14 → 16 ms on a 1% jittered clock; the check is one extra pass), and
-  +14 ms on Poisson events, where the grid takes about five steps down from the cap (clocks take
-  one or two). The timings in the table below are from the earlier rule and are due for a re-run
-  on AC power.
+- **Encode time** (table below): rounding pays for itself where it makes blocks regular: at e =
+  0.05, against exact times in the same run, jittered clocks encode 77–162 µs faster per block
+  group, 1024 and 60 Hz 80 µs, drift with jitter 124 µs. Elsewhere it costs: +98 µs on a perfect
+  grid (its regular blocks aren't rounded, but each is checked), +89 µs with a few gaps, +150, +289
+  and +255 µs with 20 gaps, 1% dropped and bursts (already on their grid), +106 µs on the drifting
+  clock, +329 µs on the noisy clock (still irregular), +485–535 µs on Poisson events (about five
+  steps down from the cap; clocks take one or two) and +518 µs on deadband logging, which gains
+  nothing at these e. Per million samples that is about +1.5 ms on grids, +5 ms on gaps and noisy
+  clocks and +8–9 ms on events and deadband logging. Against the earlier rule (the same differences
+  in its table below), clocks cost 30–140 µs more per block group (60 Hz 40 less), the noisy clock
+  150 µs more, Poisson events 430 µs more and deadband logging 350 µs more: each candidate now
+  takes a pass of the check, and events walk down several steps.
+
+Encode/decode time the times add, per block group, against the values-only 310/111 µs (Apple M3,
+AC power, single thread, best of 20, `bench/time_axis.py --time-error 0.02,0.05,0.1`, 2026-10-13,
+at 7fa0991):
+
+| timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
+|---|---|---|---|---|
+| grid: regular 1 kHz | +18/+11 µs | +118/+19 µs | +116/+19 µs | +116/+19 µs |
+| grid + a few gaps (2 per minute) | +44/+25 µs | +132/+25 µs | +133/+25 µs | +132/+25 µs |
+| noisy clock (σ=20 µs, µs resolution) | +392/+155 µs | +713/+137 µs | +721/+140 µs | +309/+19 µs |
+| 1 kHz, 20 gaps | +128/+74 µs | +276/+74 µs | +278/+74 µs | +275/+74 µs |
+| 1 kHz, 1% dropped | +302/+144 µs | +590/+144 µs | +591/+146 µs | +590/+145 µs |
+| drifting clock (0.99998 ms) | +219/+101 µs | +332/+19 µs | +325/+19 µs | +316/+19 µs |
+| jitter σ=10 µs, ns resolution | +473/+200 µs | +708/+139 µs | +311/+19 µs | +309/+19 µs |
+| jitter σ=10 µs, µs resolution | +387/+149 µs | +692/+144 µs | +310/+20 µs | +309/+19 µs |
+| Poisson events, mean 1 ms, µs | +382/+193 µs | +875/+157 µs | +917/+193 µs | +917/+189 µs |
+| Poisson events, mean 1 ms, ns | +433/+216 µs | +878/+168 µs | +918/+188 µs | +916/+164 µs |
+| deadband logging, ms grid | +604/+251 µs | +1082/+249 µs | +1122/+248 µs | +1171/+249 µs |
+| bursts 10 kHz / idle | +156/+108 µs | +410/+108 µs | +411/+108 µs | +411/+110 µs |
+| jitter σ=10 µs, ns, phase 25 µs | +474/+191 µs | +692/+153 µs | +313/+19 µs | +313/+20 µs |
+| jitter σ=10 µs, ns, phase 50 µs | +473/+180 µs | +689/+132 µs | +308/+19 µs | +306/+19 µs |
+| jitter σ=10 µs, ns, phase 123 µs | +473/+181 µs | +690/+155 µs | +307/+19 µs | +307/+19 µs |
+| drift + jitter σ=10 µs, phase 37 µs | +474/+186 µs | +688/+159 µs | +350/+22 µs | +322/+19 µs |
+| 1024 Hz, jitter 0.5% | +439/+181 µs | +690/+132 µs | +359/+19 µs | +349/+19 µs |
+| 60 Hz, jitter 0.5% | +469/+205 µs | +667/+109 µs | +387/+19 µs | +368/+19 µs |
 
 Earlier rule (2026-10-10), with timings: bytes the times add, encode/decode time they add (and
 its share of the values-only 322/111 µs), irregular blocks of 60, and the largest move in median
@@ -371,8 +404,9 @@ intervals (Apple M3, AC power, single thread, best of three runs).
 - **Regular clocks are faster to encode and decode once rounded**: the regular time path, the
   plain noise estimate, the regular decode loop.
 - **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; checking
-  them costs about +80 µs per block group (+26%) on a regular grid (regular blocks aren't
-  rounded) and +87 µs (+29%) with a few gaps (time report, 2026-10-10).
+  them cost about +80 µs per block group (+26%) on a regular grid (regular blocks aren't
+  rounded) and +87 µs (+29%) with a few gaps under the earlier rule (time report, 2026-10-10);
+  +98 and +89 µs under the 95% rule (2026-10-13).
 - **Events and deadband logging** have no grid to land on. Under the earlier rule events got
   1.5–4× smaller, with times moved by up to 1.45 e of the overall median; under the 95% rule,
   1.1–1.3× in µs ticks and 2–2.5× in ns (above).

@@ -156,7 +156,7 @@ def rounding_cases(examples):
 
 
 def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
-    """Bytes, irregular blocks, the largest move (in median intervals) and µs the timestamps add when
+    """Bytes, irregular blocks, the largest move (in mean intervals) and µs the timestamps add when
     rounded to the time error."""
     times = ticks.view("datetime64[ns]")
     params = fluxcode.Params(time_error=time_error)
@@ -166,7 +166,7 @@ def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
     assert np.all(np.diff(rounded) >= 0), "rounded times out of order"
     irregular = (_group.decompress(group).block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME) != 0
     row = {"bytes": len(group) - len(plain_group), "irregular": irregular,
-           "moved": float(np.abs(rounded - ticks).max() / np.median(np.diff(ticks)))}
+           "moved": float(np.abs(rounded - ticks).max() / np.mean(np.diff(ticks)))}
     if reps:
         row["encode_us"] = best_us(lambda: fluxcode.encode_group(values, params, times=times), reps) - plain_times[0]
         row["decode_us"] = best_us(lambda: fluxcode.decode_group(group), reps) - plain_times[1]
@@ -180,7 +180,7 @@ def plot_rounding(sweep):
         ax.step(SWEEP_ERRORS, sizes, where="post", color=color, lw=1.5, label=label)
     ax.set_yscale("log")
     ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:,.0f}"))
-    ax.set_xlabel("time error e (Params.time_error): the largest move, as a share of the block's interval")
+    ax.set_xlabel("time error e (Params.time_error)")
     ax.set_ylabel("bytes the timestamps add")
     ax.grid(color="0.9", lw=0.6)
     for side in ("top", "right"):
@@ -315,28 +315,30 @@ above.</p>
 Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
 really is at ns resolution.</p>""")
     h.append(f"""<h2 id="rounding">Rounding timestamps: Params.time_error</h2>
-<p>When the jitter is measurement noise, <code>Params(time_error=e)</code> lets each timestamp move by up to
-<i>e</i> times its block's interval (0 to 0.5; the default 0 keeps them exact). The values are kept as measured,
-and the format doesn't change: the decoder sees ordinary times.</p>
+<p>When the jitter is measurement noise, <code>Params(time_error=e)</code> lets fluxcode round the timestamps
+(0 to 0.5; the default 0 keeps them exact). Each block gets the coarsest consistent step at which 95% of its
+times keep within <i>e</i> of their own interval, and none moves more than <i>e</i> of the block's mean interval.
+The values are kept as measured, and the format doesn't change: the decoder sees ordinary times.</p>
 <ul>
-<li><b>Per block: a step and a phase.</b> The interval is the mean of the one-scan intervals where the block
-has a cadence (90% of its intervals one scan), else the median of 15. The step is the largest 1-2-5 tick
-count (1, 2, 5, 10, 20, …) at most 2<i>e</i> intervals (2% slack), and the grid sits at the clock's own phase
-(a multiple of a tenth of the step, kept from the previous block unless another fits clearly better), so a
-free-running or drifting clock rounds onto its own grid, not the epoch's. Each time rounds to its nearest grid
-point.</li>
-<li><b>A clock no 1-2-5 step divides</b> (1024 Hz, 60 Hz) can't land on a grid: its rounded intervals alternate.
-Such a block goes onto a lattice of its own instead (its mean interval as the period, rounded as coarsely as
-drift allows, and its mean phase) if every time is within <i>e</i>/2 intervals of it, which leaves an update
-room to round it again. That takes about 10 times the jitter.</li>
+<li><b>The check.</b> No time moves more than <i>e</i> mean intervals (the block's span over its intervals, 2%
+slack), and at most one in 20 moves more than <i>e</i> times its own interval, the smaller of the two either
+side of it. Only unusually close times may be off by more than <i>e</i> of their own interval, and by no more
+than the others.</li>
+<li><b>Candidates</b>, the first that passes is taken: the lattice continuing the block before, when it is
+regular on the same clock; then the block's own 1-2-5 grid (1, 2, 5, 10, 20, … ticks), from the coarsest step
+of at most 2<i>e</i> mean intervals down until the check passes, at the clock's own phase (a multiple of a tenth
+of the step, kept from the previous block unless another fits clearly better), so a free-running or drifting
+clock rounds onto its own grid, not the epoch's; then, for a clock no 1-2-5 step divides (1024 Hz, 60 Hz),
+whose rounded intervals alternate, a lattice of its own (its typical interval as the period).</li>
 <li><b>A jittered clock becomes regular</b> once <i>e</i> is about 5 times its jitter (σ over the interval):
 every time stays on its own grid point, and the block stores no residuals. Below that the size falls in steps,
-one at each 1-2-5 step (for a 1 ms clock at e = …, 0.005, 0.01, 0.025, 0.05, 0.1), and each step pays off on its own:
-there is no threshold below which rounding stops helping.</li>
+one at each 1-2-5 step, and each step pays off on its own: there is no threshold below which rounding stops
+helping.</li>
 <li><b>Regular blocks are left alone,</b> and times already on a grid don't change.</li>
-<li><b>Order is kept</b> across blocks and block groups; <code>update</code> and <code>update_time_blocks</code>
-round new samples onto the stored blocks' grids (or lattices), and move stored times only to round a whole
-block, within the same bound in all.</li>
+<li><b>Order is kept</b> across blocks and block groups, and in time blocks every time stays in its block
+(a time that rounds up to the block's end stays at the end). Times are rounded once, as they are encoded:
+<code>update_time_blocks</code> stores new times exactly, and <code>replace_time_blocks</code> re-encodes
+whole blocks from the samples given.</li>
 </ul>
 {rounding_chart}
 <table><tr><th class='l'>timestamps</th>""" + "".join(
@@ -359,30 +361,35 @@ block, within the same bound in all.</li>
     jitter_bytes = [cell(label, 0.05) for label in ("Jitter σ = 10 µs (1%), ns, on round times",
                                                    "The same, free-running: 50 µs off the epoch's grid")]
     drift = "Drift and jitter σ = 10 µs, 37 µs off"
+    events = "Poisson events, mean 1 ms, ns"
+    events_ratio = cell(events, 0.0) / cell(events, 0.05)
     lattice_labels = [label for label in by_label if "no 1-2-5 step" in label]
     lattice_text = "; ".join(
         f"{label.split(',')[0]}: {cell(label, 0.0):,} → {cell(label, 0.05):,} bytes at 0.05 and {cell(label, 0.1):,} at 0.1"
         for label in lattice_labels)
     h.append(f"""</table>
 <p class='muted'>Each cell: bytes the timestamps add · irregular blocks of 60, then the encode time they add
-(percentage of the values-only encode, {plain_times[0]:.0f} µs) and the largest move in median intervals.
+(percentage of the values-only encode, {plain_times[0]:.0f} µs) and the largest move in mean intervals.
 Single thread, best of {reps}, Apple M3 on AC power. The chart samples e every 0.0025.</p>
 <ul>
 <li><b>Jittered clocks</b> drop from about 120 KB to {min(jitter_bytes)}–{max(jitter_bytes)} bytes once e reaches
 about 5σ (0.05 here), on round times or free-running. With drift as well, the phase follows the clock block by
 block: {cell(drift, 0.05):,} bytes at 0.05 and {cell(drift, 0.1):,} at 0.1. Once regular they also encode faster:
 a regular block skips the residuals.</li>
-<li><b>Clocks no 1-2-5 step divides</b> go onto lattices of their own once e/2 covers the jitter (about 10σ):
-{lattice_text}. A noisy clock that no lattice fits costs the attempt: up to about +90 µs (+30%) per block group.</li>
+<li><b>Clocks no 1-2-5 step divides</b> go onto lattices of their own once e covers the jitter (about 5σ):
+{lattice_text}.</li>
 <li><b>Times already on a grid</b> don't change, but checking them costs time: {check_cost("Perfect grid")} per
-block group on a perfect grid (finding each block's step) and {check_cost("Grid with a few gaps")} with a few gaps
-(rounding the irregular blocks).</li>
+block group on a perfect grid (its blocks are regular and aren't rounded, but the ticks are checked for order and
+regularity and copied) and {check_cost("Grid with a few gaps")} with a few gaps (rounding the irregular blocks).</li>
 <li><b>The noisy clock</b> (σ = 20 µs, 2%) needs e = 0.1 to land on its grid; at 0.05 about 1% of its
 times fall to a neighbouring grid point.</li>
 <li><b>Events and deadband logging</b> have no grid to land on. Rounding still takes out the low bits
-(events get 3–4 times smaller), but a coarse grid (deadband logging's 1 ms) gains only once the step
-passes it. Without a cadence the interval is a rough estimate, so a time can move by more than <i>e</i> of
-the overall median (within about <i>e</i> of its block's own estimate).</li>
+(events get {events_ratio:.1f} times smaller at 0.05). Events have many close pairs, and 95% of times must keep
+within <i>e</i> of their own interval, so their step is finer than a clock's at the same <i>e</i>. Deadband
+logging's times are already on a 1 ms grid and mostly a few ms apart: any coarser step moves too many of them
+by more than <i>e</i> of their own interval, so it gains nothing below <i>e</i> = 0.5, and the attempt costs
+{added(cell("Deadband logging, ms grid", 0.05, "encode_us") - cell("Deadband logging, ms grid", 0.0, "encode_us"), plain_times[0])}
+per block group at 0.05.</li>
 </ul>
 <p class='muted'>Measurements behind the choices (1-2-5 steps over powers of two, no interpolation of values, no
 resampling, per-block phases): <a href="https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md#time-error">docs/TUNING.md,

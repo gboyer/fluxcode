@@ -1,15 +1,16 @@
-# fluxcode update benchmark (bench/update.py, 2026-10-07, AC power, single thread)
+# fluxcode update benchmark (bench/update.py, 2026-10-13, AC power, single thread)
 
-At 4e89772, default params (effort 4: both layouts compressed, one block run). Each update against encoding
+At 7fa0991, default params (effort 4: both layouts compressed, one block run). Each update against encoding
 the same series from scratch. The append row's update builds a block group of 61 blocks and is compared with encoding
 the 60-block one. The main table is the Python path (FLUXCODE_RUST=0); a second table is the same run with the
 optional Rust extension, which also packs the bodies of time-axis block groups and of updates (`pack_group`), so
 at efforts 5 and up their block flushes don't hold the GIL (not measured here).
 
-Against 0581c29 (the noise floor's cadence and window rule changed; these have regular 1 kHz times, so the same
-steps as without times), everything is within run-to-run noise: encoding the 60-block random walk with times takes
-333 → 325 µs, and `update` with times 288 → 291 µs (the load average was 2.1–2.4 from other apps). Updates stay
-2–43% cheaper than encoding, and the upsert of one sample in each of 3,600 blocks 37–84% dearer.
+Against 4e89772 (since then timestamp rounding, which these exact updates don't use, and clean-ups), everything is
+within run-to-run noise: encoding the 60-block random walk with times takes 325 → 321 µs, and `update` with times
+291 → 287 µs (the load average was 1.5–2.6). Updates stay 3–43% cheaper than encoding, and the upsert of one sample
+in each of 3,600 blocks 37–81% dearer. Lossy updates (`replace_time_blocks`) re-encode whole blocks and aren't timed
+here.
 
 Notes from the run at d039350 (2026-10-02), still accurate:
 
@@ -36,27 +37,27 @@ arm64 Darwin 25.6.0, Python 3.11.13, numpy 2.4.6; median of 300 calls (100 for t
 
 | signal | operation | encode from scratch | update | vs encode |
 |---|---|---|---|---|
-| random-walk | `update`, 1 of 60 blocks | 309 µs | 269 µs | -40 µs (-13%) |
-| random-walk | `update` with times, 1 of 60 | 325 µs | 291 µs | -33 µs (-10%) |
-| random-walk | `update` with times, append 1 | 325 µs | 318 µs | -7 µs (-2%) |
-| random-walk | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 565 µs | 389 µs | -176 µs (-31%) |
-| random-walk | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1424 µs | 1013 µs | -411 µs (-29%) |
-| random-walk | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1424 µs | 988 µs | -436 µs (-31%) |
-| random-walk | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1424 µs | 1956 µs | +532 µs (+37%) |
-| noisy-sine | `update`, 1 of 60 blocks | 240 µs | 192 µs | -48 µs (-20%) |
-| noisy-sine | `update` with times, 1 of 60 | 261 µs | 212 µs | -49 µs (-19%) |
-| noisy-sine | `update` with times, append 1 | 261 µs | 240 µs | -21 µs (-8%) |
-| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 497 µs | 309 µs | -189 µs (-38%) |
-| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1401 µs | 1001 µs | -400 µs (-29%) |
-| noisy-sine | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1401 µs | 974 µs | -427 µs (-30%) |
-| noisy-sine | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1401 µs | 1969 µs | +568 µs (+41%) |
-| sensor-0.1 | `update`, 1 of 60 blocks | 337 µs | 299 µs | -38 µs (-11%) |
-| sensor-0.1 | `update` with times, 1 of 60 | 356 µs | 317 µs | -39 µs (-11%) |
-| sensor-0.1 | `update` with times, append 1 | 356 µs | 342 µs | -14 µs (-4%) |
-| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 593 µs | 413 µs | -180 µs (-30%) |
-| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 884 µs | 547 µs | -337 µs (-38%) |
-| sensor-0.1 | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 884 µs | 521 µs | -363 µs (-41%) |
-| sensor-0.1 | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 884 µs | 1600 µs | +715 µs (+81%) |
+| random-walk | `update`, 1 of 60 blocks | 291 µs | 266 µs | -24 µs (-8%) |
+| random-walk | `update` with times, 1 of 60 | 321 µs | 287 µs | -34 µs (-11%) |
+| random-walk | `update` with times, append 1 | 321 µs | 312 µs | -9 µs (-3%) |
+| random-walk | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 526 µs | 387 µs | -139 µs (-26%) |
+| random-walk | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1411 µs | 1031 µs | -380 µs (-27%) |
+| random-walk | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1411 µs | 1002 µs | -409 µs (-29%) |
+| random-walk | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1411 µs | 1968 µs | +557 µs (+39%) |
+| noisy-sine | `update`, 1 of 60 blocks | 241 µs | 194 µs | -47 µs (-20%) |
+| noisy-sine | `update` with times, 1 of 60 | 263 µs | 214 µs | -48 µs (-18%) |
+| noisy-sine | `update` with times, append 1 | 263 µs | 242 µs | -21 µs (-8%) |
+| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 498 µs | 312 µs | -186 µs (-37%) |
+| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1399 µs | 1016 µs | -384 µs (-27%) |
+| noisy-sine | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1399 µs | 990 µs | -409 µs (-29%) |
+| noisy-sine | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1399 µs | 1963 µs | +564 µs (+40%) |
+| sensor-0.1 | `update`, 1 of 60 blocks | 335 µs | 294 µs | -41 µs (-12%) |
+| sensor-0.1 | `update` with times, 1 of 60 | 349 µs | 312 µs | -37 µs (-11%) |
+| sensor-0.1 | `update` with times, append 1 | 349 µs | 335 µs | -14 µs (-4%) |
+| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 585 µs | 405 µs | -180 µs (-31%) |
+| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 863 µs | 538 µs | -325 µs (-38%) |
+| sensor-0.1 | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 863 µs | 512 µs | -352 µs (-41%) |
+| sensor-0.1 | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 863 µs | 1560 µs | +697 µs (+81%) |
 
 ## With the Rust extension
 
@@ -64,24 +65,24 @@ arm64 Darwin 25.6.0, Python 3.11.13, numpy 2.4.6; median of 300 calls (100 for t
 
 | signal | operation | encode from scratch | update | vs encode |
 |---|---|---|---|---|
-| random-walk | `update`, 1 of 60 blocks | 288 µs | 249 µs | -39 µs (-14%) |
-| random-walk | `update` with times, 1 of 60 | 307 µs | 268 µs | -39 µs (-13%) |
-| random-walk | `update` with times, append 1 | 307 µs | 296 µs | -11 µs (-4%) |
-| random-walk | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 533 µs | 366 µs | -166 µs (-31%) |
-| random-walk | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1396 µs | 1009 µs | -386 µs (-28%) |
-| random-walk | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1396 µs | 985 µs | -410 µs (-29%) |
-| random-walk | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1396 µs | 1956 µs | +560 µs (+40%) |
-| noisy-sine | `update`, 1 of 60 blocks | 220 µs | 176 µs | -45 µs (-20%) |
-| noisy-sine | `update` with times, 1 of 60 | 244 µs | 194 µs | -50 µs (-20%) |
-| noisy-sine | `update` with times, append 1 | 244 µs | 222 µs | -22 µs (-9%) |
-| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 480 µs | 292 µs | -189 µs (-39%) |
-| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1406 µs | 998 µs | -408 µs (-29%) |
-| noisy-sine | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1406 µs | 974 µs | -432 µs (-31%) |
-| noisy-sine | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1406 µs | 1969 µs | +563 µs (+40%) |
-| sensor-0.1 | `update`, 1 of 60 blocks | 324 µs | 283 µs | -41 µs (-13%) |
-| sensor-0.1 | `update` with times, 1 of 60 | 341 µs | 300 µs | -41 µs (-12%) |
-| sensor-0.1 | `update` with times, append 1 | 341 µs | 323 µs | -18 µs (-5%) |
-| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 577 µs | 395 µs | -182 µs (-32%) |
-| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 866 µs | 527 µs | -339 µs (-39%) |
-| sensor-0.1 | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 866 µs | 503 µs | -363 µs (-42%) |
-| sensor-0.1 | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 866 µs | 1594 µs | +728 µs (+84%) |
+| random-walk | `update`, 1 of 60 blocks | 269 µs | 232 µs | -37 µs (-14%) |
+| random-walk | `update` with times, 1 of 60 | 286 µs | 250 µs | -36 µs (-12%) |
+| random-walk | `update` with times, append 1 | 286 µs | 274 µs | -12 µs (-4%) |
+| random-walk | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 505 µs | 340 µs | -165 µs (-33%) |
+| random-walk | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1367 µs | 978 µs | -389 µs (-28%) |
+| random-walk | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1367 µs | 958 µs | -409 µs (-30%) |
+| random-walk | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1367 µs | 1879 µs | +512 µs (+37%) |
+| noisy-sine | `update`, 1 of 60 blocks | 219 µs | 173 µs | -46 µs (-21%) |
+| noisy-sine | `update` with times, 1 of 60 | 242 µs | 191 µs | -51 µs (-21%) |
+| noisy-sine | `update` with times, append 1 | 242 µs | 217 µs | -25 µs (-10%) |
+| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 445 µs | 284 µs | -161 µs (-36%) |
+| noisy-sine | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 1368 µs | 974 µs | -394 µs (-29%) |
+| noisy-sine | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 1368 µs | 951 µs | -417 µs (-30%) |
+| noisy-sine | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 1368 µs | 1913 µs | +546 µs (+40%) |
+| sensor-0.1 | `update`, 1 of 60 blocks | 319 µs | 274 µs | -45 µs (-14%) |
+| sensor-0.1 | `update` with times, 1 of 60 | 336 µs | 294 µs | -42 µs (-12%) |
+| sensor-0.1 | `update` with times, append 1 | 336 µs | 314 µs | -22 µs (-6%) |
+| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 60 blocks | 535 µs | 385 µs | -150 µs (-28%) |
+| sensor-0.1 | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | 850 µs | 506 µs | -344 µs (-40%) |
+| sensor-0.1 | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | 850 µs | 484 µs | -365 µs (-43%) |
+| sensor-0.1 | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | 850 µs | 1539 µs | +689 µs (+81%) |

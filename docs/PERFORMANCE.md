@@ -9,10 +9,10 @@ harness: [bench/stress.py](../bench/stress.py).
 **Since these tables, `Params.planes` became `Params.effort`** (TUNING.md, Effort). `planes="best"`
 below is the old default, which is now effort 3–4 (the default, 4): the same block groups, byte for
 byte. `planes="bit"` is gone; effort 1 is the fast option (about a third faster, 1.5–2.5% larger).
-The tables below are from 2026-10-01; the 2026-10-07 reruns in `bench/` (gigabyte, day-scale,
-timestamps, updates, with the default effort and the noise floor on timed data, at 4e89772) agree
-within 5%, with the same sizes: the day encodes in 4.62 µs/block/worker (4.84 here), and the noisy
-clock in 11.74 (11.23 here), where it now pays for the noise floor's cadence check and estimate,
+The tables below are from 2026-10-01; the 2026-10-13 reruns in `bench/` (gigabyte, day-scale,
+timestamps, updates, with the default effort and the noise floor on timed data, at 7fa0991) agree
+within 5%, with the same sizes: the day encodes in 4.52 µs/block/worker (4.84 here), and the noisy
+clock in 11.57 (11.23 here), where it now pays for the noise floor's cadence check and estimate,
 which these tables skipped with times.
 
 Most of the change from the previous tables is `planes="best"`: every block group is compressed
