@@ -23,6 +23,7 @@ This page measures, on a day of 1 s scans per signal-day cut into 1 h storage bl
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
@@ -448,7 +449,8 @@ def refit_study():
 def timings():
     """Seconds, best of 3, by n (1 s scans, days concatenated): rank; prune with the rmse pass alone (rank, count,
     refine); prune with max_error = 1% of the range as well; and prune with refit=True. A temperature trace and white
-    noise."""
+    noise (whose max_error is below its noise on purpose: no warnings)."""
+    warnings.filterwarnings("ignore", message="prune: max_error")
     rows = []
     for name in ("temperature", "white-noise"):
         x_all = np.concatenate([scans(name, d) for d in range(12)])
@@ -892,9 +894,10 @@ points, 3-5× slower); a secant search for the relaxed bound (9.4 max_error pass
 against 14); trying every number of the rmse pass's points instead of bisecting (0.4% lower RMSE on average).</li>
 <li><b>Refit</b> (<code>refit=True</code>): least-squares values at the same kept times, the required points pinned to
 their samples, lower the RMSE by about a tenth overall, almost all of it on smooth or step-like signals (sine,
-compressor, batch: 0.5-0.7×) where a chord cuts a curve's corner; on noisy ones by 1-4%. It costs one O(n) tridiagonal
-solve. The values are then no longer readings, and max_error isn't checked again, so it stays an option to measure on
-real data. Choosing the times and the values together (a free-knot fit, or Imai and Iri's 1986 fewest-segments algorithm
+compressor, batch: 0.5-0.8×) where a chord cuts a curve's corner; on noisy ones by 1-3%. It costs one O(n) tridiagonal
+solve. The values are then no longer readings, and it doesn't mix with max_error: a least-squares line through noise
+moves away from the scans that set the bound, so max_error still holds in only 41% of the blocks (none on the noisy
+signals, all on the smooth or quiet ones). It stays an option to measure on real data. Choosing the times and the values together (a free-knot fit, or Imai and Iri's 1986 fewest-segments algorithm
 for max_error with corners off the samples) could gain more and wasn't tried.</li>
 </ol>
 <p><b>The API.</b> <code>prune(t, x)</code> returns the kept times and values, the RMSE and largest error they leave,
