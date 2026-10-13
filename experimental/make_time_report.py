@@ -316,7 +316,7 @@ Poisson events and deadband logging have random intervals, and ns resolution cos
 really is at ns resolution.</p>""")
     h.append(f"""<h2 id="rounding">Rounding timestamps: Params.time_error</h2>
 <p>When the jitter is measurement noise, <code>Params(time_error=e)</code> lets fluxcode round the timestamps
-(0 to 0.5; the default 0 keeps them exact). Each block gets the coarsest consistent step at which 95% of its
+(0 to 0.5; the default 0 keeps them exact). Each block gets a coarse consistent step at which 95% of its
 times keep within <i>e</i> of their own interval, and none moves more than <i>e</i> of the block's mean interval.
 The values are kept as measured, and the format doesn't change: the decoder sees ordinary times.</p>
 <ul>
@@ -325,8 +325,9 @@ slack), and at most one in 20 moves more than <i>e</i> times its own interval, t
 side of it. Only unusually close times may be off by more than <i>e</i> of their own interval, and by no more
 than the others.</li>
 <li><b>Candidates</b>, the first that passes is taken: the lattice continuing the block before, when it is
-regular on the same clock; then the block's own 1-2-5 grid (1, 2, 5, 10, 20, … ticks), from the coarsest step
-of at most 2<i>e</i> mean intervals down until the check passes, at the clock's own phase (a multiple of a tenth
+regular on the same clock; then the block's own 1-2-5 grid (1, 2, 5, 10, 20, … ticks): the coarsest step of at
+most 2<i>e</i> mean intervals if the check passes there (clocks do), else from the step of a short interval (the
+3rd smallest of 15 sampled) down until it passes, at the clock's own phase (a multiple of a tenth
 of the step, kept from the previous block unless another fits clearly better), so a free-running or drifting
 clock rounds onto its own grid, not the epoch's; then, for a clock no 1-2-5 step divides (1024 Hz, 60 Hz),
 whose rounded intervals alternate, a lattice of its own (its typical interval as the period).</li>

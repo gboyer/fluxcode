@@ -12,9 +12,10 @@ delta beyond the int64 maximum is the reference over a step of 1), so it stores 
 residuals. Any other block is irregular and stores them.
 
 With a time error e > 0 (Params.time_error) the encoder first rounds each block's ticks
-(`round_blocks`) to the coarsest 1-2-5 step of at most 2 e times the block's mean interval for
-which at least 95% of its ticks move by at most e times their own interval: a jittered clock
-lands back on its own grid and stores as a regular block. A clock whose period no such step
+(`round_blocks`) to a 1-2-5 step for which at least 95% of its ticks move by at most e times
+their own interval: the largest of at most 2 e times the block's mean interval if that keeps to
+it, else the coarsest that does from the step of a short interval down. A jittered clock lands
+back on its own grid and stores as a regular block. A clock whose period no such step
 divides (1024 Hz, 60 Hz) goes onto its own lattice instead, on the same condition. The format
 doesn't change.
 """
@@ -404,8 +405,8 @@ def expand_times(
 
 
 @njit(inline="always")
-def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
-    """The median of CADENCE_SAMPLES evenly spaced intervals of a block's ticks.
+def sampled_intervals(ticks: np.ndarray, scratch_pivots: np.ndarray) -> np.ndarray:
+    """CADENCE_SAMPLES evenly spaced intervals of a block's ticks, sorted.
 
     Args:
         ticks: 1D int64 array of the block's ticks (at least 2). A decrease gives a negative
@@ -413,7 +414,7 @@ def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
         scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
 
     Returns:
-        The median interval.
+        The leading part of scratch_pivots holding them.
     """
     num_intervals = ticks.shape[0] - 1
     # Insertion sort of the evenly spaced intervals (a library sort would allocate)
@@ -426,7 +427,22 @@ def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
             pivots[insert_idx] = pivots[insert_idx - 1]
             insert_idx -= 1
         pivots[insert_idx] = pivot
-    return pivots[CADENCE_SAMPLES // 2]
+    return pivots
+
+
+@njit(inline="always")
+def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
+    """The median of CADENCE_SAMPLES evenly spaced intervals of a block's ticks (sampled_intervals).
+
+    Args:
+        ticks: 1D int64 array of the block's ticks (at least 2). A decrease gives a negative
+            interval.
+        scratch_pivots: 1D int64 scratch array of at least CADENCE_SAMPLES.
+
+    Returns:
+        The median interval.
+    """
+    return sampled_intervals(ticks, scratch_pivots)[CADENCE_SAMPLES // 2]
 
 
 @njit(inline="always")
@@ -459,6 +475,15 @@ def one_scan(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, i
         interval = ticks_next[interval_idx] - ticks_prev[interval_idx]
         num_one_scan += (interval > lower) & (interval < upper)
     return scan, lower, upper, num_one_scan
+
+
+JUMP_RANK: int = 2
+"""Once the step of a block's mean interval fails, round_blocks goes on from the step of the
+interval of this rank (from 0) among its CADENCE_SAMPLES sampled ones, the positive ones
+(about the 14th percentile), if that is finer. Events and deadband logging pass there or a
+little below it, far below the mean's step, and skipping the steps between saves their tries;
+a skipped step rarely passes (Poisson events: about 0.5% more bytes). Clocks pass at the
+mean's step and never jump."""
 
 
 @njit(inline="always")
@@ -1071,8 +1096,9 @@ def round_blocks(
 
     1. The lattice continuing the previous non-empty block, if that is regular with interval d
        (as rounded here) and m rounds to d (the same clock): its last tick + k d, k >= 1.
-    2. Its own grid (block_phase), of the coarsest 1-2-5 step of at most 2 time_error
-       m (time_quantum) that keeps to the time error.
+    2. Its own grid (block_phase): the 1-2-5 step of at most 2 time_error m (time_quantum) if
+       it keeps to the time error, else the coarsest that does from the step of a short
+       interval down (JUMP_RANK).
     3. A lattice of its own (fit_lattice), for a clock the grid leaves irregular (one whose
        period no 1-2-5 step divides, like 1024 Hz).
 
@@ -1163,6 +1189,7 @@ def round_blocks(
                 safe_last -= 1
         grid_failed = False
         sampled_ticks = phase_samples(times, phase_ticks)
+        jump = largest
         while largest_move < 0 and quantum > 1:
             if not (grid_failed and safe_last - safe_first >= 1
                     and grid_fails(times[safe_first:safe_last + 1], block_len, quantum, time_error)):
@@ -1173,8 +1200,17 @@ def round_blocks(
                 if largest_move == -2:
                     snap_block(times, quantum, phase, out)
                     largest_move = _clamped_error(times, out, low, high, allowed, max_move)
+                if largest_move < 0 and not grid_failed:
+                    # The mean's step failed: go on from that of a short interval (JUMP_RANK),
+                    # among the positive ones (repeated ticks may still round onto a grid)
+                    sampled = sampled_intervals(times, pivots)
+                    positive = 0
+                    while positive < CADENCE_SAMPLES - 1 and sampled[positive] <= 0:
+                        positive += 1
+                    short = sampled[min(positive + JUMP_RANK, CADENCE_SAMPLES - 1)]
+                    jump = np.int64(time_quantum(max(short, 1), time_error))
                 grid_failed = True
-            quantum = _finer_step(quantum)
+            quantum = min(_finer_step(quantum), jump)
         if largest_move < 0:
             out[:] = times
             largest_move = 0

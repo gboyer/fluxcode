@@ -46,9 +46,9 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 - **`target_bits_per_sample`:** a guard against unexpectedly high usage, not a way to squeeze
   signals whose shape you don't know.
 - **`effort`:** changes the size and the encode time, never the decoded values.
-- **`time_error`:** 0 stores timestamps exactly. e > 0 rounds each block's times to the coarsest
+- **`time_error`:** 0 stores timestamps exactly. e > 0 rounds each block's times to a coarse
   1-2-5 step for which 95% of them move by at most e times their own interval (none more than e
-  mean intervals), which puts a jittered clock back on its grid.
+  mean intervals), which puts a jittered clock back on its grid (§4 says which step).
   - About 5× the clock's jitter (σ over the interval) makes it regular: 0.05 for 1% jitter.
   - The values see the rounded times: a block that becomes regular gets the noise floor of regular
     times (§5.2).
@@ -183,10 +183,14 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
        encode) is regular with interval d, and m rounds to d (the same clock, gaps allowed), the
        lattice continuing it: its last tick + k·d, k ≥ 1. The block is then regular on the same
        clock, also when d has no 1-2-5 grid (1001 µs).
-    2. **Its own grid:** the coarsest 1-2-5 × 10^k step q of at most 2·e·m·1.02 that passes,
-       trying each step down from there (one or two tries on clocks, about five on Poisson
-       events). Any 1-2-5 step up to a fifth of a 1-2-5 period divides it: a jittered clock
-       rounds back onto its own grid.
+    2. **Its own grid:** the largest 1-2-5 × 10^k step q of at most 2·e·m·1.02 if it passes
+       (clocks pass there: one try). Otherwise the coarsest step that passes from the step of a
+       short interval down: the 3rd smallest positive of the 15 evenly spaced intervals the
+       cadence test samples (about the 14th percentile, `JUMP_RANK`), where events and deadband
+       logging pass or nearly. The steps between are skipped: on Poisson events one of them would
+       sometimes have passed (+0.1–0.7% bytes), but the walk down from the mean's step took about
+       five tries a block. Any 1-2-5 step up to a fifth of a 1-2-5 period divides it: a jittered
+       clock rounds back onto its own grid.
        - Once a step has failed, each finer one is first tested on the intervals alone, which
          skips steps that can't pass without rounding the block (the result is the same). Two
          ticks I apart round to points a multiple of q apart, so one of them moves by at least

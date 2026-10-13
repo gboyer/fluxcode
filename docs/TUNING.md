@@ -268,10 +268,12 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
 
 ### Time error
 
-`time_error` = e rounds each block's times once, from the values given (ENCODER §4): to the
-coarsest 1-2-5 step of at most 2e mean intervals (the block's span over its intervals, +2%) for
-which at least 95% of its times move by at most e times their own interval (the smaller of the
-two either side) and none by more than e mean intervals, at the clock's own phase. A block may
+`time_error` = e rounds each block's times once, from the values given (ENCODER §4): to a 1-2-5
+step for which at least 95% of its times move by at most e times their own interval (the smaller
+of the two either side) and none by more than e mean intervals, at the clock's own phase: the
+largest of at most 2e mean intervals (the block's span over its intervals, +2%) if it passes,
+else the coarsest that passes from the step of a short interval down (since 2026-10-13; before,
+from the largest down). A block may
 instead continue the lattice of a regular block before it (if it is the same clock), or, if no
 1-2-5 step divides its period (1024 Hz, 60 Hz), take a lattice of its own, on the same check.
 Regular blocks aren't rounded. Updates never round a stored time again: `update_time_blocks`
@@ -280,6 +282,8 @@ update could round a block's stored ticks again, and lattices were limited to e/
 budget). Sizes measured with `bench/time_axis.py --time-error 0.02,0.05,0.1 --reps 1` (one-minute
 block groups of 60 × 1000, 2026-10-12): bytes the times add, irregular blocks of 60, and the
 largest move in median intervals; "(was …)" is the rule before 2026-10-12, where it differs.
+Poisson events since the jump to a short interval's step (2026-10-13; before: 83,245, 73,202 and
+66,009 B in µs, 83,222, 74,009 and 66,078 B in ns).
 
 | timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
 |---|---|---|---|---|
@@ -291,8 +295,8 @@ largest move in median intervals; "(was …)" is the rule before 2026-10-12, whe
 | drifting clock (0.99998 ms) | 339 B, 60 | 87 B, 0, 0.020 (was 88) | 93 B, 0, 0.049 (was 89) | 93 B, 0, 0.098 (was 98) |
 | jitter σ=10 µs, ns resolution | 120,712 B, 60 | 14,726 B, 60, 0.010 | 63 B, 0, 0.046 | 63 B, 0, 0.046 |
 | jitter σ=10 µs, µs resolution | 45,903 B, 60 | 14,702 B, 60, 0.010 | 63 B, 0, 0.042 | 63 B, 0, 0.042 |
-| Poisson events, mean 1 ms, µs | 87,889 B, 60 | 83,245 B, 60, 0.001 (was 57,359) | 73,202 B, 60, 0.003 (was 47,498) | 66,009 B, 60, 0.007 (was 39,487) |
-| Poisson events, mean 1 ms, ns | 164,661 B, 60 | 83,222 B, 60, 0.001 (was 57,152) | 74,009 B, 60, 0.004 (was 47,567) | 66,078 B, 60, 0.007 (was 39,778) |
+| Poisson events, mean 1 ms, µs | 87,889 B, 60 | 83,365 B, 60, 0.001 (was 57,359) | 73,378 B, 60, 0.003 (was 47,498) | 66,009 B, 60, 0.007 (was 39,487) |
+| Poisson events, mean 1 ms, ns | 164,661 B, 60 | 83,895 B, 60, 0.001 (was 57,152) | 73,951 B, 60, 0.004 (was 47,567) | 66,463 B, 60, 0.007 (was 39,778) |
 | deadband logging, ms grid | 55,498 B, 60 | 55,498 B, 60, 0.000 | 55,498 B, 60, 0.000 | 55,498 B, 60, 0.000 (was 51,270) |
 | bursts 10 kHz / idle | 102 B, 60 | 102 B, 60, 0.000 | 102 B, 60, 0.000 | 102 B, 60, 0.000 |
 | jitter σ=10 µs, ns, phase 25 µs | 120,653 B, 60 | 14,712 B, 60, 0.010 | 66 B, 0, 0.045 | 103 B, 0, 0.049 |
@@ -317,12 +321,12 @@ largest move in median intervals; "(was …)" is the rule before 2026-10-12, whe
   q = 100 µs, against 2.9% with the previous interval alone; 1M-sample test, +14% bytes).
 - **Encode time** (table below): at e = 0.05, against exact times in the same run, as a share of the
   whole encode with exact times. Rounding pays for itself where it makes blocks regular: jittered
-  clocks encode 39–46% faster, 1024 and 60 Hz 39%, drift with jitter 43%, the drifting clock 22%.
-  Elsewhere it costs: +5% on a perfect grid (its regular blocks aren't rounded, but they are
-  checked), +7% with a few gaps, +14%, +15% and +22% with 20 gaps, 1% dropped and bursts (already on
-  their grid), +12% on the noisy clock (still irregular), +25–34% on Poisson events and +9% on
-  deadband logging, which gains nothing at these e. Poisson events take about five tries per block:
-  four fail, and the one that passes reads every tick.
+  clocks encode 39–46% faster, 1024 and 60 Hz 39–40%, drift with jitter 43%, the drifting clock
+  23%. Elsewhere it costs: +6% on a perfect grid (its regular blocks aren't rounded, but they are
+  checked), +7% with a few gaps, +11%, +20% and +22% with 20 gaps, 1% dropped and bursts (already
+  on their grid), +14% on the noisy clock (still irregular), +17–28% on Poisson events and +11% on
+  deadband logging, which gains nothing at these e. Events fail at the mean's step and go on from
+  a short interval's step down; the try that passes reads every tick.
 - **Speedups** (2026-10-13, same bytes): the steps below a failed one are first tested on the
   intervals alone (ENCODER §4), the clamp touches only the runs at either end, and blocks left as
   they are aren't copied. Against the first version of the 95% rule (the same AC benchmark, an hour
@@ -360,31 +364,42 @@ largest move in median intervals; "(was …)" is the rule before 2026-10-12, whe
   (by a try or the interval test), so going down from the cap tries each step once and passes
   once, while a decade search adds passing tries, each reading every tick. The phase's 10 × 64
   cost loop (0.12 µs) already vectorizes; in float64 it was slower (its sum doesn't vectorize).
+- **Jump to a short interval's step** (2026-10-13): after the mean's step fails, the walk goes on
+  from the step of the 3rd smallest positive of 15 evenly spaced intervals (about the 14th
+  percentile), skipping the steps between, so the result is no longer always the coarsest step
+  that passes. Across 176 cases (16 clock and event shapes, ms-logged 1024/60/50 Hz, repeated
+  ticks, bursts, lognormal and Poisson events, 1000-sample and random blocks, e = 0.02 to 0.3),
+  158 keep their bytes; Poisson and lognormal events change by −0.1% to +0.7%, and their rounding
+  is 13–30% faster (Poisson µs 3.7 → 3.0 µs per block at e = 0.05). Clocks pass at the mean's
+  step and never jump. Measured and dropped: the 2nd smallest of 15 (about the 7th percentile:
+  Poisson 2.7 µs per block, +1–4% bytes); starting from the short interval's step outright
+  (faster on events, but a noisy or jittered clock's short interval sits under a 1-2-5 boundary:
+  the noisy clock 2.9 → 10–12 KB a minute at e = 0.05, and 41 → 236 B at 0.1).
 
-Encode/decode time the times add, per block group, against the values-only 312/110 µs (Apple M3,
+Encode/decode time the times add, per block group, against the values-only 302/111 µs (Apple M3,
 AC power, single thread, best of 20, `bench/time_axis.py --time-error 0.02,0.05,0.1`, 2026-10-13,
 vectorized):
 
 | timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
 |---|---|---|---|---|
-| grid: regular 1 kHz | +17/+13 µs | +40/+20 µs | +32/+20 µs | +56/+20 µs |
-| grid + a few gaps (2 per minute) | +45/+25 µs | +69/+26 µs | +69/+26 µs | +69/+26 µs |
-| noisy clock (σ=20 µs, µs resolution) | +354/+126 µs | +476/+120 µs | +434/+110 µs | +117/+17 µs |
-| 1 kHz, 20 gaps | +94/+55 µs | +153/+50 µs | +149/+60 µs | +147/+60 µs |
-| 1 kHz, 1% dropped | +293/+116 µs | +382/+119 µs | +385/+118 µs | +429/+119 µs |
-| drifting clock (0.99998 ms) | +218/+100 µs | +122/+20 µs | +100/+20 µs | +121/+20 µs |
-| jitter σ=10 µs, ns resolution | +422/+164 µs | +470/+111 µs | +88/+20 µs | +117/+20 µs |
-| jitter σ=10 µs, µs resolution | +338/+116 µs | +440/+131 µs | +87/+20 µs | +116/+20 µs |
-| Poisson events, mean 1 ms, µs | +335/+161 µs | +589/+118 µs | +554/+156 µs | +550/+177 µs |
-| Poisson events, mean 1 ms, ns | +373/+176 µs | +517/+139 µs | +545/+157 µs | +542/+135 µs |
-| deadband logging, ms grid | +604/+212 µs | +747/+211 µs | +684/+194 µs | +729/+215 µs |
-| bursts 10 kHz / idle | +124/+107 µs | +224/+93 µs | +221/+107 µs | +258/+108 µs |
-| jitter σ=10 µs, ns, phase 25 µs | +423/+156 µs | +429/+134 µs | +117/+20 µs | +117/+22 µs |
-| jitter σ=10 µs, ns, phase 50 µs | +473/+172 µs | +461/+126 µs | +116/+20 µs | +116/+20 µs |
-| jitter σ=10 µs, ns, phase 123 µs | +471/+172 µs | +411/+117 µs | +117/+20 µs | +88/+11 µs |
-| drift + jitter σ=10 µs, phase 37 µs | +472/+172 µs | +415/+140 µs | +135/+23 µs | +97/+20 µs |
-| 1024 Hz, jitter 0.5% | +435/+172 µs | +407/+108 µs | +144/+21 µs | +109/+20 µs |
-| 60 Hz, jitter 0.5% | +468/+187 µs | +387/+93 µs | +160/+20 µs | +119/+20 µs |
+| grid: regular 1 kHz | +18/+2 µs | +40/+1 µs | +38/+0 µs | +39/+2 µs |
+| grid + a few gaps (2 per minute) | +29/+5 µs | +53/+5 µs | +52/+15 µs | +51/+14 µs |
+| noisy clock (σ=20 µs, µs resolution) | +352/+137 µs | +437/+132 µs | +441/+96 µs | +94/+1 µs |
+| 1 kHz, 20 gaps | +107/+44 µs | +152/+43 µs | +153/+41 µs | +152/+42 µs |
+| 1 kHz, 1% dropped | +270/+118 µs | +388/+117 µs | +384/+117 µs | +385/+117 µs |
+| drifting clock (0.99998 ms) | +225/+76 µs | +101/+0 µs | +102/+1 µs | +99/+2 µs |
+| jitter σ=10 µs, ns resolution | +428/+155 µs | +425/+109 µs | +93/+1 µs | +94/+1 µs |
+| jitter σ=10 µs, µs resolution | +345/+117 µs | +417/+118 µs | +90/+1 µs | +88/+0 µs |
+| Poisson events, mean 1 ms, µs | +337/+160 µs | +508/+153 µs | +516/+155 µs | +503/+157 µs |
+| Poisson events, mean 1 ms, ns | +386/+181 µs | +518/+134 µs | +503/+141 µs | +510/+153 µs |
+| deadband logging, ms grid | +574/+210 µs | +687/+207 µs | +666/+210 µs | +657/+206 µs |
+| bursts 10 kHz / idle | +131/+84 µs | +229/+81 µs | +228/+81 µs | +228/+81 µs |
+| jitter σ=10 µs, ns, phase 25 µs | +427/+157 µs | +418/+123 µs | +97/+4 µs | +95/+0 µs |
+| jitter σ=10 µs, ns, phase 50 µs | +427/+158 µs | +417/+96 µs | +96/+8 µs | +95/+0 µs |
+| jitter σ=10 µs, ns, phase 123 µs | +427/+159 µs | +418/+122 µs | +94/+1 µs | +95/+0 µs |
+| drift + jitter σ=10 µs, phase 37 µs | +427/+155 µs | +416/+130 µs | +116/+5 µs | +101/+0 µs |
+| 1024 Hz, jitter 0.5% | +394/+136 µs | +415/+103 µs | +120/+4 µs | +115/+1 µs |
+| 60 Hz, jitter 0.5% | +425/+169 µs | +396/+79 µs | +137/+9 µs | +127/+0 µs |
 
 Earlier rule (2026-10-10), with timings: bytes the times add, encode/decode time they add (and
 its share of the values-only 322/111 µs), irregular blocks of 60, and the largest move in median
