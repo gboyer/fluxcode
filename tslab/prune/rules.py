@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""How many points to keep, from a fluxprune.Ranking's error curve e[k] (relative RMSE of keeping k).
+"""How many points to keep, from a fluxprune._api.Ranking's error curve e[k] (relative RMSE of keeping k).
 
 Every rule is a function of the curve only, so all of them run on the same ranking:
 
@@ -28,7 +28,7 @@ NOISE_MIN_POINTS = 64
 
 
 def _curve(r):
-    e = r.rmse()
+    e = r.relative_rmse()
     e[: r.min_points] = np.inf
     return e
 
@@ -39,9 +39,9 @@ def count(r, K):
 
 def rmse(r, eps):
     """The fewest points whose relative RMSE, and that of every larger count, is at most eps."""
-    e = np.sqrt(np.maximum(r.sq_error, 0.0))  # e[j]: after j removals
+    e = r.relative_rmse()[r.min_points:]  # e[j]: keeping min_points + j
     over = np.flatnonzero(e > eps)
-    return r.n - (over[0] - 1 if len(over) else len(e) - 1)
+    return r.min_points + (over[-1] + 1 if len(over) else 0)
 
 
 def geomean(r, K, eps):
@@ -51,7 +51,7 @@ def geomean(r, K, eps):
 def noise(r):
     """The block's white-noise level relative to its range, from its own curve: keeping the best half of white
     noise's points leaves NOISE_AT_HALF of its sigma. Correlated noise reads lower; 0 below NOISE_MIN_POINTS."""
-    return r.rmse(r.n // 2) / NOISE_AT_HALF if r.n >= NOISE_MIN_POINTS else 0.0
+    return r.relative_rmse(r.n // 2) / NOISE_AT_HALF if r.n >= NOISE_MIN_POINTS else 0.0
 
 
 def rmse_noisy(r, eps):
