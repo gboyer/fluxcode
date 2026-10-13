@@ -95,7 +95,8 @@ pass scans each line once for its worst point and once more where it strays (poi
 target and where the bounds crossed are scanned again, so a pathological signal can cost more).
 Without a binding cap, `max_error` adds about 2 passes; giving way adds a bisection of about
 log2(k) attempts of 6-7 passes; relaxing adds about 12-15 max_error passes of 2 passes each.
-`bench/PRUNE_RESULTS.md` has the measured cost: +5-35% over the ranking.
+`bench/PRUNE_RESULTS.md` has the measured cost: +13-53% over the ranking (+16-32% for the rmse pass alone at 3,600
+points, +7-21% at 86,400 and more).
 
 Measured and not adopted (report/prune.html): the max_error pass first and ranking again with its
 points fixed (same RMSE at the same count, 3-5x slower); a secant search for the relaxed bound
@@ -116,5 +117,5 @@ and others; nine stopping rules on 12 slow signals in 1 h blocks, with their sta
 sampling rate and block length; what the error should be relative to (six more signals); the guards
 against swinging door and the max_error pass against its alternatives; refit; swinging-door archives
 as input; speed. [bench/prune.py](../bench/prune.py) times every call
-([bench/PRUNE_RESULTS.md](../bench/PRUNE_RESULTS.md)): about 0.7 ms for an hour of 1 s scans and
-25 ms for a day, on an M3.
+([bench/PRUNE_RESULTS.md](../bench/PRUNE_RESULTS.md)): about 0.45 ms for an hour of 1 s scans and
+17 ms for a day, on an M3 (one core).

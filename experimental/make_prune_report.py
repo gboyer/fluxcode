@@ -815,7 +815,7 @@ FINDINGS = """
 <li><b>Ranking: bottom-up, then refine.</b> Removing the cheapest point repeatedly (exact time-weighted L2, a heap,
 O(n log n)) gives a nested ranking of every point and the whole error curve in one pass, but greedy merging is myopic:
 about 30% above the optimum. Two O(n) passes that slide each kept point to its best spot between its neighbours bring
-it to 4-6% above the optimum on whole 1 h blocks at 12, 36 and 108 points (worst 1.4×), for +5-15% of the ranking's
+it to 4-6% above the optimum on whole 1 h blocks at 12, 36 and 108 points (worst 1.4×), for +10-30% of the ranking's
 time. Top-down splitting (Douglas-Peucker's order, and that of perceptually important points) is better than plain
 bottom-up on step-like signals and much worse on others (up to 74× the optimum on the compressor). Visvalingam-Whyatt
 (bottom-up by triangle area) is 1.6-1.8× fluxprune's RMSE, and 1.03-1.07× with the same refinement passes: the
@@ -874,7 +874,7 @@ further than max_error from the scans by farthest reach: from each anchor, the l
 while every scan between stays within max_error. Swinging door's rule (the line ends at the first scan the chord can't
 reach) keeps
 1.1-3× as many points on the noisy signals (vibration 170 against 66 per hour, batch 72 against 23, temperature 766
-against 510), the exact minimum 4% fewer overall at about 35× the time (12 against 440 µs per block, up to 8 ms). At the same guarantee as
+against 510), the exact minimum 4% fewer overall at about 34× the time (13 against 441 µs per block, up to 8.4 ms). At the same guarantee as
 swinging door (CompDev = max_error / 2, since at CompDev = max_error its line strays up to 1.6-2× that), fluxprune keeps
 fewer points on 12 of the 18 signals (batch 23 against 228 per hour, vibration 66 against 422, temperature 510 against
 1,136, grid frequency 282 against 597) and as many on two; more only where the rmse pass already wanted more than

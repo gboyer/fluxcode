@@ -14,8 +14,8 @@ moments of two neighbours merged, are O(1) and lose no precision to the position
 (prefix sums over the whole block would: a short steep chord far from the start cancels them).
 
 A segment's moments and its error sit in one row (one cache line), and the candidates wait in a
-4-ary heap that holds their keys inline: half the time of separate arrays and a binary heap of
-indices at 3,600 points, two thirds at a million.
+4-ary heap that holds their keys inline: the ranking takes 0.57x the time of separate arrays and
+a binary heap of indices at 3,600 and 86,400 points, 0.6x at a million (one core).
 """
 
 import numpy as np
