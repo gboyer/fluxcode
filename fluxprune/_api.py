@@ -92,9 +92,9 @@ class Ranking:
     def relative_rmse(self, k=None):
         """Relative RMSE of keeping k points (min_points <= k <= n), or of every count as an array
         indexed by k (nan below min_points)."""
-        e = np.sqrt(np.maximum(self._sq_error, 0.0))
         if k is not None:
-            return float(e[self.n - self._clip(k)])
+            return float(np.sqrt(max(self._sq_error[self.n - self._clip(k)], 0.0)))
+        e = np.sqrt(np.maximum(self._sq_error, 0.0))
         out = np.full(self.n + 1, np.nan)
         out[self.min_points:] = e[::-1]
         return out
