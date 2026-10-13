@@ -10,12 +10,13 @@ This page measures, on a day of 1 s scans per signal-day cut into 1 h storage bl
 (tslab.prune.signals):
 
 - how close its ranking (bottom-up, then refined) gets to the optimum, against top-down splitting,
-  swinging door, LTTB, min/max buckets and even spacing at the same point count;
+  Visvalingam-Whyatt, swinging door, LTTB, min/max buckets and even spacing at the same point count;
 - how many points each stopping rule keeps where (tslab.prune.rules), each calibrated to the same total;
 - whether the rules hold up when the sampling rate or the block length changes;
 - what errors should be relative to: the block's range, its largest |value|, the geometric mean of the
   two, or a known span per series, on signals with small variations on a large offset;
-- the max_error and max_points guards against swinging door, and peaks() on periodic signals with known peaks;
+- the max_error and max_points guards against swinging door, and the max_error pass against its alternatives;
+- refit=True: least-squares values at the kept times instead of the samples;
 - what it does to swinging-door archives as input; and how long it takes.
 """
 
@@ -30,7 +31,8 @@ import html
 import _fresh_numba_cache  # noqa: E402, F401  (before numba kernels: a cache keyed on the sources)
 import fluxprune
 import matplotlib
-from fluxprune._guard import errors_kernel, fill_kernel
+from fluxprune._api import rank
+from fluxprune._guard import max_error_kernel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -40,7 +42,7 @@ import numpy as np
 from tslab.common.historian import TAG_INFO, TAGS, swinging_door
 from tslab.prune import baselines as B
 from tslab.prune import rules as R
-from tslab.prune.signals import EXTRA_INFO, GUARD, OFFSET, PERIOD_S, PERIODIC, PROMINENCE, SIGNALS, blocks, periodic_scans, scans
+from tslab.prune.signals import EXTRA_INFO, GUARD, OFFSET, SIGNALS, blocks, scans
 from tslab.report.page import clean_outputs, save_fig, shell
 
 OUT = Path(__file__).parent / "report"
@@ -54,7 +56,6 @@ PASSES = 2
 KNEE_ALPHA = 0.25
 QUALITY_KS = (12, 36, 108)
 SWEEP_BUDGETS = (12, 36, 108, 324)  # points per hour
-OPT_WINDOW, OPT_KS = 600, (12, 24)
 
 
 def describe(name):
@@ -110,7 +111,7 @@ def corpus(hours=1, days=DAYS, archive=False, step=1, names=SIGNALS):
     for name in names:
         for day in range(days):
             for b, (t, x) in enumerate(blocks(name, day, hours, archive)):
-                out.append(dict(name=name, day=day, block=b, t=t, x=x, r=fluxprune.rank(t, x)))
+                out.append(dict(name=name, day=day, block=b, t=t, x=x, r=rank(t, x)))
     return out
 
 
@@ -171,13 +172,16 @@ def plot_sweep(sw):
 
 def quality(items):
     """RMSE and max error of each method at each k, per block (fluxprune refined is the reference)."""
-    methods = ["fluxprune", "bottom-up (nested)", "top-down", "swinging door", "LTTB", "min/max buckets", "uniform"]
+    methods = ["fluxprune", "bottom-up (nested)", "top-down", "Visvalingam-Whyatt", "Visvalingam-Whyatt + refine",
+               "swinging door", "LTTB", "min/max buckets", "uniform"]
     out = {k: {m: {"rmse": [], "max": [], "name": []} for m in methods} for k in QUALITY_KS}
     for it in items:
         t, x, r = it["t"], it["x"], it["r"]
         for k in QUALITY_KS:
+            vw = B.visvalingam_whyatt(t, x, k, r.required)
             picks = {"fluxprune": r.refine(r.top(k), PASSES), "bottom-up (nested)": r.top(k),
-                     "top-down": B.top_down(t, x, k, r.required), "swinging door": B.sdt(t, x, k),
+                     "top-down": B.top_down(t, x, k, r.required), "Visvalingam-Whyatt": vw,
+                     "Visvalingam-Whyatt + refine": r.refine(vw, PASSES), "swinging door": B.sdt(t, x, k),
                      "LTTB": B.lttb(t, x, k), "min/max buckets": B.minmax(t, x, k), "uniform": B.uniform(t, x, k)}
             for m, keep in picks.items():
                 e, mx = B.exact_rmse(t, x, keep, max_err=True)
@@ -188,14 +192,13 @@ def quality(items):
 
 
 def optimality(items):
-    """On OPT_WINDOW-point windows: each greedy method's RMSE over the optimum's (same required points)."""
-    out = {k: {"fluxprune": [], "bottom-up (nested)": [], "top-down": []} for k in OPT_KS}
+    """On whole 1 h blocks: each greedy method's RMSE over the optimum's (same required points)."""
+    out = {k: {"fluxprune": [], "bottom-up (nested)": [], "top-down": []} for k in QUALITY_KS}
     for it in items:
-        t, x = it["t"][:OPT_WINDOW], it["x"][:OPT_WINDOW]
+        t, x, r = it["t"], it["x"], it["r"]
         if x.max() == x.min():
             continue
-        r = fluxprune.rank(t, x)
-        for k in OPT_KS:
+        for k in QUALITY_KS:
             best = B.exact_rmse(t, x, B.optimal_with(t, x, k, r.required))
             if best < 1e-9:
                 continue
@@ -215,10 +218,10 @@ def invariance(params):
         half = blocks(name, 0, 12)
         for rule, (k_of, *_) in RULES.items():
             p = params[rule]
-            ks = [k_of(fluxprune.rank(t, x), p, 1) for t, x in hour]
-            ks10 = [k_of(fluxprune.rank(t[::10], x[::10]), p, 1) for t, x in hour]
+            ks = [k_of(rank(t, x), p, 1) for t, x in hour]
+            ks10 = [k_of(rank(t[::10], x[::10]), p, 1) for t, x in hour]
             rate[rule][name] = float(np.median(np.array(ks10) / np.array(ks)))
-            k12 = [k_of(fluxprune.rank(t, x), p, 12) for t, x in half]
+            k12 = [k_of(rank(t, x), p, 12) for t, x in half]
             length[rule][name] = float(np.mean([k12[j] / sum(ks[12 * j:12 * j + 12]) for j in range(2)]))
     return rate, length
 
@@ -342,24 +345,26 @@ CAP = 360  # points per hour: the guard study's safety cap (10% of the scans)
 
 
 def guard_study():
-    """Per block of the main and offset signals (1 h): points, largest error and RMSE of the automatic rule, of
+    """Per block of the main and offset signals (1 h): points, largest error and RMSE of the rmse pass, of
     max_error = the signal's GUARD, of the same with a cap of CAP points, and of swinging door with CompDev = GUARD."""
     items = scale_corpus(1)
-    methods = ["automatic", "max_error", f"max_error, max_points {CAP}", "swinging door, CompDev = max_error / 2",
+    methods = ["rmse pass", "max_error", f"max_error, max_points {CAP}", "swinging door, CompDev = max_error / 2",
                "swinging door, CompDev = max_error"]
     out = {m: {"k": [], "max": [], "rmse": [], "capped": []} for m in methods}
     for it in items:
         r, x, t = it["r"], it["x"], it["t"]
         tol = GUARD[it["name"]]
-        picks = {"automatic": r.prune(), "max_error": r.prune(max_error=tol),
-                 f"max_error, max_points {CAP}": r.prune(max_error=tol, max_points=CAP)}
+        picks = {"rmse pass": r.select(), "max_error": r.select(max_error=tol),
+                 f"max_error, max_points {CAP}": r.select(max_error=tol, max_points=CAP)}
         for m in methods:
             if m.startswith("swinging door"):
                 idx = swinging_door((t - t[0]).astype(np.float64), x, tol / 2 if m.endswith("/ 2") else tol, np.inf)
-                worst = errors_kernel(r._tau, r._y, idx)[1] * it["range"] if len(r._tau) else 0.0
-                capped = False
+                rmse_met = True
             else:
-                idx, worst, capped = picks[m].index, picks[m].max_error, picks[m].capped
+                idx, rmse_met = picks[m]
+            worst = r.errors(idx)[1] * it["range"]
+            # the cap cut the rmse pass, or relaxed max_error
+            capped = "max_points" in m and (not rmse_met or worst > tol * (1 + 1e-9))
             out[m]["k"].append(len(idx))
             out[m]["max"].append(worst / tol)
             out[m]["rmse"].append(abs_error(it, idx) / SPAN[it["name"]])
@@ -368,27 +373,28 @@ def guard_study():
     return names, {m: {key: np.array(v) for key, v in d.items()} for m, d in out.items()}
 
 
-FILLS = ["swinging door's rule", "farthest reach (fluxprune)", "fewest points (exact)"]
+SPLITS = ["swinging door's rule", "farthest reach (fluxprune)", "fewest points (exact)"]
 
 
-def fill_study():
-    """Per block of the main and offset signals: the automatic points (refined) filled at max_error = GUARD by each
-    fill: points, RMSE over the span and the fill's time."""
+def max_error_pass_study():
+    """Per block of the main and offset signals: the rmse pass's points (refined) with every line that strays further
+    than max_error = GUARD split by each rule: points, RMSE over the span and the max_error pass's time."""
     items = scale_corpus(1)
-    out = {m: {"k": [], "rmse": [], "ms": []} for m in FILLS}
+    out = {m: {"k": [], "rmse": [], "ms": []} for m in SPLITS}
     for it in items:
         r = it["r"]
         if not len(r._tau):
             continue
         tol = GUARD[it["name"]] / it["range"]
         base = r.refine(r.top(r.count()), PASSES)
-        calls = {FILLS[0]: lambda: B.other_fill(r._tau, r._y, base, tol, False),
-                 FILLS[1]: lambda: fill_kernel(r._tau, r._y, base, tol),
-                 FILLS[2]: lambda: B.other_fill(r._tau, r._y, base, tol, True)}
+        local = np.searchsorted(r._live, base)
+        calls = {SPLITS[0]: lambda: B.other_max_error_pass(r._tau, r._y, local, tol, False),
+                 SPLITS[1]: lambda: max_error_kernel(r._tau, r._y, local, tol),
+                 SPLITS[2]: lambda: B.other_max_error_pass(r._tau, r._y, local, tol, True)}
         for m, call in calls.items():
             call()  # compiled and warm
             t0 = time.perf_counter()
-            idx = call()
+            idx = r._live[call()]
             out[m]["ms"].append(1e3 * (time.perf_counter() - t0))
             out[m]["k"].append(len(idx))
             out[m]["rmse"].append(abs_error(it, idx) / SPAN[it["name"]])
@@ -396,8 +402,8 @@ def fill_study():
     return names, {m: {key: np.array(v) for key, v in d.items()} for m, d in out.items()}
 
 
-def fill_section(fills):
-    f_names, f = fills
+def max_error_pass_section(passes):
+    f_names, f = passes
     rows = []
     for name in SIGNALS + OFFSET:
         sel = f_names == name
@@ -405,77 +411,44 @@ def fill_section(fills):
     rows.append(["<b>all</b>"] + [f"<b>{d['k'].mean():.0f} · {pct(d['rmse'].mean())}</b><br><span class='muted'>"
                                   f"{1e3 * d['ms'].mean():.0f} µs per block, at most {1e3 * d['ms'].max():,.0f} µs</span>"
                                   for d in f.values()])
-    return ("<h3>The fill</h3><p>How <code>max_error</code> is met. Each segment of the automatic points that strays "
-            "further than max_error is filled from its left end. Every scan after an anchor bounds the slope of a line "
+    return ("<h3>The max_error pass</h3><p>How <code>max_error</code> is met. Each line between the rmse pass's points "
+            "that strays further than max_error is split from its left end. Every scan after an anchor bounds the slope of a line "
             "from the anchor that passes within max_error of it, from below and above. <i>Swinging door's rule</i> ends "
             "the line at the first scan its chord can't reach. <i>Farthest reach</i>, fluxprune's, scans on while the "
             "bounds still overlap (some line could still pass every scan so far), notes the last scan whose own chord "
             "satisfies them, and when they cross makes that scan the next anchor: with noise, a scan after one the "
             "chord can't reach is often reachable again. <i>Fewest points</i> is the exact minimum (dynamic "
-            "programming over every feasible chord). Cells: points per hour · RMSE over the span; the automatic "
-            "points the same in each column; below, the fill's time per 1 h block.</p>"
+            "programming over every feasible chord). Cells: points per hour · RMSE over the span; the rmse pass's "
+            "points the same in each column; below, the max_error pass's time per 1 h block.</p>"
             + table(["signal", *f.keys()], rows))
 
 
-def windows(t, x, period_ns):
-    """The forcing rule: the lowest and highest point of every consecutive window of one period, and the ends."""
-    w = (t - t[0]) // period_ns
-    edges = np.flatnonzero(np.diff(w)) + 1
-    out = {0, len(x) - 1}
-    for a, b in zip(np.r_[0, edges], np.r_[edges, len(x)]):
-        out |= {a + int(np.argmin(x[a:b])), a + int(np.argmax(x[a:b]))}
-    return np.array(sorted(out))
-
-
-PEAK_METHODS = ["peaks(period)", "peaks(prominence)", "peaks(period, prominence)", "min and max of every period",
-                "prune (automatic)", "prune(keep=peaks(period, prominence))"]
-
-
-def peak_study():
-    """Per periodic signal and method, over 1 h blocks of DAYS days: true peaks and troughs kept (those more than half
-    a period from a block's ends), kept points that are neither (nor the ends), points, and RMSE over the span."""
+def refit_study():
+    """Per block of the main and offset signals: the rmse pass's points with least-squares values (the required points
+    pinned) against the samples: RMSE and largest error ratios; and with max_error = GUARD, how often it still holds."""
     out = {}
-    for name in PERIODIC:
-        P = np.timedelta64(PERIOD_S[name], "s")
-        R = PROMINENCE[name]
-        res = {m: {"peaks": [0, 0], "troughs": [0, 0], "extra": 0, "k": 0, "rmse": []} for m in PEAK_METHODS}
-        span = np.ptp(np.concatenate([periodic_scans(name, d)[0] for d in range(DAYS)]))
-        for day in range(DAYS):
-            x_day, tops, bottoms = periodic_scans(name, day)
-            for b, (t, x) in enumerate(blocks(name, day, 1)):
-                t = t.view("datetime64[ns]")
-                lo, hi = 3600 * b, 3600 * (b + 1)
-                margin = PERIOD_S[name] // 2
-                truth = {"peaks": tops[(tops >= lo + margin) & (tops < hi - margin)] - lo,
-                         "troughs": bottoms[(bottoms >= lo + margin) & (bottoms < hi - margin)] - lo}
-                every = set((tops[(tops >= lo) & (tops < hi)] - lo).tolist()) | set((bottoms[(bottoms >= lo) & (bottoms < hi)] - lo).tolist())
-                pk = fluxprune.peaks(t, x, period=P, prominence=R)
-                picks = {"peaks(period)": fluxprune.peaks(t, x, period=P),
-                         "peaks(prominence)": fluxprune.peaks(t, x, prominence=R),
-                         "peaks(period, prominence)": pk,
-                         "min and max of every period": windows(t.view(np.int64), x, PERIOD_S[name] * 1_000_000_000),
-                         "prune (automatic)": fluxprune.prune(t, x).index,
-                         "prune(keep=peaks(period, prominence))": fluxprune.prune(t, x, keep=pk).index}
-                r = fluxprune.rank(t, x)
-                for m, idx in picks.items():
-                    kept = set(idx.tolist())
-                    for kind in ("peaks", "troughs"):
-                        # the true extreme, or a scan of the same value within half a period (0.1 °C steps tie)
-                        for i in truth[kind]:
-                            near = idx[np.searchsorted(idx, i - margin):np.searchsorted(idx, i + margin, "right")]
-                            res[m][kind][0] += bool(i in kept or np.any(x[near] == x[i]))
-                        res[m][kind][1] += len(truth[kind])
-                    res[m]["extra"] += len(kept - every - {0, len(x) - 1})
-                    res[m]["k"] += len(idx)
-                    res[m]["rmse"].append(r.relative_error(idx) * np.ptp(x) / span)
-        out[name] = res
+    for it in scale_corpus(1):
+        r = it["r"]
+        if not len(r._tau) or not np.isfinite(it["x"]).all():
+            continue
+        idx = r.select()[0]
+        e0, m0 = r.errors(idx)
+        if e0 < 1e-9:  # already exact (the valve, the totalizer)
+            continue
+        e1, m1 = r.errors(idx, r.refit(idx))
+        guarded = r.select(max_error=GUARD[it["name"]])[0]
+        held = r.errors(guarded, r.refit(guarded))[1] * it["range"] <= GUARD[it["name"]] * (1 + 1e-9)
+        d = out.setdefault(it["name"], {"rmse": [], "max": [], "held": []})
+        d["rmse"].append(e1 / e0)
+        d["max"].append(m1 / m0)
+        d["held"].append(held)
     return out
 
 
 def timings():
-    """Seconds, best of 3, by n (1 s scans, days concatenated): rank; prune with the automatic rule (rank, count,
-    refine); prune with max_error = 1% of the range as well; and peaks with a 60 s period and a prominence of 5% of the
-    range. A temperature trace and white noise."""
+    """Seconds, best of 3, by n (1 s scans, days concatenated): rank; prune with the rmse pass alone (rank, count,
+    refine); prune with max_error = 1% of the range as well; and prune with refit=True. A temperature trace and white
+    noise."""
     rows = []
     for name in ("temperature", "white-noise"):
         x_all = np.concatenate([scans(name, d) for d in range(12)])
@@ -483,10 +456,10 @@ def timings():
             x = x_all[:n]
             t = (np.arange(n, dtype=np.int64) * 1_000_000_000).view("datetime64[ns]")
             tol = 0.01 * np.ptp(x)
-            calls = {"rank": lambda: fluxprune.rank(t, x),
+            calls = {"rank": lambda: rank(t, x),
                      "prune": lambda: fluxprune.prune(t, x),
                      "max_error": lambda: fluxprune.prune(t, x, max_error=tol),
-                     "peaks": lambda: fluxprune.peaks(t, x, period=np.timedelta64(60, "s"), prominence=0.05 * np.ptp(x))}
+                     "refit": lambda: fluxprune.prune(t, x, refit=True)}
             best = {}
             for key, call in calls.items():
                 call()
@@ -608,7 +581,7 @@ def shade(ratio):
     return "" if ratio < 1.05 else "r1" if ratio < 1.25 else "r2" if ratio < 1.6 else "r3" if ratio < 2.5 else "r4"
 
 
-def write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills, peaks_res, archive_res, archive_items,
+def write(items, params, res, sw, qual, opt, rate, length, scale, guards, passes, refits, archive_res, archive_items,
           times):
     names = SIGNALS
     by = np.array([it["name"] for it in items])
@@ -640,7 +613,9 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills,
     body = ("<p>Every method picks the same number of points per 1 h block (day 0, every 4th hour, so 6 blocks per "
             "signal); cells are the geometric mean of the block's RMSE over fluxprune's (refined). fluxprune and "
             "top-down keep the required points within k; swinging door's CompDev is searched for k points (the nearest "
-            "count at or above k); LTTB and min/max buckets are the plotting downsamplers.</p>")
+            "count at or above k); LTTB and min/max buckets are the plotting downsamplers; Visvalingam-Whyatt "
+            "(cartography's line simplification) is bottom-up by triangle area, and <i>+ refine</i> adds fluxprune's two "
+            "refinement passes to its points.</p>")
     methods = list(qual[QUALITY_KS[0]].keys())
     for k in QUALITY_KS:
         rows = []
@@ -665,11 +640,12 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills,
             cells.append(f"{gmean(np.array(qual[k][m]['max'])[ok] / mx_ref[ok]):.2f}")
             rows.append(cells)
         body += f"<h3>{k} points per hour</h3>" + table(["method", *names, "all (RMSE)", "all (max error)"], rows)
-    opt_rows = [[m] + [f"{gmean(opt[k][m]):.2f} (worst {max(opt[k][m]):.2f})" for k in OPT_KS] for m in opt[OPT_KS[0]]]
-    body += (f"<h3>Against the optimum</h3><p>On the first {OPT_WINDOW} points of the same blocks, the optimal choice of "
-             f"k points that include the required ones (dynamic programming, O(n²k)); each greedy method's RMSE over "
-             f"the optimum's, geometric mean.</p>"
-             + table(["method", *[f"k = {k}" for k in OPT_KS]], opt_rows))
+    opt_rows = [[m] + [f"{gmean(opt[k][m]):.2f} (worst {max(opt[k][m]):.2f})" for k in QUALITY_KS]
+                for m in opt[QUALITY_KS[0]]]
+    body += ("<h3>Against the optimum</h3><p>On the same whole blocks (3,600 points), the optimal choice of k points that "
+             "include the required ones (dynamic programming, O(n²k): about 2 s a block, an oracle, not a method); each "
+             "greedy method's RMSE over the optimum's, geometric mean.</p>"
+             + table(["method", *[f"k = {k}" for k in QUALITY_KS]], opt_rows))
     section("quality", "Ranking quality at a fixed count", body)
 
     # curves
@@ -767,38 +743,33 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills,
     rows.append(["<b>all</b>", ""] + [f"<b>{d['k'].mean():.0f} · {d['max'].max():.2g} · {pct(d['rmse'].mean())}</b>"
                                       for d in g.values()])
     section("guards", "Guards: max_error and max_points",
-            "<p>The automatic rule (θ = 0.0015) alone, then with <code>max_error</code> set to an engineer's value per "
+            "<p>The rmse pass (θ = 0.0015) alone, then with <code>max_error</code> set to an engineer's value per "
             "signal (the historian tags' CompDev, otherwise about what matters), then with a safety cap of "
-            f"<code>max_points</code> = {CAP} per hour (10% of the scans) as well. <code>max_error</code> fills each "
-            "segment of the automatic points that strays further with the farthest-reach fill (below). Swinging door at "
+            f"<code>max_points</code> = {CAP} per hour (10% of the scans) as well. The max_error pass splits each "
+            "line between the rmse pass's points that strays further, by farthest reach (below). Swinging door at "
             "CompDev = max_error / 2 has the same "
             "guarantee: its doors pivot about the archived point, so at CompDev = max_error (last column) its line "
             "strays up to twice that. Cells: mean points per hour · the largest error of any "
-            "block over max_error · mean RMSE over the signal's span; below, the share of blocks the cap bound.</p>"
+            "block over max_error · mean RMSE over the signal's span; below, the share of blocks the cap bound "
+            "(<code>rmse_met</code> or <code>max_error_met</code> false).</p>"
             + table(["signal", "max_error", *g.keys()], rows)
-            + fill_section(fills))
+            + max_error_pass_section(passes))
 
-    # peaks
-    rows = []
-    for name, res in peaks_res.items():
-        for m, d in res.items():
-            hours = DAYS * 24
-            rows.append([name, m, pct(d["peaks"][0] / d["peaks"][1], 3), pct(d["troughs"][0] / d["troughs"][1], 3),
-                         f"{d['extra'] / hours:.0f}" if m.startswith(("peaks", "min")) else "",
-                         f"{d['k'] / hours:.0f}", pct(np.mean(d["rmse"]))])
-    info = "".join(f"<li><b>{n}</b>: {html.escape(describe(n))}; period {PERIOD_S[n]} s, prominence {PROMINENCE[n]:g}</li>"
-                   for n in PERIODIC)
-    section("peaks", "Peaks and troughs: fluxprune.peaks",
-            f"<p>For periodic signals, where each peak and trough matters as a sample of its own: <code>peaks(t, x, "
-            f"period=, prominence=)</code> keeps the highest point within half a period on either side, at least "
-            f"prominence above its surroundings, and a trough between every two peaks (and the other way round). On "
-            f"{DAYS} days of 1 h blocks of:</p><ul>{info}</ul><p>The true peaks and troughs are the highest scan of each "
-            f"cycle's upper half (of each object in view) and the lowest of each lower half (each gap); those more than "
-            f"half a period from a block's ends are scored, and a kept scan of the same value within half a period "
-            f"counts (values in 0.1 °C steps tie). Extra: kept points per hour that are neither (nor a block's "
-            f"ends). <i>min and max of every period</i> is the forcing rule: the lowest and highest point of each "
-            f"consecutive period.</p>"
-            + table(["signal", "method", "peaks kept", "troughs kept", "extra/h", "points/h", "RMSE / span"], rows))
+    # refit
+    rows = [[name, f"{gmean(d['rmse']):.2f}", f"{gmean(d['max']):.2f}", pct(np.mean(d["held"]), 3)]
+            for name, d in refits.items()]
+    every = [v for d in refits.values() for v in d["rmse"]]
+    rows.append(["<b>all</b>", f"<b>{gmean(every):.2f}</b>",
+                 f"<b>{gmean([v for d in refits.values() for v in d['max']]):.2f}</b>",
+                 f"<b>{pct(np.mean([v for d in refits.values() for v in d['held']]), 3)}</b>"])
+    section("refit", "Refit: values that aren't samples",
+            "<p><code>prune(refit=True)</code> keeps the same times but replaces the values with those whose lines fit the "
+            "input best in time-weighted L2 (a tridiagonal system over the kept points, O(n)), the first, last, minimum "
+            "and maximum points (and the points around gaps) keeping their samples. Per signal, over 1 h blocks of all "
+            "days with any error left: the geometric mean of the RMSE and the largest error with refit over without, at "
+            "the rmse pass's points; and with <code>max_error</code> = the signal's guard value, the share of blocks where "
+            "it still holds after the refit (it isn't checked again).</p>"
+            + table(["signal", "RMSE, refit / samples", "largest error, refit / samples", "max_error still holds"], rows))
 
     # archives
     rows = []
@@ -823,16 +794,15 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills,
     for name, n, b in times:
         tr = b["rank"]
         rows.append([name, f"{n:,}", f"{1e3 * tr:.1f} ms", f"{1e9 * tr / n:.0f} ns"]
-                    + [f"+{1e3 * (b[key] - tr):.1f} ms (+{100 * (b[key] - tr) / tr:.0f}%)" for key in ("prune", "max_error")]
-                    + [f"{1e3 * b['peaks']:.1f} ms ({100 * b['peaks'] / tr:.0f}% of rank)"])
+                    + [f"+{1e3 * (b[key] - tr):.1f} ms (+{100 * (b[key] - tr) / tr:.0f}%)"
+                       for key in ("prune", "max_error", "refit")])
     power = ("" if "AC Power" in subprocess.run(["pmset", "-g", "ps"], capture_output=True, text=True).stdout
              else "<b>Measured on battery power: indicative only, rerun on AC.</b> ") if sys.platform == "darwin" else ""
     section("speed", "Speed", f"<p>{power}Apple M3, one thread, best of 3, 1 s scans. rank is the O(n log n) pass; "
             "prune adds picking k (O(n)) and the two O(n) refinement passes, shown as the time it adds to rank; "
-            "max_error (1% of the range) adds the swinging-door fill on top of that, also against rank; peaks (60 s period, "
-            "prominence 5% of the range) is separate and O(n). <code>bench/prune.py</code> has the same per call "
-            "for more signals.</p>"
-            + table(["signal", "n", "rank", "per point", "prune (automatic)", "prune, max_error", "peaks"], rows))
+            "max_error (1% of the range) adds the max_error pass on top of that, and refit the least-squares values, "
+            "both also against rank. <code>bench/prune.py</code> has the same per call for more signals.</p>"
+            + table(["signal", "n", "rank", "per point", "prune (rmse pass)", "prune, max_error", "prune, refit"], rows))
 
     section("findings", "Findings", FINDINGS)
     (OUT / "prune.html").write_text(shell("fluxprune: keeping the points that matter", intro, toc, "\n".join(sections)))
@@ -842,11 +812,15 @@ FINDINGS = """
 <ol>
 <li><b>Ranking: bottom-up, then refine.</b> Removing the cheapest point repeatedly (exact time-weighted L2, a heap,
 O(n log n)) gives a nested ranking of every point and the whole error curve in one pass, but greedy merging is myopic:
-25-35% above the optimum. Two O(n) passes that slide each kept point to its best spot between its neighbours bring
-it to about 6% above the optimum on 600-point windows (worst 1.3×), for +5-15% of the ranking's time. Top-down
-splitting is better than plain bottom-up on step-like signals and much worse on others (worst 7× the optimum).
-At the same number of points, swinging door's RMSE is 1.3-1.5× fluxprune's, LTTB's 2-2.5×, and min/max buckets' and
-even spacing's 2-4×: the plotting downsamplers keep shape for the eye, not the interpolation.</li>
+about 30% above the optimum. Two O(n) passes that slide each kept point to its best spot between its neighbours bring
+it to 4-6% above the optimum on whole 1 h blocks at 12, 36 and 108 points (worst 1.4×), for +5-15% of the ranking's
+time. Top-down splitting (Douglas-Peucker's order, and that of perceptually important points) is better than plain
+bottom-up on step-like signals and much worse on others (up to 74× the optimum on the compressor). Visvalingam-Whyatt
+(bottom-up by triangle area) is 1.6-1.8× fluxprune's RMSE, and 1.03-1.07× with the same refinement passes: the
+passes do most of the work, and exact L2 is still the better order to start from. SWAB (Keogh et al. 2001) is bottom-up
+in a sliding window, for streams; on whole blocks it is plain bottom-up. At the same number of points, swinging door's
+RMSE is 1.3-1.5× fluxprune's, LTTB's 2-2.5×, and min/max buckets' and even spacing's 2-4×: the plotting downsamplers
+keep shape for the eye, not the interpolation.</li>
 <li><b>The error curve tells the signal apart from the noise.</b> Smooth signals fall as k⁻², random walks as k⁻½,
 noise stays flat until most points are kept. The curve at k = n/2 measures the white noise: it is 0.29σ for white
 noise at every block size (<code>tslab/prune/rules.py</code>, <code>noise</code>), regular or irregular times.</li>
@@ -893,47 +867,46 @@ absolute <code>max_error</code> guard (next).</li>
 below its noise (flow, motor current: 1,300-3,000 archived points per hour) drops to 0.6-6% of the archive at the
 same settings, a smooth tag (temperature, pH: ~330/h) to 2-11%, and an archive that already has two points per hour
 stays as it is.</li>
-<li><b>max_error</b> only adds points: each segment of the automatic choice that strays further than max_error from the
-scans is filled with the farthest-reach fill: from each anchor, the line to the farthest scan it can reach while every
-scan between stays within max_error. Swinging door's rule (the line ends at the first scan the chord can't reach) keeps
+<li><b>max_error</b> only adds points: the max_error pass splits each line between the rmse pass's points that strays
+further than max_error from the scans by farthest reach: from each anchor, the line to the farthest scan it can reach
+while every scan between stays within max_error. Swinging door's rule (the line ends at the first scan the chord can't
+reach) keeps
 1.1-3× as many points on the noisy signals (vibration 170 against 66 per hour, batch 72 against 23, temperature 766
 against 510), the exact minimum 4% fewer overall at about 35× the time (12 against 440 µs per block, up to 8 ms). At the same guarantee as
 swinging door (CompDev = max_error / 2, since at CompDev = max_error its line strays up to 1.6-2× that), fluxprune keeps
 fewer points on 12 of the 18 signals (batch 23 against 228 per hour, vibration 66 against 422, temperature 510 against
-1,136, grid frequency 282 against 597) and as many on two; more only where the automatic rule already wanted more than
+1,136, grid frequency 282 against 597) and as many on two; more only where the rmse pass already wanted more than
 the guard needs (the quiet level's dither: 77 against 2). A max_error below a signal's noise keeps most of the scans,
-as swinging door does (motor current: 3,160 per hour); <b>max_points</b> (here 360 per hour) caps that. The budget goes
-in a fixed order: the required points; then max_error, if it can be met within the cap, with the automatic points
-taking what is left (the least significant give way first, by a bisection on their number); and if it can't,
-max_error relaxed to about the tightest bound the cap allows (a bisection over the fill), with no automatic points.
-The fill always comes last, since adding a point can make the error worse. The cap bound only on the five
+as swinging door does (motor current: 3,160 per hour): at max_error = σ about half the scans, at 0.6σ two thirds, at
+2.5σ an eighth, so prune() warns below σ, estimated from the error curve the ranking already has (no extra pass).
+<b>max_points</b> (here 360 per hour) caps that. The budget goes in a fixed order: the required points; then max_error,
+if it can be met within the cap, with the rmse pass taking what is left (its least significant points give way first,
+by a bisection on their number); and if it can't, max_error relaxed to about the tightest bound the cap allows (a
+bisection over the max_error pass), with no points from the rmse pass. The max_error pass always comes last, since
+adding a point can make the error worse. The cap bound only on the five
 noise-dominated signals; in their worst block the bound reached is 1.2× max_error for temperature, 1.3× for pH, 2.1×
 for white noise, 2.7× for flow and 11× for motor current, whose noise is five times max_error. Measured and not
 adopted: splitting the worst segment at its worst point when the cap binds (1.3-1.7× larger errors: it anchors on
-noise spikes); filling first and ranking again with the fill fixed (the same RMSE at the same number of points, 3-5×
-slower); a secant search for the relaxed bound (9.4 fills on average against 12.8, but up to 28 against 14); trying
-every number of automatic points instead of bisecting (0.4% lower RMSE on average).</li>
-<li><b>Peaks are a different job</b>, so they have their own function. With a 60 s period and a prominence of about
-6σ of the noise or more, <code>peaks()</code> keeps every true peak and trough of a vibration whose period drifts from 40
-to 80 s and whose amplitude drifts fivefold, and of a pyrometer's objects and the gaps between them, with 0.3 and 1.4
-other points per hour. The prominence does most of the work: alone it leaves 0.3 and 10 extra points per hour (noise on
-the objects' tops); the period alone leaves 69-78 (every noise bump half a period from a higher one) and misses 3% of
-the pyrometer's troughs. Three choices settled on the way: the period compares peaks with peaks (scipy's distance), not
-with every scan within half a period, which dropped the peak of a cooler object that follows a hotter one closely (its
-tail is still hot: 0.3% of the pyrometer's peaks); the prominence test comes first, so that noise can't suppress a real
-peak; and a side of a peak with no higher point before the block's end doesn't count, since the block's edge cuts it
-(by the usual definition, the first gap of a block had the prominence of its noise). Forcing a minimum and a maximum
-into every period (the first idea) misses 15% of the extremes: real peaks fall on window edges, and windows without one
-get a meaningless pair. The automatic rule keeps only a third of the vibration's peaks and a seventh of the
-pyrometer's: they cost little RMSE. <code>prune(keep=peaks(...))</code> keeps them all and prunes the rest as usual,
-with a lower RMSE than either alone.</li>
+noise spikes); the max_error pass first and ranking again with its points fixed (the same RMSE at the same number of
+points, 3-5× slower); a secant search for the relaxed bound (9.4 max_error passes on average against 12.8, but up to 28
+against 14); trying every number of the rmse pass's points instead of bisecting (0.4% lower RMSE on average).</li>
+<li><b>Refit</b> (<code>refit=True</code>): least-squares values at the same kept times, the required points pinned to
+their samples, lower the RMSE by about a tenth overall, almost all of it on smooth or step-like signals (sine,
+compressor, batch: 0.5-0.7×) where a chord cuts a curve's corner; on noisy ones by 1-4%. It costs one O(n) tridiagonal
+solve. The values are then no longer readings, and max_error isn't checked again, so it stays an option to measure on
+real data. Choosing the times and the values together (a free-knot fit, or Imai and Iri's 1986 fewest-segments algorithm
+for max_error with corners off the samples) could gain more and wasn't tried.</li>
 </ol>
-<p><b>The API.</b> <code>prune(t, x, error_per_point=θ / H)</code> for blocks of H hours is the default (θ = 0.0015
-keeps ~1% of 1 s scans on this corpus; the error relative to each block's range). Two optional guards bound it:
+<p><b>The API.</b> <code>prune(t, x)</code> returns the kept times and values, the RMSE and largest error they leave,
+and <code>rmse_met</code>, <code>max_error_met</code> and <code>max_points_met</code>. The rmse pass is the default
+(<code>error_per_point</code> θ = 0.0015 keeps ~1% of 1 s scans in 1 h blocks on this corpus; the error relative to
+each block's range; θ / H for blocks of H hours keeps fewer per hour). Two optional guards bound it:
 <code>max_points</code>, a hard cap, and <code>max_error</code>, the largest error of any scan in value units, which
-also takes care of quiet blocks, glitches and the block length for a configured signal. For periodic signals,
-<code>peaks(t, x, period=, prominence=)</code>, passed to <code>prune(keep=)</code>. The other rules on this page
-(count, tolerance, balance, noise floor, marginal, knee) are experiments in <code>tslab/prune/rules.py</code>.</p>
+also takes care of quiet blocks, glitches and the block length for a configured signal. θ = 0 with
+<code>max_points</code> keeps the best <code>max_points</code>; θ = ∞ with <code>max_error</code> runs the max_error
+pass alone. A run of non-finite values keeps its first point and the finite points around it (a forward hold), past
+<code>max_points</code> if need be. The other rules on this page (count, tolerance, balance, noise floor, marginal,
+knee) are experiments in <code>tslab/prune/rules.py</code>.</p>
 """
 
 
@@ -954,14 +927,14 @@ def main():
     scale = scale_study()
     print(f"scale: {time.time() - t0:.0f} s", flush=True)
     guards = guard_study()
-    fills = fill_study()
-    peaks_res = peak_study()
-    print(f"guards and peaks: {time.time() - t0:.0f} s", flush=True)
+    passes = max_error_pass_study()
+    refits = refit_study()
+    print(f"guards and refit: {time.time() - t0:.0f} s", flush=True)
     archive_items = corpus(archive=True, names=TAGS)
     archive_res = apply_rules(archive_items, params)
     times = timings()
     print(f"done: {time.time() - t0:.0f} s", flush=True)
-    write(items, params, res, sw, qual, opt, rate, length, scale, guards, fills, peaks_res, archive_res, archive_items,
+    write(items, params, res, sw, qual, opt, rate, length, scale, guards, passes, refits, archive_res, archive_items,
           times)
 
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""How many points to keep, from a fluxprune.Ranking's error curve e[k] (relative RMSE of keeping k).
+"""How many points to keep, from a fluxprune._api.Ranking's error curve e[k] (relative RMSE of keeping k).
 
 Every rule is a function of the curve only, so all of them run on the same ranking:
 

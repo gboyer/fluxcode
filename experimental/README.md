@@ -85,10 +85,10 @@ swinging-door (SDT) historian archives, one block group per tag-day with exact t
 per archived point against zstd and Gorilla, error against the archived points and the scans, a B sweep, block layouts,
 resampled exports, and SDT against storing every scan. `make_prune_report.py` writes `report/prune.html`: the
 [fluxprune](../fluxprune/README.md) prepass (keep the points that matter for linear interpolation) on 12 slow signals
-in 1 h blocks (`tslab/prune/`): its ranking against the optimum, swinging door, LTTB and others at the same count,
+in 1 h blocks (`tslab/prune/`): its ranking against the optimum, Visvalingam-Whyatt, swinging door, LTTB and others at the same count,
 eight rules for how many points to keep, their stability under sampling rate and block length, what errors should be
 relative to (range, largest |value|, a known span; six more signals with small variations on a large offset), the
-max_error and max_points guards against swinging door, peaks() on two periodic signals with known peaks,
+max_error and max_points guards against swinging door, the max_error pass against its alternatives, refit,
 swinging-door archives as input, and timings (they need a quiet machine). `report/` is generated, and committed so it can be read without rerunning.
 
 ## Benchmarks

@@ -11,6 +11,8 @@
 - lttb: Largest-Triangle-Three-Buckets (Steinarsson 2013), the plotting downsampler.
 - minmax: the min and max of each of k/2 equal-time buckets (M4 without first/last), plus the ends.
 - uniform: k points evenly spaced in index.
+- visvalingam_whyatt: bottom-up by the area of the triangle each point makes with its neighbours (Visvalingam
+  and Whyatt 1993, the cartographers' line simplification), in coordinates relative to the block's duration and range.
 
 and `exact_rmse`: the relative time-weighted RMSE of any subset, by brute force.
 """
@@ -138,6 +140,40 @@ def uniform(t, x, k):
     return np.unique(np.linspace(0, len(x) - 1, k).round().astype(np.int64))
 
 
+def visvalingam_whyatt(t, x, k, required):
+    """The k points left after removing, one at a time, the point whose triangle with its neighbours has the
+    least area (each neighbour's area raised to at least the last one removed, as the original does); the
+    required points stay."""
+    tau, y = normalize(t, x)
+    n = len(y)
+    prv, nxt = list(range(-1, n - 1)), list(range(1, n + 1))
+    alive = np.ones(n, bool)
+    fixed = np.zeros(n, bool)
+    fixed[required] = True
+
+    def area(i):
+        p, q = prv[i], nxt[i]
+        return abs((tau[i] - tau[p]) * (y[q] - y[p]) - (tau[q] - tau[p]) * (y[i] - y[p])) / 2
+
+    cur = {i: area(i) for i in range(1, n - 1) if not fixed[i]}
+    heap = [(a, i) for i, a in cur.items()]
+    heapq.heapify(heap)
+    left = n
+    while left > k and heap:
+        a, i = heapq.heappop(heap)
+        if not alive[i] or cur[i] != a:
+            continue
+        alive[i] = False
+        left -= 1
+        p, q = prv[i], nxt[i]
+        nxt[p], prv[q] = q, p
+        for j in (p, q):
+            if j in cur:
+                cur[j] = max(area(j), a)
+                heapq.heappush(heap, (cur[j], j))
+    return np.flatnonzero(alive)
+
+
 def optimal_with(t, x, k, required):
     """The k points with the least error that include `required` (O(n² k))."""
     tau, y = normalize(t, x)
@@ -175,7 +211,7 @@ def _optimal_with(tau, y, k, req):
 
 
 # ---------------------------------------------------------------------------
-# Fills for max_error, against fluxprune's farthest reach (fluxprune._guard.fill_kernel)
+# The max_error pass's alternatives, against fluxprune's farthest reach (fluxprune._guard.max_error_kernel)
 # ---------------------------------------------------------------------------
 
 @njit(cache=True)
@@ -247,16 +283,16 @@ def _fewest_segment(tau, y, a, b, tol, out, m):
 
 
 @njit(cache=True)
-def other_fill(tau, y, keep, tol, fewest):
-    """keep with each segment that strays more than tol filled by swinging door's rule, or (fewest) by the fewest
-    points: what fluxprune's farthest-reach fill is measured against."""
+def other_max_error_pass(tau, y, keep, tol, fewest):
+    """keep with each segment that strays more than tol split by swinging door's rule, or (fewest) by the fewest
+    points: what fluxprune's farthest reach is measured against."""
     out = np.empty(len(tau), np.int64)
     m = 0
     for s in range(len(keep) - 1):
         a, b = keep[s], keep[s + 1]
         out[m] = a
         m += 1
-        if _worst(tau, y, a, b)[0] > tol:
+        if _worst(tau, y, a, b) > tol:
             m = _fewest_segment(tau, y, a, b, tol, out, m) if fewest else _door_segment(tau, y, a, b, tol, out, m)
     out[m] = keep[-1]
     return out[: m + 1].copy()
