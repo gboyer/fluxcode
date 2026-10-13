@@ -12,6 +12,10 @@ over its span in coordinates local to its left end (u = t - t_left, w = y - y_le
 so its error against the chord, E = Sww - 2 s Suw + s² Suu with s the chord's slope, and the
 moments of two neighbours merged, are O(1) and lose no precision to the position in the block
 (prefix sums over the whole block would: a short steep chord far from the start cancels them).
+
+A segment's moments and its error sit in one row (one cache line), and the candidates wait in a
+4-ary heap that holds their keys inline: half the time of separate arrays and a binary heap of
+indices at 3,600 points, two thirds at a million.
 """
 
 import numpy as np
@@ -28,40 +32,64 @@ def _chord_error(L, Suu, Sww, Suw, du, dw):
     return max(0.0, e)  # rounding: a straight span can come out a hair negative
 
 
-@njit(cache=True)
-def _sift_up(heap, pos, key, k):
-    i = heap[k]
+# the columns of a segment's row
+_L, _SU, _SW, _SUU, _SWW, _SUW, _ERR = range(7)
+_D = 4  # the heap's arity
+
+
+@njit(cache=True, inline="always")
+def _less(ka, ia, kb, ib):
+    """(key, index) order: the lower key, then the lower index."""
+    return ka < kb or (ka == kb and ia < ib)
+
+
+@njit(cache=True, inline="always")
+def _sift_up(hk, hi, pos, k, ck, ci):
+    """Place the entry (ck, ci) at or above slot k."""
     while k > 0:
-        parent = (k - 1) >> 1
-        j = heap[parent]
-        if key[j] < key[i] or (key[j] == key[i] and j < i):
+        par = (k - 1) // _D
+        if not _less(ck, ci, hk[par], hi[par]):
             break
-        heap[k] = j
-        pos[j] = k
-        k = parent
-    heap[k] = i
-    pos[i] = k
+        hk[k] = hk[par]
+        hi[k] = hi[par]
+        pos[hi[k]] = k
+        k = par
+    hk[k] = ck
+    hi[k] = ci
+    pos[ci] = k
 
 
-@njit(cache=True)
-def _sift_down(heap, pos, key, k, size):
-    i = heap[k]
+@njit(cache=True, inline="always")
+def _sift_down(hk, hi, pos, k, ck, ci, size):
+    """Place the entry (ck, ci) at or below slot k."""
     while True:
-        c = 2 * k + 1
+        c = _D * k + 1
         if c >= size:
             break
-        if c + 1 < size:
-            a, b = heap[c], heap[c + 1]
-            if key[b] < key[a] or (key[b] == key[a] and b < a):
-                c += 1
-        j = heap[c]
-        if key[i] < key[j] or (key[i] == key[j] and i < j):
+        best = c
+        for e in range(c + 1, min(c + _D, size)):
+            if _less(hk[e], hi[e], hk[best], hi[best]):
+                best = e
+        if not _less(hk[best], hi[best], ck, ci):
             break
-        heap[k] = j
-        pos[j] = k
-        k = c
-    heap[k] = i
-    pos[i] = k
+        hk[k] = hk[best]
+        hi[k] = hi[best]
+        pos[hi[k]] = k
+        k = best
+    hk[k] = ck
+    hi[k] = ci
+    pos[ci] = k
+
+
+@njit(cache=True, inline="always")
+def _merged_error(tau, y, M, p, i, q):
+    """Error of the chord p -> q over the segments p -> i and i -> q merged (without merging them)."""
+    a = tau[i] - tau[p]
+    b = y[i] - y[p]
+    suu = M[p, _SUU] + M[i, _SUU] + 2.0 * a * M[i, _SU] + a * a * M[i, _L]
+    sww = M[p, _SWW] + M[i, _SWW] + 2.0 * b * M[i, _SW] + b * b * M[i, _L]
+    suw = M[p, _SUW] + M[i, _SUW] + a * M[i, _SW] + b * M[i, _SU] + a * b * M[i, _L]
+    return _chord_error(M[p, _L] + M[i, _L], suu, sww, suw, tau[q] - tau[p], y[q] - y[p])
 
 
 @njit(cache=True)
@@ -72,14 +100,7 @@ def rank_kernel(tau, y, removable):
     two it replaces). tau must be non-decreasing; y finite wherever a removable point or its
     neighbours are."""
     n = len(tau)
-    # moments of each current segment, indexed by its left end
-    L = np.zeros(n)
-    Su = np.zeros(n)
-    Sw = np.zeros(n)
-    Suu = np.zeros(n)
-    Sww = np.zeros(n)
-    Suw = np.zeros(n)
-    err = np.zeros(n)
+    M = np.zeros((n, 8))  # each current segment's row, indexed by its left end (the last column pads)
     prv = np.empty(n, np.int64)
     nxt = np.empty(n, np.int64)
     for j in range(n):
@@ -88,72 +109,59 @@ def rank_kernel(tau, y, removable):
     for j in range(n - 1):
         h = tau[j + 1] - tau[j]
         d = y[j + 1] - y[j]
-        L[j] = h
-        Su[j] = h * h / 2.0
-        Sw[j] = h * d / 2.0
-        Suu[j] = h * h * h / 3.0
-        Sww[j] = h * d * d / 3.0
-        Suw[j] = h * h * d / 3.0
+        M[j, _L] = h
+        M[j, _SU] = h * h / 2.0
+        M[j, _SW] = h * d / 2.0
+        M[j, _SUU] = h * h * h / 3.0
+        M[j, _SWW] = h * d * d / 3.0
+        M[j, _SUW] = h * h * d / 3.0
 
-    key = np.zeros(n)
-    heap = np.empty(n, np.int64)
-    pos = np.full(n, -1, np.int64)
+    hk = np.empty(n)  # the heap: keys and indices side by side
+    hi = np.empty(n, np.int64)
+    pos = np.full(n, -1, np.int64)  # each candidate's slot in it
     size = 0
     for i in range(1, n - 1):
         if removable[i]:
-            p, q = i - 1, i + 1
-            key[i] = _merged_error(tau, y, L, Su, Sw, Suu, Sww, Suw, p, i, q) - err[p] - err[i]
-            heap[size] = i
+            hk[size] = _merged_error(tau, y, M, i - 1, i, i + 1) - M[i - 1, _ERR] - M[i, _ERR]
+            hi[size] = i
             pos[i] = size
             size += 1
-    for k in range(size // 2 - 1, -1, -1):
-        _sift_down(heap, pos, key, k, size)
+    for k in range((size - 2) // _D, -1, -1):
+        _sift_down(hk, hi, pos, k, hk[k], hi[k], size)
 
     order = np.empty(size, np.int64)
     delta = np.empty(size)
     for r in range(size):
-        i = heap[0]
+        i = hi[0]
+        order[r] = i
+        delta[r] = hk[0]
         pos[i] = -1
         size -= 1
         if size > 0:
-            heap[0] = heap[size]
-            pos[heap[0]] = 0
-            _sift_down(heap, pos, key, 0, size)
-        order[r] = i
-        delta[r] = key[i]
+            _sift_down(hk, hi, pos, 0, hk[size], hi[size], size)
         p, q = prv[i], nxt[i]
         # merge segment i into segment p
         a = tau[i] - tau[p]
         b = y[i] - y[p]
-        Suu[p] += Suu[i] + 2.0 * a * Su[i] + a * a * L[i]
-        Sww[p] += Sww[i] + 2.0 * b * Sw[i] + b * b * L[i]
-        Suw[p] += Suw[i] + a * Sw[i] + b * Su[i] + a * b * L[i]
-        Su[p] += Su[i] + a * L[i]
-        Sw[p] += Sw[i] + b * L[i]
-        L[p] += L[i]
-        err[p] = _chord_error(L[p], Suu[p], Sww[p], Suw[p], tau[q] - tau[p], y[q] - y[p])
+        Li, Sui, Swi = M[i, _L], M[i, _SU], M[i, _SW]
+        M[p, _SUU] += M[i, _SUU] + 2.0 * a * Sui + a * a * Li
+        M[p, _SWW] += M[i, _SWW] + 2.0 * b * Swi + b * b * Li
+        M[p, _SUW] += M[i, _SUW] + a * Swi + b * Sui + a * b * Li
+        M[p, _SU] += Sui + a * Li
+        M[p, _SW] += Swi + b * Li
+        M[p, _L] += Li
+        M[p, _ERR] = _chord_error(M[p, _L], M[p, _SUU], M[p, _SWW], M[p, _SUW], tau[q] - tau[p], y[q] - y[p])
         nxt[p] = q
         prv[q] = p
         for j in (p, q):
-            if pos[j] >= 0:
-                old = key[j]
-                key[j] = _merged_error(tau, y, L, Su, Sw, Suu, Sww, Suw, prv[j], j, nxt[j]) - err[prv[j]] - err[j]
-                if key[j] < old:
-                    _sift_up(heap, pos, key, pos[j])
+            k = pos[j]
+            if k >= 0:
+                key = _merged_error(tau, y, M, prv[j], j, nxt[j]) - M[prv[j], _ERR] - M[j, _ERR]
+                if _less(key, j, hk[k], j):
+                    _sift_up(hk, hi, pos, k, key, j)
                 else:
-                    _sift_down(heap, pos, key, pos[j], size)
+                    _sift_down(hk, hi, pos, k, key, j, size)
     return order, delta
-
-
-@njit(cache=True, inline="always")
-def _merged_error(tau, y, L, Su, Sw, Suu, Sww, Suw, p, i, q):
-    """Error of the chord p -> q over the segments p -> i and i -> q merged (without merging them)."""
-    a = tau[i] - tau[p]
-    b = y[i] - y[p]
-    suu = Suu[p] + Suu[i] + 2.0 * a * Su[i] + a * a * L[i]
-    sww = Sww[p] + Sww[i] + 2.0 * b * Sw[i] + b * b * L[i]
-    suw = Suw[p] + Suw[i] + a * Sw[i] + b * Su[i] + a * b * L[i]
-    return _chord_error(L[p] + L[i], suu, sww, suw, tau[q] - tau[p], y[q] - y[p])
 
 
 @njit(cache=True)

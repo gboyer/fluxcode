@@ -251,24 +251,34 @@ def rank(times, values):
     tau = _offsets(times, n)
 
     finite = np.isfinite(x)
-    kind = np.where(finite, 0, np.where(np.isnan(x), 1, np.where(x > 0, 2, 3)))
-    start = ~finite
-    start[1:] &= kind[1:] != kind[:-1]  # each gap's first point, and where it changes between nan and ±inf
-    near = np.zeros(n, bool)  # the finite points just before and after a gap
-    near[:-1] |= finite[:-1] & ~finite[1:]
-    near[1:] |= finite[1:] & ~finite[:-1]
     base = np.zeros(n, bool)  # first, last, minimum, maximum
     if n:
         base[[0, n - 1]] = True
     lo = hi = 0.0
-    if finite.any():
-        fi = np.flatnonzero(finite)
-        base[fi[np.argmin(x[fi])]] = base[fi[np.argmax(x[fi])]] = True
-        lo, hi = x[fi].min(), x[fi].max()
-    required = base | start | near
-    live = np.flatnonzero(finite | start)  # the inside of a gap is never kept
-    req = required[live]
-    gaps = int(np.count_nonzero(required & ~base))
+    every = bool(finite.all())
+    if every:  # no gaps, the usual case: none of their masks
+        live = np.arange(n)
+        if n:
+            low, high = int(np.argmin(x)), int(np.argmax(x))
+            base[low] = base[high] = True
+            lo, hi = x[low], x[high]
+        req = base
+        gaps = 0
+    else:
+        kind = np.where(finite, 0, np.where(np.isnan(x), 1, np.where(x > 0, 2, 3)))
+        start = ~finite
+        start[1:] &= kind[1:] != kind[:-1]  # each gap's first point, and where it changes between nan and ±inf
+        near = np.zeros(n, bool)  # the finite points just before and after a gap
+        near[:-1] |= finite[:-1] & ~finite[1:]
+        near[1:] |= finite[1:] & ~finite[:-1]
+        if finite.any():
+            fi = np.flatnonzero(finite)
+            base[fi[np.argmin(x[fi])]] = base[fi[np.argmax(x[fi])]] = True
+            lo, hi = x[fi].min(), x[fi].max()
+        required = base | start | near
+        live = np.flatnonzero(finite | start)  # the inside of a gap is never kept
+        req = required[live]
+        gaps = int(np.count_nonzero(required & ~base))
 
     m = len(live)
     duration = tau[live[-1]] - tau[live[0]] if m else 0.0
@@ -279,7 +289,7 @@ def rank(times, values):
                        np.zeros(m), live, 0.0)
     y = (x[live] - lo) / (hi - lo)
     t = (tau[live] - tau[live[0]]) / duration
-    order, delta = rank_kernel(t, np.where(np.isfinite(y), y, 0.0), ~req)
+    order, delta = rank_kernel(t, y if every else np.where(np.isfinite(y), y, 0.0), ~req)
     return Ranking(m, gaps, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
                    float(hi - lo))
 

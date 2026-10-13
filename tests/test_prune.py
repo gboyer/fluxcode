@@ -385,3 +385,13 @@ def test_max_error_pass_with_repeated_times():
         keep, _ = r.select(error_per_point=np.inf, max_error=tol)
         worst = r.errors(keep)[1]
         assert worst * 4 <= tol + 1e-12 and max_deviation(t, x, keep) <= tol + 1e-12
+
+
+def test_a_gap_at_the_start_next_to_the_maximum():
+    t = np.arange(20.0)
+    x = np.sin(t / 3)
+    x[0], x[1] = np.nan, 5.0  # the gap's finite neighbour is the maximum: no gap point beyond the four
+    r = rank(t, x)
+    assert r.gaps == 0 and set(r.required) == {0, 1, 19, int(np.nanargmin(x))}
+    p = fluxprune.prune(t, x)
+    assert np.isnan(p.values[0]) and np.isfinite(p.rmse) and np.isfinite(p.max_error)
