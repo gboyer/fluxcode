@@ -267,18 +267,62 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
 
 ### Time error
 
-`time_error` = e lets each time move by up to e times its block's interval (ENCODER §4): times
-round to a grid of a 1-2-5 step of at most 2e intervals, at the clock's own phase. A clock that is
-still irregular on that grid because no 1-2-5 step divides its period (1024 Hz, 60 Hz) goes onto a
-lattice of its own if every time is within e/2 intervals of it. Blocks of fewer than 16 samples
-aren't rounded. In `update_time_blocks`, new ticks snap within e/2 intervals onto a stored regular
-block's lattice, or take a 1-2-5 grid nested in the stored ticks' (which never move); otherwise the
-block is rounded whole, so a tick moves e intervals in all at most. A block after a regular one
-with ticks within e/2 of its lattice continues that clock. Measured with
-`bench/time_axis.py --time-error 0.02,0.05,0.1` (one-minute block groups of 60 × 1000, Apple M3, AC
-power, single thread, Python without the Rust extension, best of three runs, 2026-10-10): bytes the
-times add, encode/decode time they add (and its share of the values-only 322/111 µs), irregular
-blocks of 60, and the largest move in median intervals.
+`time_error` = e rounds each block's times once, from the values given (ENCODER §4): to the
+coarsest 1-2-5 step of at most 2e mean intervals (the block's span over its intervals, +2%) for
+which at least 95% of its times move by at most e times their own interval (the smaller of the
+two either side) and none by more than e mean intervals, at the clock's own phase. A block may
+instead continue the lattice of a regular block before it (if it is the same clock), or, if no
+1-2-5 step divides its period (1024 Hz, 60 Hz), take a lattice of its own, on the same check.
+Regular blocks aren't rounded. Updates never round a stored time again: `update_time_blocks`
+stores new times exactly, `replace_time_blocks` re-encodes whole blocks (2026-10-12; before, an
+update could round a block's stored ticks again, and lattices were limited to e/2 to leave it a
+budget). Sizes measured with `bench/time_axis.py --time-error 0.02,0.05,0.1 --reps 1` (one-minute
+block groups of 60 × 1000, 2026-10-12): bytes the times add, irregular blocks of 60, and the
+largest move in median intervals; "(was …)" is the rule before 2026-10-12, where it differs.
+
+| timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
+|---|---|---|---|---|
+| grid: regular 1 kHz | 65 B, 0 | 65 B, 0, 0.000 | 65 B, 0, 0.000 | 65 B, 0, 0.000 |
+| grid + a few gaps (2 per minute) | 177 B, 2 | 177 B, 2, 0.000 | 177 B, 2, 0.000 | 177 B, 2, 0.000 |
+| noisy clock (σ=20 µs, µs resolution) | 53,422 B, 60 | 21,124 B, 60, 0.010 | 3,010 B, 60, 0.050 | 65 B, 0, 0.088 |
+| 1 kHz, 20 gaps | 1,094 B, 19 | 1,094 B, 19, 0.000 | 1,094 B, 19, 0.000 | 1,094 B, 19, 0.000 |
+| 1 kHz, 1% dropped | 1,461 B, 60 | 1,461 B, 60, 0.000 | 1,461 B, 60, 0.000 | 1,461 B, 60, 0.000 |
+| drifting clock (0.99998 ms) | 339 B, 60 | 87 B, 0, 0.020 (was 88) | 93 B, 0, 0.049 (was 89) | 93 B, 0, 0.098 (was 98) |
+| jitter σ=10 µs, ns resolution | 120,712 B, 60 | 14,726 B, 60, 0.010 | 63 B, 0, 0.046 | 63 B, 0, 0.046 |
+| jitter σ=10 µs, µs resolution | 45,903 B, 60 | 14,702 B, 60, 0.010 | 63 B, 0, 0.042 | 63 B, 0, 0.042 |
+| Poisson events, mean 1 ms, µs | 87,889 B, 60 | 83,245 B, 60, 0.001 (was 57,359) | 73,202 B, 60, 0.003 (was 47,498) | 66,009 B, 60, 0.007 (was 39,487) |
+| Poisson events, mean 1 ms, ns | 164,661 B, 60 | 83,222 B, 60, 0.001 (was 57,152) | 74,009 B, 60, 0.004 (was 47,567) | 66,078 B, 60, 0.007 (was 39,778) |
+| deadband logging, ms grid | 55,498 B, 60 | 55,498 B, 60, 0.000 | 55,498 B, 60, 0.000 | 55,498 B, 60, 0.000 (was 51,270) |
+| bursts 10 kHz / idle | 102 B, 60 | 102 B, 60, 0.000 | 102 B, 60, 0.000 | 102 B, 60, 0.000 |
+| jitter σ=10 µs, ns, phase 25 µs | 120,653 B, 60 | 14,712 B, 60, 0.010 | 66 B, 0, 0.045 | 103 B, 0, 0.049 |
+| jitter σ=10 µs, ns, phase 50 µs | 120,653 B, 60 | 14,667 B, 60, 0.010 | 66 B, 0, 0.044 | 66 B, 0, 0.054 |
+| jitter σ=10 µs, ns, phase 123 µs | 120,653 B, 60 | 14,702 B, 60, 0.010 | 74 B, 0, 0.047 | 74 B, 0, 0.047 |
+| drift + jitter σ=10 µs, phase 37 µs | 120,648 B, 60 | 14,661 B, 60, 0.010 | 210 B, 1, 0.050 (was 258) | 111 B, 0, 0.100 (was 102) |
+| 1024 Hz, jitter 0.5% | 112,889 B, 60 | 9,372 B, 51, 0.020 (was 10,618) | 154 B, 0, 0.050 (was 530) | 100 B, 0, 0.102 (was 151) |
+| 60 Hz, jitter 0.5% | 144,082 B, 60 | 6,239 B, 52, 0.020 (was 6,678) | 267 B, 0, 0.051 (was 1,180) | 169 B, 0, 0.100 (was 184) |
+
+- **Clocks keep their sizes:** jittered clocks on round times or free-running, drift, gaps and
+  grids are unchanged; drift with jitter improves (258 → 210 B at e = 0.05).
+- **Non-decimal clocks gain most:** with the full e for their own lattice, 1024 Hz at e = 0.05
+  stores 154 B (was 530) and 60 Hz 267 B (was 1,180).
+- **Events are rounded less, by design:** the old rule rounded Poisson events with one step from
+  the median interval, moving about 22% of them further than e of their own interval; the 95%
+  rule keeps them there, at +40–55% bytes. Deadband logging no longer gains at e = 0.1 (the
+  ms grid's GCD is already coarse).
+- **The noisy clock** (σ = 20 µs at e = 0.05) stays at 3,010 B: rounding to the nearest grid
+  point never moves a time more than half a step, so jitter-tail times can't go back to their
+  slots; the times taking both neighbouring intervals as their own also makes jittered clocks
+  near the limit drop a step (σ = 5% at e = 0.05: 5.6% of times over e of their own interval at
+  q = 100 µs, against 2.9% with the previous interval alone; 1M-sample test, +14% bytes).
+- **Encode time** (indicative, on battery, single thread, 1M samples, e = 0.05, 2026-10-12):
+  about +3–4 ms on clocks (14 → 16 ms on a 1% jittered clock; the check is one extra pass), and
+  +14 ms on Poisson events, where the grid takes about five steps down from the cap (clocks take
+  one or two). The timings in the table below are from the earlier rule and are due for a re-run
+  on AC power.
+
+Earlier rule (2026-10-10), with timings: bytes the times add, encode/decode time they add (and
+its share of the values-only 322/111 µs), irregular blocks of 60, and the largest move in median
+intervals (Apple M3, AC power, single thread, best of three runs).
 
 | timestamps | exact | e = 0.02 | e = 0.05 | e = 0.1 |
 |---|---|---|---|---|
@@ -312,8 +356,9 @@ blocks of 60, and the largest move in median intervals.
   rounded intervals alternate, and on main before the lattice fit 1024 Hz with 0.5% jitter stored
   3,863 B at e = 0.05 and 2,546 B at e = 0.1 (60 Hz: 2,444 and 275 B). On lattices of their own:
   530 and 151 B (60 Hz: 1,180 and 184), and encoding is faster too, by 159 and 196 µs (−53%, −65%
-  of the values-only encode), as the blocks become regular. A lattice needs every time within e/2,
-  so about 10σ of jitter; below that the grid's rounding stands (e = 0.02 here). The attempt is
+  of the values-only encode), as the blocks become regular. A lattice needed every time within e/2
+  then, so about 10σ of jitter; since 2026-10-12 it takes the same check as the grid (154 and
+  100 B, 60 Hz 267 and 169, in the table above). The attempt is
   only made on clocks the grid leaves with unequal one-scan intervals (not on gaps alone), from
   64 sampled ticks, and stops at the first tick that doesn't fit; on noisy clocks it fails it
   costs about +20–90 µs per block group (+6–28%) against main, measured alternately with it.
@@ -328,18 +373,21 @@ blocks of 60, and the largest move in median intervals.
 - **Times already on their grid** (the grid with gaps, 1% dropped, bursts) don't change; checking
   them costs about +80 µs per block group (+26%) on a regular grid (regular blocks aren't
   rounded) and +87 µs (+29%) with a few gaps (time report, 2026-10-10).
-- **Events and deadband logging** have no grid to land on. Events get 1.5–4× smaller (more in ns than in µs ticks); times on a
-  1 ms grid already have a coarse GCD and gain only from e = 0.1. Without a cadence the interval
-  is the median of 15, a rough estimate: times moved by up to 1.45 e of the overall median.
+- **Events and deadband logging** have no grid to land on. Under the earlier rule events got
+  1.5–4× smaller, with times moved by up to 1.45 e of the overall median; under the 95% rule,
+  1.1–1.3× in µs ticks and 2–2.5× in ns (above).
 
 **Design notes** (measured with prototypes on the patterns above, 2026-10-08):
 - **1-2-5 steps, not powers of two:** a power-of-two step doesn't divide a 1 ms period, so the
   rounded times never come back to a grid (jitter σ=10 µs at a step near the median/8: 6,250 B
   against 343 B; the noisy clock 10,932 against 5,652). 1-2-10 has a 5× gap that drops a 5 ms clock
   to a 200 µs step (5,524 B against 43 at e = 0.05).
-- **The interval estimate** is the mean of one-scan intervals where there is a cadence: on a
-  nice period and a nice e, the median of 15 would flip the step between blocks. Rounding per
-  sample (not fitting a period) keeps the error bounded through drift and gaps.
+- **The interval estimate** was the mean of one-scan intervals where there was a cadence (on a
+  nice period and a nice e, the median of 15 would flip the step between blocks). Since
+  2026-10-12 the step's cap is the span over the intervals and the check decides: gaps inside a
+  block only loosen the cap, and clocks take one or two tries. A lattice's period is still a
+  cadence estimate: the mean of the intervals near the scan interval. Rounding per sample (not
+  fitting a period) keeps the error bounded through drift and gaps.
 - **Values are not interpolated onto the rounded times.** Against the physical signal, under
   sampling jitter (each sample taken at its stamp) interpolating is close to ideal and plain
   rounding is off by slope × jitter; under stamp jitter (samples on the grid, stamps late or early)
@@ -351,13 +399,12 @@ blocks of 60, and the largest move in median intervals.
   at the same step: as small on jittered clocks with 3× the error against the input, and 6–150×
   the samples on bursts and deadband logging, 2× when a 1-2-5 grid falls under a clock running
   slightly fast.
-- **The lattice limit is e/2, not e** (2026-10-10): the other lattice snaps (a block continuing
-  the clock before it, an update onto a stored regular block) use e/2 so that `update_time_blocks`
-  can still round such a block whole within e (rule 3). With the full e the lattice also takes
-  more jitter (60 Hz at e = 0.05: 269 B against 1,456; 1024 Hz at e = 0.02: 3.3 KB against 11 KB),
-  but rule 3 would then have no budget left for any stored regular block, and a block fitted
-  with a lattice phase between grid steps passed that phase on to the next block's grid (σ=30 µs
-  at e = 0.1: 1,146 B against 678).
+- **The lattice limit was e/2** (2026-10-10 to 2026-10-12), so that `update_time_blocks` could
+  still round a lattice block whole within e. Updates no longer round stored times, so lattices
+  take the full check now (60 Hz at e = 0.05: 267 B, was 1,180).
+- **A lattice's period ignores outlying intervals:** with the mean of all one-scan intervals, one
+  tick 60 µs late on a clean 1 ms clock of 200 ticks put the whole block on a 1.0003 ms lattice,
+  moving the 199 punctual ticks by up to 30 µs to save one residual.
 - **Alternatives measured and dropped** (prototypes, 2026-10-10, same block groups):
   - An octave (bit-length) histogram of the intervals with the 5th percentile as the interval:
     on a jittered clock the 5th percentile is below the period, so the step falls a rung (σ=10 µs
@@ -366,11 +413,11 @@ blocks of 60, and the largest move in median intervals.
     interval and all within 2e: noisy clocks become regular (σ=20 µs at e = 0.05: 3,010 → 65 B)
     only by moving their jitter tails beyond e, it moves genuine off-clock stamps onto the clock
     (up to 0.42 intervals without the 2e cap), misses non-decimal clocks, and costs +15–38% encode
-    on blocks it doesn't help. Its gain requires a looser guarantee (95% within e), which was not
-    taken.
+    on blocks it doesn't help. The 95% rule adopted on 2026-10-12 caps every move at e mean
+    intervals instead of 2e, so it doesn't get this gain.
   - A one-sided cadence test (90% of intervals above c/2, else the smallest of the 15 sampled as
-    the interval) keeps 95% of event times within e of their own interval (22% are moved further
-    now) but makes Poisson events 60–80% larger: a change of what e means, not taken.
+    the interval) kept 95% of event times within e of their own interval but made Poisson events
+    60–80% larger. The 95% rule adopted on 2026-10-12 has the same effect (+40–55%).
   - The epoch's grid or the first tick as the phase instead of the phase search: 594–4,916 B on
     free-running and drifting clocks against 74–258 (epoch), 215–222 B against 63–74 (first
     tick); the search costs about 15 µs per block group.

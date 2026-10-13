@@ -452,6 +452,28 @@ def update_blocks(
     return np.array(indices, np.int64), np.concatenate(samples) if samples else np.zeros(0), sizes, ticks
 
 
+def block_list(blocks: Iterable[int]) -> np.ndarray:
+    """Validates the blocks a replace_time_blocks declares.
+
+    Args:
+        blocks: Iterable of distinct block indices (a range, list or 1D integer array).
+
+    Returns:
+        1D int64 array of the indices in increasing order.
+
+    Raises:
+        ValueError: If blocks isn't an iterable of distinct integers from 0 to MAX_BLOCKS - 1.
+    """
+    if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Iterable):
+        raise ValueError(f"blocks must be block indices, got {type(blocks).__name__}")  # noqa: TRY004
+    indices = list(np.asarray(blocks).ravel().tolist()) if isinstance(blocks, np.ndarray) else list(blocks)
+    if not all(is_int(idx) and 0 <= idx < _format.MAX_BLOCKS for idx in indices):
+        raise ValueError(f"blocks must be integers from 0 to {_format.MAX_BLOCKS - 1}, got {indices!r}")
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"blocks must be distinct, got {indices!r}")
+    return np.array(sorted(int(idx) for idx in indices), np.int64)
+
+
 def time_blocks_update(
     samples: npt.ArrayLike,
     times: npt.ArrayLike,

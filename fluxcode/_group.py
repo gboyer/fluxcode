@@ -160,7 +160,7 @@ def stored_tails(parsed: "ParsedGroup", time_rows: _format.TimeRows, blocks: np.
 
     Returns:
         A tuple of (last_ticks, steps): 1D int64 arrays; a step is the interval if the block is
-        regular with at least _time.MIN_ROUND_SAMPLES samples, else 0.
+        regular (at least 2 samples, all intervals equal and positive), else 0.
     """
     regular = ~(parsed.block_flags[blocks] & _format.BLOCK_FLAG_IRREGULAR_TIME).astype(bool)
     interval = (time_rows.steps[blocks] * time_rows.refs[blocks].astype(np.int64))
@@ -168,7 +168,7 @@ def stored_tails(parsed: "ParsedGroup", time_rows: _format.TimeRows, blocks: np.
     last = time_rows.starts[blocks] + (sizes - 1) * interval
     irregular = np.flatnonzero(~regular)
     last[irregular] = _last_ticks(parsed, time_rows, blocks[irregular])
-    steps = np.where(regular & (sizes >= _time.MIN_ROUND_SAMPLES) & (interval > 0), interval, 0)
+    steps = np.where(regular & (sizes >= 2) & (interval > 0), interval, 0)
     return last, steps
 
 
@@ -178,8 +178,9 @@ def snap_ticks(
     time_error: float,
     seed_ticks: np.ndarray | None = None,
     seed_steps: np.ndarray | None = None,
+    bounds: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Rounds each block's ticks (_time.round_blocks, then order_blocks to keep the blocks in order).
+    """Rounds each block's ticks (_time.round_blocks, then clamp_boundaries to keep the blocks in order).
 
     The order of the ticks is checked only if a tick is rounded (rounding could hide a
     decrease); otherwise they are returned as given, for encode_times to check.
@@ -192,18 +193,20 @@ def snap_ticks(
             it, or INT64_MIN to follow the block before it here.
         seed_steps: Optional 1D int64 array per block: that stored block's interval if it is
             regular (stored_tails), else 0.
+        bounds: Optional (lows, highs): 1D int64 arrays per block of the smallest and largest
+            tick it may round to (time blocks: its start, and its end, included).
 
     Returns:
-        A tuple of (ticks, quanta): the rounded ticks (a new array if any tick moved, else the
-        given one) and each block's quantum (0 where it was kept or put on a lattice).
+        A tuple of (ticks, moves): the rounded ticks (a new array if any tick moved, else the
+        given one) and each block's largest move.
 
     Raises:
         ValueError: If the times contain NaT, or decrease anywhere when a block is rounded.
     """
     num_blocks = block_sizes.shape[0]
-    quanta = np.zeros(num_blocks, np.int64)
+    moves = np.zeros(num_blocks, np.int64)
     if time_error <= 0 or not ticks.shape[0]:
-        return ticks, quanta
+        return ticks, moves
     # NaT is int64 minimum: past the first time it is a decrease
     if ticks[0] == _time.INT64_MIN:
         raise ValueError("times contain NaT")
@@ -212,16 +215,18 @@ def snap_ticks(
         seed_ticks = np.full(num_blocks, _time.INT64_MIN, np.int64)
     if seed_steps is None:
         seed_steps = np.zeros(num_blocks, np.int64)
-    kept = np.empty_like(ticks)
-    phases = np.zeros(num_blocks, np.int64)
+    if bounds is None:
+        bounds = (np.full(num_blocks, _time.INT64_MIN, np.int64), np.full(num_blocks, _time.INT64_MAX, np.int64))
+    rounded = np.empty_like(ticks)
     status, sample_idx = _time.round_blocks(
-        ticks, offsets, float(time_error), seed_ticks, seed_steps, kept, quanta, phases
+        ticks, offsets, float(time_error), *bounds, seed_ticks, seed_steps, rounded, moves
     )
     if status != _time.OK:
         raise _args.decrease_error(ticks, sample_idx)
-    if quanta.any():
-        _time.order_blocks(offsets, quanta, kept)
-    return (ticks if np.array_equal(kept, ticks) else kept), quanta
+    if not moves.any():
+        return ticks, moves
+    _time.clamp_boundaries(ticks, offsets, moves, rounded)
+    return rounded, moves
 
 
 def encode(
@@ -289,7 +294,7 @@ def encode_series(
         if decreases.shape[0]:
             raise _args.decrease_error(ticks, int(decreases[0]))
         # Round the whole series at once (its blocks are the block groups' blocks), so that
-        # block groups stay in order where neighbouring blocks' quanta differ
+        # block groups stay in order where neighbouring blocks round past each other
         ticks, _ = snap_ticks(ticks, _args.fixed_sizes(ticks.shape[0], block_len), params.time_error)
     parts = []
     # Encode each chunk as an independent block group
@@ -561,11 +566,12 @@ def _check_spliced_order(
         )
 
 
-def _stored_quantum(parsed: ParsedGroup, time_rows: _format.TimeRows, block_idx: int, time_error: float) -> int:
-    """The quantum the time error gives a stored block's times.
+def _stored_allowance(parsed: ParsedGroup, time_rows: _format.TimeRows, block_idx: int, time_error: float) -> float:
+    """How far the time error may have moved a stored block's times: time_error (2% more) times
+    its mean interval.
 
     A regular block's interval is in its columns (step times reference); an irregular one's
-    times are expanded.
+    last time is unpacked.
 
     Args:
         parsed: The block group.
@@ -575,15 +581,17 @@ def _stored_quantum(parsed: ParsedGroup, time_rows: _format.TimeRows, block_idx:
         time_error: The time error (> 0).
 
     Returns:
-        The quantum, 0 if there is none.
+        The largest move.
     """
+    size = int(parsed.block_sizes[block_idx])
+    if size < 2:
+        return 0.0
     if not parsed.block_flags[block_idx] & _format.BLOCK_FLAG_IRREGULAR_TIME:
-        interval = float(time_rows.steps[block_idx]) * float(time_rows.refs[block_idx])
-        quantum = _time.time_quantum(interval, time_error)
-        return quantum if quantum > 1 else 0
-    offsets = parsed.layout.sample_offsets
-    ticks = _block_ticks(parsed, time_rows, np.array([block_idx], np.int64))[offsets[block_idx]:offsets[block_idx + 1]]
-    return int(_time.block_quantum(ticks, time_error, np.empty(_time.CADENCE_SAMPLES, np.int64)))
+        mean = float(time_rows.steps[block_idx]) * float(time_rows.refs[block_idx])
+    else:
+        last = int(_last_ticks(parsed, time_rows, np.array([block_idx], np.int64))[0])
+        mean = (last - int(time_rows.starts[block_idx])) / (size - 1)
+    return time_error * _time.TIME_ERROR_SLACK * mean
 
 
 class StoredNeighbours(NamedTuple):
@@ -640,32 +648,57 @@ def _stored_neighbours(
     return StoredNeighbours(rows, previous, following, stored_previous, stored_following, last_ticks, steps)
 
 
+def stored_seeds(
+    parsed: ParsedGroup, time_rows: _format.TimeRows, sizes: np.ndarray, indices: np.ndarray
+) -> tuple[StoredNeighbours, np.ndarray, np.ndarray]:
+    """The clock each new block of a splice continues: the last tick and regular interval of the
+    stored non-empty block before it (snap_ticks' seed_ticks and seed_steps).
+
+    Args:
+        parsed: The existing block group.
+        time_rows: Its time rows (the columns at least).
+        sizes: 1D int64 array of the spliced block group's block sizes.
+        indices: 1D int64 array of the new blocks, increasing.
+
+    Returns:
+        A tuple of (neighbours, seed_ticks, seed_steps): the new blocks' stored neighbours
+        (_stored_neighbours), and per new block the seed (INT64_MIN and 0 where the block before
+        it is new too, or there is none).
+    """
+    neighbours = _stored_neighbours(parsed, time_rows, sizes, indices)
+    seed_ticks = np.full(indices.shape[0], _time.INT64_MIN, np.int64)
+    seeded = neighbours.rows[neighbours.stored_previous]
+    seed_ticks[seeded] = neighbours.last_ticks[neighbours.stored_previous]
+    seed_steps = np.zeros(indices.shape[0], np.int64)
+    seed_steps[seeded] = neighbours.steps[neighbours.stored_previous]
+    return neighbours, seed_ticks, seed_steps
+
+
 def _clamp_to_neighbours(
     parsed: ParsedGroup,
     time_rows: _format.TimeRows,
     neighbours: StoredNeighbours,
     new_offsets: np.ndarray,
-    quanta: np.ndarray,
+    moves: np.ndarray,
     time_error: float,
     raw_ticks: np.ndarray,
     in_out_ticks: np.ndarray,
 ) -> None:
     """Keeps rounded new blocks in order with the stored blocks around them.
 
-    A stored block's times were rounded too, by up to half its quantum, so a new block whose
-    times are in order with the samples a stored neighbour was made from can still round past
-    it. A stored block can't give way, so a new block that starts below the previous stored
-    block's last time is raised to it if its first time as given is within half the larger of
-    the two blocks' quanta of it; one that ends above the next stored block's start is lowered
-    to it likewise. Every time then stays within half that quantum of the time given. Larger
-    overlaps are left for _check_spliced_order to reject.
+    A stored block's times were rounded too (_stored_allowance), so a new block whose times are
+    in order with the samples a stored neighbour was made from can still round past it. A
+    stored block can't give way, so a new block that starts below the previous stored block's
+    last time is raised to it if its first time as given is within the larger of the two
+    blocks' moves of it; one that ends above the next stored block's start is lowered to it
+    likewise. Larger overlaps are left for _check_spliced_order to reject.
 
     Args:
         parsed: The existing block group.
         time_rows: Its time rows (the columns at least).
         neighbours: The new blocks' stored neighbours (_stored_neighbours).
         new_offsets: 1D int64 array of the new blocks' sample offsets.
-        quanta: 1D int64 array of the new blocks' quanta (0: not rounded).
+        moves: 1D int64 array of the new blocks' largest moves (snap_ticks).
         time_error: The time error (> 0).
         raw_ticks: 1D int64 array of the new blocks' ticks as given.
         in_out_ticks: 1D int64 array of the new blocks' rounded ticks, clamped in place.
@@ -675,14 +708,14 @@ def _clamp_to_neighbours(
         block = in_out_ticks[first:end]
         if neighbours.stored_previous[row] and block[0] < neighbours.last_ticks[row]:
             floor = int(neighbours.last_ticks[row])
-            stored = _stored_quantum(parsed, time_rows, int(neighbours.previous[row]), time_error)
-            if raw_ticks[first] >= floor - max(int(quanta[new_idx]), stored) // 2:
+            stored = _stored_allowance(parsed, time_rows, int(neighbours.previous[row]), time_error)
+            if raw_ticks[first] >= floor - max(float(moves[new_idx]), stored):
                 np.maximum(block, floor, out=block)
         following = int(neighbours.following[row])
         if neighbours.stored_following[row] and block[-1] > time_rows.starts[following]:
             ceiling = int(time_rows.starts[following])
-            stored = _stored_quantum(parsed, time_rows, following, time_error)
-            if raw_ticks[end - 1] <= ceiling + max(int(quanta[new_idx]), stored) // 2:
+            stored = _stored_allowance(parsed, time_rows, following, time_error)
+            if raw_ticks[end - 1] <= ceiling + max(float(moves[new_idx]), stored):
                 np.minimum(block, ceiling, out=block)
 
 
@@ -713,8 +746,8 @@ def splice(
         params: Encoder parameters.
         old_time_rows: The block group's time rows if already read (the columns at least).
         snap: Whether to round the new blocks' ticks to params.time_error (False: the caller
-            has). New blocks that overlap a stored neighbour by up to half the larger of their
-            quanta are clamped to it (_clamp_to_neighbours).
+            has). New blocks that overlap a stored neighbour by up to the larger of their moves
+            are clamped to it (_clamp_to_neighbours).
 
     Returns:
         UpdatedGroup with the new block group and the statistics of every re-encoded block
@@ -746,18 +779,13 @@ def splice(
     if ticks is not None and snap and params.time_error > 0:
         if old_time_rows is None:
             old_time_rows = read_time_rows(parsed, np.zeros(0, np.int64))
-        neighbours = _stored_neighbours(parsed, old_time_rows, sizes, indices)
-        # A new block after a stored one keeps its phase if that fits
-        seed_ticks = np.full(indices.shape[0], _time.INT64_MIN, np.int64)
-        seeded = neighbours.rows[neighbours.stored_previous]
-        seed_ticks[seeded] = neighbours.last_ticks[neighbours.stored_previous]
-        seed_steps = np.zeros(indices.shape[0], np.int64)
-        seed_steps[seeded] = neighbours.steps[neighbours.stored_previous]
+        # A new block after a stored one continues its clock if that fits
+        neighbours, seed_ticks, seed_steps = stored_seeds(parsed, old_time_rows, sizes, indices)
         raw_ticks = ticks
-        ticks, quanta = snap_ticks(ticks, block_sizes, params.time_error, seed_ticks, seed_steps)
+        ticks, moves = snap_ticks(ticks, block_sizes, params.time_error, seed_ticks, seed_steps)
         if ticks is raw_ticks:
             ticks = ticks.copy()
-        _clamp_to_neighbours(parsed, old_time_rows, neighbours, new_offsets, quanta, params.time_error, raw_ticks, ticks)
+        _clamp_to_neighbours(parsed, old_time_rows, neighbours, new_offsets, moves, params.time_error, raw_ticks, ticks)
 
     # Encode value residuals and codes for the replacement blocks
     new_rows, stats = encode_rows(samples, block_sizes, params, ticks)

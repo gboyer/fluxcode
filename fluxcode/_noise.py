@@ -277,7 +277,7 @@ def cadence(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, fl
         share is the share of one-scan intervals. If it is below CADENCE_SHARE, the window is
         (0, 0), which holds no interval.
     """
-    _, lower, upper, num_one_scan, _, _ = one_scan(ticks, scratch_pivots)
+    _, lower, upper, num_one_scan = one_scan(ticks, scratch_pivots)
     if upper == 0:
         return 0, 0, 0.0
     num_intervals = ticks.shape[0] - 1

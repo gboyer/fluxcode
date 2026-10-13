@@ -125,18 +125,21 @@ class Params:
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
-        time_error: Largest change to a timestamp, as a share of its block's interval (0 to
+        time_error: How far timestamps may move, as a share of an interval (0 to
             MAX_TIME_ERROR); 0 (the default) stores times exactly. Each block's times are
-            rounded to a grid of a 1-2-5 step of at most 2 * time_error intervals (2% more at
-            most), at the clock's own phase: a jittered clock rounds back onto its own grid
-            once time_error is about 5 times its jitter's standard deviation over its
-            interval, and then stores as regular times. Smaller time errors still save most of
-            the jitter's cost. Regular blocks, and blocks of fewer than 16 samples, are left as
-            they are. A block after a regular one is rounded onto its lattice if every time is
-            within half the time error of it, and a clock whose period no 1-2-5 step divides
-            (1024 Hz, 60 Hz) onto a lattice of its own on the same condition. No time moves
-            further than time_error in all,
-            however often its block is updated (update_time_blocks).
+            rounded to one 1-2-5 step: the coarsest of at most 2 * time_error mean intervals
+            (the block's span over its intervals, 2% more at most) for which at least 95% of
+            its times move by no more than time_error times their own interval (the smaller of
+            the two either side). No time moves more than half the step, so the other 5% (the
+            unusually close times) are off by no more than the rest. The grid is at the
+            clock's own phase: a jittered clock rounds back onto its own grid once time_error
+            is about 5 times its jitter's standard deviation over its interval, and then stores
+            as regular times. A block may instead take the lattice of a regular block before it,
+            or, for a clock whose period no 1-2-5 step divides (1024 Hz, 60 Hz), a lattice of its
+            own, on the same condition. Regular blocks are left as they are. In time blocks
+            (encode_time_blocks) a time that would round past its block's end is set to the end
+            itself. Times are rounded once, from the values given: update_time_blocks stores
+            new times exactly, and replace_time_blocks re-encodes whole blocks.
     """
 
     min_quantize_bits: int = 6

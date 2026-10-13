@@ -19,7 +19,7 @@ The functions come in three groups: encoding, decoding and updating. They valida
 arguments and call _group (groups and blocks) or _time_blocks (time division).
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 import numpy.typing as npt
 
@@ -154,7 +154,9 @@ def encode_time_blocks(
     in blocks of one minute. Blocks without samples are empty, and the block group ends with the
     last block that holds a sample. start_time and block_duration aren't stored in the block group:
     keep them (typically start_time is part of the block group's storage key) and pass the same
-    ones to update_time_blocks.
+    ones to update_time_blocks and replace_time_blocks. With params.time_error, each block's times
+    round within its range; one that would round past the block's end is set to the end itself
+    (the next block's start, still in this block).
 
     Args:
         samples: 1D array-like of float64 samples (may be empty).
@@ -313,20 +315,12 @@ def update_time_blocks(
 
     First every existing sample timed within delete_ranges is discarded. Then the new
     samples are added: an existing sample with the same timestamp as a new one is replaced,
-    and new samples sharing a timestamp are all kept (in their order). With params.time_error,
-    new times are rounded first, and "the same timestamp" is the rounded one. A block of fewer
-    than 16 samples, or exactly regular, isn't rounded. Otherwise new times snap within half the
-    time error onto a stored regular block's lattice, or take a 1-2-5 grid that nests in the
-    grid the stored times lie on (they stay); failing both, the whole block, stored times
-    included, is rounded again. So no time moves further than time_error intervals in all,
-    however often its block is updated. A block without stored samples follows the block before
-    it (a regular block's lattice if the times fit). Upsert and rounding are at odds: a new
-    sample that rounds onto a stored one replaces it, whether it re-sends that sample or is a
-    distinct event a fraction of a step away; with both, delete the range the new samples
-    replace. So with only samples it is an upsert, with only delete_ranges a deletion, and with
-    both a range replacement
+    and new samples sharing a timestamp are all kept (in their order). So with only samples it
+    is an upsert, with only delete_ranges a deletion, and with both a range replacement
     (new samples may be timed anywhere; those in a deleted range are kept, as they're added
-    after the deletion). start_time and block_duration must be the ones the block group was
+    after the deletion). New times are stored exactly: with params.time_error > 0 new samples
+    are an error (replace_time_blocks re-encodes whole blocks with a time error; stored times
+    are never rounded again). start_time and block_duration must be the ones the block group was
     encoded with: they aren't stored in it, so they can't be checked.
 
     Blocks that no range meets and no new sample falls in are carried over untouched,
@@ -358,11 +352,61 @@ def update_time_blocks(
         is empty.
 
     Raises:
-        ValueError: If the block group is corrupt or has no time axis, a sample is timed before
-            start_time, the times decrease, a block or the block group would
-            hold too many samples, or the time arguments are invalid.
+        ValueError: If the block group is corrupt or has no time axis, samples are given with
+            params.time_error > 0, a sample is timed before start_time, the times decrease, a
+            block or the block group would hold too many samples, or the time arguments are
+            invalid.
         zstandard.ZstdError: If the zstd frame is corrupt.
     """
     return _time_blocks.update_time_blocks(
         group, samples, times, params, start_time, block_duration, delete_ranges, time_unit
+    )
+
+
+def replace_time_blocks(
+    group: bytes,
+    blocks: Iterable[int],
+    samples: npt.ArrayLike,
+    times: npt.ArrayLike,
+    params: Params = DEFAULT_PARAMS,
+    *,
+    start_time: TimeLike,
+    block_duration: DurationLike,
+    time_unit: TimeUnit | None = None,
+) -> UpdatedGroup:
+    """Replaces whole blocks of a block group made by encode_time_blocks.
+
+    Each declared block is emptied and refilled with the samples timed in it, encoded as
+    encode_time_blocks would (with params.time_error, rounded from the times given, continuing
+    the clock of the stored block before it). A declared block that gets no samples is left
+    empty: that deletes it. Every sample must be timed in a declared block. Blocks past the
+    block group's end are appended (empty ones to fill a gap). This is how to update a block
+    group with a time error: send each changed block whole, from the source data.
+
+    Blocks not declared are carried over untouched, without being decoded or re-encoded.
+
+    Args:
+        group: Existing block group bytes, with a time axis.
+        blocks: The indices of the blocks replaced (a range, or an iterable of distinct ints).
+        samples: 1D array-like of float64 samples (may be empty).
+        times: Their timestamps, non-decreasing: datetime64 in the block group's time unit, or
+            integer ticks in it.
+        params: Encoder configuration parameters.
+        start_time: Start of block 0 (see encode_time_blocks).
+        block_duration: Length of every block (see encode_time_blocks).
+        time_unit: Optional: the block group's time unit, checked if given.
+
+    Returns:
+        UpdatedGroup tuple (group, indices, block_min, block_max, block_mean): the new block group,
+        and the blocks re-encoded (the declared ones and appended empty ones) with their
+        statistics. With no blocks declared, the block group is returned as is.
+
+    Raises:
+        ValueError: If the block group is corrupt or has no time axis, a sample is timed outside
+            the declared blocks, the times decrease, a block or the block group would hold too
+            many samples, or the arguments are invalid.
+        zstandard.ZstdError: If the zstd frame is corrupt.
+    """
+    return _time_blocks.replace_time_blocks(
+        group, blocks, samples, times, params, start_time, block_duration, time_unit
     )

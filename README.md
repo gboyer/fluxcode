@@ -40,13 +40,16 @@ type:
   Without timestamps the samples are taken as evenly spaced, so store an archive with its times
   (or with the noise floor off). It only applies to blocks of at least 256 samples, so a fixed
   `block_len` under 256 never gets one.
-* **Time error**: Optionally lets each timestamp move by up to a share of its block's interval
-  (`time_error`, off by default): times round to a grid of a 1-2-5 step (1, 2, 5, 10, ... ticks)
-  at the clock's own phase, so a jittered clock lands back on its own grid and stores as a regular
-  one. A time error of about 5× the jitter (σ over the interval) does that: 0.05 for 1% jitter,
-  120 KB → 63–74 bytes a minute at 1 kHz, on round times or free-running. Smaller ones still save
-  most of the jitter's cost. A clock whose period no 1-2-5 step divides (1024 Hz, 60 Hz) goes onto
-  a lattice of its own instead, at about 10× the jitter.
+* **Time error**: Optionally lets timestamps move by up to a share of their interval
+  (`time_error`, off by default): each block's times round to the coarsest grid of a 1-2-5 step
+  (1, 2, 5, 10, ... ticks) for which 95% of them move by at most that share of their own interval
+  (none more than that share of the mean interval), at the clock's own phase, so a jittered clock
+  lands back on its own grid and stores as a regular one. A time error of about 5× the jitter (σ
+  over the interval) does that: 0.05 for 1% jitter, 120 KB → 63–74 bytes a minute at 1 kHz, on
+  round times or free-running. Smaller ones still save most of the jitter's cost. A clock whose
+  period no 1-2-5 step divides (1024 Hz, 60 Hz) goes onto a lattice of its own instead (154 and
+  267 bytes a minute at 0.5% jitter and 0.05). Times are rounded once, from the values given:
+  update a block group with a time error with `replace_time_blocks`, from the source data.
 * **Target bit rate**: Uses an entropy estimator to determine if the above would likely
   exceed your bit rate after compression. By default, off, to preserve quality.
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
@@ -93,7 +96,7 @@ price = np.round(20 + np.cumsum(rng.normal(0, 0.05, 5_000)), 2)
 assert np.array_equal(fluxcode.decode_group(fluxcode.encode_group(price).group).values, price)
 
 # Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly
-# (or, with Params(time_error=...), within that share of an interval).
+# (or, with Params(time_error=...), rounded within that share of their interval).
 stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(1, "ms")
 stamps[12_345:] += np.timedelta64(2, "s")                  # a gap: only its block pays for it
 values, times, _ = fluxcode.decode_group(fluxcode.encode_group(x, times=stamps).group)
@@ -159,12 +162,18 @@ which set the step to 0.25σ.
   `delete_ranges` (`[start, end)` pairs: one pair, a list, or a `(k, 2)` array), then adds the new
   samples, which may be timed anywhere: an existing sample with the same timestamp as a new one is
   replaced, and new samples sharing a timestamp are all kept. Samples only is an upsert, ranges
-  only a deletion, both a range replacement. With `time_error`, "the same timestamp" is the
-  rounded one: upsert and rounding are at odds (a distinct event a fraction of a step from a
-  stored one replaces it too), so with both, delete the range the new samples replace. Blocks that no range meets and no new sample falls in
+  only a deletion, both a range replacement. New times are stored exactly: with `time_error`,
+  new samples are an error (use `replace_time_blocks`). Blocks that no range meets and no new sample falls in
   are carried over without being decoded; the others are decoded, merged and re-encoded: their kept samples are grid points, so they come back bit for
   bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
   used however often it is updated.
+- `replace_time_blocks(group, blocks, x, times, params, *, start_time, block_duration,
+  time_unit=None)`: re-encodes the declared blocks (indices, e.g. `range(12, 14)`) from the
+  samples timed in them; every sample must fall in a declared block, and a declared block without
+  samples is emptied. With `time_error` the times are rounded as `encode_time_blocks` would round
+  them, each block continuing the clock of the stored block before it: re-sending the open block
+  whole as it fills gives the bytes of encoding at once. This is how to update a block group with
+  a time error.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
   (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9), `time_error=0` (0–0.5). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
@@ -229,10 +238,11 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
   decode identically; without a size target, the updated block group is byte-identical to encoding
   the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
-- **Timestamps decode exactly** by default. With `time_error` = e, each moves by at most e times
-  its block's interval (2% more at most; an `update` clamped to a stored neighbour, by the
-  neighbour's), they stay in order, and `update_time_blocks` moves a stored one only when it
-  rounds a whole block, within the same bound in all.
+- **Timestamps decode exactly** by default. With `time_error` = e, in each rounded block none
+  moves more than e times the block's mean interval (2% more at most; an `update` clamped to a
+  stored neighbour, by the neighbour's), at most 5% move more than e times their own interval,
+  they stay in order and inside their time blocks (a time rounded up to its block's end stays in
+  the block, at the end), and no time is rounded twice.
 
 ## How it works
 

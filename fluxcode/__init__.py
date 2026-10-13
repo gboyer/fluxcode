@@ -35,6 +35,9 @@ Typical usage:
     hour = dict(start_time=np.datetime64("2026-01-01T10:00"), block_duration=np.timedelta64(1, "m"))
     group, *_ = fluxcode.encode_time_blocks(x, t, **hour)
     group, *_ = fluxcode.update_time_blocks(group, x_new, t_new, delete_ranges=(t0, t1), **hour)
+
+    # With Params(time_error=...), replace whole minutes from the source data instead:
+    group, *_ = fluxcode.replace_time_blocks(group, range(12, 14), x_new, t_new, params, **hour)
 """
 
 from ._api import (
@@ -44,6 +47,7 @@ from ._api import (
     encode_blocks,
     encode_group,
     encode_time_blocks,
+    replace_time_blocks,
     update,
     update_time_blocks,
 )
@@ -71,6 +75,7 @@ __all__ = [
     "encode_blocks",
     "encode_group",
     "encode_time_blocks",
+    "replace_time_blocks",
     "update",
     "update_time_blocks",
 ]
