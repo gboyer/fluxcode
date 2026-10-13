@@ -51,6 +51,8 @@ def main():
     assert len(td) == 20 and baselines.exact_rmse(t, x, td) > 0
     p = fluxprune.prune(t, x, max_error=1.0, max_points=50)
     assert len(p) <= 50 and len(baselines.visvalingam_whyatt(t, x, 20, r.required)) == 20
+    from tslab.prune import rules  # noqa: E402
+    assert all(r.min_points <= k <= r.n for k in (rules.rmse(r, 0.05), rules.geomean_noisy(r, 30, 0.01), rules.knee(r, 0.25)))
     print("experimental smoke test passed")
 
 

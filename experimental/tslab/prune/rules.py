@@ -39,9 +39,9 @@ def count(r, K):
 
 def rmse(r, eps):
     """The fewest points whose relative RMSE, and that of every larger count, is at most eps."""
-    e = np.sqrt(np.maximum(r.sq_error, 0.0))  # e[j]: after j removals
+    e = r.relative_rmse()[r.min_points:]  # e[j]: keeping min_points + j
     over = np.flatnonzero(e > eps)
-    return r.n - (over[0] - 1 if len(over) else len(e) - 1)
+    return r.min_points + (over[-1] + 1 if len(over) else 0)
 
 
 def geomean(r, K, eps):
