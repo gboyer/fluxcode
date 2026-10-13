@@ -817,9 +817,78 @@ def within_error(times: np.ndarray, out: np.ndarray, time_error: float, max_move
 
 @njit(inline="always")
 def _clamp(out: np.ndarray, low: np.int64, high: np.int64) -> None:
-    """Raises ticks below low to it and lowers those above high to it."""
-    for sample_idx in range(out.shape[0]):
-        out[sample_idx] = min(max(out[sample_idx], low), high)
+    """Raises ticks below low to it and lowers those above high to it. The ticks are in order
+    (rounding keeps them so), so only a run at either end can be outside."""
+    block_len = out.shape[0]
+    sample_idx = 0
+    while sample_idx < block_len and out[sample_idx] < low:
+        out[sample_idx] = low
+        sample_idx += 1
+    sample_idx = block_len - 1
+    while sample_idx >= 0 and out[sample_idx] > high:
+        out[sample_idx] = high
+        sample_idx -= 1
+
+
+GRID_TEST_CHUNK: int = 64
+"""Intervals grid_fails counts between looks at its count."""
+
+GRID_TEST_GIVE_UP: int = 256
+"""Intervals after which grid_fails gives up on a grid whose forced count is behind the pace that
+could rule it out."""
+
+FLOAT_EXACT_INTERVAL: float = 2.0**52
+"""Intervals below which float64 holds them, and their offsets from a grid, exactly."""
+
+
+@njit(inline="always")
+def grid_fails(times: np.ndarray, block_len: int, quantum: np.int64, time_error: float) -> bool:
+    """Whether no phase of the grid of quantum can keep a block's ticks to the time error, from
+    their intervals alone: a cheap test that lets round_blocks skip a step without choosing its
+    phase, rounding and checking.
+
+    Two ticks I apart round to grid points a multiple of quantum apart, so at least one of them
+    moves by at least half of I's distance d to the nearest multiple of quantum, and that tick's
+    own interval is at most I: if d > 2 time_error I, it moves by more than time_error times its
+    own interval. Each tick has two intervals, so more than 2 (n // TIME_ERROR_OUTLIERS) such
+    intervals mean more than n // TIME_ERROR_OUTLIERS such ticks, and within_error fails. The
+    test can only rule a grid out, never in.
+
+    The caller passes only ticks that round onto the grid whatever the phase: none within a
+    quantum of the block's bounds (where a tick may be clamped instead) or of the int64 range.
+    The count stops once it rules the grid out, or after GRID_TEST_GIVE_UP intervals if it is
+    behind the pace that could.
+
+    Args:
+        times: 1D int64 array of a block's ticks (at least 2), less any near its bounds.
+        block_len: The whole block's tick count n.
+        quantum: The grid's step (> 1).
+        time_error: The time error e (> 0).
+
+    Returns:
+        True if the grid can't keep to the time error; False if it might.
+    """
+    num_intervals = times.shape[0] - 1
+    limit = 2 * (block_len // TIME_ERROR_OUTLIERS)
+    quantum_float = np.float64(quantum)
+    inverse = 1.0 / quantum_float
+    # A hair under 2 e, so that float rounding never counts an interval that isn't forced
+    threshold = 2.0 * time_error * (1.0 - 1e-9)
+    ticks_next, ticks_prev = times[1:], times[:num_intervals]
+    forced = 0
+    for chunk_start in range(0, num_intervals, GRID_TEST_CHUNK):
+        chunk_end = min(chunk_start + GRID_TEST_CHUNK, num_intervals)
+        for interval_idx in range(chunk_start, chunk_end):
+            interval = np.float64(ticks_next[interval_idx] - ticks_prev[interval_idx])
+            # Distance to the nearest multiple: min(d, quantum - d) also mends a quotient rounded the wrong way at .5
+            distance = abs(interval - np.round(interval * inverse) * quantum_float)
+            distance = min(distance, quantum_float - distance)
+            forced += (distance > threshold * interval) & (interval < FLOAT_EXACT_INTERVAL)
+        if forced > limit:
+            return True
+        if chunk_end >= GRID_TEST_GIVE_UP and forced * num_intervals < limit * chunk_end:
+            return False
+    return False
 
 
 @njit(nogil=True, cache=True)
@@ -861,7 +930,8 @@ def round_blocks(
             to carry on from the block before it here.
         seed_steps: 1D int64 array: that stored block's interval if it is regular, else 0 (read
             where seed_ticks is set).
-        out_ticks: Output 1D int64 array of every sample's tick, kept or rounded.
+        out_ticks: Output 1D int64 array of every sample's tick, kept or rounded; written only
+            if some block moved (else the ticks are as given).
         out_moves: Output 1D int64 array: each block's largest move.
 
     Returns:
@@ -880,6 +950,9 @@ def round_blocks(
     pivots = np.empty(CADENCE_SAMPLES, np.int64)
     phase_scratch = np.empty(PHASE_SAMPLES, np.int64)
     trial_ticks = np.empty(num_samples, np.int64)
+    # Blocks left as they are aren't copied to out_ticks unless another block moves
+    kept = np.zeros(sample_offsets.shape[0] - 1, np.bool_)
+    any_moved = False
     previous_last = np.int64(INT64_MIN)
     previous_step = np.int64(0)
     for block_idx in range(sample_offsets.shape[0] - 1):
@@ -892,48 +965,71 @@ def round_blocks(
         if block_len == 0:
             continue
         times = ticks[first_sample:first_sample + block_len]
-        out = out_ticks[first_sample:first_sample + block_len]
-        trial = trial_ticks[first_sample:first_sample + block_len]
-        out[:] = times
         step = np.int64(regular_step(times)) if block_len >= 2 else np.int64(0)
         mean = (times[block_len - 1] - times[0]) / (block_len - 1) if block_len >= 3 else 0.0
         # Exactly regular blocks (and those of 1 or 2 ticks) stay as they are
-        if step == 0 and mean > 0.0:
-            low, high = lows[block_idx], highs[block_idx]
-            max_move = time_error * TIME_ERROR_SLACK * mean
-            # Each candidate is written to out; the largest move is -1 until one keeps to the error
-            largest_move = -1
-            # 1. The lattice of the block before, if it is the same clock
-            same_clock = previous_step > 0 and times[0] >= previous_last and np.round(mean / previous_step) == 1.0
-            if same_clock and snap_lattice(times, previous_last, previous_step, np.int64(1), out):
-                _clamp(out, low, high)
-                largest_move = within_error(times, out, time_error, max_move)
-            # 2. Its own grid, the coarsest that keeps to the time error
-            largest = np.int64(time_quantum(mean, time_error))
-            quantum = largest
-            while largest_move < 0 and quantum > 1:
+        if step != 0 or mean <= 0.0:
+            kept[block_idx] = True
+            previous_last = times[block_len - 1]
+            previous_step = step
+            continue
+        out = out_ticks[first_sample:first_sample + block_len]
+        trial = trial_ticks[first_sample:first_sample + block_len]
+        low, high = lows[block_idx], highs[block_idx]
+        max_move = time_error * TIME_ERROR_SLACK * mean
+        # Each candidate is written to out; the largest move is -1 until one keeps to the error
+        largest_move = -1
+        # 1. The lattice of the block before, if it is the same clock
+        same_clock = previous_step > 0 and times[0] >= previous_last and np.round(mean / previous_step) == 1.0
+        if same_clock and snap_lattice(times, previous_last, previous_step, np.int64(1), out):
+            _clamp(out, low, high)
+            largest_move = within_error(times, out, time_error, max_move)
+        # 2. Its own grid, the coarsest that keeps to the time error. Once a grid has failed, the
+        # steps below it are first tested on the intervals of the ticks no bound or int64 limit
+        # can clamp (grid_fails), which rules most failing steps out without a phase
+        largest = np.int64(time_quantum(mean, time_error))
+        quantum = largest
+        safe_first, safe_last = 0, -1
+        if largest < (1 << 60):
+            safe_low = max(low, np.int64(INT64_MIN) + 2 * largest) + largest
+            safe_high = min(high, np.int64(INT64_MAX) - 2 * largest) - largest
+            safe_first, safe_last = 0, block_len - 1
+            while safe_first < block_len and times[safe_first] < safe_low:
+                safe_first += 1
+            while safe_last >= 0 and times[safe_last] > safe_high:
+                safe_last -= 1
+        grid_failed = False
+        while largest_move < 0 and quantum > 1:
+            if not (grid_failed and safe_last - safe_first >= 1
+                    and grid_fails(times[safe_first:safe_last + 1], block_len, quantum, time_error)):
                 phase = block_phase(times, quantum, previous_last, phase_scratch)
                 snap_block(times, quantum, phase, out)
                 _clamp(out, low, high)
                 largest_move = within_error(times, out, time_error, max_move)
-                quantum = _finer_step(quantum)
-            if largest_move < 0:
-                out[:] = times
-                largest_move = 0
-            # 3. A clock still irregular: a lattice of its own
-            if regular_step(out) == 0:
-                interval = clock_interval(times, pivots, max_move)
-                clock = interval > 0.0 and not scans_equal(out, interval)
-                if clock and fit_lattice(times, interval, largest, max_move, trial):
-                    _clamp(trial, low, high)
-                    lattice_move = within_error(times, trial, time_error, max_move)
-                    if lattice_move >= 0:
-                        out[:] = trial
-                        largest_move = lattice_move
-            out_moves[block_idx] = largest_move
-            step = np.int64(regular_step(out))
+                grid_failed = True
+            quantum = _finer_step(quantum)
+        if largest_move < 0:
+            out[:] = times
+            largest_move = 0
+        # 3. A clock still irregular: a lattice of its own
+        if regular_step(out) == 0:
+            interval = clock_interval(times, pivots, max_move)
+            clock = interval > 0.0 and not scans_equal(out, interval)
+            if clock and fit_lattice(times, interval, largest, max_move, trial):
+                _clamp(trial, low, high)
+                lattice_move = within_error(times, trial, time_error, max_move)
+                if lattice_move >= 0:
+                    out[:] = trial
+                    largest_move = lattice_move
+        out_moves[block_idx] = largest_move
+        any_moved |= largest_move > 0
         previous_last = out[block_len - 1]
-        previous_step = step
+        previous_step = np.int64(regular_step(out))
+    if any_moved:
+        for block_idx in range(sample_offsets.shape[0] - 1):
+            if kept[block_idx]:
+                first_sample, end_sample = sample_offsets[block_idx], sample_offsets[block_idx + 1]
+                out_ticks[first_sample:end_sample] = ticks[first_sample:end_sample]
     return OK, 0
 
 

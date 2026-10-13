@@ -547,6 +547,50 @@ def test_clamp_boundaries_never_moves_a_tick_further():
         assert (np.diff(out) >= 0).all() and (np.abs(out - ticks) <= before).all()
 
 
+def test_grid_fails_only_on_grids_no_phase_keeps_to_the_error():
+    rng = np.random.default_rng(11)
+    ruled_out = 0
+    for _ in range(300):
+        block_len = int(rng.integers(3, 300))
+        d = int(rng.choice([7, 100, 1000, 16667, MS]))
+        kind = rng.choice(["poisson", "jitter", "deadband", "repeats"])
+        if kind == "poisson":
+            gaps = np.round(rng.exponential(d, block_len))
+        elif kind == "jitter":
+            gaps = np.maximum(0, np.round(rng.normal(d, 0.05 * d, block_len)))
+        elif kind == "deadband":
+            gaps = d * np.where(rng.random(block_len) < 0.05, rng.integers(1, 1000, block_len), rng.integers(1, 20, block_len))
+        else:
+            gaps = d * rng.integers(0, 3, block_len)
+        ticks = (START + np.cumsum(gaps)).astype(np.int64)
+        if ticks[-1] == ticks[0]:
+            continue
+        time_error = float(rng.choice([0.01, 0.05, 0.2, 0.45]))
+        mean = (ticks[-1] - ticks[0]) / (block_len - 1)
+        max_move = time_error * _time.TIME_ERROR_SLACK * mean
+        quantum = np.int64(_time.time_quantum(mean, time_error))
+        out = np.empty_like(ticks)
+        while quantum > 1:
+            if _time.grid_fails(ticks, block_len, quantum, time_error):
+                ruled_out += 1
+                step = max(quantum // _time.PHASE_STEPS, 1)
+                for phase in range(0, quantum, step):
+                    _time.snap_block(ticks, quantum, np.int64(phase), out)
+                    assert _time.within_error(ticks, out, time_error, max_move) == -1
+            quantum = _time._finer_step(quantum)
+    assert ruled_out > 100
+
+
+def test_clamp_raises_and_lowers_only_the_ends():
+    rng = np.random.default_rng(5)
+    for _ in range(200):
+        ticks = np.sort(rng.integers(0, 100, int(rng.integers(1, 20)))).astype(np.int64)
+        low, high = np.int64(rng.integers(0, 50)), np.int64(rng.integers(50, 100))
+        out = ticks.copy()
+        _time._clamp(out, low, high)
+        np.testing.assert_array_equal(out, np.clip(ticks, low, high))
+
+
 def multi_rate_blocks(rng, block_len):
     """Blocks of different clocks one after another: regular, jittered, Poisson, bursts, 1024 Hz."""
     parts, t = [], 10**6

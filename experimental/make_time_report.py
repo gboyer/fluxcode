@@ -380,7 +380,7 @@ a regular block skips the residuals.</li>
 {lattice_text}.</li>
 <li><b>Times already on a grid</b> don't change, but checking them costs time: {check_cost("Perfect grid")} per
 block group on a perfect grid (its blocks are regular and aren't rounded, but the ticks are checked for order and
-regularity and copied) and {check_cost("Grid with a few gaps")} with a few gaps (rounding the irregular blocks).</li>
+regularity) and {check_cost("Grid with a few gaps")} with a few gaps (rounding the irregular blocks).</li>
 <li><b>The noisy clock</b> (σ = 20 µs, 2%) needs e = 0.1 to land on its grid; at 0.05 about 1% of its
 times fall to a neighbouring grid point.</li>
 <li><b>Events and deadband logging</b> have no grid to land on. Rounding still takes out the low bits

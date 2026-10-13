@@ -187,6 +187,15 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
        trying each step down from there (one or two tries on clocks, about five on Poisson
        events). Any 1-2-5 step up to a fifth of a 1-2-5 period divides it: a jittered clock
        rounds back onto its own grid.
+       - Once a step has failed, each finer one is first tested on the intervals alone, which
+         skips steps that can't pass without rounding the block (the result is the same). Two
+         ticks I apart round to points a multiple of q apart, so one of them moves by at least
+         half of I's distance d to the nearest multiple of q, and its own interval is at most I:
+         if d > 2e·I it fails the check. More than 2·(n // 20) such intervals mean more than
+         n // 20 such ticks. Ticks within q of the block's bounds (or of the int64 range) are
+         left out, since clamping could move them less. On deadband logging this rules out five
+         of its seven steps (the first is always tried, the last passes); on Poisson events
+         about one step in ten.
     3. **Its own lattice:** a block with a cadence (90% of intervals one scan) still irregular
        after 1 and 2, because no 1-2-5 step divides its period (1024 Hz: 976,562.5 ns; 60 Hz) and
        the rounded intervals alternate, is put on a lattice of its own if that passes.
