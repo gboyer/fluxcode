@@ -11,7 +11,8 @@ Every rule is a function of the curve only, so all of them run on the same ranki
                     error by less than lam (best total squared error for the points spent).
 - marginal_rmse(lam): the k that minimises e + lam * k: the allocation with the least mean RMSE over
                     blocks for a total number of points.
-- amortized(theta): the first k where e[k] / (points added beyond the required) < theta.
+- amortized(theta): the first k where e[k] / (points added beyond the required) < theta: Ranking.count(), by
+                    default above the noise floor (√(e² - σ²), σ from fluxprune's noise kernel).
 - noisy(rule, ...):  the same rule with eps raised to the block's noise level, estimated from the curve:
                     keeping the best half of white noise's points leaves 0.29 of its sigma (noise()).
 - knee(alpha, eps): the first k where doubling the points improves the error by less than a factor
@@ -73,8 +74,8 @@ def marginal_rmse(r, lam):
     return int(np.argmin(e + lam * np.arange(len(e))))
 
 
-def amortized(r, theta):
-    return r.count(error_per_point=theta)
+def amortized(r, theta, noise_floor=True):
+    return r.count(error_per_point=theta, noise_floor=noise_floor)
 
 
 def knee(r, alpha, eps=0.0):

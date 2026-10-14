@@ -9,20 +9,19 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ._guard import errors_kernel, max_error_kernel
+from ._noise import noise_kernel
 from ._rank import rank_kernel, refine_kernel
 from ._refit import refit_kernel
 
 ERROR_PER_POINT = 0.0015
-"""The default exchange rate of error for points: about 1% of the points of 1 s scans in 1 h blocks of
-slow process data (report/prune.html). It is per block: for blocks H times as long, start from
-error_per_point / H. That keeps fewer points per hour, not the same density (about a third as many in
+"""The default exchange rate of error for points: about 0.6% of the points of 1 s scans in 1 h blocks of
+slow process data, 1% without the noise floor (report/prune.html). It is per block: for blocks H times as
+long, start from error_per_point / H. That keeps fewer points per hour, not the same density (about a third as many in
 12 h blocks as in 1 h blocks on the report's corpus): a longer block has a wider range, which the error
 is relative to, and it needs one set of required points instead of H."""
 
-NOISE_AT_HALF = 0.29
-"""Keeping the best half of white noise's points leaves 0.29 of its σ (from 64 points to 43,200, regular
-or irregular times): the noise estimate behind max_error's warning, read off the ranking's error curve."""
 NOISE_MIN_POINTS = 64
+"""max_error's warning that it is below the noise needs this many points for the noise estimate."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -34,6 +33,8 @@ class Pruned:
     values: np.ndarray
     """Their values: the samples, or with refit=True the refit ones (the first, last, minimum and
     maximum points and the points around gaps keep their samples)."""
+    noise: float
+    """The input's white-noise σ, estimated (value units): the rmse pass's noise floor."""
     rmse: float
     """The time-weighted RMSE of the kept points' lines against the input's, in value units."""
     max_error: float
@@ -74,6 +75,13 @@ class Ranking:
     _y: np.ndarray = field(repr=False)  # relative to the range; non-finite values as they are
     _live: np.ndarray = field(repr=False)  # the keepable points' indices into the input
     _span: float = field(repr=False)
+    _noise: float = field(default=0.0, repr=False)  # the white-noise σ, relative to the range
+
+    @property
+    def noise(self) -> float:
+        """The input's white-noise σ, estimated (value units): each point's distance from its
+        neighbours' chord, its median scaled for normal noise (_noise.py)."""
+        return self._noise * self._span
 
     @property
     def min_points(self) -> int:
@@ -103,15 +111,22 @@ class Ranking:
         """Sorted indices of the k most significant points (k is clipped to [min_points, n])."""
         return self._live[self._top(k)]
 
-    def count(self, error_per_point=ERROR_PER_POINT):
+    def count(self, error_per_point=ERROR_PER_POINT, noise_floor=True):
         """The first count k where the relative RMSE falls below error_per_point times the points added
         beyond the required ones: where the error left and the points spent, at that exchange rate,
         meet. More points for a complex block, fewer for a simple one, sublinearly; it hardly depends
         on the sampling rate (report/prune.html, "amortized"). At 0 points are free: every point (n);
-        at inf none is worth its price: the required points alone (min_points)."""
+        at inf none is worth its price: the required points alone (min_points).
+
+        noise_floor: read the RMSE as √(e² - σ²), σ the estimated white noise (`noise`): an estimate of
+        the error against the signal under the noise, so points that only trace the noise aren't
+        bought. Lines through noisy samples leave about σ against them however many are kept, until
+        nearly all are."""
         if not error_per_point >= 0:
             raise ValueError("error_per_point must be non-negative (0 to inf)")
         e = self.relative_rmse()[self.min_points:]
+        if noise_floor and self._noise > 0:
+            e = np.sqrt(np.maximum(e * e - self._noise * self._noise, 0.0))
         ok = np.flatnonzero(e < error_per_point * np.arange(1, len(e) + 1))
         return self.min_points + int(ok[0]) if len(ok) else self.n
 
@@ -134,9 +149,9 @@ class Ranking:
         sq, worst = errors_kernel(self._tau, self._y, keep, self._y[keep] if values is None else values)
         return float(np.sqrt(sq)), float(worst)
 
-    def select(self, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None):
+    def select(self, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, noise_floor=True):
         """(the sorted indices prune() keeps, whether the rmse pass kept all it asked for)."""
-        keep, rmse_met = self._select(error_per_point, max_points, max_error)
+        keep, rmse_met = self._select(error_per_point, max_points, max_error, noise_floor)
         return self._live[keep], rmse_met
 
     def refit(self, keep):
@@ -170,9 +185,9 @@ class Ranking:
             refine_kernel(self._tau, self._y, keep, fixed, passes)
         return keep
 
-    def _select(self, error_per_point, max_points, max_error):
+    def _select(self, error_per_point, max_points, max_error, noise_floor=True):
         cap = self.n if max_points is None else int(max_points)
-        wanted = self.count(error_per_point)
+        wanted = self.count(error_per_point, noise_floor)
         if self.min_points > cap:  # the gaps alone exceed it: they win, and nothing is added
             return self._required, wanted == self.min_points
         k = min(wanted, cap)
@@ -291,15 +306,16 @@ def rank(times, values):
     t = (tau[live] - tau[live[0]]) / duration
     order, delta = rank_kernel(t, y if every else np.where(np.isfinite(y), y, 0.0), ~req)
     return Ranking(m, gaps, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
-                   float(hi - lo))
+                   float(hi - lo), float(noise_kernel(t, y)))
 
 
-def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, refit=False):
+def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, refit=False,
+          noise_floor=True):
     """The points to keep of a series read as straight lines between them: a Pruned with their times and
     values, the RMS and largest error they leave, and which of the asks were met.
 
     Two passes choose them. The rmse pass ranks every point by how much it lowers the time-weighted RMSE
-    and keeps as many as error_per_point asks for; the max_error pass then adds points wherever a kept
+    and keeps as many as error_per_point asks for, above the noise floor; the max_error pass then adds points wherever a kept
     line strays further than max_error from the input.
 
     error_per_point: the rmse pass keeps the first count where the time-weighted RMSE left, relative to
@@ -307,6 +323,11 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
         (with max_points: the best max_points); inf none beyond the required ones (with max_error: the
         max_error pass alone). It is per block: for blocks H times as long, start from
         error_per_point / H (ERROR_PER_POINT has how far that is from the same density).
+    noise_floor: the rmse pass reads its RMSE above the input's white noise, √(rmse² - σ²) with σ
+        estimated from each point's distance to its neighbours' chord (`noise` of the result), so it
+        doesn't keep points that only trace the noise: a quiet block of noise keeps about a tenth as
+        many. Smooth and quantized signals hardly change (σ is about 0). Narrow spikes on the noise
+        are cheap in a time-weighted RMSE either way: max_error (a few σ) keeps them.
     max_points: a hard cap on the points kept (at least 4: the first, last, minimum and maximum).
     max_error: no input point strays further than this, in value units, from the kept lines: each line
         that strays further is split by farthest reach (from each kept point, the line to the farthest
@@ -333,7 +354,7 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
         raise ValueError("max_points must be at least 4 (the first, last, minimum and maximum points)")
     if max_error is not None and not (np.isfinite(max_error) and max_error >= 0):
         raise ValueError("max_error must be finite and non-negative")
-    keep, rmse_met = r._select(error_per_point, max_points, max_error)
+    keep, rmse_met = r._select(error_per_point, max_points, max_error, noise_floor)
     idx = r._live[keep]
     out = x[idx].copy()
     rmse = worst = 0.0
@@ -353,8 +374,8 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
         warnings.warn(f"prune: {len(idx)} points kept, over max_points={max_points}: {r.gaps} of them are "
                       "there for gaps (non-finite values)", stacklevel=2)
     if max_error is not None and r._span > 0 and r.n >= NOISE_MIN_POINTS:
-        sigma = r.relative_rmse(r.n // 2) / NOISE_AT_HALF * r._span
+        sigma = r.noise
         if max_error < sigma:
             warnings.warn(f"prune: max_error={max_error:g} is below the noise (σ ≈ {sigma:.3g}): the max_error "
                           "pass keeps about half the points or more", stacklevel=2)
-    return Pruned(t[idx], out, float(rmse), float(worst), rmse_met, max_error_met, max_points_met)
+    return Pruned(t[idx], out, r.noise, float(rmse), float(worst), rmse_met, max_error_met, max_points_met)

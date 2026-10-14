@@ -135,11 +135,14 @@ def test_refine_lowers_error_and_keeps_required(seed):
 def test_error_per_point():
     t, x = series(5)
     r = rank(t, x)
-    e = r.relative_rmse()
-    for theta in (1e-4, 1e-3, 1e-2):
-        k = r.count(error_per_point=theta)
-        assert e[k] < theta * (k - r.min_points + 1)
-        assert all(e[j] >= theta * (j - r.min_points + 1) for j in range(r.min_points, k))
+    raw = r.relative_rmse()
+    sigma = r.noise / (x.max() - x.min())
+    assert sigma > 0  # a random walk's unit steps read as a little noise
+    for floor, e in ((True, np.sqrt(np.maximum(raw**2 - sigma**2, 0))), (False, raw)):
+        for theta in (1e-4, 1e-3, 1e-2):
+            k = r.count(error_per_point=theta, noise_floor=floor)
+            assert e[k] < theta * (k - r.min_points + 1)
+            assert all(e[j] >= theta * (j - r.min_points + 1) for j in range(r.min_points, k))
     assert r.count(error_per_point=1e-3) > r.count(error_per_point=1e-2)
     assert r.count(error_per_point=0) == r.n and r.count(error_per_point=np.inf) == r.min_points
     for bad in (-1e-3, np.nan):
@@ -237,6 +240,61 @@ def test_noise_warning():
         warnings.simplefilter("error")
         fluxprune.prune(t, x, max_error=3.0)
         fluxprune.prune(t, x)
+
+
+# the noise floor
+
+def noise_estimate(t, x):
+    """σ from each point's distance to its neighbours' chord, by brute force."""
+    t = np.asarray(t, np.float64)
+    r = []
+    for i in range(1, len(x) - 1):
+        w = (t[i] - t[i - 1]) / (t[i + 1] - t[i - 1])
+        r.append(abs(x[i] - x[i - 1] - w * (x[i + 1] - x[i - 1])) / np.sqrt(1 + w * w + (1 - w) ** 2))
+    return 1.4826 * np.median(r)
+
+
+@pytest.mark.parametrize("irregular", [False, True])
+def test_noise_estimate(irregular):
+    rng = np.random.default_rng(7)
+    t = np.cumsum(rng.uniform(0.2, 1.8, 3600)) if irregular else np.arange(3600.0)
+    x = 50 + 0.01 * t + rng.normal(0, 2, 3600)
+    r = rank(t, x)
+    assert r.noise == pytest.approx(noise_estimate(t, x), rel=1e-9)
+    assert r.noise == pytest.approx(2.0, rel=0.05)
+    spikes = x + sum(800 / (1 + ((t - c) / 2) ** 2) for c in np.arange(100.0, t[-1], 180))
+    assert rank(t, spikes).noise == pytest.approx(2.0, rel=0.15)  # the median ignores the spikes
+    assert rank(t, np.round(np.sin(t / 300), 1)).noise == 0.0  # quantized steps: no noise
+    with_gap = x.copy()
+    with_gap[100:110] = np.nan
+    assert rank(t, with_gap).noise == pytest.approx(r.noise, rel=0.02)
+
+
+def test_noise_floor():
+    rng = np.random.default_rng(11)
+    t = np.arange(3600.0)
+    quiet = 50 + rng.normal(0, 2, 3600)
+    on, off = fluxprune.prune(t, quiet), fluxprune.prune(t, quiet, noise_floor=False)
+    assert on.noise == pytest.approx(2.0, rel=0.05) and off.noise == on.noise
+    assert len(on) * 4 < len(off)  # a tenth or so: it doesn't trace the noise
+    assert on.rmse < 1.2 * off.rmse  # against the samples, what's left is mostly the noise either way
+    under = np.zeros(2)  # against the signal under the noise, fewer points are closer on average
+    for seed in range(10):
+        q = 50 + np.random.default_rng(seed).normal(0, 2, 3600)
+        for j, floor in enumerate((True, False)):
+            p = fluxprune.prune(t, q, noise_floor=floor)
+            under[j] += np.sqrt(np.mean((np.interp(t, p.times, p.values) - 50) ** 2))
+    assert under[0] < 0.9 * under[1]
+    sine = np.sin(2 * np.pi * t / 1200)  # smooth: no noise, no change
+    assert np.array_equal(fluxprune.prune(t, sine).times, fluxprune.prune(t, sine, noise_floor=False).times)
+    # narrow spikes on the noise: cheap in the rmse, kept by a max_error of a few σ
+    truth = 50 + sum(800 / (1 + ((t - c) / 2) ** 2) for c in np.arange(300.0, 3600, 600))
+    x = truth + rng.normal(0, 2, 3600)
+    p = fluxprune.prune(t, x, max_error=20)
+    line = np.interp(t, p.times, p.values)
+    for c in np.arange(300.0, 3600, 600):
+        near = np.abs(t - c) <= 5
+        assert truth[near].max() - line[near].max() < 20
 
 
 # gaps: runs of non-finite values
