@@ -13,12 +13,19 @@ from ._noise import noise_kernel
 from ._rank import rank_kernel, refine_kernel
 from ._refit import refit_kernel
 
-ERROR_PER_POINT = 0.0015
-"""The default exchange rate of error for points: about 0.6% of the points of 1 s scans in 1 h blocks of
-slow process data, 1% without the noise floor (report/prune.html). It is per block: for blocks H times as
-long, start from error_per_point / H. That keeps fewer points per hour, not the same density (about a third as many in
-12 h blocks as in 1 h blocks on the report's corpus): a longer block has a wider range, which the error
-is relative to, and it needs one set of required points instead of H."""
+ERROR_AT_A_TENTH = 0.001
+"""The default exchange rate of error for points, error_per_point = ERROR_AT_A_TENTH / (n / 10) for n input
+points: an RMSE of 0.1% of the range accepted at a tenth of the points (2.8e-6 for an hour of 1 s scans).
+A rate, not a count: simple blocks stop well before n / 10 and complex ones go past (on the report's slow
+process data, 1 h blocks of 1 s scans: 158 points per hour on average, median 78, the most 614). Scaled by
+n, it keeps about as many points per hour in long blocks as in short ones, but fewer per hour at a slower
+sampling rate (an hour of 10 s scans: 0.1-0.6x as many as of 1 s scans). Better: choose
+error_per_point = (the RMSE you'd accept) / (at how many points)."""
+
+
+def default_error_per_point(n):
+    """error_per_point when none is given, for n input points: ERROR_AT_A_TENTH at a tenth of them."""
+    return ERROR_AT_A_TENTH / (max(int(n), 1) / 10)
 
 NOISE_MIN_POINTS = 64
 """max_error's warning that it is below the noise needs this many points for the noise estimate."""
@@ -76,6 +83,7 @@ class Ranking:
     _live: np.ndarray = field(repr=False)  # the keepable points' indices into the input
     _span: float = field(repr=False)
     _noise: float = field(default=0.0, repr=False)  # the white-noise σ, relative to the range
+    _size: int = field(default=0, repr=False)  # the input's length, for the default error_per_point
 
     @property
     def noise(self) -> float:
@@ -111,17 +119,20 @@ class Ranking:
         """Sorted indices of the k most significant points (k is clipped to [min_points, n])."""
         return self._live[self._top(k)]
 
-    def count(self, error_per_point=ERROR_PER_POINT, noise_floor=True):
+    def count(self, error_per_point=None, noise_floor=True):
         """The first count k where the relative RMSE falls below error_per_point times the points added
         beyond the required ones: where the error left and the points spent, at that exchange rate,
-        meet. More points for a complex block, fewer for a simple one, sublinearly; it hardly depends
-        on the sampling rate (report/prune.html, "amortized"). At 0 points are free: every point (n);
-        at inf none is worth its price: the required points alone (min_points).
+        meet. More points for a complex block, fewer for a simple one, sublinearly; a fixed rate hardly
+        depends on the sampling rate (report/prune.html, "amortized"). At 0 points are free: every point
+        (n); at inf none is worth its price: the required points alone (min_points). None:
+        default_error_per_point of the input's length.
 
         noise_floor: read the RMSE as √(e² - σ²), σ the estimated white noise (`noise`): an estimate of
         the error against the signal under the noise, so points that only trace the noise aren't
         bought. Lines through noisy samples leave about σ against them however many are kept, until
         nearly all are."""
+        if error_per_point is None:
+            error_per_point = default_error_per_point(self._size)
         if not error_per_point >= 0:
             raise ValueError("error_per_point must be non-negative (0 to inf)")
         e = self.relative_rmse()[self.min_points:]
@@ -149,7 +160,7 @@ class Ranking:
         sq, worst = errors_kernel(self._tau, self._y, keep, self._y[keep] if values is None else values)
         return float(np.sqrt(sq)), float(worst)
 
-    def select(self, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, noise_floor=True):
+    def select(self, error_per_point=None, max_points=None, max_error=None, noise_floor=True):
         """(the sorted indices prune() keeps, whether the rmse pass kept all it asked for)."""
         keep, rmse_met = self._select(error_per_point, max_points, max_error, noise_floor)
         return self._live[keep], rmse_met
@@ -301,15 +312,15 @@ def rank(times, values):
         # nothing to weigh by (all at one time) or nothing to lose (constant): any removal is free
         rest = np.flatnonzero(~req)
         return Ranking(m, gaps, np.flatnonzero(req), rest, np.zeros(len(rest) + 1), np.empty(0),
-                       np.zeros(m), live, 0.0)
+                       np.zeros(m), live, 0.0, _size=n)
     y = (x[live] - lo) / (hi - lo)
     t = (tau[live] - tau[live[0]]) / duration
     order, delta = rank_kernel(t, y if every else np.where(np.isfinite(y), y, 0.0), ~req)
     return Ranking(m, gaps, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
-                   float(hi - lo), float(noise_kernel(t, y)))
+                   float(hi - lo), float(noise_kernel(t, y)), n)
 
 
-def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_error=None, refit=False,
+def prune(times, values, error_per_point=None, max_points=None, max_error=None, refit=False,
           noise_floor=True):
     """The points to keep of a series read as straight lines between them: a Pruned with their times and
     values, the RMS and largest error they leave, and which of the asks were met.
@@ -319,10 +330,14 @@ def prune(times, values, error_per_point=ERROR_PER_POINT, max_points=None, max_e
     line strays further than max_error from the input.
 
     error_per_point: the rmse pass keeps the first count where the time-weighted RMSE left, relative to
-        the block's range (max - min), falls below this many times the points added. 0 keeps every point
-        (with max_points: the best max_points); inf none beyond the required ones (with max_error: the
-        max_error pass alone). It is per block: for blocks H times as long, start from
-        error_per_point / H (ERROR_PER_POINT has how far that is from the same density).
+        the block's range (max - min), falls below this many times the points added: an exchange rate,
+        best chosen as (the RMSE you'd accept) / (at how many points), e.g. 0.002 / 360 for 0.2% at
+        360 points. A rate, not a count: a simple block stops sooner, a complex one goes on (cap it
+        with max_points). 0 keeps every point (with max_points: the best max_points); inf none beyond
+        the required ones (with max_error: the max_error pass alone). None (the default):
+        ERROR_AT_A_TENTH / (len(values) / 10), 0.1% of the range at a tenth of the points; scaled by
+        the length, it keeps about the same density in long blocks as in short ones, but fewer points
+        per hour at a slower sampling rate.
     noise_floor: the rmse pass reads its RMSE above the input's white noise, √(rmse² - σ²) with σ
         estimated from each point's distance to its neighbours' chord (`noise` of the result), so it
         doesn't keep points that only trace the noise: a quiet block of noise keeps about a tenth as

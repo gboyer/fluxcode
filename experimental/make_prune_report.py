@@ -358,12 +358,13 @@ def noise_study():
     names = SIGNALS + OFFSET + NOISY
     per = {}
     for name in names:
-        d = per[name] = {"on": [], "off": [], "e_on": [], "e_off": [], "sigma": []}
+        d = per[name] = {key: [] for key in ("on", "off", "e_on", "e_off", "don", "doff", "e_don", "e_doff", "sigma")}
         for day in range(DAYS):
             for t, x in blocks(name, day, 1):
                 r = rank(t, x)
-                for key, floor in (("on", True), ("off", False)):
-                    keep = r.refine(r.top(r.count(noise_floor=floor)), PASSES)
+                for key, theta, floor in (("on", 0.0015, True), ("off", 0.0015, False), ("don", None, True),
+                                          ("doff", None, False)):
+                    keep = r.refine(r.top(r.count(theta, noise_floor=floor)), PASSES)
                     d[key].append(len(keep))
                     d["e_" + key].append(r.relative_error(keep))
                 d["sigma"].append(r._noise)
@@ -380,11 +381,11 @@ def noise_study():
         for floor in (True, False):
             sweep_k[name, floor] = [np.mean([r.count(th, floor) for r in rs]) for th in NOISE_THETAS]
     settings = {
-        "θ = 0.0015, no floor": dict(noise_floor=False),
-        "θ = 0.0015 (default)": {},
-        "θ = 0.000015": dict(error_per_point=1.5e-5),
-        "θ = 0.000015, no floor": dict(error_per_point=1.5e-5, noise_floor=False),
-        f"θ = 0.0015, max_error = {GUARD['pyrometer']:g}": dict(max_error=GUARD["pyrometer"]),
+        "θ = 0.0015, no floor": dict(error_per_point=0.0015, noise_floor=False),
+        "θ = 0.0015": dict(error_per_point=0.0015),
+        "default (θ = 2.8e-6 at 1 h)": {},
+        "default, no floor": dict(noise_floor=False),
+        f"θ = 0.0015, max_error = {GUARD['pyrometer']:g}": dict(error_per_point=0.0015, max_error=GUARD["pyrometer"]),
     }
     return per, sweep_k, pyrometer_study(settings)
 
@@ -520,7 +521,8 @@ def config_section(configs):
     head = ["signal", *[config_label(name) for name in CONFIGS]]
     body = ("<p>The API as a store would configure it: about 360 points per hour at most (10% of the 1 s scans) as "
             "<code>max_points</code>, and the exchange rate <code>error_per_point</code> as the RMSE one would accept "
-            "at that many points divided by them: <i>fine</i> 0.1% of the range at 360 points (θ = 0.001 / 356), "
+            "at that many points divided by them: <i>fine</i> 0.1% of the range at 360 points (θ = 0.001 / 356, the "
+            "default's rate for an hour of 1 s scans, here with a cap), "
             "<i>coarse</i> about the old default (θ = 0.0014: half the range at 360 points, so the cap seldom matters). "
             "The noise floor is on in both. Per signal, 1 h blocks of all days: mean points per hour (the most in "
             "one block) and the share of blocks where the cap cut the rmse pass short; below, relative to the "
@@ -541,8 +543,9 @@ def plot_pyrometer():
     counts = np.bincount((centers // 3600).astype(int), minlength=24)
     quiet, busy = int(np.argmin(counts)), int(np.argmax(counts))
     t = np.arange(3600.0)
-    settings = (("θ = 0.0015, no floor", dict(noise_floor=False)), ("θ = 0.0015, noise floor (default)", {}),
-                ("θ = 0.000015, noise floor", dict(error_per_point=1.5e-5)))
+    settings = (("θ = 0.0015, no floor", dict(error_per_point=0.0015, noise_floor=False)),
+                ("θ = 0.0015, noise floor", dict(error_per_point=0.0015)),
+                ("the default (θ = 2.8e-6 at 1 h), noise floor", {}))
     fig, axes = plt.subplots(3, 2, figsize=(12, 6.5), layout="constrained", sharex="col")
     for col, hour in enumerate((quiet, busy)):
         xb = x[3600 * hour:3600 * (hour + 1)]
@@ -569,9 +572,10 @@ def noise_section(noise):
     rows = []
     for name in SIGNALS + OFFSET + NOISY:
         d = per[name]
-        on, off = np.mean(d["on"]), np.mean(d["off"])
-        rows.append([name, pct(np.median(d["sigma"])), f"{off:.0f}", f"{on:.0f}", f"{on / off:.2f}",
-                     pct(np.mean(d["e_off"])), pct(np.mean(d["e_on"]))])
+        rows.append([name, pct(np.median(d["sigma"]))]
+                    + [f"{np.mean(d[off]):.0f} → {np.mean(d[on]):.0f}<br><span class='muted'>"
+                       f"{pct(np.mean(d['e_' + off]))} → {pct(np.mean(d['e_' + on]))}</span>"
+                       for off, on in (("off", "on"), ("doff", "don"))])
     body = ("<p>Lines through noisy samples leave about the noise's σ against them however many points are kept, until "
             "nearly all are, so the rmse pass on a quiet, noisy block keeps buying points that trace the noise: its "
             "range is a few σ, and relative to that the noise looks like signal. With the noise floor (the default) it "
@@ -579,9 +583,10 @@ def noise_section(noise):
             "estimated in one O(n) pass: each scan's distance from the chord of its two neighbours, divided by "
             "√(1 + w² + (1 − w)²) (w its position between them in time), median, × 1.4826 "
             "(<code>fluxprune/_noise.py</code>). Nothing is smoothed and the ranking is the same; only where it "
-            "stops moves. Per signal, 1 h blocks of all days at θ = 0.0015: the median σ over the range, points per "
-            "hour without and with the floor, and the mean RMSE over the range (against the scans).</p>"
-            + table(["signal", "σ / range", "no floor", "floor", "ratio", "RMSE, no floor", "RMSE, floor"], rows))
+            "stops moves. Per signal, 1 h blocks of all days: the median σ over the range, and at θ = 0.0015 (the old "
+            "default) and at the default (θ = 0.001 / (n / 10): 2.8e-6 for 3,600 scans) the points per hour without → "
+            "with the floor and, below, the mean RMSE over the range (against the scans).</p>"
+            + table(["signal", "σ / range", "θ = 0.0015", "default"], rows))
     zero = per["white-noise"]["zero"]
     body += (f"<p>Against the signal under the noise instead: on white noise (σ = 1, {len(zero[True])} hours) the kept "
              f"lines' RMSE from zero is {np.mean(zero[True]):.2f}σ on average with the floor and "
@@ -606,13 +611,14 @@ def noise_section(noise):
              "kept lines' top is below each spike's (°C, mean and worst), and the RMSE against the curve under the "
              "noise (°C) in busy and quiet hours. The floor takes the quiet hours from tracing noise to a handful of "
              "points; it changes nothing on the spikes, which a time-weighted RMSE counts as cheap: a 600 °C spike "
-             "4 s wide adds only about 30 °C to an hour's RMSE. A lower θ or a <code>max_error</code> of a few σ "
-             "keeps them.</p>"
+             "4 s wide adds only about 30 °C to an hour's RMSE. A lower θ (the default) or a <code>max_error</code> "
+             "of a few σ keeps them.</p>"
              + pyrometer_table(pyro) + plot_pyrometer())
     return body
 
 
 CAP = 360  # points per hour: the guard study's safety cap (10% of the scans)
+GUARD_THETA = 0.0015  # the guard and refit studies' rmse pass: coarse, so that the guards do the work
 
 
 def guard_study():
@@ -625,8 +631,8 @@ def guard_study():
     for it in items:
         r, x, t = it["r"], it["x"], it["t"]
         tol = GUARD[it["name"]]
-        picks = {"rmse pass": r.select(), "max_error": r.select(max_error=tol),
-                 f"max_error, max_points {CAP}": r.select(max_error=tol, max_points=CAP)}
+        picks = {"rmse pass": r.select(GUARD_THETA), "max_error": r.select(GUARD_THETA, max_error=tol),
+                 f"max_error, max_points {CAP}": r.select(GUARD_THETA, max_error=tol, max_points=CAP)}
         for m in methods:
             if m.startswith("swinging door"):
                 idx = swinging_door((t - t[0]).astype(np.float64), x, tol / 2 if m.endswith("/ 2") else tol, np.inf)
@@ -657,7 +663,7 @@ def max_error_pass_study():
         if not len(r._tau):
             continue
         tol = GUARD[it["name"]] / it["range"]
-        base = r.refine(r.top(r.count()), PASSES)
+        base = r.refine(r.top(r.count(GUARD_THETA)), PASSES)
         local = np.searchsorted(r._live, base)
         calls = {SPLITS[0]: lambda: B.other_max_error_pass(r._tau, r._y, local, tol, False),
                  SPLITS[1]: lambda: max_error_kernel(r._tau, r._y, local, tol),
@@ -702,12 +708,12 @@ def refit_study():
         r = it["r"]
         if not len(r._tau) or not np.isfinite(it["x"]).all():
             continue
-        idx = r.select()[0]
+        idx = r.select(GUARD_THETA)[0]
         e0, m0 = r.errors(idx)
         if e0 < 1e-9:  # already exact (the valve, the totalizer)
             continue
         e1, m1 = r.errors(idx, r.refit(idx))
-        guarded = r.select(max_error=GUARD[it["name"]])[0]
+        guarded = r.select(GUARD_THETA, max_error=GUARD[it["name"]])[0]
         held = r.errors(guarded, r.refit(guarded))[1] * it["range"] <= GUARD[it["name"]] * (1 + 1e-9)
         d = out.setdefault(it["name"], {"rmse": [], "max": [], "held": []})
         d["rmse"].append(e1 / e0)
@@ -1018,7 +1024,7 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, configs
     section("configs", "Two configurations", config_section(configs))
 
     section("guards", "Guards: max_error and max_points",
-            "<p>The rmse pass (θ = 0.0015) alone, then with <code>max_error</code> set to an engineer's value per "
+            "<p>The rmse pass at θ = 0.0015 (the old default: coarse, so that the guards do the work) alone, then with <code>max_error</code> set to an engineer's value per "
             "signal (the historian tags' CompDev, otherwise about what matters), then with a safety cap of "
             f"<code>max_points</code> = {CAP} per hour (10% of the scans) as well. The max_error pass splits each "
             "line between the rmse pass's points that strays further, by farthest reach (below). Swinging door at "
@@ -1126,10 +1132,12 @@ against the scans (mostly the noise the dropped points traced). Calibrated to 36
 possible for the total (3.3%, as marginal (RMSE)) with half the median (0.95% against 1.7%), where the rule without it
 is at 3.6%; at 324/h it levels off (2.8% against 1.9%), since it won't trace noise. A lower θ no longer buys noise:
 at θ = 1.5·10⁻⁶ white noise keeps 17 points per hour (3,142 without), while smooth signals keep refining. The pyrometer
-(narrow spikes on a noisy floor, quiet hours between production runs) shows both sides: its quiet hours go from 94
+(narrow spikes on a noisy floor, quiet hours between production runs) shows both sides: at θ = 0.0015 its quiet hours go from 94
 points to 11, closer to the curve under the noise (0.56 °C RMSE against 0.66); its spikes, which a time-weighted RMSE
-counts as cheap, are kept by a lower θ (1.5·10⁻⁵: 172 points per busy hour, every peak within 7 °C) or by
-<code>max_error</code> = 10σ (162, the same peaks), not by the floor. Its costs: correlated noise reads partly as
+counts as cheap, are kept by a lower θ (the default: 236 points per busy hour and 22 per quiet one, every peak within
+7 °C) or by <code>max_error</code> = 10σ (162, the same peaks), not by the floor. At the default θ the floor is what
+makes the low rate usable: without it the noise-dominated signals keep most of their scans (white noise 2,941 of 3,600
+per hour, motor current 2,705, the pyrometer's quiet hours 2,933), with it 18, 22 and 22. Its costs: correlated noise reads partly as
 signal at the sampling rate (flow, τ 5 s: at 10 s scans the same noise reads as noise and keeps 0.14× as many points;
 temperature and pH 0.66-0.69×), so it is less stable under a change of sampling rate than the rule without it; and on
 pure noise the lines from the required minimum and maximum lean on the few points left (the worst of 120 hours of
@@ -1193,9 +1201,11 @@ for max_error with corners off the samples) could gain more and wasn't tried.</l
 </ol>
 <p><b>The API.</b> <code>prune(t, x)</code> returns the kept times and values, the RMSE and largest error they leave,
 and <code>rmse_met</code>, <code>max_error_met</code> and <code>max_points_met</code>. The rmse pass is the default
-(<code>error_per_point</code> θ = 0.0015 keeps ~0.6% of 1 s scans in 1 h blocks on this corpus, 1% without the noise
-floor; the error relative to each block's range and read above its white noise, <code>noise_floor=True</code>; θ / H
-for blocks of H hours keeps fewer per hour). Two optional guards bound it:
+(<code>error_per_point</code>: an exchange rate, best chosen as the RMSE one would accept at a number of points
+divided by that number, θ = Y / X; the error relative to each block's range and read above its white noise,
+<code>noise_floor=True</code>). Its default is 0.1% at a tenth of the input's points, θ = 0.001 / (n / 10)
+(2.8·10⁻⁶ for 1 h of 1 s scans; ~4% of the scans on this corpus, the median block 2%): scaled by the length, it keeps
+about the same density in long blocks, but fewer points per hour at a slower sampling rate. Two optional guards bound it:
 <code>max_points</code>, a hard cap, and <code>max_error</code>, the largest error of any scan in value units, which
 also takes care of quiet blocks, glitches and the block length for a configured signal. θ = 0 with
 <code>max_points</code> keeps the best <code>max_points</code>; θ = ∞ with <code>max_error</code> runs the max_error

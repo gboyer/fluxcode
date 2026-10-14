@@ -167,7 +167,19 @@ def test_prune_reports_its_errors(seed):
     assert np.array_equal(p.values, x[keep])
     assert p.rmse == pytest.approx(np.sqrt(exact_mse(t - t[0], x, keep)), rel=1e-9)
     assert p.max_error == pytest.approx(max_deviation(t, x, keep), rel=1e-9)
-    assert len(fluxprune.prune(t, x, error_per_point=1e-4)) > len(p) > len(fluxprune.prune(t, x, error_per_point=1e-2))
+    assert len(fluxprune.prune(t, x, error_per_point=0)) > len(p) > len(fluxprune.prune(t, x, error_per_point=1e-3))
+
+
+def test_default_error_per_point():
+    """None: 0.1% of the range at a tenth of the input's points."""
+    t, x = series(4)
+    r = rank(t, x)
+    assert fluxprune._api.default_error_per_point(400) == pytest.approx(0.001 / 40)
+    assert r.count() == r.count(error_per_point=0.001 / 40)
+    assert np.array_equal(fluxprune.prune(t, x).times, fluxprune.prune(t, x, error_per_point=0.001 / 40).times)
+    gap = x.copy()
+    gap[50:60] = np.nan  # the input's length, not the keepable points'
+    assert rank(t, gap).count() == rank(t, gap).count(error_per_point=0.001 / 40)
 
 
 @pytest.mark.filterwarnings("ignore:.*below the noise")  # a random walk's unit steps
@@ -274,7 +286,8 @@ def test_noise_floor():
     rng = np.random.default_rng(11)
     t = np.arange(3600.0)
     quiet = 50 + rng.normal(0, 2, 3600)
-    on, off = fluxprune.prune(t, quiet), fluxprune.prune(t, quiet, noise_floor=False)
+    theta = 0.0015  # a coarse rate: at the default, without the floor, the noise keeps most of the points
+    on, off = fluxprune.prune(t, quiet, theta), fluxprune.prune(t, quiet, theta, noise_floor=False)
     assert on.noise == pytest.approx(2.0, rel=0.05) and off.noise == on.noise
     assert len(on) * 4 < len(off)  # a tenth or so: it doesn't trace the noise
     assert on.rmse < 1.2 * off.rmse  # against the samples, what's left is mostly the noise either way
@@ -282,9 +295,10 @@ def test_noise_floor():
     for seed in range(10):
         q = 50 + np.random.default_rng(seed).normal(0, 2, 3600)
         for j, floor in enumerate((True, False)):
-            p = fluxprune.prune(t, q, noise_floor=floor)
+            p = fluxprune.prune(t, q, theta, noise_floor=floor)
             under[j] += np.sqrt(np.mean((np.interp(t, p.times, p.values) - 50) ** 2))
     assert under[0] < 0.9 * under[1]
+    assert len(fluxprune.prune(t, quiet)) < 40 and len(fluxprune.prune(t, quiet, noise_floor=False)) > 2000
     sine = np.sin(2 * np.pi * t / 1200)  # smooth: no noise, no change
     assert np.array_equal(fluxprune.prune(t, sine).times, fluxprune.prune(t, sine, noise_floor=False).times)
     # narrow spikes on the noise: cheap in the rmse, kept by a max_error of a few σ

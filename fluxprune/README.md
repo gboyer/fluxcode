@@ -7,30 +7,38 @@ keeps a subset of the points, far fewer and much lossier.
 ```python
 import fluxprune
 
-p = fluxprune.prune(t, x)                                   # the rmse pass alone
+p = fluxprune.prune(t, x, error_per_point=0.002 / 360)     # 0.2% of the range at 360 points
+p = fluxprune.prune(t, x)                                   # default: 0.1% at a tenth of the points
 p.times, p.values                                           # the kept points
 p.rmse, p.max_error                                         # the errors they leave, in value units
 p.noise                                                     # the white-noise σ the rmse pass reads above
 p = fluxprune.prune(t, x, max_points=360, max_error=0.5)    # with guards
 p.rmse_met, p.max_error_met, p.max_points_met               # which asks were met
-p = fluxprune.prune(t, x, error_per_point=0.0015 / 12)      # 12 h blocks (fewer per hour)
+p = fluxprune.prune(t, x, error_per_point=0.002 / 360, max_points=720)  # ... and at most 720
 p = fluxprune.prune(t, x, error_per_point=0, max_points=36) # the best 36 points
 p = fluxprune.prune(t, x, error_per_point=np.inf, max_error=0.5)  # the max_error pass alone
 ```
 
 Two passes choose the points:
 
-- **The rmse pass** (`error_per_point`, default 0.0015): one O(n log n) pass orders every point by
-  significance, bottom-up: it removes the point whose removal adds the least time-weighted error,
-  integrated exactly per segment, and records the error of every count. The count is the first where
-  the RMSE left, relative to the block's range, falls below `error_per_point` times the points
-  added: error and points traded at a fixed rate, more points for complex blocks, fewer for simple
-  ones, sublinearly, and nearly independent of the sampling rate. Two O(n) refinement passes then
-  move each point to where it fits best between its neighbours (4-6% above the optimal choice on
-  1 h blocks). The rate is per block: for blocks H times as long, start from `error_per_point / H`.
-  That keeps fewer points per hour, not the same density: about a third as many in 12 h blocks as
-  in 1 h blocks on the report's corpus (geometric mean over 18 signals), since a longer block has a
-  wider range for the error to be relative to, and needs one set of required points instead of H.
+- **The rmse pass** (`error_per_point`): one O(n log n) pass orders every point by significance,
+  bottom-up: it removes the point whose removal adds the least time-weighted error, integrated
+  exactly per segment, and records the error of every count. The count is the first where the RMSE
+  left, relative to the block's range, falls below `error_per_point` times the points added: error
+  and points traded at a fixed rate, more points for complex blocks, fewer for simple ones,
+  sublinearly. Two O(n) refinement passes then move each point to where it fits best between its
+  neighbours (4-6% above the optimal choice on 1 h blocks).
+- **Choosing `error_per_point`.** Think of it as "Y RMSE at X points": `error_per_point = Y / X`
+  (0.002 / 360 for 0.2% of the range at 360 points). Only the ratio counts (0.4% at 720 is the
+  same setting), and X is not a target: a simple block stops well before it, a complex one goes
+  past, so add `max_points` if X is a ceiling. A fixed rate keeps about as many points of an hour
+  at any sampling rate; for blocks H times as long, divide it by H (that keeps about as many per
+  hour on signals with structure). **The default** (`None`) is 0.1% at a tenth of the input's
+  points, `ERROR_AT_A_TENTH / (len(values) / 10)` (2.8e-6 for an hour of 1 s scans, no cap): on
+  the report's corpus 158 points per hour on average (median 78, the most 614, 21% of blocks over
+  360). Since it scales with the input's length, it does the H for you, but it keeps 0.1-0.6x as
+  many points per hour at 10 s scans as at 1 s: it is partly a compression ratio. Choose a rate
+  for your data rather than rely on it.
   `error_per_point=0` makes every point worth keeping (with `max_points`: the best `max_points`);
   `np.inf` keeps only the required points (with `max_error`: the max_error pass alone).
   By default the RMSE is read above the input's own white noise (`noise_floor`, below), so the pass
@@ -69,8 +77,8 @@ it). Irregular times are fine and the median ignores spikes and steps; quantized
 (more than half the chords are exact) and don't change. Nothing is smoothed: the kept points are
 still samples, and the ranking is the same; only where it stops moves.
 
-On the report's corpus (1 h blocks, 1 s scans), the noise-dominated signals keep a fraction of the
-points (white noise 95 → 11 per hour, motor current 67 → 12, the quiet tank level 77 → 19, vibration
+On the report's corpus (1 h blocks, 1 s scans), at `error_per_point=0.0015` the noise-dominated
+signals keep a fraction of the points (white noise 95 → 11 per hour, motor current 67 → 12, the quiet tank level 77 → 19, vibration
 47 → 18) and smooth or quantized ones the same (temperature, tank level, valve, totalizer, sine), for
 0-10% more RMSE against the scans. On pure noise (120 hours), the kept lines are closer to the signal
 under it on average (0.26σ against 0.33σ RMSE; the worst hour 0.48σ against 0.38σ, where the lines
@@ -78,11 +86,14 @@ from the required minimum and maximum lean on the few points left). Calibrated t
 (36 per hour), it reaches the least mean RMSE possible for it, with half the median error of the rule
 without the floor. Its cost is the sampling rate: correlated noise (a time constant of a few scans)
 reads partly as signal at 1 s and as noise at 10 s, so such a signal keeps fewer points per hour at
-10 s (flow: 0.14x; without the floor 0.82x). With the floor, a lower `error_per_point` no longer buys noise: noise-dominated
-signals level off at what their content needs (white noise 17 per hour even at 1e-8), and only
+10 s (flow: 0.14x; without the floor 0.82x). With the floor, a lower `error_per_point` no longer
+buys noise, which is what makes the default's low rate usable: without the floor, at the default,
+white noise keeps 2,941 of 3,600 points per hour and motor current 2,705; with it 18 and 22.
+Noise-dominated signals level off at what their content needs (white noise 17 per hour even at 1e-8), and only
 signals with structure at finer scales keep more. Narrow spikes on the noise (a pyrometer's hot
 items, about 10 s wide) are cheap in a time-weighted RMSE with or without the floor: a lower
-`error_per_point` (1.5e-5: every peak within 7 °C, quiet hours still about 20 points) or a
+`error_per_point` (the default: every peak within 7 °C, 236 points per busy hour and 22 per quiet
+one) or a
 `max_error` of a few σ keeps them. Scoring against a smoothed copy instead (Savitzky-Golay, a running
 median) was measured and not adopted: it keeps as many points on noise (a line through noisy samples
 is no closer to a smooth curve), needs a window, and shaves narrow peaks.
