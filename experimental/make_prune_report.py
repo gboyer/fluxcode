@@ -17,6 +17,7 @@ This page measures, on a day of 1 s scans per signal-day cut into 1 h storage bl
   two, or a known span per series, on signals with small variations on a large offset;
 - the noise floor: the rmse pass reading its error above the block's own white noise, on a pyrometer's
   narrow spikes and quiet hours too;
+- two configurations as a store would set them (max_points 360 with a fine and a coarse exchange rate);
 - the max_error and max_points guards against swinging door, and the max_error pass against its alternatives;
 - refit=True: least-squares values at the kept times instead of the samples;
 - what it does to swinging-door archives as input; and how long it takes.
@@ -385,6 +386,12 @@ def noise_study():
         "θ = 0.000015, no floor": dict(error_per_point=1.5e-5, noise_floor=False),
         f"θ = 0.0015, max_error = {GUARD['pyrometer']:g}": dict(max_error=GUARD["pyrometer"]),
     }
+    return per, sweep_k, pyrometer_study(settings)
+
+
+def pyrometer_study(settings):
+    """Per setting (label -> prune kwargs), over the pyrometer's 1 h blocks of all days against its noise-free
+    curve: points in busy and quiet hours, points on spikes, each spike's peak miss, and the RMSE under the noise."""
     pyro = {k: {"busy": [], "quiet": [], "on_spike": [], "miss": [], "under": [], "under_quiet": []} for k in settings}
     for day in range(DAYS):
         x, truth, centers = pyrometer(day)
@@ -405,7 +412,126 @@ def noise_study():
                 for c in cb:
                     near = np.abs(t - c) <= 5
                     d["miss"].append(float(tb[near].max() - line[near].max()))
-    return per, sweep_k, pyro
+    return pyro
+
+
+def pyrometer_table(pyro):
+    rows = []
+    for label, d in pyro.items():
+        miss = np.abs(np.array(d["miss"]))
+        rows.append([label, f"{np.mean(d['busy']):.0f}", f"{np.mean(d['quiet']):.0f}",
+                     f"{np.mean(d['on_spike']):.0f}", f"{np.mean(miss):.1f}", f"{np.max(miss):.0f}",
+                     f"{np.mean(d['under']):.1f}", f"{np.mean(d['under_quiet']):.2f}"])
+    return table(["setting", "points/h, busy", "points/h, quiet", "on spikes/h", "peak miss", "worst",
+                  "RMSE, busy", "RMSE, quiet"], rows)
+
+
+# two configurations of the API as a store would set them: about 360 points per hour at most, and an exchange rate
+CONFIGS = {
+    "fine": dict(error_per_point=2.8e-6, max_points=360),
+    "coarse": dict(error_per_point=1.4e-3, max_points=360),
+}
+
+
+def config_label(name):
+    kw = CONFIGS[name]
+    return f"{name}: θ = {kw['error_per_point']:g}, max_points = {kw['max_points']}"
+
+
+def config_study():
+    """Each configuration on every signal's 1 h blocks (all days): points, whether the cap bound, and the errors
+    relative to the block's range (RMSE against the scans, the same above the block's noise, largest error)."""
+    out = {name: {} for name in CONFIGS}
+    for sig in SIGNALS + OFFSET + NOISY:
+        for day in range(DAYS):
+            for t, x in blocks(sig, day, 1):
+                f = x[np.isfinite(x)]
+                span = float(f.max() - f.min())
+                if span <= 0:
+                    continue
+                for name, kw in CONFIGS.items():
+                    p = fluxprune.prune(t, x, **kw)
+                    d = out[name].setdefault(sig, {"k": [], "capped": [], "rmse": [], "above": [], "max": []})
+                    d["k"].append(len(p))
+                    d["capped"].append(not p.rmse_met)
+                    d["rmse"].append(p.rmse / span)
+                    d["above"].append(np.sqrt(max(p.rmse ** 2 - p.noise ** 2, 0.0)) / span)
+                    d["max"].append(p.max_error / span)
+    pyro = pyrometer_study({config_label(name): kw for name, kw in CONFIGS.items()})
+    return out, pyro
+
+
+def plot_config_examples(name):
+    """One 1 h block of each signal (day 0, 09:00; the pyrometer's busiest hour) with the points a configuration
+    keeps."""
+    names = SIGNALS + OFFSET + NOISY
+    cols = 2
+    rows_n = (len(names) + 1) // cols
+    fig, axes = plt.subplots(rows_n, cols, figsize=(12, 1.6 * rows_n), layout="constrained")
+    _, _, centers = pyrometer(0)
+    busy = int(np.argmax(np.bincount((centers // 3600).astype(int), minlength=24)))
+    for ax, sig in zip(axes.T.ravel(), names):
+        t, x = blocks(sig, 0, 1)[busy if sig == "pyrometer" else 9]
+        p = fluxprune.prune(t, x, **CONFIGS[name])
+        minutes = (t - t[0]) / 6e10
+        ax.plot(minutes, x, color=SCANS, lw=0.6, label="1 s scans")
+        ax.plot((p.times - t[0]) / 6e10, p.values, "-o", color=C[0], lw=1.0, ms=2, label="kept points")
+        if sig == "pyrometer":
+            ax.set_yscale("symlog", linthresh=100)
+        f = x[np.isfinite(x)]
+        span = f.max() - f.min()
+        err = f"RMSE {100 * p.rmse / span:.2g}% of range" if span > 0 else "constant"
+        ax.set_title(f"{sig}: {len(p)} points, {err}" + ("" if p.rmse_met else " (capped)"), loc="left", fontsize=9)
+        ax.set_xlim(0, 60)
+        ax.tick_params(labelsize=8)
+        tidy(ax)
+    for ax in axes.T.ravel()[len(names):]:
+        ax.axis("off")
+    for ax in axes[-1]:
+        ax.set_xlabel("minutes into the hour", fontsize=8)
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside upper right", ncols=2, frameon=False, fontsize=9)
+    return save_fig(fig, OUT, f"{PREFIX}config-{name}", f"One hour of each signal with the points the {name} "
+                    "configuration keeps")
+
+
+def config_section(configs):
+    out, pyro = configs
+    names = SIGNALS + OFFSET + NOISY
+    rows = []
+    for sig in names:
+        cells = [sig]
+        for name in CONFIGS:
+            d = out[name][sig]
+            cap = f" · capped {100 * np.mean(d['capped']):.0f}%" if any(d["capped"]) else ""
+            cells.append(f"{np.mean(d['k']):.0f} (max {max(d['k'])}){cap}<br><span class='muted'>"
+                         f"{pct(np.mean(d['rmse']))} · {pct(np.mean(d['above']))} · {pct(np.max(d['max']))}</span>")
+        rows.append(cells)
+    total = ["<b>all</b>"]
+    for name in CONFIGS:
+        ks = [k for sig in names for k in out[name][sig]["k"]]
+        cap = [c for sig in names for c in out[name][sig]["capped"]]
+        e = [v for sig in names for v in out[name][sig]["rmse"]]
+        a = [v for sig in names for v in out[name][sig]["above"]]
+        total.append(f"<b>{np.mean(ks):.0f} (median {np.median(ks):.0f}) · capped {100 * np.mean(cap):.0f}%</b><br>"
+                     f"<span class='muted'>{pct(np.mean(e))} · {pct(np.mean(a))} (median "
+                     f"{pct(np.median(e))} · {pct(np.median(a))})</span>")
+    rows.append(total)
+    head = ["signal", *[config_label(name) for name in CONFIGS]]
+    body = ("<p>The API as a store would configure it: about 360 points per hour at most (10% of the 1 s scans) as "
+            "<code>max_points</code>, and the exchange rate <code>error_per_point</code> as the RMSE one would accept "
+            "at that many points divided by them: <i>fine</i> 0.1% of the range at 360 points (θ = 0.001 / 356), "
+            "<i>coarse</i> about the old default (θ = 0.0014: half the range at 360 points, so the cap seldom matters). "
+            "The noise floor is on in both. Per signal, 1 h blocks of all days: mean points per hour (the most in "
+            "one block) and the share of blocks where the cap cut the rmse pass short; below, relative to the "
+            "block's range, the mean RMSE against the scans · the same above the block's noise (√(RMSE² − σ²)) · "
+            "the largest error of any scan in any block.</p>" + table(head, rows))
+    body += ("<h3>The pyrometer</h3><p>As in the noise floor section: points in hours with spikes and in quiet ones, "
+             "points on spikes, how far each spike's top is missed (°C), and the RMSE against the curve under the "
+             "noise (°C).</p>" + pyrometer_table(pyro))
+    for name in CONFIGS:
+        body += f"<h3>{html.escape(config_label(name))}</h3>" + plot_config_examples(name)
+    return body
 
 
 def plot_pyrometer():
@@ -471,12 +597,6 @@ def noise_section(noise):
              "buys noise, so the count follows the noise; with it the noise-dominated signals level off at what "
              "their content needs, and only signals with structure at finer scales keep more.</p>"
              + table(["signal", *[f"θ = {th:g}" for th in NOISE_THETAS]], rows))
-    rows = []
-    for label, d in pyro.items():
-        miss = np.array(d["miss"])
-        rows.append([label, f"{np.mean(d['busy']):.0f}", f"{np.mean(d['quiet']):.0f}",
-                     f"{np.mean(d['on_spike']):.0f}", f"{np.mean(np.abs(miss)):.1f}", f"{np.max(np.abs(miss)):.0f}",
-                     f"{np.mean(d['under']):.1f}", f"{np.mean(d['under_quiet']):.2f}"])
     n_spikes = len(next(iter(pyro.values()))["miss"])
     body += ("<h3>A pyrometer</h3><p>The case that asked for it: a pyrometer at a furnace's exit conveyor reads its "
              "noisy floor most of the time and a narrow spike (a / (b + t²), about 10 s wide) as each hot item passes, "
@@ -488,9 +608,7 @@ def noise_section(noise):
              "points; it changes nothing on the spikes, which a time-weighted RMSE counts as cheap: a 600 °C spike "
              "4 s wide adds only about 30 °C to an hour's RMSE. A lower θ or a <code>max_error</code> of a few σ "
              "keeps them.</p>"
-             + table(["setting", "points/h, busy", "points/h, quiet", "on spikes/h", "peak miss", "worst",
-                      "RMSE, busy", "RMSE, quiet"], rows)
-             + plot_pyrometer())
+             + pyrometer_table(pyro) + plot_pyrometer())
     return body
 
 
@@ -735,8 +853,8 @@ def shade(ratio):
     return "" if ratio < 1.05 else "r1" if ratio < 1.25 else "r2" if ratio < 1.6 else "r3" if ratio < 2.5 else "r4"
 
 
-def write(items, params, res, sw, qual, opt, rate, length, scale, noise, guards, passes, refits, archive_res,
-          archive_items, times):
+def write(items, params, res, sw, qual, opt, rate, length, scale, noise, configs, guards, passes, refits,
+          archive_res, archive_items, times):
     names = SIGNALS
     by = np.array([it["name"] for it in items])
     sections = []
@@ -897,6 +1015,7 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, guards,
     rows.append(["<b>all</b>", ""] + [f"<b>{d['k'].mean():.0f} · {d['max'].max():.2g} · {pct(d['rmse'].mean())}</b>"
                                       for d in g.values()])
     section("noise", "The noise floor", noise_section(noise))
+    section("configs", "Two configurations", config_section(configs))
 
     section("guards", "Guards: max_error and max_points",
             "<p>The rmse pass (θ = 0.0015) alone, then with <code>max_error</code> set to an engineer's value per "
@@ -1103,7 +1222,8 @@ def main():
     scale = scale_study()
     print(f"scale: {time.time() - t0:.0f} s", flush=True)
     noise = noise_study()
-    print(f"noise: {time.time() - t0:.0f} s", flush=True)
+    configs = config_study()
+    print(f"noise and configurations: {time.time() - t0:.0f} s", flush=True)
     guards = guard_study()
     passes = max_error_pass_study()
     refits = refit_study()
@@ -1112,8 +1232,8 @@ def main():
     archive_res = apply_rules(archive_items, params)
     times = timings()
     print(f"done: {time.time() - t0:.0f} s", flush=True)
-    write(items, params, res, sw, qual, opt, rate, length, scale, noise, guards, passes, refits, archive_res,
-          archive_items, times)
+    write(items, params, res, sw, qual, opt, rate, length, scale, noise, configs, guards, passes, refits,
+          archive_res, archive_items, times)
 
 
 if __name__ == "__main__":
