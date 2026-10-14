@@ -1165,7 +1165,7 @@ further than max_error from the scans by farthest reach: from each anchor, the l
 while every scan between stays within max_error. Swinging door's rule (the line ends at the first scan the chord can't
 reach) keeps
 1.1-5× as many points on the noisy signals (vibration 176 against 36 per hour, batch 73 against 23, temperature 766
-against 509), the exact minimum 4% fewer overall at about 34× the time (13 against 441 µs per block, up to 8.4 ms). At the same guarantee as
+against 509), the exact minimum 4% fewer overall at about 38× the time (13 against 490 µs per block, up to 8.4 ms). At the same guarantee as
 swinging door (CompDev = max_error / 2, since at CompDev = max_error its line strays up to 1.6-2× that), fluxprune keeps
 fewer points on 12 of the 18 signals (batch 23 against 228 per hour, vibration 36 against 422, temperature 509 against
 1,136, grid frequency 282 against 597) and as many on two; more only where the rmse pass already wanted more than

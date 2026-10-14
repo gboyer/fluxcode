@@ -120,7 +120,7 @@ bounds but ends the line at the first point the chord can't reach; with noise, a
 can be reached again. On the report's 18 slow signals (1 h blocks) this keeps 1-5x fewer points
 than the swinging-door rule (vibration 36 against 176 per hour, batch 23 against 73, temperature
 509 against 766) at the same cost, and 4% more than the fewest points that meet `max_error` (up to
-20% more on the noisiest signals; exact by dynamic programming over all feasible lines, about 35x
+20% more on the noisiest signals; exact by dynamic programming over all feasible lines, about 38x
 slower).
 
 **Cost.** Each step is linear: picking the k most significant points is a mask over the removal
@@ -129,8 +129,8 @@ pass scans each line once for its worst point and once more where it strays (poi
 target and where the bounds crossed are scanned again, so a pathological signal can cost more).
 Without a binding cap, `max_error` adds about 2 passes; giving way adds a bisection of about
 log2(k) attempts of 6-7 passes; relaxing adds about 12-15 max_error passes of 2 passes each.
-`bench/PRUNE_RESULTS.md` has the measured cost: +13-53% over the ranking (+16-32% for the rmse pass alone at 3,600
-points, +7-21% at 86,400 and more).
+`bench/PRUNE_RESULTS.md` has the measured cost: +3-63% over the ranking (+14-31% for the rmse pass alone at 3,600
+points, +1-22% at 86,400 and more).
 
 Measured and not adopted (report/prune.html): the max_error pass first and ranking again with its
 points fixed (same RMSE at the same count, 3-5x slower); a secant search for the relaxed bound
