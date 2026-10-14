@@ -9,6 +9,8 @@ cut into storage blocks of fixed duration.
 - OFFSET: signals whose small variations matter on a large offset (a furnace at ~2115 °F, grid
   frequency), the same ambient temperature in °C (crossing zero) and in K, a tank level that sits
   still for hours, and the furnace with thermocouple dropouts: what the error should be relative to.
+- NOISY: a pyrometer at a conveyor's exit: a noisy floor and narrow spikes as hot items pass, in
+  production runs with quiet hours between (the noise floor; its noise-free curve from pyrometer()).
 - GUARD: a max_error per signal (the historian tags' CompDev, otherwise about what an engineer would set).
 
 All seeds are fixed.
@@ -33,11 +35,12 @@ from tslab.common.historian import (
 EXTRA = ["totalizer", "batch", "vibration", "compressor", "white-noise", "sine"]
 SIGNALS = TAGS + EXTRA
 OFFSET = ["furnace", "furnace-dropout", "grid-frequency", "ambient-C", "ambient-K", "level-quiet"]
+NOISY = ["pyrometer"]
 GUARD = {
     **{tag: TAG_INFO[tag][2] for tag in TAGS},
     "totalizer": 1.0, "batch": 0.2, "vibration": 0.1, "compressor": 0.5, "white-noise": 1.0, "sine": 0.01,
     "furnace": 1.0, "furnace-dropout": 1.0, "grid-frequency": 0.005, "ambient-C": 0.2, "ambient-K": 0.2,
-    "level-quiet": 0.1,
+    "level-quiet": 0.1, "pyrometer": 20.0,
 }
 EXTRA_INFO = {
     "totalizer": "Flow totalizer: integral of a stepped flow, 0.1 resolution (piecewise straight)",
@@ -52,6 +55,9 @@ EXTRA_INFO = {
     "ambient-C": "Outdoor temperature, °C: −3 to 9 over the day, weather drift, 0.1 °C steps (crosses zero)",
     "ambient-K": "The same ambient temperature in kelvin (+273.15)",
     "level-quiet": "Tank level, %: held at 62.4 (±1 step of 0.01 dither) but for 3 fill/draw cycles a day",
+    "pyrometer": "Pyrometer at a furnace's exit conveyor, °C: a 45-55 floor with noise σ 2, and hot items passing "
+                 "every 1.5-5 min in production runs of 1-4 h with 0.5-3 h quiet between: spikes of 500-900 above "
+                 "the floor, a / (b + t²) with a half-width of 1.5-2.5 s, 0.1 °C steps",
 }
 
 
@@ -137,10 +143,35 @@ def offset_scans(name, day):
     raise ValueError(name)
 
 
+def pyrometer(day):
+    """(a day of 1 s scans, the noise-free curve under them, the spikes' times in s)."""
+    rng = np.random.default_rng(9800 + day)
+    n = DAY_S
+    s = np.arange(n, dtype=np.float64)
+    truth = 50 + 5 * np.sin(2 * np.pi * s / DAY_S + rng.uniform(0, 2 * np.pi))
+    centers = []
+    k, run = float(rng.uniform(0, 3600)), False
+    while k < n:
+        length = rng.uniform(3600, 4 * 3600) if run else rng.uniform(1800, 3 * 3600)
+        if run:
+            c = k + rng.uniform(90, 300)
+            while c < min(k + length, n - 1):
+                centers.append(c)
+                c += rng.uniform(90, 300)
+        k += length
+        run = not run
+    for c in centers:
+        lo, hi = max(int(c) - 600, 0), min(int(c) + 600, n)
+        truth[lo:hi] += rng.uniform(500, 900) / (1 + ((s[lo:hi] - c) / rng.uniform(1.5, 2.5)) ** 2)
+    return np.round(truth + rng.normal(0, 2.0, n), 1), truth, np.array(centers)
+
+
 def scans(name, day):
     """A day of 1 s scans of a signal."""
     if name in TAGS:
         return tag_scans(name, tag_seed(name, day))
+    if name in NOISY:
+        return pyrometer(day)[0]
     return offset_scans(name, day) if name in OFFSET else extra_scans(name, day)
 
 
