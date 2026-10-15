@@ -12,6 +12,8 @@ cut into storage blocks of fixed duration.
 - NOISY: a pyrometer at a conveyor's exit: a noisy floor and narrow spikes as hot items pass, in
   production runs with quiet hours between (the noise floor; its noise-free curve from pyrometer()).
 - GUARD: a max_error per signal (the historian tags' CompDev, otherwise about what an engineer would set).
+- MAX_ERROR: a loose and a fine max_error per signal for the tuning examples: loose about what an operator
+  would notice, fine about twice the sensor's noise (or the resolution that matters, if it has none).
 
 All seeds are fixed.
 """
@@ -41,6 +43,13 @@ GUARD = {
     "totalizer": 1.0, "batch": 0.2, "vibration": 0.1, "compressor": 0.5, "white-noise": 1.0, "sine": 0.01,
     "furnace": 1.0, "furnace-dropout": 1.0, "grid-frequency": 0.005, "ambient-C": 0.2, "ambient-K": 0.2,
     "level-quiet": 0.1, "pyrometer": 20.0,
+}
+MAX_ERROR = {  # (loose, fine), in the signal's units
+    "temperature": (0.5, 0.1), "flow": (5.0, 2.0), "tank-level": (1.0, 0.1), "valve": (2.0, 0.5),
+    "ph-float32": (0.1, 0.02), "motor-current": (5.0, 2.0), "totalizer": (5.0, 1.0), "batch": (1.0, 0.1),
+    "vibration": (0.2, 0.06), "compressor": (2.0, 0.25), "white-noise": (5.0, 2.0), "sine": (0.05, 0.005),
+    "furnace": (1.0, 0.25), "furnace-dropout": (1.0, 0.25), "grid-frequency": (0.01, 0.003),
+    "ambient-C": (0.5, 0.15), "ambient-K": (0.5, 0.15), "level-quiet": (0.05, 0.015), "pyrometer": (50.0, 5.0),
 }
 EXTRA_INFO = {
     "totalizer": "Flow totalizer: integral of a stepped flow, 0.1 resolution (piecewise straight)",
