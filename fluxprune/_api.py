@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ._guard import errors_kernel, max_error_kernel
-from ._noise import noise_kernel
+from ._noise import noise
 from ._rank import rank_kernel, refine_kernel
 from ._refit import refit_kernel
 
@@ -41,7 +41,8 @@ class Pruned:
     """Their values: the samples, or with refit=True the refit ones (the first, last, minimum and
     maximum points and the points around gaps keep their samples)."""
     noise: float
-    """The input's white-noise σ, estimated (value units): the rmse pass's noise floor."""
+    """The input's white-noise σ, estimated (value units): the rmse pass's noise floor; 0 on irregular
+    times (fewer than 90% of the intervals one scan, as in an archive)."""
     rmse: float
     """The time-weighted RMSE of the kept points' lines against the input's, in value units."""
     max_error: float
@@ -88,7 +89,8 @@ class Ranking:
     @property
     def noise(self) -> float:
         """The input's white-noise σ, estimated (value units): each point's distance from its
-        neighbours' chord, its median scaled for normal noise (_noise.py)."""
+        neighbours' chord, its median scaled for normal noise; 0 unless at least 90% of the intervals
+        are one scan (an archive's aren't: its points look like noise but aren't; _noise.py)."""
         return self._noise * self._span
 
     @property
@@ -317,7 +319,7 @@ def rank(times, values):
     t = (tau[live] - tau[live[0]]) / duration
     order, delta = rank_kernel(t, y if every else np.where(np.isfinite(y), y, 0.0), ~req)
     return Ranking(m, gaps, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
-                   float(hi - lo), float(noise_kernel(t, y)), n)
+                   float(hi - lo), noise(tau, (x - lo) / (hi - lo)), n)
 
 
 def prune(times, values, error_per_point=None, max_points=None, max_error=None, refit=False,
@@ -341,7 +343,10 @@ def prune(times, values, error_per_point=None, max_points=None, max_error=None, 
     noise_floor: the rmse pass reads its RMSE above the input's white noise, √(rmse² - σ²) with σ
         estimated from each point's distance to its neighbours' chord (`noise` of the result), so it
         doesn't keep points that only trace the noise: a quiet block of noise keeps about a tenth as
-        many. Smooth and quantized signals hardly change (σ is about 0). Narrow spikes on the noise
+        many. Smooth and quantized signals hardly change (σ is about 0). Only on raw scans: σ is 0
+        (no floor) unless at least 90% of the intervals are one scan, so a swinging-door or deadband
+        archive, whose points look like noise but aren't, is left alone; pass False for an archive
+        on a regular grid (an interpolated or resampled one) or other already-compressed input. Narrow spikes on the noise
         are cheap in a time-weighted RMSE either way: max_error (a few σ) keeps them.
     max_points: a hard cap on the points kept (at least 4: the first, last, minimum and maximum).
     max_error: no input point strays further than this, in value units, from the kept lines: each line

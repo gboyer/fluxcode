@@ -6,7 +6,9 @@ import warnings
 import numpy as np
 import pytest
 
+import fluxcode._noise
 import fluxprune
+import fluxprune._noise
 from fluxprune._api import rank
 
 
@@ -134,6 +136,7 @@ def test_refine_lowers_error_and_keeps_required(seed):
 
 def test_error_per_point():
     t, x = series(5)
+    t = t[0] + np.arange(len(t)) * 1_000_000_000  # regular scans: a noise floor
     r = rank(t, x)
     raw = r.relative_rmse()
     sigma = r.noise / (x.max() - x.min())
@@ -257,19 +260,26 @@ def test_noise_warning():
 # the noise floor
 
 def noise_estimate(t, x):
-    """σ from each point's distance to its neighbours' chord, by brute force."""
+    """σ from each point's distance to its neighbours' chord, by brute force, over the triplets whose two
+    intervals are one scan (strictly between half and 1.5 times the median interval)."""
     t = np.asarray(t, np.float64)
+    c = np.median(np.diff(t))
     r = []
     for i in range(1, len(x) - 1):
-        w = (t[i] - t[i - 1]) / (t[i + 1] - t[i - 1])
+        d0, d1 = t[i] - t[i - 1], t[i + 1] - t[i]
+        if not (c / 2 < d0 < 1.5 * c and c / 2 < d1 < 1.5 * c) or not np.isfinite(x[i - 1:i + 2]).all():
+            continue
+        w = d0 / (d0 + d1)
         r.append(abs(x[i] - x[i - 1] - w * (x[i + 1] - x[i - 1])) / np.sqrt(1 + w * w + (1 - w) ** 2))
     return 1.4826 * np.median(r)
 
 
-@pytest.mark.parametrize("irregular", [False, True])
-def test_noise_estimate(irregular):
+@pytest.mark.parametrize("times", ["regular", "jittered", "skipped scans"])
+def test_noise_estimate(times):
     rng = np.random.default_rng(7)
-    t = np.cumsum(rng.uniform(0.2, 1.8, 3600)) if irregular else np.arange(3600.0)
+    steps = {"regular": np.ones(3600), "jittered": rng.uniform(0.6, 1.4, 3600),  # every interval one scan
+             "skipped scans": np.where(rng.random(3600) < 0.05, 2.0, 1.0)}[times]  # 95% one scan
+    t = np.cumsum(steps)
     x = 50 + 0.01 * t + rng.normal(0, 2, 3600)
     r = rank(t, x)
     assert r.noise == pytest.approx(noise_estimate(t, x), rel=1e-9)
@@ -280,6 +290,25 @@ def test_noise_estimate(irregular):
     with_gap = x.copy()
     with_gap[100:110] = np.nan
     assert rank(t, with_gap).noise == pytest.approx(r.noise, rel=0.02)
+
+
+def test_no_noise_floor_without_a_cadence():
+    """Irregular times (an archive: points kept for their values) get no noise floor; the cadence test is
+    fluxcode's own."""
+    assert fluxprune._noise.cadence is fluxcode._noise.cadence
+    rng = np.random.default_rng(8)
+    t = np.arange(36_000.0)
+    x = np.cumsum(rng.normal(0, 0.05, 36_000)) + rng.normal(0, 0.1, 36_000)
+    keep = [0]  # a deadband archive: a point whenever the value moved 0.3 from the last one kept
+    for i in range(1, len(x)):
+        if abs(x[i] - x[keep[-1]]) > 0.3:
+            keep.append(i)
+    keep = np.array(keep)
+    assert rank(t, x).noise > 0 and rank(t[keep], x[keep]).noise == 0.0
+    heavy = np.cumsum(rng.uniform(0.2, 1.8, 3600))  # most intervals not one scan: no floor either
+    noisy = rng.normal(0, 1, 3600)
+    assert rank(heavy, noisy).noise == 0.0
+    assert np.array_equal(fluxprune.prune(heavy, noisy).times, fluxprune.prune(heavy, noisy, noise_floor=False).times)
 
 
 def test_noise_floor():

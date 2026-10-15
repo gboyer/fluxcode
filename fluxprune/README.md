@@ -77,6 +77,18 @@ it). Irregular times are fine and the median ignores spikes and steps; quantized
 (more than half the chords are exact) and don't change. Nothing is smoothed: the kept points are
 still samples, and the ranking is the same; only where it stops moves.
 
+It is the difference-based estimator of Gasser, Sroka and Jennen-Steinmetz (1986), and like every
+noise estimate (a variogram's nugget, the Allan variance, a spectrum's floor) it assumes the times
+were chosen independently of the values. An archive's weren't: swinging door or a deadband keeps a
+point because of its value, and on a smooth tag its points pass tests of white noise as well as raw
+scans do (temperature: σ read as 3x the scans' noise, about the CompDev, and the floor then
+doubled the error). That can't be told from the values, only from the times, so the floor runs
+only on a cadence: at least 90% of the intervals one scan, σ from the triplets whose two intervals
+are one scan, the same test as fluxcode's noise floor (`fluxcode._noise.cadence`, imported: one
+definition). Gaps, skipped scans and moderate clock jitter keep it; an archive, or times jittered by
+more than half a scan, get none (`noise` 0). For an archive on a regular grid (resampled), pass
+`noise_floor=False`.
+
 On the report's corpus (1 h blocks, 1 s scans), at `error_per_point=0.0015` the noise-dominated
 signals keep a fraction of the points (white noise 95 → 11 per hour, motor current 67 → 12, the quiet tank level 77 → 19, vibration
 47 → 18) and smooth or quantized ones the same (temperature, tank level, valve, totalizer, sine), for

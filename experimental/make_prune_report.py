@@ -368,6 +368,24 @@ def noise_study():
                     d[key].append(len(keep))
                     d["e_" + key].append(r.relative_error(keep))
                 d["sigma"].append(r._noise)
+    archive = {}  # the tags' swinging-door archives: σ, points and RMSE against the scans, floor and none
+    for tag in ("temperature", "flow", "ph-float32", "motor-current"):  # the others archive 2-5 points per hour
+        d = archive[tag] = {"n": [], "sigma": [], "k": [], "e": [], "k_off": [], "e_off": [], "e_in": []}
+        for day in range(DAYS):
+            for (ts, xs), (ta, xa) in zip(blocks(tag, day, 1), blocks(tag, day, 1, archive=True)):
+                span = float(np.ptp(xs))
+                if span <= 0 or len(xa) < 3:
+                    continue
+                tsf, taf = (ts - ts[0]) / 1e9, (ta - ts[0]) / 1e9
+                d["n"].append(len(xa))
+                d["e_in"].append(np.sqrt(np.mean((np.interp(tsf, taf, xa) - xs) ** 2)) / span)
+                for floor, kk, ee in ((True, "k", "e"), (False, "k_off", "e_off")):
+                    p = fluxprune.prune(taf, xa, noise_floor=floor)
+                    if floor:
+                        d["sigma"].append(p.noise)
+                    d[kk].append(len(p))
+                    d[ee].append(np.sqrt(np.mean((np.interp(tsf, p.times, p.values) - xs) ** 2)) / span)
+    per["archives"] = archive
     zero = {True: [], False: []}  # white noise (σ 1): the kept lines' RMSE against the zero under it
     for day in range(DAYS):
         for t, x in blocks("white-noise", day, 1):
@@ -587,6 +605,18 @@ def noise_section(noise):
             "default) and at the default (θ = 0.001 / (n / 10): 2.8e-6 for 3,600 scans) the points per hour without → "
             "with the floor and, below, the mean RMSE over the range (against the scans).</p>"
             + table(["signal", "σ / range", "θ = 0.0015", "default"], rows))
+    rows = [[tag, f"{np.mean(d['n']):.0f}", f"{100 * np.mean(np.array(d['sigma']) > 0):.0f}%",
+             f"{np.mean(d['k']):.0f} · {pct(np.mean(d['e']))}", f"{np.mean(d['k_off']):.0f} · {pct(np.mean(d['e_off']))}",
+             pct(np.mean(d["e_in"]))] for tag, d in per["archives"].items()]
+    body += ("<h3>Archives</h3><p>Every noise estimate assumes the times were chosen independently of the values; an "
+             "archive's weren't (swinging door or a deadband keeps a point because of its value), and on a smooth tag "
+             "its points pass tests of white noise as well as raw scans do, with σ read at about the CompDev. So the "
+             "floor runs only on a cadence: at least 90% of the intervals one scan (fluxcode's own test, "
+             "<code>fluxcode._noise.cadence</code>). The tags' swinging-door archives in 1 h blocks of all days: "
+             "points per hour in, the share of blocks with a floor, and the default prune's points per hour · RMSE "
+             "over the range against the 1 s scans, as is and with <code>noise_floor=False</code>, and the "
+             "archive's own RMSE (the tank level and the valve archive 2-5 points per hour: nothing to prune).</p>"
+             + table(["tag", "archived/h", "blocks with a floor", "default", "noise_floor=False", "the archive"], rows))
     zero = per["white-noise"]["zero"]
     body += (f"<p>Against the signal under the noise instead: on white noise (σ = 1, {len(zero[True])} hours) the kept "
              f"lines' RMSE from zero is {np.mean(zero[True]):.2f}σ on average with the floor and "
@@ -1141,7 +1171,13 @@ per hour, motor current 2,705, the pyrometer's quiet hours 2,933), with it 18, 2
 signal at the sampling rate (flow, τ 5 s: at 10 s scans the same noise reads as noise and keeps 0.14× as many points;
 temperature and pH 0.66-0.69×), so it is less stable under a change of sampling rate than the rule without it; and on
 pure noise the lines from the required minimum and maximum lean on the few points left (the worst of 120 hours of
-white noise 0.48σ from the zero under it, against 0.38σ without the floor; 0.26σ against 0.33σ on average). Scoring the
+white noise 0.48σ from the zero under it, against 0.38σ without the floor; 0.26σ against 0.33σ on average). Every noise
+estimate assumes the times were chosen independently of the values, which an archive's weren't: on the tags'
+swinging-door archives the estimate read about the CompDev (temperature 3× its scans' noise) and passed tests of
+white noise (residuals near zero, their lag-1 correlation) as well as the scans, and the floor doubled the error
+against the scans (temperature 3.3% of the range against 1.9%). No test on the values tells them apart, so the floor
+runs only on a cadence (at least 90% of the intervals one scan, fluxcode's own test): the archives get none, and keep
+what they kept without it. Scoring the
 ranking against a smoothed copy of the scans was tried and dropped: a line through noisy samples is no closer to a
 smooth curve, so it keeps as many points on noise, needs a window, and shaves narrow peaks.</li>
 <li><b>Knee detection</b> (stop when doubling the points stops paying) is unusable: periodic signals have plateaus at
