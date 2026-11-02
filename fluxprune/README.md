@@ -77,10 +77,14 @@ next gap start or finite point); its minimum and maximum are over finite values.
 interval's last point (it sits next to the next interval's first, so it adds little) and its mean
 (no choice of points makes it exact; its error is at most the interval's RMSE). Like the gap points,
 they are kept past `max_points`, with a warning, and the rmse pass's rate doesn't count them as
-points added. They don't make it stop sooner, though: on noisy signals an interval's minimum and
-maximum are noise extremes, and lines pinned to them fit a little worse (a week of 1 s scans with
-noise, hourly: 503 points forced, 115 more bought by the rmse pass, 0.2% higher RMSE). Finding them is
-one O(n) pass (+3.3 ms (+1.6%) on that week). Not with `refit`: it keeps these points' samples, but
+points added. On the report's corpus (day blocks at a week-summary store's rate, θ = 0.001 / 131,072
+per week, hourly; report/prune.html, "Regular intervals") that forces 2-3 points per hour, and on most
+signals the rmse pass buys about as many points as without, a few fewer. The exception is a quiet
+block at its noise floor: its lines already leave about σ, so the pass stops at the required points;
+an hour's minimum and maximum are noise extremes, lines pinned to them leave a little more than σ,
+and the pass then buys points all over the block until the error is back at the floor (the quiet
+tank level: 1 → 123 points per hour; white noise 0 → 8; motor current 2 → 10). `max_points` bounds
+it. Finding them is one O(n) pass: on a day of 1 s scans, prune takes +0.4-0.5 ms (+2-3%). Not with `refit`: it keeps these points' samples, but
 its other values can stray past them, as they already can past the block's own range, and then an
 interval's minimum and maximum would no longer read back exactly. That is stricter than `refit` is
 about the block, on purpose: exact read-back is what the intervals are for.

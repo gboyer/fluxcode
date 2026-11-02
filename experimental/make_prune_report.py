@@ -755,6 +755,34 @@ def noise_section(noise):
 GUARD_THETA = 0.0015  # the guard and refit studies' rmse pass: coarse, so that the guards do the work
 
 
+WEEK_POINTS = 131_072  # a week-summary store: at most this many points per week ...
+WEEK_THETA = 0.001 / WEEK_POINTS  # ... and 0.1% of the week's range at that many
+HOUR = np.timedelta64(1, "h")  # for datetime64 times
+HOUR_NS = 3_600 * 10**9  # for the corpus's integer nanoseconds
+
+
+def intervals_study():
+    """Per signal, day blocks of all days at a week-summary store's rate per hour (θ = 0.001 / 131,072 for a week,
+    times 7 for a day; max_points 131,072 / 7), with and without include_regular_intervals = 1 h: points kept, how
+    many of them forced and how many the rmse pass bought, and the RMSE."""
+    warnings.filterwarnings("ignore", message="prune: max_points")
+    out = {}
+    for name in SIGNALS + OFFSET + NOISY:
+        d = out.setdefault(name, {"plain": [], "hourly": [], "forced": [], "bought": [], "rmse": []})
+        for day in range(DAYS):
+            for t, x in blocks(name, day, 24):
+                kw = {"error_per_point": WEEK_THETA * 7, "max_points": WEEK_POINTS // 7}
+                a = fluxprune.prune(t, x, **kw)
+                b = fluxprune.prune(t, x, include_regular_intervals=HOUR_NS, **kw)
+                r = rank(t, x, HOUR_NS)
+                d["plain"].append(len(a))
+                d["hourly"].append(len(b))
+                d["forced"].append(r.intervals)
+                d["bought"].append(len(b) - r.min_points - (len(a) - rank(t, x).min_points))
+                d["rmse"].append(b.rmse / a.rmse if a.rmse > 0 else 1.0)
+    return out
+
+
 def guard_study():
     """Per block of the main and offset signals (1 h): points, largest error and RMSE of the rmse pass, of
     max_error = the signal's GUARD, of the same with a cap of CAP points, and of swinging door with CompDev = GUARD."""
@@ -871,7 +899,8 @@ def timings():
             calls = {"rank": lambda: rank(t, x),
                      "prune": lambda: fluxprune.prune(t, x),
                      "max_error": lambda: fluxprune.prune(t, x, max_error=tol),
-                     "refit": lambda: fluxprune.prune(t, x, refit=True)}
+                     "refit": lambda: fluxprune.prune(t, x, refit=True),
+                     "hourly": lambda: fluxprune.prune(t, x, include_regular_intervals=HOUR)}
             best = {}
             for key, call in calls.items():
                 call()
@@ -977,13 +1006,13 @@ PARTS = [
      "<p>The studies behind the defaults: how good the ranking is, which stopping rule, what errors are relative to, "
      "how max_error is met, refit, archives as input, and speed. Some use rules and settings that are only "
      "experiments (<code>tslab/prune/rules.py</code>).</p>",
-     ["quality", "curves", "rules", "scale", "guards", "refit", "archives", "speed"]),
+     ["quality", "curves", "rules", "scale", "guards", "refit", "intervals", "archives", "speed"]),
     ("", "", "", ["findings"]),
 ]
 
 
 def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning, guards, passes, refits,
-          archive_res, archive_items, times):
+          archive_res, archive_items, times, intervals):
     names = SIGNALS
     by = np.array([it["name"] for it in items])
     secs = {}
@@ -1180,6 +1209,39 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
             "it still holds after the refit (it isn't checked again).</p>"
             + table(["signal", "RMSE, refit / samples", "largest error, refit / samples", "max_error still holds"], rows))
 
+    # regular intervals
+    rows = []
+    hours = DAYS * 24
+
+    def per_hour(v):
+        return f"{np.sum(v) / hours:.0f}"
+
+    for name, d in intervals.items():
+        rows.append([name, per_hour(d["plain"]), per_hour(d["hourly"]), per_hour(d["forced"]),
+                     f"{np.sum(d['bought']) / hours:+.1f}", f"{gmean(d['rmse']):.3f}"])
+    every = {key: [v for d in intervals.values() for v in d[key]] for key in ("plain", "hourly", "forced", "bought")}
+    n_sig = len(intervals)
+    rows.append(["<b>mean</b>", *(f"<b>{np.sum(every[key]) / hours / n_sig:.0f}</b>"
+                                  for key in ("plain", "hourly", "forced")),
+                 f"<b>{np.sum(every['bought']) / hours / n_sig:+.1f}</b>",
+                 f"<b>{gmean([v for d in intervals.values() for v in d['rmse']]):.3f}</b>"])
+    section("intervals", "Regular intervals: each hour's first, minimum and maximum",
+            "<p><code>prune(include_regular_intervals=np.timedelta64(1, \"h\"))</code> also requires each clock hour's "
+            "first point, minimum and maximum, so a reader gets them back exactly from the kept points. Here on day "
+            f"blocks of every signal (all {DAYS} days) at a week-summary store's rate: at most "
+            f"{WEEK_POINTS:,} points per week and θ = 0.001 / {WEEK_POINTS:,} for a week (the same per hour: θ × 7 "
+            f"and at most {WEEK_POINTS // 7:,} points for a day). Per signal: points per hour without and with, how "
+            "many per hour were forced (beyond the block's own first, last, minimum and maximum), how many more or "
+            "fewer the rmse pass bought, and the geometric mean of the RMSE with over without. Forced points cost "
+            "nothing in the rate, and on most signals the rmse pass buys about as many points as without (a few "
+            "fewer: the forced points do part of its work). The exception is a quiet block at its noise floor: its "
+            "lines already leave about σ, so the pass stops at the required points; an hour's minimum and maximum are "
+            "noise extremes, lines pinned to them leave a little more than σ, and the pass then buys points all over "
+            "the block (most of them far from the forced ones) until the error is back at the floor. The cap bounds "
+            "it.</p>"
+            + table(["signal", "points/h", "points/h, hourly", "forced/h", "bought/h", "RMSE, hourly / without"],
+                    rows))
+
     # archives
     rows = []
     for name in TAGS:
@@ -1204,14 +1266,16 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
         tr = b["rank"]
         rows.append([name, f"{n:,}", f"{1e3 * tr:.1f} ms", f"{1e9 * tr / n:.0f} ns"]
                     + [f"+{1e3 * (b[key] - tr):.1f} ms (+{100 * (b[key] - tr) / tr:.0f}%)"
-                       for key in ("prune", "max_error", "refit")])
+                       for key in ("prune", "max_error", "refit", "hourly")])
     power = ("" if "AC Power" in subprocess.run(["pmset", "-g", "ps"], capture_output=True, text=True).stdout
              else "<b>Measured on battery power: indicative only, rerun on AC.</b> ") if sys.platform == "darwin" else ""
     section("speed", "Speed", f"<p>{power}Apple M3, one thread, best of 3, 1 s scans. rank is the O(n log n) pass; "
             "prune adds picking k (O(n)) and the two O(n) refinement passes, shown as the time it adds to rank; "
             "max_error (1% of the range) adds the max_error pass on top of that, and refit the least-squares values, "
-            "both also against rank. <code>bench/prune.py</code> has the same per call for more signals.</p>"
-            + table(["signal", "n", "rank", "per point", "prune (rmse pass)", "prune, max_error", "prune, refit"], rows))
+            "both also against rank; hourly is prune with <code>include_regular_intervals</code> = 1 h. "
+            "<code>bench/prune.py</code> has the same per call for more signals.</p>"
+            + table(["signal", "n", "rank", "per point", "prune (rmse pass)", "prune, max_error", "prune, refit",
+                     "prune, hourly"], rows))
 
     section("findings", "Findings", FINDINGS)
     toc, sections = [], []
@@ -1386,13 +1450,14 @@ def main():
     guards = guard_study()
     passes = max_error_pass_study()
     refits = refit_study()
+    intervals = intervals_study()
     print(f"guards and refit: {time.time() - t0:.0f} s", flush=True)
     archive_items = corpus(archive=True, names=TAGS)
     archive_res = apply_rules(archive_items, params)
     times = timings()
     print(f"done: {time.time() - t0:.0f} s", flush=True)
     write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning, guards, passes, refits,
-          archive_res, archive_items, times)
+          archive_res, archive_items, times, intervals)
 
 
 if __name__ == "__main__":
