@@ -440,6 +440,8 @@ def test_regular_intervals(seed):
     for tt, st in ((secs, 300), (secs.astype(float), 300.0)):
         assert np.array_equal(rank(tt, x, st).required, r.required)
     assert np.array_equal(rank(t, x, datetime.timedelta(minutes=5)).required, r.required)
+    ns = t.view(np.int64)  # epoch nanoseconds: a float interval must still divide exactly
+    assert np.array_equal(rank(ns, x, 3e11).required, r.required)
     # an interval longer than the block only adds its first point if the block starts inside one
     assert set(rank(t, x, np.timedelta64(1000, "D")).required) == base
 
@@ -480,6 +482,14 @@ def test_regular_intervals_beat_the_cap():
     check_intervals(t, x, p, 0.0, 10.0)
 
 
+def test_regular_intervals_integer_times_at_the_boundary():
+    hour = 1_790_035_200 * 10**9  # an hour boundary in epoch nanoseconds
+    t = hour + np.arange(-3, 4)
+    x = np.array([5.0, 1, 3, 2, 3, 4, 0])  # [hour - 3, hour): min 1; [hour, ...): first 2, max 4
+    for step in (3600 * 10**9, 3.6e12, np.float64(3.6e12)):
+        assert set(rank(t, x, step).required) == {0, 1, 3, 5, 6}
+
+
 def test_regular_intervals_arguments():
     t, x = series(0)
     t = t.astype("datetime64[ns]")
@@ -494,6 +504,10 @@ def test_regular_intervals_arguments():
             fluxprune.prune(np.arange(400.0), x, include_regular_intervals=bad)
     with pytest.raises(ValueError, match="positive"):
         fluxprune.prune(t, x, include_regular_intervals=np.timedelta64(0, "s"))
+    with pytest.raises(ValueError, match="months or years"):
+        fluxprune.prune(t, x, include_regular_intervals=np.timedelta64(1, "M"))
+    with pytest.raises(TypeError, match="timedelta64 times"):
+        fluxprune.prune(t - t[0], x, include_regular_intervals=3600)
     for n in (0, 1, 3):  # degenerate inputs
         p = fluxprune.prune(np.arange(float(n)), np.ones(n), include_regular_intervals=1)
         assert len(p) == n

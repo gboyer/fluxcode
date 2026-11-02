@@ -276,8 +276,10 @@ def _interval_ids(t, interval):
     times, a number in the times' units otherwise."""
     if t.dtype.kind in "mM":
         if not isinstance(interval, (np.timedelta64, datetime.timedelta)):
-            raise TypeError("include_regular_intervals must be a timedelta64 for datetime64 times")
+            raise TypeError("include_regular_intervals must be a timedelta64 for datetime64 or timedelta64 times")
         step = np.timedelta64(interval)
+        if np.datetime_data(step.dtype)[0] in ("Y", "M"):
+            raise ValueError("include_regular_intervals can't be in months or years: they aren't one length")
         if not step > np.timedelta64(0, "s"):
             raise ValueError("include_regular_intervals must be positive")
         if t.dtype.kind == "M":
@@ -287,6 +289,8 @@ def _interval_ids(t, interval):
         raise TypeError("include_regular_intervals must be a number, in the times' units, for numeric times")
     if not (np.isfinite(interval) and interval > 0):
         raise ValueError("include_regular_intervals must be finite and positive")
+    if t.dtype.kind in "iu" and float(interval).is_integer():
+        interval = int(interval)  # exact: float64 can't tell nanoseconds apart at epoch scale (3.6e12 for an hour)
     return np.floor_divide(t, interval)
 
 
@@ -425,7 +429,8 @@ def prune(times, values, error_per_point=None, max_points=None, max_error=None, 
         keeps each clock hour's first, minimum and maximum (UTC), so they can be read back exactly
         from the kept points. Like the block's own required points, they cost nothing in the rmse
         pass's exchange rate, and they are kept past max_points if need be (with a warning). Not with
-        refit, whose values could stray past an interval's minimum or maximum.
+        refit: it keeps these points' samples but its other values can stray past them (as they can
+        past the block's own range), so the minimum and maximum wouldn't read back exactly.
 
     The first, last, minimum and maximum points are always kept. A run of non-finite values (a gap)
     keeps its first point and the finite points just before and after it, past max_points if need be
@@ -434,7 +439,7 @@ def prune(times, values, error_per_point=None, max_points=None, max_error=None, 
     """
     if refit and include_regular_intervals is not None:
         raise ValueError("refit can't be combined with include_regular_intervals: refit values could stray "
-                         "past an interval's minimum or maximum")
+                         "past an interval's minimum or maximum, which then wouldn't read back exactly")
     t = np.asarray(times)
     x = np.asarray(values, dtype=np.float64)
     r = rank(t, x, include_regular_intervals)

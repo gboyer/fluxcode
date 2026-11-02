@@ -80,8 +80,10 @@ they are kept past `max_points`, with a warning, and the rmse pass's rate doesn'
 points added. They don't make it stop sooner, though: on noisy signals an interval's minimum and
 maximum are noise extremes, and lines pinned to them fit a little worse (a week of 1 s scans with
 noise, hourly: 503 points forced, 115 more bought by the rmse pass, 0.2% higher RMSE). Finding them is
-one O(n) pass (+3.3 ms (+1.6%) on that week). Not with `refit`, whose values could stray past an
-interval's minimum or maximum.
+one O(n) pass (+3.3 ms (+1.6%) on that week). Not with `refit`: it keeps these points' samples, but
+its other values can stray past them, as they already can past the block's own range, and then an
+interval's minimum and maximum would no longer read back exactly. That is stricter than `refit` is
+about the block, on purpose: exact read-back is what the intervals are for.
 
 **The noise floor** (`noise_floor=True`, the default). Lines through noisy samples leave about the
 noise's σ against them however many points are kept, until nearly all are, so the rmse pass on a
