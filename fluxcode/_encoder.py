@@ -388,6 +388,45 @@ def detect_decimal(
 
 
 @njit(nogil=True, cache=True)
+def coarse_binary_exponent(samples: np.ndarray, quant_exp: int, decimal_step: float) -> int:
+    """The coarsest power-of-two grid holding the block exactly, if it is coarser than decimal_step.
+
+    Values on a coarse power-of-two grid are also on finer decimal ones (0.25 on 0.01), whose
+    indices carry an odd factor (x 25) that bit planes can't absorb. On the coarsest power-of-two
+    grid holding them they are compact and stored exactly.
+
+    decimal_step is a detected 10^p > 2^quant_exp, so |sample| / 10^p < 2^52 for every sample:
+    the scaled samples below are exact and their integer test is meaningful.
+
+    Args:
+        samples: 1D float64 array of samples of a non-constant block.
+        quant_exp: The block's power-of-two exponent.
+        decimal_step: The detected decimal step 10^p.
+
+    Returns:
+        The exponent of the coarsest power of two that every sample is a multiple of, if that is
+        coarser than decimal_step; else quant_exp.
+    """
+    coarse_exp = quant_exp + 1
+    while math.ldexp(1.0, coarse_exp) <= decimal_step:
+        coarse_exp += 1
+    inv_step = math.ldexp(1.0, -coarse_exp)
+    index_bits = np.int64(0)
+    for sample_idx in range(samples.shape[0]):
+        scaled = samples[sample_idx] * inv_step
+        # Stop at the first sample off the coarse grid (sample 0 for ordinary decimal data)
+        if scaled != math.floor(scaled):
+            return quant_exp
+        index_bits |= np.int64(scaled)
+    # The indices' common trailing zero bits make the grid coarser still (a non-constant block
+    # has a nonzero index)
+    while index_bits & 1 == 0:
+        index_bits >>= 1
+        coarse_exp += 1
+    return coarse_exp
+
+
+@njit(nogil=True, cache=True)
 def quantize(
     samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
 ) -> None:
@@ -685,9 +724,15 @@ def encode_block(
             samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_quantized
         )
         if decimal_exp != NO_DECIMAL:
-            decimal_detected = True
-            param_val = decimal_exp
-            flags |= BLOCK_FLAG_DECIMAL
+            # A power-of-two grid holding the block exactly at a coarser step stores it smaller
+            binary_exp = coarse_binary_exponent(samples, quant_exp, 10.0 ** decimal_exp)
+            if binary_exp != quant_exp:
+                quant_exp = binary_exp
+                param_val = binary_exp
+            else:
+                decimal_detected = True
+                param_val = decimal_exp
+                flags |= BLOCK_FLAG_DECIMAL
     # Fall back to power-of-two quantization if decimal grid not detected
     if not decimal_detected:
         anchor = quantize_block(samples, lower_bound, upper_bound, quant_exp, scratch_quantized)
@@ -1027,6 +1072,9 @@ def encode_group(
             if out_block_flags[block_idx] & BLOCK_FLAG_DECIMAL:
                 # Decimal grid is already 10^p; track equivalent binary exponent
                 block_exponents[block_idx] = math.floor(math.log2(10.0 ** out_grid_params[block_idx]))
+            else:
+                # The stored exponent: coarser than planned on an exact coarse binary grid (§5.3)
+                block_exponents[block_idx] = out_grid_params[block_idx]
             coarsest_exponents[block_idx] = max(
                 range_exponent(block_min, block_max, min_bits), block_exponents[block_idx]
             )

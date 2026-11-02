@@ -58,7 +58,8 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 1. a block starts at e_fine;
 2. the noise floor raises it on gated blocks;
 3. it is clamped to e_coarse;
-4. decimal detection looks for a decimal grid coarser than that step;
+4. decimal detection looks for a decimal grid coarser than that step (or an exact power-of-two
+   grid coarser still, §5.3);
 5. the target (if set and the block group is over budget) coarsens blocks further, never past
    e_coarse.
 
@@ -462,8 +463,26 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
   - Encode is then up to ~20% slower ([PERFORMANCE.md](PERFORMANCE.md)).
   - Real data rarely looks like this, so it's noted rather than guarded against.
   - If it shows up, probing a few spread-out samples before each full scan would bound it.
-- **Not detected:** other steps (ADC counts in engineering units, 0.5, 0.25, 2⁻ᵏ). They use the
-  power-of-two grid.
+- **A coarser power-of-two grid wins.** Values on a coarse power-of-two grid are also on finer
+  decimal ones: 0.25 on 0.01, multiples of 4 on 1. Those indices carry the odd factor (× 25),
+  which bit planes can't absorb (+34% on a 0.25-grid walk). So once a step p is found:
+
+  ```
+  c = the smallest exponent with 2^c > 10^p
+  if every x[i]·2^-c is an integer:                  # exact: |x[i]| / 10^p < 2^52
+      e = c + the trailing zero bits common to every x[i]·2^-c
+      use the power-of-two grid of 2^e instead       # it holds the block exactly
+  (stops at the first sample off the 2^c grid: sample 0 for ordinary decimal data)
+  ```
+
+  - The grid is the coarsest power of two holding the block: its indices are compact, and it
+    decodes exactly. It is coarser than `ps` and than `e_coarse`, which only bound lossy steps.
+  - Measured against the indices' zero low bits at `ps`, the compact grid is smaller on most
+    binary-grid data (−1% for multiples of 4 rather than +7%), but not all: near-constant blocks
+    (three levels of 0.5) are 6% larger than with zero bits, as the exponent varies from block to
+    block (experimental/grids).
+- **Not detected:** other steps (ADC counts in engineering units, 0.2, 0.05, 2⁻ᵏ finer than
+  10^p). They use the power-of-two grid.
 
 ### 5.4 Quantize
 
@@ -543,7 +562,7 @@ N their total samples.
 - Otherwise:
 
   ```
-  e_b     = the block's exponent (for a decimal block, floor(log2 10^p): its grid is already that coarse)
+  e_b     = the block's stored exponent (for a decimal block, floor(log2 10^p): its grid is already that coarse)
   give_b  = min(round(max(h_b − 1, 0)), e_coarse_b − e_b)        # whole bits block b can give
   k       = the smallest k ≥ 1 with Σ_b n_b·min(k, give_b) ≥ Σ_b n_b·h_b − t·N   (k ≤ 16)
   k_b     = min(k, give_b)

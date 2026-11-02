@@ -188,3 +188,47 @@ def test_straddling_updates_keep_a_bounded_error():
             np.testing.assert_array_equal(y, previous[1])
         previous = (e, y)
     assert len(set(steps)) > 2  # the step moved both ways
+
+
+@pytest.mark.parametrize("step", [4.0, 0.5, 0.25, 0.125])
+@pytest.mark.parametrize("target", [None, 6])
+def test_a_coarse_binary_grid_beats_a_finer_decimal_one(step, target):
+    """Values on a coarse power-of-two grid are also on a finer decimal one (0.25 on 0.01), whose
+    indices carry an odd factor (x 25): they go on the coarsest power-of-two grid holding them,
+    and decode exactly (ENCODER §5.3)."""
+    walk = np.cumsum(np.random.default_rng(3).normal(0, 4 * step, 1000))
+    x = np.round(walk / step) * step
+    x[0] = 3 * step  # an odd multiple: the coarsest grid is the step itself
+    group, e, anchor = encode_block(x, Params(target_bits_per_sample=target))
+    assert not group_rows(group).block_flags[0] & BLOCK_FLAG_DECIMAL
+    assert (e, anchor) == (int(np.log2(step)), x.min())
+    np.testing.assert_array_equal(decode(group), x)
+
+
+def test_the_coarse_binary_grid_can_be_coarser_than_the_data_step():
+    """Every sample even: the grid is 2, the coarsest that holds them, not the walk's 1."""
+    x = np.cumsum(np.random.default_rng(5).integers(-3, 4, 1000)) * 2.0 + 100
+    group, e, _ = encode_block(x, Params())
+    assert e == 1
+    np.testing.assert_array_equal(decode(group), x)
+
+
+@pytest.mark.parametrize(("den", "p"), [(5, -1), (1, 0), (100, -2)])
+def test_decimal_grids_that_are_not_binary_stay_decimal(den, p):
+    """0.2, odd integers and cents: no power-of-two grid coarser than 10^p holds them."""
+    k = np.cumsum(np.random.default_rng(4).integers(-9, 10, 1000)) * 2 + 1  # odd: not on 2
+    x = k / den if den > 1 else k.astype(np.float64)
+    group, _, _ = encode_block(x, Params())
+    rows = group_rows(group)
+    assert rows.block_flags[0] & BLOCK_FLAG_DECIMAL and rows.grid_params[0] == p
+    np.testing.assert_array_equal(decode(group), x)
+
+
+def test_the_target_coarsens_a_coarse_binary_grid_from_its_stored_exponent():
+    """A 0.25-grid walk of about 11 bits/sample, capped at 6: the target starts from the stored
+    exponent -2 (not the planned 16-bit one) and keeps half a step of error."""
+    x = np.round(np.cumsum(np.random.default_rng(6).normal(0, 300, 1000)) * 4) / 4
+    exact, e0, _ = encode_block(x, Params())
+    capped, e1, _ = encode_block(x, Params(target_bits_per_sample=6))
+    assert e0 == -2 and e1 > e0 and len(capped) < len(exact)
+    assert np.max(np.abs(decode(capped) - x)) <= 2.0 ** (e1 - 1)
