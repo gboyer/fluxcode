@@ -1,5 +1,9 @@
 # Richer value grids (2026-11-01)
 
+These experiments led to scaled grids (ENCODER.md §5.4, `Params.grids`), and their baseline is the
+encoder before them: `grids="decimal"` (power-of-two only: `"binary"`). The tables here are from
+before scaled grids landed; the encoder's own figures are in bench/RESULTS.md.
+
 Can the value grid do better than `a + q·2^e` and exact `(K0 + q)·10^p` on data quantized by a
 sensor whose grid the writer doesn't know? Scripts: `grids.py` (detecting an existing grid,
 `detect.md`) and `lossy.py` (choosing a lossy step, `lossy.md`). Sizes are real block groups:

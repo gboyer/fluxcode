@@ -77,7 +77,7 @@ def dataset(name, seed):
 
 
 def run(x, sig, family):
-    rows, _ = encode_rows(x, SIZES, Params())
+    rows, _ = encode_rows(x, SIZES, Params(grids="decimal"))
     rows = rows._replace(block_flags=rows.block_flags.copy(), grid_params=rows.grid_params.copy(),
                          value_anchors=rows.value_anchors.copy(), residuals=rows.residuals.copy())
     sq, n, gated = 0.0, 0, 0

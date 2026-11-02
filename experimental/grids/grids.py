@@ -288,7 +288,7 @@ def column_bytes(rows, values, dtype):
     """What a byte-planed per-block column adds to the zstd of the block group's real columns."""
     from fluxcode import _bitpacking, _format
     offsets = _format.layout(rows.block_flags, rows.block_sizes)
-    body = _bitpacking.write_group(rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors,
+    body = _bitpacking.write_group(rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors,
                                    rows.residuals, rows.codes, rows.time_rows, offsets)
     cols = body[: _format.residual_start(rows.block_flags.shape[0], False)].tobytes()
     raw = np.ascontiguousarray(np.asarray(values, dtype).view(np.uint8).reshape(len(values), -1).T).tobytes()
@@ -296,8 +296,8 @@ def column_bytes(rows, values, dtype):
 
 
 def baseline(x):
-    rows, _ = encode_rows(x, SIZES, Params())
-    pow2, _ = encode_rows(x, SIZES, Params(decimal_detection=False))
+    rows, _ = encode_rows(x, SIZES, Params(grids="decimal"))
+    pow2, _ = encode_rows(x, SIZES, Params(grids="binary"))
     return rows, pow2
 
 
