@@ -9,11 +9,13 @@ harness: [bench/stress.py](../bench/stress.py).
 **Since these tables, `Params.planes` became `Params.effort`** (TUNING.md, Effort). `planes="best"`
 below is the old default, which is now effort 3–4 (the default, 4): the same block groups, byte for
 byte. `planes="bit"` is gone; effort 1 is the fast option (about a third faster, 1.5–2.5% larger).
-The tables below are from 2026-10-01; the 2026-10-13 reruns in `bench/` (gigabyte, day-scale,
-timestamps, updates, with the default effort and the noise floor on timed data, at 7fa0991) agree
-within 5%, with the same sizes: the day encodes in 4.52 µs/block/worker (4.84 here), and the noisy
-clock in 11.57 (11.23 here), where it now pays for the noise floor's cadence check and estimate,
-which these tables skipped with times.
+The tables below are from 2026-10-01; the 2026-11-01 reruns in `bench/` (gigabyte, day-scale,
+timestamps, updates, with the default effort, the noise floor on timed data and the scaled grids)
+agree within 5%, with the same sizes to 0.1%: the day encodes in 4.74 µs/block/worker (4.84 here),
+and the noisy clock in 11.53 (11.23 here), where it now pays for the noise floor's cadence check and
+estimate, which these tables skipped with times. The scaled grids cost the day +3% against the
+encoder before them (4.59 → 4.74 µs/block/worker in the same session) and +0.08% in size (the
+4-byte grid scale per block); data on grids a writer doesn't know are below.
 
 Most of the change from the previous tables is `planes="best"`: every block group is compressed
 twice, with bit planes and with byte planes, and the smaller kept. That makes the day 2.2% smaller
@@ -115,7 +117,13 @@ about 31 µs for the bit-plane shuffle, and 8-87 µs of zstd per pass depending 
   4.28 µs/block against 3.53 for plain data (2026-09-25); with both plane passes it is within
   run-to-run noise (5.79-5.98 against 5.23-5.80; single thread,
   [bench/decimal_near_miss.py](../bench/decimal_near_miss.py), results in STRESS_RESULTS.md).
+  Since the scaled grids, such a block also runs the rational search: integers with one off-grid
+  sample take 8.80 µs/block against 5.82 on the grid (+3.0 µs, +51%; 2026-11-01).
   `grids="binary"` avoids it. The note is in ENCODER.md §5.3.
+- **Grids a writer doesn't know** (2026-11-01, 250 tags, full day extrapolated): a random walk on
+  0.05 encodes in 137 s (6.36 µs/block/worker, 6.51 bits/sample), one in ADC counts of 10 V / 4095
+  in 282 s (13.05 µs/block/worker, 11.32 bits/sample): the rational search finds that grid in
+  nearly every block, about 4 µs each, and the data are stored exactly (ENCODER.md §5.4).
 
 ### Timestamps (`--times`)
 

@@ -37,8 +37,11 @@ class FluxCodec:
         parsed = _group.decompress(group)  # the package's own reader: no layout assumptions here
         nb = parsed.header.num_blocks
         params = [int(_format.get_int16(parsed.raw_body, _format.grid_params_start(nb), nb, b)) for b in range(nb)]
+        scales = [int(_format.get_uint32(parsed.raw_body, _format.grid_scale_start(nb), nb, b)) for b in range(nb)]
         infos = [{"order": int(f & _format.BLOCK_FLAG_ORDER), "decimal": bool(f & _format.BLOCK_FLAG_DECIMAL),
-                  "param": p} for f, p in zip(parsed.block_flags, params)]
+                  "param": p,
+                  "scale": (s & _format.SCALE_MASK, s >> _format.SCALE_SHIFT) if f & _format.BLOCK_FLAG_SCALED else None}
+                 for f, p, s in zip(parsed.block_flags, params, scales)]
         return group, infos
 
     def decode_group(self, data, nb, n):

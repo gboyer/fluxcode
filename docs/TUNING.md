@@ -136,6 +136,26 @@ more than bit planes up to level 12. Level 1 saves only 10% of the zstd time and
 linear and square block groups. The high levels pay off only on blocky or periodic signals (square
 −50%, sin-50.3hz −16% at 19); noisy and random-walk signals gain 1–3% even at 19.
 
+## Grids
+
+`grids` picks which grids a block may take, each level adding to the one before: `"binary"` (2^e),
+`"decimal"` (10^p too), `"rational"` (the default: scaled grids N / D times either, ENCODER.md §5.4).
+Measured on 2026-11-01 (bench/RESULTS.md, the default against the encoder before scaled grids,
+which is `"decimal"`):
+
+| data | bits/sample | encode µs/block |
+|---|---|---|
+| the 15 ordinary signals | 4.76 → 4.76 | 4.99 → 5.12 (+0.13 µs, +3%) |
+| random walk on 0.05 | 8.09 → 6.52 (−19%), now exact | 5.95 → 5.82 |
+| random walk on thirds | 7.68 → 3.97 (−48%), now exact | 11.32 → 10.82 |
+| ADC counts of 10 V / 4095 | 12.61 → 11.34 (−10%), now exact | 5.35 → 11.98 (+6.63 µs, +124%) |
+
+The default is `"rational"`: ordinary data pay 3% and keep their size, data on a grid the writer
+doesn't know are smaller and stored exactly. A grid found by the rational search (D > 1, like the
+ADC's) costs about 4 µs per block; the index gcd's (0.05 = 5 × 0.01) costs nothing measurable.
+`"decimal"` is the choice for a tag known to be on such a grid whose encode time matters more than
+its size; `"binary"` skips every grid search, for data that are never on a grid.
+
 ## Noise floor: measured behaviour
 
 B = 16, orders 0–3, decimal detection, bit-shuffle, minute block groups. Noisy test signals only:

@@ -19,7 +19,7 @@ High level properties:
 * **Grids you don't know**: A sensor's own step is found and stored exactly when it is a fraction
   N / D (each up to 65,535) of a power of ten or two, with an offset: 0.05 or 0.18 (°F from 0.1 °C)
   steps, thirds, ADC counts of 10 V / 4096 or 10 V / 4095, a calibration's gain and offset. Such
-  data compresses 19–49% smaller and decodes bit for bit.
+  data compresses 10–48% smaller in the benchmarks and decodes bit for bit.
 * **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
   difference, whichever has the lowest variance.
 * **Group-Compressed zstd**: Blocks are assembled into block groups; for example, a minute might
@@ -192,23 +192,24 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 |0.0000%| 2.41 | 1.35 |
-| square wave | 0.04 |0.0000%| 2.57 | 1.14 |
-| sine, 4.12 Hz | 2.40 |0.0010%| 6.15 | 1.98 |
-| sine, 50.3 Hz | 6.74 |0.0010%| 6.00 | 2.09 |
-| chirp | 7.81 |0.0010%| 7.46 | 1.98 |
-| random walk | 12.62 |0.0015%| 5.54 | 1.80 |
-| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.65 | 1.85 |
-| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.35 | 2.13 |
-| noisy sine (σ = 5) | 5.24 |0.2334%| 4.25 | 1.58 |
-| Gaussian spikes on uniform noise | 6.60 |1.4661%| 4.98 | 1.81 |
-| **all 15 signals** | **4.76** | | **5.09** | **1.73** |
+| linear ramp | 0.02 |0.0000%| 2.40 | 1.36 |
+| square wave | 0.04 |0.0000%| 2.96 | 1.57 |
+| sine, 4.12 Hz | 2.40 |0.0010%| 6.10 | 2.12 |
+| sine, 50.3 Hz | 6.74 |0.0010%| 6.06 | 2.16 |
+| chirp | 7.81 |0.0010%| 7.48 | 2.05 |
+| random walk | 12.62 |0.0015%| 5.63 | 1.82 |
+| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.32 | 1.88 |
+| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.23 | 2.19 |
+| noisy sine (σ = 5) | 5.24 |0.2334%| 4.26 | 1.58 |
+| Gaussian spikes on uniform noise | 6.60 |1.4661%| 5.06 | 1.86 |
+| **all 15 signals** | **4.76** | | **5.12** | **1.79** |
+| random walk on thirds (not in the 15) | 3.97 |0% (exact)| 10.82 | 2.36 |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
 the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The default
 effort compresses each block group with bit and with byte planes and keeps the smaller. The whole
-set at effort 1 is 4.83 bits/sample at 3.44 µs/block to encode, and at effort 5 4.66 at 5.80
+set at effort 1 is 4.83 bits/sample at 3.53 µs/block to encode, and at effort 5 4.66 at 5.96
 ([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits` (see
 the [research report](experimental/report/index.html#scatter-kinds)).
 

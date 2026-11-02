@@ -548,7 +548,10 @@ for B = 10, then 2, with B^p <= S < B^(p+1):
 - **Cost** (`fit_step` alone, single thread, per 1000 samples, against 4–6 µs to encode a block):
   0.03 µs to reject a random walk, about 0.2 µs on a smooth ramp, 2.8 µs to fit a hidden grid;
   the index gcd 0.08 µs on ordinary data, 0.16–0.7 µs when its gcd survives the block. Whole
-  encodes are in bench/RESULTS.md (the hidden grids after each table's total).
+  encodes (bench/RESULTS.md, the hidden grids after each table's total): +0.13 µs per block (+3%)
+  on the 15 ordinary signals against `grids="decimal"`; −0.13 µs on a 0.05 grid and −0.50 µs on
+  thirds, which no longer go through the noise floor's lossy grid, and +6.6 µs (+124%) on ADC
+  counts of 10 V / 4095.
 - **Skipped** for wide blocks, subnormal steps (e < −1022) and blocks of up to 8 samples.
 
 ### 5.5 Quantize

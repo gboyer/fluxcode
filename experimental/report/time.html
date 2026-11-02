@@ -22,8 +22,8 @@ nav ul{columns:2;list-style:none;padding-left:0}nav li{margin:2px 0;break-inside
 <a href="#rounding">last section</a> lets them move by a share of an interval). This page covers only that time
 axis: what the timestamps add to a one-minute block group (60 blocks of 1,000 samples, nominally 1 kHz, int64 ns ticks).
 Every number here is the block group with times minus the same block group without them. For scale, that block group's values alone take
-17,976 bytes (a 4.12 Hz sine at the default settings), 311 µs to encode and
-100 µs to decode.
+17,973 bytes (a 4.12 Hz sine at the default settings), 309 µs to encode and
+110 µs to decode.
 <b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_time_report.py</code>.</p>
 <h2 id="how">How timestamps are stored</h2>
 <ul>
@@ -51,16 +51,16 @@ cost more than the values (here about two and a half times as much).</p>
 <table><tr><th class='l'>shape</th><th class='l'>what it is</th><th>bytes (example)</th><th>bits/sample</th>
 <th>irregular blocks</th><th>vs values</th><th>bytes over 64 groups: median</th><th>max</th>
 <th>encode time added</th><th>decode time added</th></tr>
-<tr><td>Perfect grid</td><td class='l'>Every interval exactly 1 ms: hardware-clocked acquisition, resampled or synthesized series.</td><td>66</td><td>0.009</td><td>0/60</td><td>0.4%</td><td>66</td><td>133</td><td>+13 µs (+4%)</td><td>+14 µs (+14%)</td></tr>
-<tr><td>Grid with a few gaps</td><td class='l'>A perfect grid that sometimes skips: dropped packets, reconnects, a paused logger (Poisson, mean 2 gaps per minute, each 5 ms to 3 s).</td><td>167</td><td>0.022</td><td>2/60</td><td>0.9%</td><td>166</td><td>834</td><td>+15 µs (+5%)</td><td>+15 µs (+15%)</td></tr>
-<tr><td>Noisy clock</td><td class='l'>Host timestamps on arrival: 1 ms nominal, σ = 20 µs jitter, µs resolution.</td><td>53,413</td><td>7.122</td><td>60/60</td><td>297.1%</td><td>53,411</td><td>53,560</td><td>+336 µs (+108%)</td><td>+119 µs (+119%)</td></tr>
+<tr><td>Perfect grid</td><td class='l'>Every interval exactly 1 ms: hardware-clocked acquisition, resampled or synthesized series.</td><td>69</td><td>0.009</td><td>0/60</td><td>0.4%</td><td>69</td><td>136</td><td>+12 µs (+4%)</td><td>+12 µs (+11%)</td></tr>
+<tr><td>Grid with a few gaps</td><td class='l'>A perfect grid that sometimes skips: dropped packets, reconnects, a paused logger (Poisson, mean 2 gaps per minute, each 5 ms to 3 s).</td><td>170</td><td>0.023</td><td>2/60</td><td>0.9%</td><td>169</td><td>838</td><td>+20 µs (+6%)</td><td>+15 µs (+14%)</td></tr>
+<tr><td>Noisy clock</td><td class='l'>Host timestamps on arrival: 1 ms nominal, σ = 20 µs jitter, µs resolution.</td><td>53,401</td><td>7.120</td><td>60/60</td><td>297.1%</td><td>53,399</td><td>53,544</td><td>+339 µs (+110%)</td><td>+119 µs (+109%)</td></tr>
 </table>
 <p class='muted'>The example is the median-size block group of 64 seeds per shape. Times are single thread, best of
-60, Apple M3 on AC power; each added time's percentage is of the same block group's values-only encode
-(311 µs) or decode (100 µs). <i>vs values</i> is the timestamps' bytes as a share
-of the values' 17,976.</p>
+30, Apple M3 on AC power; each added time's percentage is of the same block group's values-only encode
+(309 µs) or decode (110 µs). <i>vs values</i> is the timestamps' bytes as a share
+of the values' 17,973.</p>
 <ul>
-<li><b>Perfect grid:</b> 66 bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
+<li><b>Perfect grid:</b> 69 bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
 writes the 60,000 int64 ticks, and that is most of its cost.</li>
 <li><b>A few gaps:</b> each gap makes one block irregular. Its intervals are all 1 except one, so the block's
 planes are nearly all zero and it costs about 20 to 60 bytes (next section).</li>
@@ -68,18 +68,18 @@ planes are nearly all zero and it costs about 20 to 60 bytes (next section).</li
 resolution carries about 6.4 bits per sample, and the block group spends 7.1. The rest comes from storing intervals
 (each the difference of two jitters) with each bit plane coded on its own. If the jitter is measurement noise
 rather than information, let fluxcode round it away: with <code>Params(time_error=0.1)</code> the same clock
-costs 65 bytes (<a href="#rounding">last section</a>).</li>
+costs 79 bytes (<a href="#rounding">last section</a>).</li>
 </ul>
 <h2 id="gaps">Cost per gap</h2>
 <p>A grid with <i>k</i> gaps per minute, each 5 ms to 3 s; median of 16 block groups per row.</p>
 <table><tr><th>gaps per minute</th><th>irregular blocks</th><th>bytes</th><th>bits/sample</th><th>bytes per gap</th></tr>
-<tr><td>0</td><td>0/60</td><td>63</td><td>0.008</td><td>—</td></tr>
-<tr><td>1</td><td>1/60</td><td>125</td><td>0.017</td><td>62</td></tr>
-<tr><td>2</td><td>2/60</td><td>164</td><td>0.022</td><td>51</td></tr>
-<tr><td>5</td><td>5/60</td><td>747</td><td>0.100</td><td>137</td></tr>
-<tr><td>10</td><td>9/60</td><td>914</td><td>0.122</td><td>85</td></tr>
-<tr><td>20</td><td>17/60</td><td>1,140</td><td>0.152</td><td>54</td></tr>
-<tr><td>60</td><td>38/60</td><td>1,374</td><td>0.183</td><td>22</td></tr>
+<tr><td>0</td><td>0/60</td><td>66</td><td>0.009</td><td>—</td></tr>
+<tr><td>1</td><td>1/60</td><td>128</td><td>0.017</td><td>62</td></tr>
+<tr><td>2</td><td>2/60</td><td>166</td><td>0.022</td><td>50</td></tr>
+<tr><td>5</td><td>5/60</td><td>750</td><td>0.100</td><td>137</td></tr>
+<tr><td>10</td><td>9/60</td><td>910</td><td>0.121</td><td>84</td></tr>
+<tr><td>20</td><td>17/60</td><td>1,145</td><td>0.153</td><td>54</td></tr>
+<tr><td>60</td><td>38/60</td><td>1,366</td><td>0.182</td><td>22</td></tr>
 </table>
 <h2 id="harder">Harder shapes</h2>
 <p>For comparison, shapes with many more irregular blocks (from <code>bench/time_axis.py</code>). Only the
@@ -87,15 +87,15 @@ cases with random intervals cost more than the values. Percentages are of the va
 above.</p>
 <table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>
 <th>encode time added</th><th>decode time added</th></tr>
-<tr><td>1 kHz, 20 gaps</td><td>1,094</td><td>0.146</td><td>19/60</td><td>+97 µs (+31%)</td><td>+60 µs (+60%)</td></tr>
-<tr><td>1 kHz, 1% dropped</td><td>1,461</td><td>0.195</td><td>60/60</td><td>+261 µs (+84%)</td><td>+123 µs (+122%)</td></tr>
-<tr><td>drifting clock (0.99998 ms)</td><td>339</td><td>0.045</td><td>60/60</td><td>+216 µs (+69%)</td><td>+85 µs (+84%)</td></tr>
-<tr><td>jitter σ=10 µs, ns resolution</td><td>120,712</td><td>16.095</td><td>60/60</td><td>+416 µs (+134%)</td><td>+178 µs (+178%)</td></tr>
-<tr><td>jitter σ=10 µs, µs resolution</td><td>45,903</td><td>6.120</td><td>60/60</td><td>+336 µs (+108%)</td><td>+126 µs (+125%)</td></tr>
-<tr><td>Poisson events, mean 1 ms, µs</td><td>87,889</td><td>11.719</td><td>60/60</td><td>+341 µs (+110%)</td><td>+160 µs (+160%)</td></tr>
-<tr><td>Poisson events, mean 1 ms, ns</td><td>164,661</td><td>21.955</td><td>60/60</td><td>+379 µs (+122%)</td><td>+189 µs (+188%)</td></tr>
-<tr><td>deadband logging, ms grid</td><td>55,498</td><td>7.400</td><td>60/60</td><td>+513 µs (+165%)</td><td>+219 µs (+218%)</td></tr>
-<tr><td>bursts 10 kHz / idle</td><td>102</td><td>0.014</td><td>60/60</td><td>+121 µs (+39%)</td><td>+91 µs (+91%)</td></tr>
+<tr><td>1 kHz, 20 gaps</td><td>1,094</td><td>0.146</td><td>19/60</td><td>+94 µs (+30%)</td><td>+63 µs (+57%)</td></tr>
+<tr><td>1 kHz, 1% dropped</td><td>1,471</td><td>0.196</td><td>60/60</td><td>+259 µs (+84%)</td><td>+115 µs (+105%)</td></tr>
+<tr><td>drifting clock (0.99998 ms)</td><td>347</td><td>0.046</td><td>60/60</td><td>+214 µs (+69%)</td><td>+88 µs (+80%)</td></tr>
+<tr><td>jitter σ=10 µs, ns resolution</td><td>120,705</td><td>16.094</td><td>60/60</td><td>+409 µs (+132%)</td><td>+178 µs (+162%)</td></tr>
+<tr><td>jitter σ=10 µs, µs resolution</td><td>45,863</td><td>6.115</td><td>60/60</td><td>+331 µs (+107%)</td><td>+129 µs (+117%)</td></tr>
+<tr><td>Poisson events, mean 1 ms, µs</td><td>87,747</td><td>11.700</td><td>60/60</td><td>+335 µs (+108%)</td><td>+167 µs (+152%)</td></tr>
+<tr><td>Poisson events, mean 1 ms, ns</td><td>164,677</td><td>21.957</td><td>60/60</td><td>+350 µs (+113%)</td><td>+195 µs (+178%)</td></tr>
+<tr><td>deadband logging, ms grid</td><td>55,494</td><td>7.399</td><td>60/60</td><td>+527 µs (+170%)</td><td>+226 µs (+206%)</td></tr>
+<tr><td>bursts 10 kHz / idle</td><td>103</td><td>0.014</td><td>60/60</td><td>+121 µs (+39%)</td><td>+93 µs (+85%)</td></tr>
 </table>
 <p class='muted'>1% dropped and a drifting clock stay cheap: their intervals take two or three values. Jitter,
 Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
@@ -129,31 +129,31 @@ whole blocks from the samples given.</li>
 </ul>
 <img src='time-rounding.svg' alt='Bytes the timestamps add per block group against the time error'>
 <table><tr><th class='l'>timestamps</th><th>exact</th><th>e = 0.02</th><th>e = 0.05</th><th>e = 0.1</th></tr>
-<tr><td>Perfect grid</td><td>66 B · 0/60<br><span class='muted'>+12 µs (+4%)</span></td><td>66 B · 0/60<br><span class='muted'>+30 µs (+10%) · max 0.000</span></td><td>66 B · 0/60<br><span class='muted'>+28 µs (+9%) · max 0.000</span></td><td>66 B · 0/60<br><span class='muted'>+29 µs (+9%) · max 0.000</span></td></tr>
-<tr><td>Grid with a few gaps</td><td>167 B · 2/60<br><span class='muted'>+41 µs (+13%)</span></td><td>167 B · 2/60<br><span class='muted'>+53 µs (+17%) · max 0.000</span></td><td>167 B · 2/60<br><span class='muted'>+42 µs (+14%) · max 0.000</span></td><td>167 B · 2/60<br><span class='muted'>+42 µs (+14%) · max 0.000</span></td></tr>
-<tr><td>Noisy clock</td><td>53,413 B · 60/60<br><span class='muted'>+358 µs (+115%)</span></td><td>21,168 B · 60/60<br><span class='muted'>+433 µs (+139%) · max 0.010</span></td><td>2,990 B · 60/60<br><span class='muted'>+435 µs (+140%) · max 0.050</span></td><td>65 B · 0/60<br><span class='muted'>+86 µs (+28%) · max 0.092</span></td></tr>
-<tr><td>Jitter σ = 10 µs (1%), ns, on round times</td><td>120,712 B · 60/60<br><span class='muted'>+419 µs (+135%)</span></td><td>14,726 B · 60/60<br><span class='muted'>+418 µs (+134%) · max 0.010</span></td><td>63 B · 0/60<br><span class='muted'>+86 µs (+28%) · max 0.046</span></td><td>63 B · 0/60<br><span class='muted'>+84 µs (+27%) · max 0.046</span></td></tr>
-<tr><td>The same, free-running: 50 µs off the epoch's grid</td><td>120,653 B · 60/60<br><span class='muted'>+421 µs (+136%)</span></td><td>14,667 B · 60/60<br><span class='muted'>+409 µs (+131%) · max 0.010</span></td><td>66 B · 0/60<br><span class='muted'>+113 µs (+36%) · max 0.044</span></td><td>66 B · 0/60<br><span class='muted'>+113 µs (+36%) · max 0.054</span></td></tr>
-<tr><td>Drifting clock (0.99998 ms)</td><td>339 B · 60/60<br><span class='muted'>+214 µs (+69%)</span></td><td>87 B · 0/60<br><span class='muted'>+94 µs (+30%) · max 0.020</span></td><td>93 B · 0/60<br><span class='muted'>+91 µs (+29%) · max 0.049</span></td><td>93 B · 0/60<br><span class='muted'>+88 µs (+28%) · max 0.098</span></td></tr>
-<tr><td>Drift and jitter σ = 10 µs, 37 µs off</td><td>120,648 B · 60/60<br><span class='muted'>+409 µs (+132%)</span></td><td>14,661 B · 60/60<br><span class='muted'>+409 µs (+132%) · max 0.010</span></td><td>210 B · 1/60<br><span class='muted'>+111 µs (+36%) · max 0.050</span></td><td>111 B · 0/60<br><span class='muted'>+94 µs (+30%) · max 0.100</span></td></tr>
-<tr><td>Poisson events, mean 1 ms, ns</td><td>164,661 B · 60/60<br><span class='muted'>+384 µs (+124%)</span></td><td>83,895 B · 60/60<br><span class='muted'>+504 µs (+162%) · max 0.001</span></td><td>73,951 B · 60/60<br><span class='muted'>+495 µs (+159%) · max 0.002</span></td><td>66,463 B · 60/60<br><span class='muted'>+500 µs (+161%) · max 0.005</span></td></tr>
-<tr><td>Deadband logging, ms grid</td><td>55,498 B · 60/60<br><span class='muted'>+552 µs (+178%)</span></td><td>55,498 B · 60/60<br><span class='muted'>+651 µs (+209%) · max 0.000</span></td><td>55,498 B · 60/60<br><span class='muted'>+648 µs (+209%) · max 0.000</span></td><td>55,498 B · 60/60<br><span class='muted'>+642 µs (+207%) · max 0.000</span></td></tr>
-<tr><td>1024 Hz clock, jitter 0.5% (no 1-2-5 step divides the period)</td><td>112,735 B · 60/60<br><span class='muted'>+402 µs (+129%)</span></td><td>9,221 B · 49/60<br><span class='muted'>+396 µs (+127%) · max 0.020</span></td><td>131 B · 0/60<br><span class='muted'>+136 µs (+44%) · max 0.050</span></td><td>100 B · 0/60<br><span class='muted'>+113 µs (+36%) · max 0.101</span></td></tr>
-<tr><td>60 Hz clock, jitter 0.5% (no 1-2-5 step divides the period)</td><td>144,005 B · 60/60<br><span class='muted'>+414 µs (+133%)</span></td><td>5,995 B · 48/60<br><span class='muted'>+366 µs (+118%) · max 0.020</span></td><td>216 B · 0/60<br><span class='muted'>+120 µs (+39%) · max 0.051</span></td><td>125 B · 0/60<br><span class='muted'>+115 µs (+37%) · max 0.102</span></td></tr>
+<tr><td>Perfect grid</td><td>69 B · 0/60<br><span class='muted'>+18 µs (+6%)</span></td><td>69 B · 0/60<br><span class='muted'>+35 µs (+11%) · max 0.000</span></td><td>69 B · 0/60<br><span class='muted'>+31 µs (+10%) · max 0.000</span></td><td>69 B · 0/60<br><span class='muted'>+31 µs (+10%) · max 0.000</span></td></tr>
+<tr><td>Grid with a few gaps</td><td>170 B · 2/60<br><span class='muted'>+22 µs (+7%)</span></td><td>170 B · 2/60<br><span class='muted'>+44 µs (+14%) · max 0.000</span></td><td>170 B · 2/60<br><span class='muted'>+44 µs (+14%) · max 0.000</span></td><td>170 B · 2/60<br><span class='muted'>+44 µs (+14%) · max 0.000</span></td></tr>
+<tr><td>Noisy clock</td><td>53,401 B · 60/60<br><span class='muted'>+343 µs (+111%)</span></td><td>21,134 B · 60/60<br><span class='muted'>+425 µs (+138%) · max 0.010</span></td><td>2,935 B · 60/60<br><span class='muted'>+431 µs (+139%) · max 0.050</span></td><td>79 B · 0/60<br><span class='muted'>+88 µs (+28%) · max 0.079</span></td></tr>
+<tr><td>Jitter σ = 10 µs (1%), ns, on round times</td><td>120,705 B · 60/60<br><span class='muted'>+410 µs (+133%)</span></td><td>14,748 B · 60/60<br><span class='muted'>+413 µs (+134%) · max 0.010</span></td><td>66 B · 0/60<br><span class='muted'>+87 µs (+28%) · max 0.046</span></td><td>66 B · 0/60<br><span class='muted'>+88 µs (+29%) · max 0.046</span></td></tr>
+<tr><td>The same, free-running: 50 µs off the epoch's grid</td><td>120,618 B · 60/60<br><span class='muted'>+416 µs (+135%)</span></td><td>14,688 B · 60/60<br><span class='muted'>+405 µs (+131%) · max 0.010</span></td><td>69 B · 0/60<br><span class='muted'>+87 µs (+28%) · max 0.044</span></td><td>69 B · 0/60<br><span class='muted'>+87 µs (+28%) · max 0.054</span></td></tr>
+<tr><td>Drifting clock (0.99998 ms)</td><td>347 B · 60/60<br><span class='muted'>+216 µs (+70%)</span></td><td>90 B · 0/60<br><span class='muted'>+93 µs (+30%) · max 0.020</span></td><td>96 B · 0/60<br><span class='muted'>+94 µs (+31%) · max 0.049</span></td><td>96 B · 0/60<br><span class='muted'>+91 µs (+29%) · max 0.098</span></td></tr>
+<tr><td>Drift and jitter σ = 10 µs, 37 µs off</td><td>120,617 B · 60/60<br><span class='muted'>+414 µs (+134%)</span></td><td>14,660 B · 60/60<br><span class='muted'>+407 µs (+132%) · max 0.010</span></td><td>213 B · 1/60<br><span class='muted'>+108 µs (+35%) · max 0.050</span></td><td>114 B · 0/60<br><span class='muted'>+94 µs (+30%) · max 0.100</span></td></tr>
+<tr><td>Poisson events, mean 1 ms, ns</td><td>164,677 B · 60/60<br><span class='muted'>+353 µs (+114%)</span></td><td>83,831 B · 60/60<br><span class='muted'>+513 µs (+166%) · max 0.001</span></td><td>73,862 B · 60/60<br><span class='muted'>+504 µs (+163%) · max 0.002</span></td><td>66,463 B · 60/60<br><span class='muted'>+490 µs (+159%) · max 0.005</span></td></tr>
+<tr><td>Deadband logging, ms grid</td><td>55,494 B · 60/60<br><span class='muted'>+532 µs (+172%)</span></td><td>55,494 B · 60/60<br><span class='muted'>+640 µs (+207%) · max 0.000</span></td><td>55,494 B · 60/60<br><span class='muted'>+633 µs (+205%) · max 0.000</span></td><td>55,494 B · 60/60<br><span class='muted'>+633 µs (+205%) · max 0.000</span></td></tr>
+<tr><td>1024 Hz clock, jitter 0.5% (no 1-2-5 step divides the period)</td><td>112,706 B · 60/60<br><span class='muted'>+386 µs (+125%)</span></td><td>9,201 B · 49/60<br><span class='muted'>+396 µs (+128%) · max 0.020</span></td><td>134 B · 0/60<br><span class='muted'>+109 µs (+35%) · max 0.050</span></td><td>103 B · 0/60<br><span class='muted'>+109 µs (+35%) · max 0.101</span></td></tr>
+<tr><td>60 Hz clock, jitter 0.5% (no 1-2-5 step divides the period)</td><td>143,964 B · 60/60<br><span class='muted'>+411 µs (+133%)</span></td><td>5,965 B · 48/60<br><span class='muted'>+364 µs (+118%) · max 0.020</span></td><td>219 B · 0/60<br><span class='muted'>+128 µs (+42%) · max 0.051</span></td><td>128 B · 0/60<br><span class='muted'>+121 µs (+39%) · max 0.102</span></td></tr>
 </table>
 <p class='muted'>Each cell: bytes the timestamps add · irregular blocks of 60, then the encode time they add
-(percentage of the values-only encode, 311 µs) and the largest move in mean intervals.
-Single thread, best of 60, Apple M3 on AC power. The chart samples e every 0.0025.</p>
+(percentage of the values-only encode, 309 µs) and the largest move in mean intervals.
+Single thread, best of 30, Apple M3 on AC power. The chart samples e every 0.0025.</p>
 <ul>
-<li><b>Jittered clocks</b> drop from about 120 KB to 63–66 bytes once e reaches
+<li><b>Jittered clocks</b> drop from about 120 KB to 66–69 bytes once e reaches
 about 5σ (0.05 here), on round times or free-running. With drift as well, the phase follows the clock block by
-block: 210 bytes at 0.05 and 111 at 0.1. Once regular they also encode faster:
+block: 213 bytes at 0.05 and 114 at 0.1. Once regular they also encode faster:
 a regular block skips the residuals.</li>
 <li><b>Clocks no 1-2-5 step divides</b> go onto lattices of their own once e covers the jitter (about 5σ):
-1024 Hz clock: 112,735 → 131 bytes at 0.05 and 100 at 0.1; 60 Hz clock: 144,005 → 216 bytes at 0.05 and 125 at 0.1.</li>
-<li><b>Times already on a grid</b> don't change, but checking them costs time: +16 µs (+5%) per
+1024 Hz clock: 112,706 → 134 bytes at 0.05 and 103 at 0.1; 60 Hz clock: 143,964 → 219 bytes at 0.05 and 128 at 0.1.</li>
+<li><b>Times already on a grid</b> don't change, but checking them costs time: +14 µs (+4%) per
 block group on a perfect grid (its blocks are regular and aren't rounded, but the ticks are checked for order and
-regularity) and +1 µs (+0%) with a few gaps (rounding the irregular blocks).</li>
+regularity) and +22 µs (+7%) with a few gaps (rounding the irregular blocks).</li>
 <li><b>The noisy clock</b> (σ = 20 µs, 2%) needs e = 0.1 to land on its grid; at 0.05 about 1% of its
 times fall to a neighbouring grid point.</li>
 <li><b>Events and deadband logging</b> have no grid to land on. Rounding still takes out the low bits
@@ -161,7 +161,7 @@ times fall to a neighbouring grid point.</li>
 within <i>e</i> of their own interval, so their step is finer than a clock's at the same <i>e</i>. Deadband
 logging's times are already on a 1 ms grid and mostly a few ms apart: any coarser step moves too many of them
 by more than <i>e</i> of their own interval, so it gains nothing below <i>e</i> = 0.5, and the attempt costs
-+96 µs (+31%)
++102 µs (+33%)
 per block group at 0.05.</li>
 </ul>
 <p class='muted'>Measurements behind the choices (1-2-5 steps over powers of two, no interpolation of values, no

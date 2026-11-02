@@ -103,7 +103,11 @@ def check_bounds(codec, x, y, info):
     elif isinstance(c, RateCtlCodec):
         assert err <= info["step"] * fs / 2 * tol + 1e-12 * fs, c.name
     elif isinstance(c, FluxCodec):
-        if info["decimal"]:  # values within a quarter power-of-two step (< 10^p / 4) of the grid
+        if info["scale"]:  # a scaled grid (N / D) B^p: exact, up to the decoder's one rounding
+            num, den = info["scale"]
+            step = num / den * (10.0 if info["decimal"] else 2.0) ** info["param"]
+            assert err <= step / 2 * tol, c.name
+        elif info["decimal"]:  # values within a quarter power-of-two step (< 10^p / 4) of the grid
             assert err <= 10.0 ** info["param"] / 4 * tol, c.name
         else:
             # The grid is absolute (snapped): the min decodes to the grid point nearest it, within half a step
@@ -235,11 +239,15 @@ def notes(c, r, base):
         return f"frame exponents: mean {np.mean([i['exps'].mean() for i in infos]):.1f}, max {max(i['exps'].max() for i in infos)}"
     if isinstance(cb, FluxCodec):
         orders = Counter(i["order"] for i in infos)
-        dec = [i["param"] for i in infos if i["decimal"]]
-        pw = [i["param"] for i in infos if not i["decimal"]]
+        dec = [i["param"] for i in infos if i["decimal"] and not i["scale"]]
+        pw = [i["param"] for i in infos if not i["decimal"] and not i["scale"]]
+        scaled = Counter(f"{i['scale'][0]}" + (f"/{i['scale'][1]}" if i["scale"][1] > 1 else "")
+                         + f"·{10 if i['decimal'] else 2}^{i['param']}" for i in infos if i["scale"])
         note = "orders " + ", ".join(f"{k}: {orders[k]}" for k in sorted(orders)) + "; "
         note += ", ".join(([f"decimal grid 10^{min(dec)}" + (f"..10^{max(dec)}" if max(dec) > min(dec) else "")] if dec else [])
-                          + ([f"step 2^{min(pw)}" + (f"..2^{max(pw)}" if max(pw) > min(pw) else "")] if pw else []))
+                          + ([f"step 2^{min(pw)}" + (f"..2^{max(pw)}" if max(pw) > min(pw) else "")] if pw else [])
+                          + ([f"scaled grid {', '.join(k for k, _ in scaled.most_common(2))}"
+                              + (f" (+{len(scaled) - 2} more)" if len(scaled) > 2 else "")] if scaled else []))
         if base is not None:
             changed = sum(i["param"] != j["param"] for i, j in zip(infos, base["infos"]))
             note += f" (noise floor applied on {changed} blocks)" if changed else ""
