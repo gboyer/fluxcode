@@ -20,7 +20,7 @@ import zstandard
 
 from . import _bitpacking, _format
 
-RUST_INTERFACE_VERSION: int = 3
+RUST_INTERFACE_VERSION: int = 4
 """Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 
@@ -314,14 +314,14 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     """
     if _rust is not None and rows.time_rows is None:
         return _rust.compress_group(  # type: ignore[no-any-return]
-            rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
-            effort.layout, effort.flush, list(effort.zstd_levels),
+            rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
+            rows.codes, effort.layout, effort.flush, list(effort.zstd_levels),
         )
     offsets = _format.layout(rows.block_flags, rows.block_sizes)
 
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
     body = _bitpacking.write_group(
-        rows.block_flags, rows.block_sizes, rows.grid_params, rows.value_anchors, rows.residuals, rows.codes,
-        rows.time_rows, offsets,
+        rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
+        rows.codes, rows.time_rows, offsets,
     )
     return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)

@@ -90,8 +90,8 @@ def test_finite_blocks_unchanged():
     y = x.copy()
     y[30_500] = np.nan  # block 30
     group, _, _, _ = fluxcode.encode_group(y)
-    ha, _, pa, _, ra, _, _ = group_rows(ref)
-    hb, _, pb, _, rb, codes, _ = group_rows(group)
+    ha, _, pa, _, _, ra, _, _ = group_rows(ref)
+    hb, _, pb, _, _, rb, codes, _ = group_rows(group)
     ra, rb, codes = ra.reshape(60, L), rb.reshape(60, L), codes.reshape(60, L)
     keep = np.arange(60) != 30
     np.testing.assert_array_equal(ha[keep], hb[keep])
@@ -232,7 +232,7 @@ def test_whole_blocks_between_finite_ones(pname):
     x = np.concatenate(blocks)
     check_round_trip(x, PARAMS[pname])
     group, _, _, _ = fluxcode.encode_group(x, PARAMS[pname])
-    flags, _, _, _, _, codes, _ = group_rows(group)
+    flags, _, _, _, _, _, codes, _ = group_rows(group)
     codes = codes.reshape(-1, L)
     assert [bool(h & BLOCK_FLAG_NONFINITE) for h in flags] == [False, True, False, True, False, True, True, False, True]
     assert (codes[1] == 1).all() and (codes[3] == 2).all() and (codes[5] == 3).all()

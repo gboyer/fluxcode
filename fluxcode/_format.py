@@ -24,33 +24,35 @@ only when the header's time unit is not 0):
        Bits 0-1 encode the predictor difference order (0-3); bit 2 indicates
        decimal quantization; bit 3 indicates non-finite code planes; bit 4
        indicates irregular times (time residual planes); bit 5 (with bit 4) indicates
-       long time residuals (64 planes instead of 32); bits 6-7 are reserved and must be zero.
-       An empty block's flags are 0.
+       long time residuals (64 planes instead of 32); bit 6 indicates a scaled grid (the
+       grid_scale field); bit 7 is reserved and must be zero. An empty block's flags are 0.
     2. block_sizes (2 * num_blocks bytes):
        Per-block uint16 sample count, byte-planed (all low bytes, then all high bytes).
     3. grid_params (2 * num_blocks bytes):
        Per-block int16 grid parameter (power-of-two exponent or decimal power),
        byte-planed (all low bytes, then all high bytes).
-    4. value_anchor (8 * num_blocks bytes, byte-planed: all byte 0s, all byte 1s, ...):
+    4. grid_scale (4 * num_blocks bytes, byte-planed):
+       Per-block uint32: N | D << 16 of a scaled block (step N / D times 2^e or 10^p), 0 otherwise.
+    5. value_anchor (8 * num_blocks bytes, byte-planed: all byte 0s, all byte 1s, ...):
        Per-block reconstruction base: the bits of the float64 block minimum on the
-       power-of-two grid, or the int64 decimal grid index of the minimum.
-    5. time_start (8 * num_blocks bytes, byte-planed; time only):
+       power-of-two grid, or the int64 grid index K0 of the minimum on a decimal or scaled grid.
+    6. time_start (8 * num_blocks bytes, byte-planed; time only):
        The first non-empty block's start time as int64, then each non-empty block's start
        minus the previous non-empty block's start as uint64 (0 for an empty block). Starts
        are non-decreasing by construction.
-    6. time_step (8 * num_blocks bytes, byte-planed; time only):
+    7. time_step (8 * num_blocks bytes, byte-planed; time only):
        Per-block int64 step: the GCD of the block's time deltas (0 if all are 0).
-    7. time_ref (8 * num_blocks bytes, byte-planed; time only):
+    8. time_ref (8 * num_blocks bytes, byte-planed; time only):
        Per-block uint64 reference quotient: sample i > 0's quotient
        (time[i] - time[i-1]) / time_step is time_ref plus its residual (0 in a regular
        block).
-    8. residual_planes (16 bytes per octet of every block):
+    9. residual_planes (16 bytes per octet of every block):
        Zigzag-encoded int16 differences mod 2^16, as 16 bit planes across all
        blocks, or (flags bit 0) as 2 byte planes: every low byte, then every high byte.
-    9. nonfinite_code_planes (2 bytes per octet of the blocks with non-finite values):
+    10. nonfinite_code_planes (2 bytes per octet of the blocks with non-finite values):
        2 code bit planes for the flagged blocks, encoding sample categories
        (00: finite, 01: NaN, 10: +inf, 11: -inf).
-    10. time_residual_planes (32 bytes per octet of the irregular blocks, then 32 per octet
+    11. time_residual_planes (32 bytes per octet of the irregular blocks, then 32 per octet
        of the long blocks; time only): per sample of an irregular block, its quotient minus
        time_ref, mod 2^64 and zigzagged (0 for sample 0), as bit planes like the residual
        planes: planes 0-31 of every irregular block, then planes 32-63 of the long blocks.
@@ -80,8 +82,12 @@ BLOCK_FLAG_LONG_TIME: int = 0x20
 """Block flags: long time residuals, stored in 64 bit planes instead of 32 (bit 5); only valid
 with BLOCK_FLAG_IRREGULAR_TIME."""
 
-BLOCK_FLAG_RESERVED: int = 0xC0
-"""Block flags: reserved bits (6-7); decoders reject them."""
+BLOCK_FLAG_SCALED: int = 0x40
+"""Block flags: a scaled grid (bit 6): the step is N / D times 2^e (or 10^p with bit 2), the anchor
+an int64 index on the fine grid 2^e / D (10^p / D), N and D in the grid_scale field."""
+
+BLOCK_FLAG_RESERVED: int = 0x80
+"""Block flags: reserved bit (7); decoders reject it."""
 
 GROUP_FLAG_BYTE_PLANES: int = 0x01
 """Block group header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
@@ -154,6 +160,21 @@ P_MIN: int = -22
 P_MAX: int = 22
 """Maximum valid decimal exponent (10^22 is an exact double)."""
 
+SCALED_E_MIN: int = -1022
+"""Minimum power-of-two exponent of a scaled grid: (K0 + N q) * 2^e is then exact (a normal double)."""
+
+SCALED_E_MAX: int = 970
+"""Maximum power-of-two exponent of a scaled grid: (K0 + N q) * 2^e < 2^53 * 2^970 stays finite."""
+
+SCALED_P_MAX: int = 0
+"""Maximum decimal exponent of a scaled grid: the integer is divided by D * 10^-p, one rounding."""
+
+SCALE_SHIFT: int = 16
+"""grid_scale holds N in its low 16 bits and D above them."""
+
+SCALE_MASK: int = 0xFFFF
+"""Mask of N (and, after the shift, D) in grid_scale."""
+
 BYTES_PER_FLAGS: int = 1
 """Bytes of block_flags per block."""
 
@@ -163,11 +184,14 @@ BYTES_PER_SIZE: int = 2
 BYTES_PER_PARAM: int = 2
 """Bytes of grid_params per block (int16)."""
 
+BYTES_PER_SCALE: int = 4
+"""Bytes of grid_scale per block (uint32: N | D << 16, 0 on an unscaled block)."""
+
 BYTES_PER_ANCHOR: int = 8
 """Bytes of value_anchor per block (float64 bits or int64 grid index)."""
 
-METADATA_BYTES_PER_BLOCK: int = BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_ANCHOR
-"""Bytes of the value columns per block (flags, size, grid parameter, anchor: 13)."""
+METADATA_BYTES_PER_BLOCK: int = BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE + BYTES_PER_ANCHOR
+"""Bytes of the value columns per block (flags, size, grid parameter, scale, anchor: 17)."""
 
 FORMAT_VERSION: int = 1
 """Block group format version recorded in the first header byte."""
@@ -474,6 +498,19 @@ def grid_params_start(num_blocks: int) -> int:
 
 
 @njit(inline="always")
+def grid_scale_start(num_blocks: int) -> int:
+    """Calculates the byte offset of the grid_scale field.
+
+    Args:
+        num_blocks: Total number of blocks in the block group.
+
+    Returns:
+        Offset in bytes where the grid_scale field begins.
+    """
+    return (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM) * num_blocks
+
+
+@njit(inline="always")
 def value_anchor_start(num_blocks: int) -> int:
     """Calculates the byte offset of the value_anchor field.
 
@@ -483,7 +520,7 @@ def value_anchor_start(num_blocks: int) -> int:
     Returns:
         Offset in bytes where the value_anchor field begins.
     """
-    return (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM) * num_blocks
+    return (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE) * num_blocks
 
 
 @njit(inline="always")
@@ -564,6 +601,40 @@ def get_int64(raw_group: np.ndarray, field_start: int, num_blocks: int, block_id
         # Byte byte_idx comes from field_start + byte_idx * num_blocks + block_idx
         value_bits |= np.uint64(raw_group[field_start + byte_idx * num_blocks + block_idx]) << np.uint64(8 * byte_idx)
     return np.int64(value_bits)
+
+
+@njit(inline="always")
+def put_uint32(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
+    """Writes a block's uint32 value into a byte-planed field (byte i to the i-th run of num_blocks).
+
+    Args:
+        raw_group: 1D uint8 array of uncompressed body bytes.
+        field_start: Offset of the field (grid_scale_start).
+        num_blocks: Total number of blocks.
+        block_idx: Zero-based block index.
+        value: Unsigned 32-bit integer to write.
+    """
+    for byte_idx in range(4):
+        raw_group[field_start + byte_idx * num_blocks + block_idx] = np.uint8((value >> (8 * byte_idx)) & 0xFF)
+
+
+@njit(inline="always")
+def get_uint32(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
+    """Reads a block's uint32 value from a byte-planed field.
+
+    Args:
+        raw_group: 1D uint8 array of uncompressed body bytes.
+        field_start: Offset of the field (grid_scale_start).
+        num_blocks: Total number of blocks.
+        block_idx: Zero-based block index.
+
+    Returns:
+        The value, as int64.
+    """
+    value = np.int64(0)
+    for byte_idx in range(4):
+        value |= np.int64(raw_group[field_start + byte_idx * num_blocks + block_idx]) << (8 * byte_idx)
+    return value
 
 
 @njit(inline="always")
@@ -659,6 +730,7 @@ class GroupRows(NamedTuple):
         block_flags: 1D uint8 array of block flags.
         block_sizes: 1D int64 array of block sizes.
         grid_params: 1D int64 array of block grid parameters.
+        grid_scales: 1D int64 array of block grid scales (N | D << 16; 0 on unscaled blocks).
         value_anchors: 1D int64 array of block value anchors.
         residuals: 1D int16 array of every sample's residual.
         codes: 1D uint8 array of every sample's code (zeros in unflagged blocks).
@@ -668,6 +740,7 @@ class GroupRows(NamedTuple):
     block_flags: np.ndarray
     block_sizes: np.ndarray
     grid_params: np.ndarray
+    grid_scales: np.ndarray
     value_anchors: np.ndarray
     residuals: np.ndarray
     codes: np.ndarray

@@ -220,27 +220,28 @@ def test_worked_example_layout():
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(group[_format.HEADER_BYTES:]), np.uint8)
     num_blocks = 3
     flags, sizes = body[:3], np.array([8, 8, 4])
-    assert body.shape[0] == 191 == _format.group_size(num_blocks, _format.layout(flags, sizes), True)
+    assert body.shape[0] == 203 == _format.group_size(num_blocks, _format.layout(flags, sizes), True)
     np.testing.assert_array_equal(flags & 0x10, [0, 0x10, 0])
     np.testing.assert_array_equal(body[3:9], [8, 8, 4, 0, 0, 0])
     assert not body[9:15].any()  # grid_params: exponent 0 for constant blocks
-    value_anchor_planes = body[15:39].reshape(8, num_blocks)
+    assert not body[15:27].any()  # grid_scale: 0, unscaled
+    value_anchor_planes = body[27:51].reshape(8, num_blocks)
     np.testing.assert_array_equal(value_anchor_planes[6], [0x04, 0x02, 0x08])
     np.testing.assert_array_equal(value_anchor_planes[7], [0x40, 0x40, 0x40])
     assert not value_anchor_planes[:6].any()
-    time_start_planes = body[39:63].reshape(8, num_blocks)
+    time_start_planes = body[51:75].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_start_planes[0], [0xE8, 0x50, 0x64])
     np.testing.assert_array_equal(time_start_planes[1], [0x03, 0x00, 0x00])
     assert not time_start_planes[2:].any()
-    time_step_planes = body[63:87].reshape(8, num_blocks)
+    time_step_planes = body[75:99].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_step_planes[0], [0x0A, 0x0A, 0x0A])
     assert not time_step_planes[1:].any()
-    time_ref_planes = body[87:111].reshape(8, num_blocks)
+    time_ref_planes = body[99:123].reshape(8, num_blocks)
     np.testing.assert_array_equal(time_ref_planes[0], [0x01, 0x01, 0x01])
     assert not time_ref_planes[1:].any()
     # Block 1's quotients [1, 1, 3, 1, 1, 1, 1] from sample 1: reference 1, zigzagged residuals
     # [0, 0, 0, 4, 0, 0, 0, 0], so only bit 2 of sample 3 is set
-    time_residual_planes = body[159:191]
+    time_residual_planes = body[171:203]
     assert time_residual_planes[2] == 0x08
     assert not np.delete(time_residual_planes, 2).any()
     np.testing.assert_array_equal(decoded_times(group).view(np.int64), ticks)
@@ -294,7 +295,7 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
     )
     body = _oracle.write_group(
         block_flags, sizes, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
-        np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
+        np.zeros(num_blocks, np.int64), np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
     )
     header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnitCode.NANOSECONDS))
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())

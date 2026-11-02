@@ -16,14 +16,20 @@ from numba import njit
 from numba.cpython.unsafe.numbers import leading_zeros as _leading_zeros
 
 from . import _extreme_magnitudes as xm
+from . import _rational
 from ._format import (
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_NONFINITE,
+    BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
     P_MAX,
     P_MIN,
+    SCALE_SHIFT,
+    SCALED_E_MAX,
+    SCALED_E_MIN,
+    SCALED_P_MAX,
     SHORT_BLOCK_LEN,
 )
 from ._noise import block_noise
@@ -684,6 +690,17 @@ def estimate_bits(residuals: np.ndarray) -> float:
     return total_entropy_bits
 
 
+@njit(inline="always")
+def _common_twos(gcd: int | np.integer, base_index: np.int64) -> int:
+    """The number of trailing zero bits common to gcd (> 0) and base_index."""
+    bits = gcd | base_index if base_index else gcd
+    twos = 0
+    while bits & 1 == 0:
+        bits >>= 1
+        twos += 1
+    return twos
+
+
 @njit(nogil=True, cache=True)
 def encode_block(
     samples: np.ndarray,
@@ -691,11 +708,20 @@ def encode_block(
     upper_bound: float,
     quant_exp: int,
     decimal: bool,
+    rational: bool,
     orders_mask: int,
     scratch_quantized: np.ndarray,
+    scratch_rational: np.ndarray,
     out_residuals: np.ndarray,
-) -> tuple[int, int, np.int64, float]:
-    """Encodes one block: quantizes, picks predictor order, and computes residuals.
+    hint: np.ndarray,
+    failed_step: np.ndarray,
+) -> tuple[int, int, np.int64, float, np.int64]:
+    """Encodes one block: quantizes, scales the grid, picks predictor order, and computes residuals.
+
+    The grid (§5.3, §5.4): a decimal grid if one is detected (unless an exact power-of-two grid
+    is coarser), else the power-of-two grid; then the index gcd N of its indices scales it (on
+    a power-of-two grid, the power of two N shares with the anchor's index coarsens the exponent
+    instead); a power-of-two block with no common factor tries the rational search.
 
     Args:
         samples: 1D float64 array of samples.
@@ -703,24 +729,30 @@ def encode_block(
         upper_bound: Maximum value.
         quant_exp: Quantization exponent.
         decimal: Whether decimal detection is enabled.
+        rational: Whether the rational search is enabled.
         orders_mask: Allowed predictor orders bitmask.
         scratch_quantized: Preallocated 1D int32 scratch buffer for quantized values.
+        scratch_rational: Preallocated 1D int32 scratch buffer for the rational search's indices.
         out_residuals: Output 1D int16 array receiving residuals.
+        hint: In-out 1D int64 array (base, p, N, D) of the previous rational grid (_rational).
+        failed_step: In-out 1D float64 array of one: the previous unrationalized step.
 
     Returns:
-        A tuple of (flags, param, decimal_base, anchor): decimal_base is the grid index of
-        lower_bound on a detected decimal grid (the block's anchor), 0 on the power-of-two
-        grid; anchor is the power-of-two grid's anchor (unused on a decimal grid).
+        A tuple of (flags, param, grid_index, anchor, scale): grid_index is the integer anchor of
+        a decimal or scaled grid (the minimum's index), anchor the power-of-two grid's float
+        anchor (unused on the others), scale N | D << 16 (0 when unscaled).
     """
     flags = 0
     anchor = lower_bound
     param_val = quant_exp
-    decimal_base = np.int64(0)
+    grid_index = np.int64(0)
+    scale = np.int64(0)
     decimal_detected = False
-    # Attempt decimal grid detection if enabled and range is within 2^1023
+    non_constant = upper_bound > lower_bound
     range_span = upper_bound - lower_bound
-    if decimal and upper_bound > lower_bound and range_span < xm.WIDE_RANGE:
-        decimal_exp, decimal_base = detect_decimal(
+    # Attempt decimal grid detection if enabled and range is within 2^1023
+    if decimal and non_constant and range_span < xm.WIDE_RANGE:
+        decimal_exp, grid_index = detect_decimal(
             samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_quantized
         )
         if decimal_exp != NO_DECIMAL:
@@ -733,14 +765,60 @@ def encode_block(
                 decimal_detected = True
                 param_val = decimal_exp
                 flags |= BLOCK_FLAG_DECIMAL
-    # Fall back to power-of-two quantization if decimal grid not detected
-    if not decimal_detected:
+    if decimal_detected:
+        gcd = _rational.index_gcd(scratch_quantized)
+        if gcd > 1:
+            # A decimal p > 0 folds into N, so the grid divides by D * 10^-p (SPEC §5)
+            fold = np.int64(10) ** max(param_val - SCALED_P_MAX, 0)
+            if gcd * fold <= _rational.MAX_SCALE and abs(grid_index * fold) < FLOAT64_EXACT_INT_LIMIT:
+                _rational.divide(scratch_quantized, gcd)
+                scale = (gcd * fold) | (np.int64(1) << SCALE_SHIFT)  # D = 1
+                grid_index *= fold
+                param_val = min(param_val, SCALED_P_MAX)
+                flags |= BLOCK_FLAG_SCALED
+    else:
+        pow2_exp = quant_exp
         anchor = quantize_block(samples, lower_bound, upper_bound, quant_exp, scratch_quantized)
+        base_index = snap_anchor(lower_bound, upper_bound, quant_exp)[1]
+        # Exceptions (constant blocks, unfinite snapped anchors) keep their grid
+        if non_constant and not math.isnan(base_index):
+            gcd = _rational.index_gcd(scratch_quantized)
+            base_int = np.int64(base_index)
+            if gcd > 1:
+                # The power of two shared with the anchor's index coarsens the exponent: the
+                # grid stays absolute and unscaled
+                twos = min(_common_twos(gcd, base_int), E_MAX - quant_exp)
+                if twos:
+                    _rational.divide(scratch_quantized, np.int64(1) << twos)
+                    gcd >>= twos
+                    base_int >>= twos
+                    quant_exp += twos
+                    param_val = quant_exp
+                if (
+                    gcd > 1 and SCALED_E_MIN <= quant_exp <= SCALED_E_MAX
+                    and abs(base_int) < FLOAT64_EXACT_INT_LIMIT
+                ):
+                    _rational.divide(scratch_quantized, gcd)
+                    scale = gcd | (np.int64(1) << SCALE_SHIFT)  # D = 1
+                    grid_index = base_int
+                    flags |= BLOCK_FLAG_SCALED
+            elif rational and gcd == 1 and range_span < xm.WIDE_RANGE and pow2_exp >= SCALED_E_MIN:
+                # (subnormal steps: no scaled grid, and 1 / step would overflow)
+                found, base, param, num, den, rational_index = _rational.detect_rational(
+                    samples, lower_bound, upper_bound, math.ldexp(1.0, pow2_exp), scratch_rational, hint,
+                    failed_step,
+                )
+                if found:
+                    flags |= BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if base == 10 else 0)
+                    param_val = param
+                    scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
+                    grid_index = rational_index
+                    scratch_quantized[:] = scratch_rational
     # Select difference order minimizing residual variance
     selected_order = pick_order(scratch_quantized, min(PICK_LEN, samples.shape[0]), orders_mask)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
-    return flags | selected_order, param_val, decimal_base, anchor
+    return flags | selected_order, param_val, grid_index, anchor, scale
 
 
 @njit(inline="always")
@@ -752,18 +830,18 @@ def _store_anchor(
     anchor: float,
     decimal_base: np.int64,
 ) -> None:
-    """Writes a block's anchor: its decimal grid index, or the float64 bits of its power-of-two anchor.
+    """Writes a block's anchor: its decimal or scaled grid index, or the float64 bits of its power-of-two anchor.
 
     Args:
         out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors.
         anchor_floats: out_value_anchors viewed as float64, made once per block group rather
             than per block.
         block_idx: Zero-based block index.
-        flags: Block header byte; BLOCK_FLAG_DECIMAL selects the decimal anchor.
+        flags: Block header byte; BLOCK_FLAG_DECIMAL or BLOCK_FLAG_SCALED select the integer anchor.
         anchor: The power-of-two grid's anchor, stored as float64 bits.
-        decimal_base: Grid index of the block minimum on a detected decimal grid.
+        decimal_base: Grid index of the block minimum on a decimal or scaled grid.
     """
-    if flags & BLOCK_FLAG_DECIMAL:
+    if flags & (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED):
         out_value_anchors[block_idx] = decimal_base
     else:
         anchor_floats[block_idx] = anchor
@@ -833,12 +911,15 @@ def _apply_target_reallocation(
     base_upper_bounds: np.ndarray,
     estimated_bits_per_block: np.ndarray,
     decimal: bool,
+    rational: bool,
     orders_mask: int,
     scratch_quantized: np.ndarray,
+    scratch_rational: np.ndarray,
     scratch_held: np.ndarray,
     scratch_residuals: np.ndarray,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
+    out_grid_scales: np.ndarray,
     out_value_anchors: np.ndarray,
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
@@ -854,18 +935,24 @@ def _apply_target_reallocation(
         base_upper_bounds: 1D float64 array of upper bounds per block.
         estimated_bits_per_block: 1D float64 array of estimated bits before coarsening.
         decimal: Whether decimal detection is active.
+        rational: Whether the rational search is active.
         orders_mask: Bitmask of allowable predictor difference orders.
         scratch_quantized: 1D int32 scratch buffer.
+        scratch_rational: 1D int32 scratch buffer for the rational search.
         scratch_held: 1D float64 scratch buffer for imputed non-finite samples.
         scratch_residuals: 1D int16 scratch buffer for rolling back residuals.
         out_block_flags: In-out 1D uint8 array of block flags.
         out_grid_params: In-out 1D int64 array of grid parameters.
+        out_grid_scales: In-out 1D int64 array of grid scales.
         out_value_anchors: In-out 1D int64 array of value anchors.
         out_residuals: In-out 1D int16 array of residuals.
         out_codes: In-out 1D uint8 array of non-finite sample codes.
     """
     num_blocks = sample_offsets.shape[0] - 1
     anchor_floats = out_value_anchors.view(np.float64)
+    # No hints: each re-encoded block searches on its own
+    no_hint = np.zeros(4, np.int64)
+    no_failed_step = np.zeros(1)
     for block_idx in range(num_blocks):
         if bit_reductions[block_idx] > 0:
             first_sample = sample_offsets[block_idx]
@@ -873,6 +960,7 @@ def _apply_target_reallocation(
             block_residuals = out_residuals[first_sample:first_sample + block_len]
             prev_flags = out_block_flags[block_idx]
             prev_param = out_grid_params[block_idx]
+            prev_scale = out_grid_scales[block_idx]
             prev_anchor = out_value_anchors[block_idx]
             backup_residuals = scratch_residuals[:block_len]
             backup_residuals[:] = block_residuals
@@ -882,15 +970,24 @@ def _apply_target_reallocation(
                 fill_nonfinite(block_samples, scratch_held[:block_len], out_codes[first_sample:first_sample + block_len])
                 block_samples = scratch_held[:block_len]
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
-            out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor = encode_block(
+            no_hint[:] = 0
+            no_failed_step[0] = 0.0
+            (
+                out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor,
+                out_grid_scales[block_idx],
+            ) = encode_block(
                 block_samples,
                 base_lower_bounds[block_idx],
                 base_upper_bounds[block_idx],
                 target_exp,
                 decimal,
+                rational,
                 orders_mask,
                 scratch_quantized[:block_len],
+                scratch_rational[:block_len],
                 block_residuals,
+                no_hint,
+                no_failed_step,
             )
             _store_anchor(
                 out_value_anchors,
@@ -906,6 +1003,7 @@ def _apply_target_reallocation(
             if estimate_bits(block_residuals) >= estimated_bits_per_block[block_idx]:
                 out_block_flags[block_idx] = prev_flags
                 out_grid_params[block_idx] = prev_param
+                out_grid_scales[block_idx] = prev_scale
                 out_value_anchors[block_idx] = prev_anchor
                 block_residuals[:] = backup_residuals
 
@@ -922,8 +1020,10 @@ def encode_group(
     noise_factor: float,
     target_bits: float,
     decimal: bool,
+    rational: bool,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
+    out_grid_scales: np.ndarray,
     out_value_anchors: np.ndarray,
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
@@ -951,8 +1051,11 @@ def encode_group(
         noise_factor: Noise floor multiplier (0.0 if disabled).
         target_bits: Target bits per sample (0.0 if disabled).
         decimal: Whether decimal detection is active.
+        rational: Whether the rational search is active.
         out_block_flags: Output 1D uint8 array of length num_blocks receiving header bytes.
         out_grid_params: Output 1D int64 array of length num_blocks receiving parameters.
+        out_grid_scales: Output 1D int64 array of length num_blocks receiving grid scales (N | D << 16,
+            0 on unscaled blocks).
         out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors (float64 bits of
             the power-of-two anchor, the grid point nearest the block minimum, or the decimal
             grid index of the minimum).
@@ -968,6 +1071,10 @@ def encode_group(
     for block_idx in range(num_blocks):
         max_len = max(max_len, sample_offsets[block_idx + 1] - sample_offsets[block_idx])
     scratch_quantized = np.empty(max_len, np.int32)
+    scratch_rational = np.empty(max_len, np.int32)
+    # The rational search tries the previous block's grid (or skips its failed step) first
+    hint = np.zeros(4, np.int64)
+    failed_step = np.zeros(1)
     scratch_held = np.empty(max_len)
     scratch_noise_diffs = np.empty(max_len)
     scratch_noise_weights = np.empty(max_len)
@@ -987,6 +1094,7 @@ def encode_group(
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         block_exponents[block_idx] = coarsest_exponents[block_idx] = 0
+        out_grid_scales[block_idx] = 0
         if block_len == 0:
             out_block_flags[block_idx] = 0
             out_grid_params[block_idx] = 0
@@ -1055,26 +1163,32 @@ def encode_group(
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
         block_exponents[block_idx] = planned_exp
-        out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor = encode_block(
+        (
+            out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor, out_grid_scales[block_idx],
+        ) = encode_block(
             block_samples,
             block_min,
             block_max,
             planned_exp,
             decimal,
+            rational,
             orders_mask,
             block_quantized,
+            scratch_rational[:block_len],
             block_residuals,
+            hint,
+            failed_step,
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
         if has_nonfinite:
             out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
         if use_target:
-            if out_block_flags[block_idx] & BLOCK_FLAG_DECIMAL:
+            if out_block_flags[block_idx] & BLOCK_FLAG_DECIMAL and not out_block_flags[block_idx] & BLOCK_FLAG_SCALED:
                 # Decimal grid is already 10^p; track equivalent binary exponent
                 block_exponents[block_idx] = math.floor(math.log2(10.0 ** out_grid_params[block_idx]))
-            else:
-                # The stored exponent: coarser than planned on an exact coarse binary grid (§5.3)
-                block_exponents[block_idx] = out_grid_params[block_idx]
+            # Other blocks count from the planned exponent, also on an exact coarser grid (the index
+            # gcd, a scaled grid): coarsening within it changes nothing and is rolled back, so the
+            # target only bites past it, and decoded data re-encodes to itself (§6)
             coarsest_exponents[block_idx] = max(
                 range_exponent(block_min, block_max, min_bits), block_exponents[block_idx]
             )
@@ -1100,12 +1214,15 @@ def encode_group(
                 base_upper_bounds,
                 estimated_bits_per_block,
                 decimal,
+                rational,
                 orders_mask,
                 scratch_quantized,
+                scratch_rational,
                 scratch_held,
                 np.empty(max_len, np.int16),
                 out_block_flags,
                 out_grid_params,
+                out_grid_scales,
                 out_value_anchors,
                 out_residuals,
                 out_codes,

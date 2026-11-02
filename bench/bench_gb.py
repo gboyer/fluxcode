@@ -7,6 +7,8 @@ quick look, pass --gib 0.05.
 Each signal type is one contiguous series of consecutive minutes (different seeds per minute;
 minute boundaries are block boundaries), so encode() splits it into block groups itself. Timings are
 best of --reps full passes; the index (min/max/mean) and zstd are included, data generation isn't.
+The signals on grids a writer doesn't know (_signals.HIDDEN_GRIDS: 0.05, 1/3, ADC counts of 10 V / 4095)
+follow each table's total, outside it, so the total stays comparable with earlier runs.
 
     uv run python bench/bench_gb.py [--gib 1.0] [--reps 3] [--threads 1,4,8]
 """
@@ -29,12 +31,14 @@ HERE = Path(__file__).resolve()
 sys.path.insert(0, str(HERE.parents[1] / "tests"))
 
 from _series import decode_series, encode_series
-from _signals import KINDS, MINUTE, discrete_minute, minute
+from _signals import HIDDEN_GRIDS, KINDS, MINUTE, discrete_minute, minute
 
 import fluxcode
 from fluxcode import Params
 
 SIGNALS = KINDS + ["sensor-0.1", "random-walk q0.01", "noisy-sine q0.1", "noisy-sine q0.01 via float32"]
+EXTRA_SIGNALS = HIDDEN_GRIDS
+"""Reported after each table's total, outside it (it stays comparable with earlier runs)."""
 CONFIGS = {"default": Params(), "noise floor off": Params(noise_floor_sigma=0),
            "target 6": Params(target_bits_per_sample=6.0), "effort 1": Params(effort=1), "effort 5": Params(effort=5),
            "effort 9": Params(effort=9)}
@@ -81,6 +85,7 @@ def main():
 
     t0 = time.perf_counter()
     data = {s: series(s, minutes) for s in SIGNALS}
+    extra = {s: series(s, minutes) for s in EXTRA_SIGNALS}
     print(f"(generated in {time.perf_counter() - t0:.0f} s)\n")
     warm = data[SIGNALS[0]][:MINUTE]
     for p in CONFIGS.values():
@@ -92,22 +97,25 @@ def main():
               "encode µs/block | decode µs/block |")
         print("|---|---|---|---|---|---|---|---|")
         te_sum = td_sum = bits = 0.0
-        for s, x in data.items():
+        for s, x in [*data.items(), *extra.items()]:
+            if s == EXTRA_SIGNALS[0]:
+                nb = total_bytes // 8000
+                print(f"| **all ({total_bytes / 2 ** 30:.2f} GiB)** | {bits / (total_bytes / 8):.2f} | "
+                      f"{64 * total_bytes / 8 / bits:.1f} | | {total_bytes / 1e6 / te_sum:.0f} | "
+                      f"{total_bytes / 1e6 / td_sum:.0f} | {1e6 * te_sum / nb:.2f} | {1e6 * td_sum / nb:.2f} |")
             te, (groups, lo, hi, _) = best(lambda x=x, p=p: encode_series(x, p), a.reps)
             td, ys = best(lambda groups=groups: fluxcode.decode(groups), a.reps)  # one DecodedGroup per block group, as rows are read
             err = np.abs(np.concatenate([decoded.values for decoded in ys]) - x).reshape(-1, 1000).max(1)
             worst = 100 * (err / np.where(hi > lo, hi - lo, 1.0)).max()
             nb = len(lo)
             b = 8 * sum(map(len, groups))
-            te_sum, td_sum, bits = te_sum + te, td_sum + td, bits + b
+            if s in data:
+                te_sum, td_sum, bits = te_sum + te, td_sum + td, bits + b
             mb = 8 * len(x) / 1e6
             print(f"| {s} | {b / len(x):.2f} | {64 * len(x) / b:.1f} | {worst:.4f} | {mb / te:.0f} | {mb / td:.0f} | "
                   f"{1e6 * te / nb:.2f} | {1e6 * td / nb:.2f} |")
             del groups, lo, ys
-        nb = total_bytes // 8000
-        print(f"| **all ({total_bytes / 2 ** 30:.2f} GiB)** | {bits / (total_bytes / 8):.2f} | "
-              f"{64 * total_bytes / 8 / bits:.1f} | | {total_bytes / 1e6 / te_sum:.0f} | {total_bytes / 1e6 / td_sum:.0f} | "
-              f"{1e6 * te_sum / nb:.2f} | {1e6 * td_sum / nb:.2f} |\n")
+        print()
 
     threads = [int(t) for t in a.threads.split(",") if t]
     if threads and threads != [1]:

@@ -91,8 +91,8 @@ def ideal_quantum(mins):
         anchors = np.ascontiguousarray(lo, np.float64).view(np.int64)  # where each block's grid starts
         sizes = np.full(nb, 1000)
         offsets = _format.layout(head, sizes)
-        byte_body = _bitpacking.write_group(head, sizes, np.zeros(nb, np.int64), anchors, resid.ravel(),
-                                            np.zeros(0, np.uint8), None, offsets)
+        byte_body = _bitpacking.write_group(head, sizes, np.zeros(nb, np.int64), np.zeros(nb, np.int64), anchors,
+                                            resid.ravel(), np.zeros(0, np.uint8), None, offsets)
         bit_body = _bitpacking.to_bit_planes(byte_body, nb, int(offsets.octet_offsets[-1]), False)
         total += len(zc.compress(bit_body))
         nblocks += nb

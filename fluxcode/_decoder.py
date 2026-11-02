@@ -28,13 +28,21 @@ from ._format import (
     BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
     BLOCK_FLAG_RESERVED,
+    BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
     P_MAX,
     P_MIN,
+    SCALE_MASK,
+    SCALE_SHIFT,
+    SCALED_E_MAX,
+    SCALED_E_MIN,
+    SCALED_P_MAX,
     get_int16,
     get_int64,
+    get_uint32,
     grid_params_start,
+    grid_scale_start,
     value_anchor_start,
 )
 from ._nonfinite import restore_nonfinite
@@ -52,8 +60,16 @@ BAD_PARAM: int = 2
 BAD_ANCHOR: int = 3
 """Validation status indicating a non-finite float anchor or an out-of-range decimal grid index."""
 
+BAD_SCALE: int = 4
+"""Validation status indicating a grid scale on an unscaled block, or a scaled grid's N or D of 0 or
+a D * 10^-p that isn't an exact double."""
+
 MAX_DECIMAL_ANCHOR: int = 1 << 52
-"""Bound on the magnitude of a decimal grid index: the index plus q stays an exact double below 2^53."""
+"""Bound on the magnitude of a decimal or scaled grid index: the index plus N q (N q < 2^32) stays an
+exact double below 2^53."""
+
+EXACT_INT_LIMIT: int = 1 << 53
+"""Integers below this are exact doubles: D * 10^-p of a scaled decimal grid must be one."""
 
 
 @njit(nogil=True, cache=True)
@@ -169,14 +185,63 @@ def dequantize_decimal(
 
 
 @njit(nogil=True, cache=True)
+def dequantize_scaled(
+    quantized_samples: np.ndarray, base_index: int | np.integer, num: int | np.integer, den: int | np.integer,
+    param: int, decimal: bool,
+    out_samples: np.ndarray,
+) -> None:
+    """Reconstructs float64 samples on a scaled grid: (base_index + num q) * B^param / den.
+
+    The result is the double nearest the rational value, with one rounding: base_index + num q is
+    an exact integer below 2^53; on a decimal grid (param <= 0) it is divided by den * 10^-param,
+    an exact double (check_group); on a power-of-two grid it is scaled by 2^param (exact: param
+    is in [-1022, 970], so the product is a normal double) and divided by den.
+
+    Args:
+        quantized_samples: 1D int32 array of quantized grid offsets q.
+        base_index: The anchor K0: the minimum's index on the fine grid B^param / den.
+        num: N, the step in fine grid points.
+        den: D.
+        param: The grid parameter: the decimal power p or the power-of-two exponent e.
+        decimal: Whether B is 10 (block flag bit 2) rather than 2.
+        out_samples: Output 1D float64 array receiving reconstructed samples.
+    """
+    if decimal:
+        divisor = den * 10.0 ** -param
+        for sample_idx in range(quantized_samples.shape[0]):
+            out_samples[sample_idx] = float(base_index + num * np.int64(quantized_samples[sample_idx])) / divisor
+    else:
+        scale = math.ldexp(1.0, param)
+        for sample_idx in range(quantized_samples.shape[0]):
+            out_samples[sample_idx] = (
+                float(base_index + num * np.int64(quantized_samples[sample_idx])) * scale
+            ) / den
+
+
+@njit(inline="always")
+def check_scale(scale: int | np.integer, param_val: int, decimal: bool) -> bool:
+    """Whether a scaled block's grid scale and parameter are valid (SPEC §6.4)."""
+    num, den = scale & SCALE_MASK, scale >> SCALE_SHIFT
+    if num == 0 or den == 0:
+        return False
+    if decimal:
+        if param_val < P_MIN or param_val > SCALED_P_MAX:
+            return False
+        # D * 10^-p = D * 5^-p * 2^-p is an exact double iff D * 5^-p < 2^53
+        return bool(np.int64(5) ** -param_val < EXACT_INT_LIMIT // den)
+    return SCALED_E_MIN <= param_val <= SCALED_E_MAX
+
+
+@njit(nogil=True, cache=True)
 def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
     """Validates block flags, grid parameters and value anchors across all blocks in a block group.
 
-    Checks, block by block, that the reserved flag bits (6-7) are zero, that the irregular
+    Checks, block by block, that the reserved flag bit (7) is zero, that the irregular
     time bit (4) is set only in block groups with a time axis and the long time bit (5) only with
     bit 4, that grid parameters fall within the format's limits, and that value anchors
-    are finite floats (power-of-two blocks) or grid indices below 2^52 (decimal). An empty
-    block's flags, grid parameter and anchor must be 0.
+    are finite floats (power-of-two blocks) or grid indices below 2^52 (decimal or scaled), and
+    that the grid scale is 0 on an unscaled block and valid on a scaled one. An empty block's
+    flags, grid parameter, grid scale and anchor must be 0.
 
     Args:
         raw_group: 1D uint8 array containing uncompressed block group bytes.
@@ -185,7 +250,7 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
 
     Returns:
         A tuple of (status, failing_block_idx):
-            status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, or BAD_ANCHOR).
+            status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, BAD_ANCHOR or BAD_SCALE).
             failing_block_idx: Zero-based index of the first failing block (0 if OK).
     """
     num_blocks = sample_offsets.shape[0] - 1
@@ -195,21 +260,32 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
         flags = raw_group[block_idx]
         param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
         anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
+        scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
             # An empty block stores nothing: its columns are 0
             if flags:
                 return BAD_FLAGS, block_idx
             if param_val:
                 return BAD_PARAM, block_idx
+            if scale:
+                return BAD_SCALE, block_idx
             if anchor_bits[0]:
                 return BAD_ANCHOR, block_idx
             continue
-        # Reserved bits 6-7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
+        # Reserved bit 7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
         irregular_time = flags & BLOCK_FLAG_IRREGULAR_TIME
         if flags & BLOCK_FLAG_RESERVED or (irregular_time and not has_time):
             return BAD_FLAGS, block_idx
         if flags & BLOCK_FLAG_LONG_TIME and not irregular_time:
             return BAD_FLAGS, block_idx
+        if flags & BLOCK_FLAG_SCALED:
+            if not check_scale(scale, param_val, flags & BLOCK_FLAG_DECIMAL != 0):
+                return BAD_SCALE, block_idx
+            if not -MAX_DECIMAL_ANCHOR < anchor_bits[0] < MAX_DECIMAL_ANCHOR:
+                return BAD_ANCHOR, block_idx
+            continue
+        if scale:
+            return BAD_SCALE, block_idx
         if flags & BLOCK_FLAG_DECIMAL:
             # Check decimal exponent range [-22, 22]
             if param_val < P_MIN or param_val > P_MAX:
@@ -294,8 +370,14 @@ def decode_group(
             unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
         # Integrate mod 2^16 by predictor order (bits 0-1)
         integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
-        # Dequantize according to grid type (decimal or power-of-two)
-        if flags & BLOCK_FLAG_DECIMAL:
+        # Dequantize according to grid type (scaled, decimal or power-of-two)
+        if flags & BLOCK_FLAG_SCALED:
+            scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+            dequantize_scaled(
+                block_residuals, anchor_bits[0], scale & SCALE_MASK, scale >> SCALE_SHIFT, param_val,
+                flags & BLOCK_FLAG_DECIMAL != 0, block_out,
+            )
+        elif flags & BLOCK_FLAG_DECIMAL:
             dequantize_decimal(block_residuals, anchor_bits[0], param_val, block_out)
         else:
             dequantize_pow2(block_residuals, anchor_float[0], param_val, block_out)

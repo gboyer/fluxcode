@@ -224,9 +224,9 @@ def test_decimal_grids_that_are_not_binary_stay_decimal(den, p):
     np.testing.assert_array_equal(decode(group), x)
 
 
-def test_the_target_coarsens_a_coarse_binary_grid_from_its_stored_exponent():
-    """A 0.25-grid walk of about 11 bits/sample, capped at 6: the target starts from the stored
-    exponent -2 (not the planned 16-bit one) and keeps half a step of error."""
+def test_the_target_coarsens_past_a_coarse_binary_grid():
+    """A 0.25-grid walk of about 11 bits/sample, capped at 6: stored at -2, the target coarsens it past
+    that (counting from the planned exponent, so decoded data re-encodes to itself) within half a step."""
     x = np.round(np.cumsum(np.random.default_rng(6).normal(0, 300, 1000)) * 4) / 4
     exact, e0, _ = encode_block(x, Params())
     capped, e1, _ = encode_block(x, Params(target_bits_per_sample=6))

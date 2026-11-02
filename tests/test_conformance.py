@@ -123,7 +123,7 @@ def test_range_just_below_power_of_two():
     x = np.linspace(0.0, rng, 1000)
     x[-1] = rng
     assert _encoder.exponent(rng, 16) == -15
-    groups, _, _, _ = encode_series(x, Params(decimal_detection=False, noise_floor_sigma=0))
+    groups, _, _, _ = encode_series(x, Params(decimal_detection=False, rational_detection=False, noise_floor_sigma=0))
     _, param, _ = rows(groups[0])
     assert param[0] == -15
     assert np.abs(decode_series(groups) - x).max() <= 2.0 ** -16
@@ -352,7 +352,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _oracle.write_group(*rows[:6], byte_planes=True, time_rows=rows.time_rows)
+    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows)
     lay = _format.layout(rows.block_flags, sizes)
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):

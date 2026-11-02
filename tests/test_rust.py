@@ -148,8 +148,8 @@ def test_mismatched_rows_are_rejected():
     sizes = np.array([3, 3], np.int64)
     with pytest.raises(ValueError, match="rows"):
         fluxcode_rs.compress_group(
-            flags, sizes, np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(5, np.int16), np.zeros(6, np.uint8),
-            "heuristic", True, [3],
+            flags, sizes, np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(5, np.int16),
+            np.zeros(6, np.uint8), "heuristic", True, [3],
         )
 
 
@@ -157,8 +157,8 @@ def test_unknown_layout_is_rejected():
     flags = np.zeros(1, np.uint8)
     with pytest.raises(ValueError, match="layout"):
         fluxcode_rs.compress_group(
-            flags, np.array([3], np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros(3, np.int16),
-            np.zeros(3, np.uint8), "size", True, [3],
+            flags, np.array([3], np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64),
+            np.zeros(3, np.int16), np.zeros(3, np.uint8), "size", True, [3],
         )
 
 

@@ -22,10 +22,11 @@ def encoded(kind="random-walk", seed=41, n=60_000, params=Params()):
 
 
 def rebuilt(group, edit):
-    """block group with its body rows changed by edit(flags, sizes, param, anchor, resid, codes, time_rows), same header."""
+    """block group with its body rows changed by edit(flags, sizes, param, scale, anchor, resid, codes, time_rows), same
+    header."""
     rows = group_rows(group)
     edit(*rows)
-    body = _oracle.write_group(*rows[:6], time_rows=rows.time_rows)
+    body = _oracle.write_group(*rows[:7], time_rows=rows.time_rows)
     return group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -163,12 +164,12 @@ def test_update_with_non_finite_blocks():
     np.testing.assert_array_equal(y3[[10, 20]], np.ones((2, L)))
 
 
-@pytest.mark.parametrize("head_bits", [0x10, 0x20, 0x40, 0x80])
+@pytest.mark.parametrize("head_bits", [0x10, 0x20, 0x80])
 def test_update_refuses_groups_it_cannot_read(head_bits):
     """A block group with reserved flags bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""
     _, group, _, _, _ = encoded()
-    raw_body = _oracle.write_group(*group_rows(group)[:6])
+    raw_body = _oracle.write_group(*group_rows(group)[:7])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
     bad = group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: block flags"):
@@ -191,7 +192,7 @@ def test_update_refuses_out_of_range_parameters():
 def test_non_finite_float_anchors_are_rejected(anchor):
     _, group, _, _, _ = encoded()
 
-    def bad_anchor(flags, sizes, param, anchors, *_):
+    def bad_anchor(flags, sizes, param, scales, anchors, *_):
         anchors.view(np.float64)[4] = anchor
 
     with pytest.raises(ValueError, match="block 4: anchor"):
@@ -203,7 +204,7 @@ def test_out_of_range_decimal_anchors_are_rejected():
     group, _, _, _ = fluxcode.encode_group(x, Params(noise_floor_sigma=0))
     assert (group_rows(group).block_flags & _format.BLOCK_FLAG_DECIMAL).all()
 
-    def bad_anchor(flags, sizes, param, anchors, *_):
+    def bad_anchor(flags, sizes, param, scales, anchors, *_):
         anchors[1] = 1 << 52
 
     with pytest.raises(ValueError, match="block 1: anchor"):

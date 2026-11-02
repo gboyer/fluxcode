@@ -3,9 +3,10 @@
 //! Packing rows into the body's bytes, and the residual layouts (`fluxcode/_bitpacking.py`).
 
 use crate::format::{
-    block_sizes_start, grid_params_start, residual_start, value_anchor_start, Rows, BIT_PLANES,
-    BLOCK_FLAG_NONFINITE, BYTES_PER_ANCHOR, BYTES_PER_PARAM, BYTES_PER_SIZE, CODE_BYTES_PER_OCTET,
-    METADATA_BYTES_PER_BLOCK, OCTET_SAMPLES, RESIDUAL_BYTES_PER_OCTET,
+    block_sizes_start, grid_params_start, grid_scale_start, residual_start, value_anchor_start,
+    Rows, BIT_PLANES, BLOCK_FLAG_NONFINITE, BYTES_PER_ANCHOR, BYTES_PER_PARAM, BYTES_PER_SCALE,
+    BYTES_PER_SIZE, CODE_BYTES_PER_OCTET, METADATA_BYTES_PER_BLOCK, OCTET_SAMPLES,
+    RESIDUAL_BYTES_PER_OCTET,
 };
 use crate::planes::{self, transpose8};
 
@@ -46,12 +47,13 @@ pub fn write_body(rows: &Rows) -> Vec<u8> {
     body
 }
 
-/// Writes the flags, block_sizes, grid_params and value_anchor fields.
+/// Writes the flags, block_sizes, grid_params, grid_scale and value_anchor fields.
 fn write_columns(rows: &Rows, body: &mut [u8]) {
     let num_blocks = rows.shape.num_blocks;
-    let (sizes_start, params_start, anchors_start) = (
+    let (sizes_start, params_start, scales_start, anchors_start) = (
         block_sizes_start(num_blocks),
         grid_params_start(num_blocks),
+        grid_scale_start(num_blocks),
         value_anchor_start(num_blocks),
     );
     for block_idx in 0..num_blocks {
@@ -71,6 +73,14 @@ fn write_columns(rows: &Rows, body: &mut [u8]) {
             block_idx,
             rows.grid_params[block_idx],
             BYTES_PER_PARAM,
+        );
+        put_byte_planed(
+            body,
+            scales_start,
+            num_blocks,
+            block_idx,
+            rows.grid_scales[block_idx],
+            BYTES_PER_SCALE,
         );
         put_byte_planed(
             body,

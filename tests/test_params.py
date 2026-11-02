@@ -53,10 +53,14 @@ def exponents(x, params):
 def test_min_max_bits_never_violated(kind, target):
     p = Params(min_quantize_bits=8, max_quantize_bits=12, noise_floor_sigma=4.0, target_bits_per_sample=target,
                decimal_detection=False)
-    _, e, rng = exponents(minute(kind, 3), p)
+    x = minute(kind, 3)
+    _, e, rng = exponents(x, p)
+    exact = (decode_series(encode_series(x, p)[0]) == x).reshape(len(e), -1).all(1)
     for b in range(len(e)):
         if rng[b] > 0:
-            assert _encoder.exponent(rng[b], 12) <= e[b] <= _encoder.exponent(rng[b], 8)
+            assert _encoder.exponent(rng[b], 12) <= e[b]
+            # Only an exact coarse grid (the index gcd: a +-100 square on 2^3) is coarser
+            assert e[b] <= _encoder.exponent(rng[b], 8) or exact[b]
 
 
 def size(x, p):

@@ -122,6 +122,10 @@ class Params:
             (must be >= 6.0 if set, or None to disable).
         decimal_detection: Whether to test for exact decimal grids (10^p) before
             falling back to power-of-two grids.
+        rational_detection: Whether to search blocks that are on neither a decimal nor an exact
+            power-of-two grid for a step N / D times a power of ten or two (thirds, ADC full
+            scales like 10 V / 4095, calibrated gains), stored exactly on that grid. A block
+            whose indices share a factor N is always stored on N times its grid (no search).
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
@@ -151,6 +155,7 @@ class Params:
     noise_floor_sigma: float = DEFAULT_NOISE_FLOOR_SIGMA
     target_bits_per_sample: float | None = None
     decimal_detection: bool = True
+    rational_detection: bool = True
     effort: int = 4
     time_error: float = 0.0
 

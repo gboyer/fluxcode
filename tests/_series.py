@@ -9,7 +9,7 @@ import _oracle
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _args, _bitpacking, _compress, _encoder, _group
+from fluxcode import Params, _api, _args, _bitpacking, _compress, _group
 
 PER_GROUP = _api.DEFAULT_BLOCKS_PER_GROUP  # the helpers assume the default block group size
 
@@ -58,11 +58,12 @@ def flags_params(groups):
 
 
 def gated(x, f=0.25):
-    """Per block: did the noise floor coarsen the step? (Decimal detection off: p isn't an exponent.)"""
-    groups, lo, hi, _ = encode_series(x, Params(noise_floor_sigma=f, decimal_detection=False))
-    _, param = flags_params(groups)
-    fine = np.array([_encoder.range_exponent(a, b, 16) for a, b in zip(lo, hi)])
-    return param > fine
+    """Per block: did the noise floor coarsen the step? Against the same encode without it: an exact
+    coarse power-of-two grid coarsens it too (the index gcd). Decimal detection off: p isn't an
+    exponent."""
+    _, param = flags_params(encode_series(x, Params(noise_floor_sigma=f, decimal_detection=False))[0])
+    _, plain = flags_params(encode_series(x, Params(noise_floor_sigma=0, decimal_detection=False))[0])
+    return param > plain
 
 
 def unchecked_params(**kw):

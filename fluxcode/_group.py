@@ -47,14 +47,14 @@ class BlockStats(NamedTuple):
     block_mean: np.ndarray
 
 
-def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool]:
+def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, bool]:
     """Converts encoder parameters into the arguments of the encoding kernel.
 
     Args:
         params: Encoder configuration parameters.
 
     Returns:
-        A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, decimal):
+        A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, decimal, rational):
         orders_mask has bit k set for each enabled order, and 0.0 for noise_factor or
         target_bits turns that feature off.
     """
@@ -65,6 +65,7 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool]:
         float(params.noise_floor_sigma),
         float(params.target_bits_per_sample or 0.0),
         bool(params.decimal_detection),
+        bool(params.rational_detection),
     )
 
 
@@ -99,6 +100,7 @@ def encode_rows(
         block_sizes,
         np.empty(num_blocks, np.int64),
         np.empty(num_blocks, np.int64),
+        np.empty(num_blocks, np.int64),
         np.empty(num_samples, np.int16),
         np.empty(num_samples, np.uint8),
         time_rows,
@@ -113,6 +115,7 @@ def encode_rows(
         *kernel_args(params),
         rows.block_flags,
         rows.grid_params,
+        rows.grid_scales,
         rows.value_anchors,
         rows.residuals,
         rows.codes,
@@ -381,6 +384,8 @@ def decompress(group: bytes) -> ParsedGroup:
         raise ValueError(f"block {failing_block_idx}: parameter out of range (corrupt block group)")
     if validation_status == _decoder.BAD_ANCHOR:
         raise ValueError(f"block {failing_block_idx}: anchor out of range (corrupt block group)")
+    if validation_status == _decoder.BAD_SCALE:
+        raise ValueError(f"block {failing_block_idx}: grid scale invalid for its grid (corrupt block group)")
     return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets)
 
 

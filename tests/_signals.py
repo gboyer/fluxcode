@@ -61,16 +61,23 @@ DISCRETE = [
     ("sin-4.12hz q0.01", "sin-4.12hz", 0.01),
     ("sensor-0.1", "sensor-0.1", 0.1),
     ("noisy-sine q0.01 via float32", "noisy-sine", 0.01),  # decimal values stored as float32 upstream
+    # Grids a writer doesn't know (scaled grids, ENCODER §5.4)
+    ("random-walk q0.05", "random-walk", 0.05),
+    ("random-walk q1/3", "random-walk", 1 / 3),
+    ("random-walk adc 10/4095", "random-walk", 10 / 4095),  # ADC counts times a float gain
 ]
+
+HIDDEN_GRIDS = [d[0] for d in DISCRETE[-3:]]
+"""The DISCRETE signals on scaled grids: neither decimal nor power-of-two steps."""
 
 
 def discrete_minute(name, seed):
     kind, qt = next((k, q) for n, k, q in DISCRETE if n == name)
     x = minute(kind, seed)
     den = round(1 / qt)
-    if abs(den * qt - 1) < 1e-12 and den % 10 == 0:  # decimal quantum: K / 10^p, as parsing "12.345" gives
+    if abs(den * qt - 1) < 1e-12:  # 1 / den: K / den, the double nearest it (decimals as parsing "12.345" gives)
         x = np.round(x * den) / den
-    else:  # binary / ADC quantum: exact multiples
+    else:  # an ADC quantum: counts times the step
         x = np.round(x / qt) * qt
     if "float32" in name:
         x = x.astype(np.float32).astype(np.float64)
