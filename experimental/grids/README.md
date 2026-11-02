@@ -42,3 +42,25 @@ A family re-grids a block only if every sample is within ¼ power-of-two step, t
    be for readable decoded values, not size.
 6. **Unexplained:** on near-constant data (3 levels per block, 2.7 KB groups) binary indices
    with zero low bits beat the compact 0.5 grid by ~100 B per group.
+
+## Follow-up (2026-11-01): the decimal fix, index gcd, and encode cost
+
+- **Finding 1 is fixed on main** (`b48c7a3`): a block exactly on a power-of-two grid coarser
+  than its decimal one takes the coarsest such grid. The tables above now run against it.
+- **Index gcd** (family `index gcd`): N = gcd of the indices the encoder already has, on its own
+  grid (decimal or binary); store q / N with multiplier N. No search. It alone gets every D = 1
+  case at full size (0.05, °F text/float, ADC 4096, 16-bit ADC, binary compaction −4%).
+- **The rational search is needed only for D > 1**: 1/3, 10 V/4095, calibrated gains, and with
+  16-bit N and D (`nd16`, scratch run) also 4-20 mA scalings (−29%): no float step needed.
+
+`timing.py` → `timing.md` (AC power, single thread, kernels as separate passes after encode):
+
+| | index gcd | rational search (gated: no decimal grid, index gcd 1) |
+|---|---:|---:|
+| continuous, decimal and noisy data | 0.01–0.03 µs (≤ 1%) | 0.08–0.13 µs (2–3%) |
+| blocks it re-grids | ~1.0 µs (+15–20%) | ~0.95 µs with the previous block's grid tried first (+10–20%); 2.9 µs without |
+| a fitted step that isn't rational (4-20 mA at D ≤ 4095) | – | 0.09 µs with the previous block's failed step remembered; 2.4 µs without |
+
+Each block encodes in 2.3–10.5 µs. A full pass costs ~1 ns/sample, and float divisibility tests
+didn't beat integer `%` much (0.92 vs 1.07 µs). Fusing the gcd into the quantize loop would be
+the next saving; not measured. Decode cost is nil: N·2^e and D·10^-p are exact doubles.

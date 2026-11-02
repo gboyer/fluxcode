@@ -133,6 +133,7 @@ class Grid:
         self.q, self.step, self.recon, self.extra = q, step, recon, extra
         self.anchor = anchor  # the anchor column's int64: K0, or a float anchor's bits
         self.p = 0  # the grid parameter column
+        self.decimal = True  # the decimal flag (a power-of-two grid with a multiplier: False)
 
 
 def _scale(base, p, den):
@@ -238,6 +239,33 @@ def search_float(x, lo, hi, ps):
     return Grid(q.astype(np.int32), step, recon, step, int(np.float64(lo).view(np.int64)))
 
 
+CURRENT = None  # (rows, block index) of the block being re-gridded: index_gcd reads its grid
+
+
+def index_gcd(x, lo, hi, ps):
+    """The block's own grid (decimal or power of two) with its indices divided by their gcd N > 1:
+    the same decoded values, stored as N·q. No search: one pass over indices the encoder has."""
+    rows, b = CURRENT
+    param = int(rows.grid_params[b])
+    if rows.block_flags[b] & BLOCK_FLAG_DECIMAL:
+        s = 10.0 ** -param if param <= 0 else 1 / 10.0 ** param
+        q = np.floor(x * s + 0.5).astype(np.int64) - int(rows.value_anchors[b])
+        step = 10.0 ** param
+    else:
+        anchor = float(rows.value_anchors[b:b + 1].view(np.float64)[0])
+        base = np.rint(anchor * math.ldexp(1.0, -param))
+        if base * math.ldexp(1.0, param) != anchor:  # an exception block, quantized from its minimum
+            return None
+        q = (np.rint(x * math.ldexp(1.0, -param)) - base).astype(np.int64)
+        step = math.ldexp(1.0, param)
+    n = int(np.gcd.reduce(q))
+    if n <= 1:
+        return None
+    g = Grid((q // n).astype(np.int32), n * step, None, (n, 1), int(rows.value_anchors[b]))
+    g.p, g.decimal = param, bool(rows.block_flags[b] & BLOCK_FLAG_DECIMAL)
+    return g
+
+
 FAMILIES = {
     "today, fixed": lambda *a: fixed_today(*a),
     "d125": lambda x, lo, hi, ps: search_multipliers(x, lo, hi, ps, [(5, 1), (2, 1), (1, 1)]),
@@ -245,6 +273,8 @@ FAMILIES = {
     "nd255": lambda x, lo, hi, ps: search_rational(x, lo, hi, ps, 255),
     "nd4095": lambda x, lo, hi, ps: search_rational(x, lo, hi, ps, 4095),
     "float": search_float,
+    "index gcd": lambda *a: index_gcd(*a),
+    "index gcd, else nd4095": lambda *a: index_gcd(*a) or search_rational(*a, 4095),
 }
 
 
@@ -322,6 +352,8 @@ def evaluate(x, family):
             continue
         cur, ps = block_step(rows, pow2, b)
         eff = pow2_effective(xb, cur)
+        global CURRENT
+        CURRENT = (rows, b)
         g = FAMILIES[family](xb, lo, hi, ps)
         if g is None:
             continue
@@ -332,10 +364,12 @@ def evaluate(x, family):
             continue
         order = pick_order(g.q, min(250, BLOCK), 15)
         residual(g.q, order, rows.residuals[sl])
-        rows.block_flags[b] = (int(rows.block_flags[b]) & ~BLOCK_FLAG_ORDER & 0xFF) | order | BLOCK_FLAG_DECIMAL
+        flag = BLOCK_FLAG_DECIMAL if g.decimal else 0
+        rows.block_flags[b] = (int(rows.block_flags[b]) & ~(BLOCK_FLAG_ORDER | BLOCK_FLAG_DECIMAL) & 0xFF) | order | flag
         rows.grid_params[b] = g.p
         rows.value_anchors[b] = g.anchor
-        recon[sl] = g.recon
+        if g.recon is not None:
+            recon[sl] = g.recon
         extras[-1] = g.extra
         changed += 1
     size = len(compress(rows, x.size, EFFORT, 0))
