@@ -47,14 +47,14 @@ class BlockStats(NamedTuple):
     block_mean: np.ndarray
 
 
-def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, bool]:
+def kernel_args(params: Params) -> tuple[int, int, int, float, float, int]:
     """Converts encoder parameters into the arguments of the encoding kernel.
 
     Args:
         params: Encoder configuration parameters.
 
     Returns:
-        A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, decimal, rational):
+        A tuple of (min_bits, max_bits, orders_mask, noise_factor, target_bits, grids):
         orders_mask has bit k set for each enabled order, and 0.0 for noise_factor or
         target_bits turns that feature off.
     """
@@ -64,8 +64,7 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, bool, bool
         sum(1 << order for order in params.diff_orders),
         float(params.noise_floor_sigma),
         float(params.target_bits_per_sample or 0.0),
-        bool(params.decimal_detection),
-        bool(params.rational_detection),
+        _encoder.GRIDS_LEVELS[params.grids],
     )
 
 

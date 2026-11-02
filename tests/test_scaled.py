@@ -75,7 +75,7 @@ def test_grids_are_found_and_decode(name):
     x = make()
     group = fluxcode.encode_group(x, block_len=L).group
     rows = group_rows(group)
-    plain = fluxcode.encode_group(x, Params(rational_detection=False), block_len=L).group
+    plain = fluxcode.encode_group(x, Params(grids="decimal"), block_len=L).group
     if name != "ADC 10 V / 4096":  # an exact binary grid: 5 x 2^-11, scaled by the index gcd
         assert (rows.block_flags & BLOCK_FLAG_SCALED).all()
     y = decode(group)
@@ -102,9 +102,9 @@ def test_scaled_grids_are_fixed_points(name):
 
 
 @pytest.mark.parametrize("name", GRIDS)
-def test_hints_never_change_a_block(name):
-    """Each block of a group encodes as it would alone: the previous block's grid only spares the
-    search (so an update re-encodes a block as a fresh encode would)."""
+def test_each_block_encodes_as_it_would_alone(name):
+    """Nothing carries over from the block before: a block's grid and residuals are those it gets
+    alone (so an update re-encodes a block as a fresh encode would)."""
     x = GRIDS[name][0]()
     together = group_rows(fluxcode.encode_group(x, block_len=L).group)
     for b in range(x.size // L):
@@ -114,7 +114,7 @@ def test_hints_never_change_a_block(name):
         np.testing.assert_array_equal(alone.residuals, together.residuals[b * L:(b + 1) * L])
 
 
-def test_an_unrationalizable_step_is_skipped_consistently():
+def test_an_unrationalizable_step_stays_binary():
     """A gain no fraction of 16-bit N and D reaches: power-of-two grid, alone or in a group."""
     x = -3.21 + counts(12, 100, 600) * 0.013712345678
     together = group_rows(fluxcode.encode_group(x, block_len=L).group)
@@ -135,6 +135,56 @@ def test_the_target_coarsens_scaled_grids_within_half_a_step(target):
     err = np.abs(decode(capped) - x).reshape(-1, L).max(1)
     for b in range(x.size // L):
         assert err[b] <= step_of(rows, b) / 2 * (1 + 1e-12)
+
+
+@pytest.mark.parametrize(("name", "make"), [
+    ("0.25 walk", lambda: np.round(walk(21, sigma=40) * 4) / 4),
+    ("thirds walk", lambda: np.round(walk(22, sigma=40) * 3) / 3),
+])
+@pytest.mark.parametrize("target", [6.0, 7.0])
+def test_the_target_caps_exact_grids_and_keeps_fixed_points(name, make, target):
+    """An exact coarse grid (the index gcd's, a rational one) is capped like any block: the budget
+    counts it at its planned exponent. And decoded data, back on the coarsened grid, re-encodes to
+    itself: the cap doesn't coarsen it again."""
+    x = make()
+    params = Params(target_bits_per_sample=target)
+    free = len(fluxcode.encode_group(x, block_len=L).group)
+    capped = fluxcode.encode_group(x, params, block_len=L).group
+    assert len(capped) < free
+    assert 8 * len(capped) / x.size < target + 1.0  # soft: the estimate is within about a bit
+    y = decode(capped)
+    again = fluxcode.encode_group(y, params, block_len=L).group
+    np.testing.assert_array_equal(decode(again), y)
+    assert fluxcode.encode_group(decode(again), params, block_len=L).group == again
+
+
+@pytest.mark.parametrize(("grids", "allowed"), [
+    ("binary", 0), ("decimal", BLOCK_FLAG_DECIMAL), ("rational", BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED),
+])
+@pytest.mark.parametrize("name", ["thirds", "0.05", "F from 0.1 C", "odd integers"])
+def test_grid_levels_nest(grids, allowed, name):
+    """Each level of Params.grids adds grids to the one before: binary stores no decimal or scaled
+    block, decimal no scaled one; every level decodes within its bounds."""
+    x = GRIDS[name][0]()
+    group = fluxcode.encode_group(x, Params(grids=grids), block_len=L).group
+    flags = group_rows(group).block_flags
+    forbidden = (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED) & ~allowed
+    assert not (flags & forbidden).any()
+    if grids == "rational":
+        np.testing.assert_array_equal(decode(group), x)
+
+
+def test_unknown_grids_level_is_rejected():
+    with pytest.raises(ValueError, match="grids must be one of"):
+        Params(grids="rationals")
+
+
+@pytest.mark.parametrize("step", [3e15, 3e19, 3e22])
+def test_large_decimal_steps_fold_or_stay_decimal(step):
+    """A decimal grid of p > 4 can't fold into N (10^5 > 2^16): it stays a plain decimal grid
+    (10^19 overflowed int64 once, giving a scale the decoder rejected)."""
+    x = np.array([0.0, step, 2 * step, step] * 8)
+    np.testing.assert_array_equal(decode(fluxcode.encode_group(x).group), x)
 
 
 # --- Decoding: one rounding (SPEC §5) ------------------------------------------------------------

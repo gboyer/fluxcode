@@ -100,9 +100,9 @@ def ideal_quantum(mins):
 
 
 # No noise floor here (it has its own sweep: noise_score / the report's noise section).
-VERSIONS = [("order 1, power-of-two only", dict(diff_orders={1}, decimal_detection=False)),
+VERSIONS = [("order 1, power-of-two only", dict(diff_orders={1}, grids="binary")),
             ("order 1, decimal detect", dict(diff_orders={1})),
-            ("order 0-3, power-of-two only", dict(decimal_detection=False)),
+            ("order 0-3, power-of-two only", dict(grids="binary")),
             ("order 0-3, decimal detect", dict())]
 SWEEP_BITS = range(9, 17)
 

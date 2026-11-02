@@ -206,7 +206,7 @@ def test_only_canonical_nan():
 WHOLE = {"nan": np.nan, "+inf": np.inf, "-inf": -np.inf}
 PARAMS = {"default": Params(), "off": OFF, "target": Params(target_bits_per_sample=6.0),
           "4bit": Params(min_quantize_bits=1, max_quantize_bits=4), "orders1": Params(diff_orders={1}),
-          "nodecimal": Params(decimal_detection=False)}
+          "nodecimal": Params(grids="binary")}
 
 
 @pytest.mark.parametrize("pname", PARAMS)

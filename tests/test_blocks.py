@@ -104,7 +104,7 @@ def test_short_blocks_skip_the_analysis(size, decimal):
 
 def test_short_blocks_honour_decimal_detection_off():
     x = np.array([1.25, 3.5, 2.75])
-    rows = group_rows(fluxcode.encode_blocks(x, [3], Params(decimal_detection=False)).group)
+    rows = group_rows(fluxcode.encode_blocks(x, [3], Params(grids="binary")).group)
     assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL
     rows = group_rows(fluxcode.encode_blocks(x, [3]).group)
     assert rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_params[0] == -2
@@ -170,7 +170,7 @@ def test_noise_floor_needs_256_samples():
     finest step. From 256 white noise gates as before."""
     rng = np.random.default_rng(4)
     noise = rng.normal(size=2 * 255 + 256)
-    group = fluxcode.encode_blocks(noise, [255, 255, 256], Params(decimal_detection=False))
+    group = fluxcode.encode_blocks(noise, [255, 255, 256], Params(grids="binary"))
     rows = group_rows(group.group)
     fine = [_encoder.range_exponent(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
     assert (rows.grid_params[:2] == fine[:2]).all() and rows.grid_params[2] > fine[2]

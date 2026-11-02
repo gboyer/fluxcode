@@ -29,7 +29,7 @@ from fluxcode import Params, encode_group
 BLOCK = 1000
 REPS, ROUNDS, WARMUP = 200, 5, 20
 DEFAULTS = Params()
-NO_DETECTION = Params(decimal_detection=False)
+NO_DETECTION = Params(grids="binary")
 
 
 def off_grid(x, step):
@@ -57,12 +57,12 @@ def main():
     integers = np.round(walk * 100)
     cases = [
         ("random walk", walk, DEFAULTS),
-        ("random walk, `decimal_detection=False`", walk, NO_DETECTION),
+        ('random walk, `grids="binary"`', walk, NO_DETECTION),
         ("on a 0.01 grid", cents, DEFAULTS),
         ("integers", integers, DEFAULTS),
         ("integers, off-grid last sample", off_grid(integers, 1.0), DEFAULTS),
         ("0.01 grid, off-grid last sample", off_grid(cents, 0.01), DEFAULTS),
-        ("the same, `decimal_detection=False`", off_grid(cents, 0.01), NO_DETECTION),
+        ('the same, `grids="binary"`', off_grid(cents, 0.01), NO_DETECTION),
     ]
     print("| input | µs/block |")
     print("|---|---|")

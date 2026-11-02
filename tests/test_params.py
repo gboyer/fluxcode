@@ -52,7 +52,7 @@ def exponents(x, params):
 @pytest.mark.parametrize("target", [None, 6.0, 8.0])
 def test_min_max_bits_never_violated(kind, target):
     p = Params(min_quantize_bits=8, max_quantize_bits=12, noise_floor_sigma=4.0, target_bits_per_sample=target,
-               decimal_detection=False)
+               grids="binary")
     x = minute(kind, 3)
     _, e, rng = exponents(x, p)
     exact = (decode_series(encode_series(x, p)[0]) == x).reshape(len(e), -1).all(1)

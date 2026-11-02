@@ -1086,7 +1086,7 @@ encode and 3 µs decode per block.
   samples and bit-shuffled planes, encode takes about 3 µs per block on one thread ([docs/PERFORMANCE.md](../docs/PERFORMANCE.md)).
 - **The size estimate for a cap.** fluxcode's optional `target_bits_per_sample` estimates each
   block from the class entropy of its residuals rather than log2(std) + 2.05, which fails on
-  sparse residuals (ENCODER §5.7).
+  sparse residuals (ENCODER §5.8).
 
 **Still open:**
 

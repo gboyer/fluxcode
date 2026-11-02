@@ -96,6 +96,10 @@ class UpdatedGroup(NamedTuple):
     block_mean: np.ndarray
 
 
+GRIDS: tuple[str, ...] = ("binary", "decimal", "rational")
+"""Params.grids levels, each adding grids to the one before (ENCODER.md §1)."""
+
+
 @dataclass(frozen=True)
 class Params:
     """Encoder configuration parameters.
@@ -120,12 +124,11 @@ class Params:
             Without times the samples are taken as evenly spaced.
         target_bits_per_sample: Soft per-block-group cap on compressed bits per sample
             (must be >= 6.0 if set, or None to disable).
-        decimal_detection: Whether to test for exact decimal grids (10^p) before
-            falling back to power-of-two grids.
-        rational_detection: Whether to search blocks that are on neither a decimal nor an exact
-            power-of-two grid for a step N / D times a power of ten or two (thirds, ADC full
-            scales like 10 V / 4095, calibrated gains), stored exactly on that grid. A block
-            whose indices share a factor N is always stored on N times its grid (no search).
+        grids: Which grids a block may take, each level adding to the one before: "binary"
+            (power-of-two steps 2^e only), "decimal" (exact decimal steps 10^p too), "rational"
+            (the default: scaled grids too, a step N / D times a power of ten or two with N and D
+            up to 65,535: 0.05, thirds, ADC counts of 10 V / 4095, a calibration's gain and
+            offset, stored exactly).
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
@@ -154,8 +157,7 @@ class Params:
     diff_orders: AbstractSet[int] | Sequence[int] = frozenset({0, 1, 2, 3})
     noise_floor_sigma: float = DEFAULT_NOISE_FLOOR_SIGMA
     target_bits_per_sample: float | None = None
-    decimal_detection: bool = True
-    rational_detection: bool = True
+    grids: str = "rational"
     effort: int = 4
     time_error: float = 0.0
 
@@ -190,6 +192,8 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
+        if self.grids not in GRIDS:
+            raise ValueError(f"grids must be one of {', '.join(map(repr, GRIDS))}, got {self.grids!r}")
         if not (is_int(self.effort) and MIN_EFFORT <= self.effort <= MAX_EFFORT):
             raise ValueError(f"effort must be an integer from {MIN_EFFORT} to {MAX_EFFORT}, got {self.effort!r}")
         time_error = self.time_error

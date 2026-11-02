@@ -173,7 +173,26 @@ SCALE_SHIFT: int = 16
 """grid_scale holds N in its low 16 bits and D above them."""
 
 SCALE_MASK: int = 0xFFFF
-"""Mask of N (and, after the shift, D) in grid_scale."""
+"""Mask of N (and, after the shift, D) in grid_scale: also the largest N and D."""
+
+INDEX_LIMIT: int = 1 << 52
+"""Bound on the magnitude of a decimal or scaled grid's anchor K0: K0 plus N q (N q < 2^32) stays
+an exact double below 2^53."""
+
+EXACT_INT_LIMIT: int = 1 << 53
+"""Integers below this are exact doubles."""
+
+
+@njit(inline="always")
+def scale_valid(decimal: bool, param: int, num: int | np.integer, den: int | np.integer) -> bool:
+    """Whether a scaled grid's parameter, N and D are valid (SPEC §6.3-6.4): N and D from 1 to
+    65,535; a decimal p from -22 to 0 with D * 5^-p < 2^53 (so D * 10^-p is an exact double); a
+    power-of-two e from -1022 to 970."""
+    if not (1 <= num <= SCALE_MASK and 1 <= den <= SCALE_MASK):
+        return False
+    if decimal:
+        return P_MIN <= param <= SCALED_P_MAX and bool(np.int64(5) ** -param < EXACT_INT_LIMIT // den)
+    return SCALED_E_MIN <= param <= SCALED_E_MAX
 
 BYTES_PER_FLAGS: int = 1
 """Bytes of block_flags per block."""

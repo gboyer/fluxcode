@@ -20,7 +20,8 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
   - Bit planes store each block in whole bytes: a block whose size isn't a multiple of 8 pads
     its last byte with zero bits (§6).
 - **The body is stored field by field** (§6). Each field holds every block's bytes, in block order.
-- **An empty block** stores no samples. Its flags, grid parameter, anchor and time columns are 0.
+- **An empty block** stores no samples. Its flags, grid parameter, grid scale, anchor and time
+  columns are 0.
 - **`num_samples` is at most 2^26.**
   - This is not a field limit (the header field holds up to 2^32 − 1).
   - It is the bound decoders use to reject implausible headers before decompressing.
@@ -94,9 +95,15 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
 - **Grid indices.** Each finite sample of a block is a grid index q, with 0 ≤ q < 2^16.
 - **The anchor** is what a decoder adds q to. It is one of:
   - on a power-of-two grid: a finite float64, giving the value anchor + q·2^e;
-  - on a decimal grid (block flag bit 2): an integer K0 with |K0| < 2^52, giving (K0 + q)·10^p.
-  - Both define the block's values exactly (a binary fraction, or a decimal). float64 enters
-    only at the final rounding (§5).
+  - on a decimal grid (block flag bit 2): an integer K0 with |K0| < 2^52, giving (K0 + q)·10^p;
+  - on a scaled grid (block flag bit 6): an integer K0 with |K0| < 2^52, giving
+    (K0 + N·q)·B^p / D, with B = 10 (bit 2 set) or 2, and N and D from `grid_scale` (§6).
+    - K0 is the index of the block's minimum on the **fine grid** B^p / D; the step is N fine
+      points. The minimum needn't be a multiple of the step: 32 + 0.18·k (°F from 0.1 °C) is
+      K0 = 1600, N = 9 on the fine grid 0.1 / 5.
+    - With D = 1 it is N times a decimal or power-of-two grid (a 0.05 grid is N = 5 on 10^−2).
+  - Each defines the block's values exactly (a binary fraction, a decimal, or a rational).
+    float64 enters only at the final rounding (§5).
 - **The format doesn't constrain how a writer picks the grid or the anchor.**
   - A decoder doesn't check that the anchor sits on the grid, nor the choice of exponent or order.
   - Any finite anchor decodes correctly.
@@ -125,10 +132,17 @@ order 0: q = v mod 2^16
 power of two: y[i] = a + q[i] · 2^e, rounded once, clamped to the largest finite double   (a: the anchor)
 decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integer divided by an exact power of ten)
               p >= 0: y[i] = float64(K0 + q[i]) · 10^p
+scaled, decimal:      y[i] = float64(K0 + N · q[i]) / (D · 10^-p)          (p <= 0)
+scaled, power of two: y[i] = (float64(K0 + N · q[i]) · 2^e) / D            (−1022 <= e <= 970)
 ```
 
 - **Decimal reconstruction** is the same double that parsing the decimal text (e.g. "12.345")
   produces, because IEEE division is correctly rounded.
+- **Scaled reconstruction rounds once,** to the double nearest the rational (K0 + N·q)·B^p / D:
+  - K0 + N·q is an exact integer below 2^53 (|K0| < 2^52, N·q < 2^32);
+  - decimal: D · 10^−p is an exact double (validated, §6.4), and the division rounds once;
+  - power of two: the product with 2^e is exact (a normal double, as e ≥ −1022) and can't
+    overflow (2^53 · 2^970 < 2^1024), and the division by D rounds once.
 - **The clamp** only matters for e ≥ 971.
   - There, a sample near the largest double can reconstruct up to half a step above it, which
     would round to inf. Clamping moves it closer to the original.
@@ -200,6 +214,7 @@ The body is these fields, in this order. The four time fields are present only w
 | `block_flags` | `num_blocks` | per block: order, grid kind and what it stores (below) |
 | `block_sizes` | 2 × `num_blocks` | sample count, uint16, byte-planed |
 | `grid_params` | 2 × `num_blocks` | grid parameter, int16, byte-planed |
+| `grid_scale` | 4 × `num_blocks` | N \| D << 16, uint32, byte-planed: 0 on an unscaled block |
 | `value_anchor` | 8 × `num_blocks` | anchor (§4), byte-planed |
 | `time_start` | 8 × `num_blocks` | start time, byte-planed |
 | `time_step` | 8 × `num_blocks` | time step, int64, byte-planed |
@@ -209,7 +224,7 @@ The body is these fields, in this order. The four time fields are present only w
 | `time_residual_planes` | 32 × (`O_irregular` + `O_long`) | the time residuals (§3) |
 
 ```
-body_size = 13 × num_blocks + 16 × O + 2 × O_nonfinite
+body_size = 17 × num_blocks + 16 × O + 2 × O_nonfinite
           + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long))
 ```
 
@@ -221,13 +236,22 @@ Every column is 0 for an empty block. Per field:
   - bit 3: non-finite codes present (§2);
   - bit 4: irregular times, with time residual planes (§3);
   - bit 5: long time residuals, 64 planes instead of 32;
-  - bits 6–7: 0.
+  - bit 6: scaled grid (with bit 2: a scaled decimal grid);
+  - bit 7: 0.
 - **`grid_params`**:
   - power-of-two grid: the exponent e, −1074 to 1023;
-  - decimal grid: the decimal power p, −22 to 22.
+  - decimal grid: the decimal power p, −22 to 22;
+  - scaled power-of-two grid: e, −1022 to 970;
+  - scaled decimal grid: p, −22 to 0, with D · 5^−p < 2^53 (so D · 10^−p is an exact double).
+- **`grid_scale`**: on a scaled grid, N (bits 0–15) and D (bits 16–31), each 1 to 65,535; 0 on
+  every other block.
+  - N and D needn't be coprime: any pair decodes.
+  - It is a fixed column rather than one only for scaled blocks: zstd stores the zeros of a block
+    group without scaled blocks in a few bytes, and every column's offset stays a function of
+    `num_blocks`.
 - **`value_anchor`**:
   - power-of-two grid: a finite float64;
-  - decimal grid: the int64 K0, with |K0| < 2^52.
+  - decimal or scaled grid: the int64 K0, with |K0| < 2^52.
 - **`time_start`**:
   - the first non-empty block: its start time, as int64;
   - each later non-empty block: its start minus the previous non-empty block's start, as uint64.
@@ -268,9 +292,11 @@ A decoder rejects a block group when any of these fail.
 - **Sizes:** the block sizes add up to `num_samples`, and the content size is exactly
   `body_size` once `block_flags` and `block_sizes` give the sums.
 - **Per block:**
-  - `block_flags` bits 6–7 zero; bit 4 only with a time axis; bit 5 only with bit 4;
+  - `block_flags` bit 7 zero; bit 4 only with a time axis; bit 5 only with bit 4;
   - the grid parameter in range for its grid;
-  - a finite float anchor, or a decimal anchor with |K0| < 2^52;
+  - `grid_scale` 0 on an unscaled block; on a scaled one N ≥ 1, D ≥ 1 and, on a decimal one,
+    D · 5^−p < 2^53;
+  - a finite float anchor, or a decimal or scaled anchor with |K0| < 2^52;
   - all columns 0 in an empty block.
 - **Time axis:**
   - a first non-empty start other than int64 minimum;
@@ -303,21 +329,22 @@ values  constant per block: 2.5, 2.25, 3.0   (power-of-two grid)
 ```
 
 - Header: `01 08 03 00 14 00 00 00` (flags 0x08: `time_unit` 4 in bits 1–3; 3 blocks; 20 samples).
-- Body: 191 bytes = 13 × 3 + 16 × 3 + 24 × 3 + 32 × 1.
+- Body: 203 bytes = 17 × 3 + 16 × 3 + 24 × 3 + 32 × 1.
 
 ```
 offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 0–2      block_flags          3      bit 4 set on block 1 only
 3–8      block_sizes          6      low bytes 08 08 04, high bytes 00 00 00
 9–14     grid_params          6      exponent 0 (constant blocks): all 00
-15–38    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
+15–26    grid_scale           12     0 (unscaled): all 00
+27–50    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
                                      plane 6 = 04 02 08, plane 7 = 40 40 40
-39–62    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
+51–74    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
                                      planes 2–7 = 00 00 00
-63–86    time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
-87–110   time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
-111–158  residual_planes      48     one byte per plane per block (block 2's last 4 bits padding)
-159–190  time_residual_planes 32     block 1 (short: planes 0–31 only), quotients [1, 1, 3, 1, 1, 1, 1]
+75–98    time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
+99–122   time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
+123–170  residual_planes      48     one byte per plane per block (block 2's last 4 bits padding)
+171–202  time_residual_planes 32     block 1 (short: planes 0–31 only), quotients [1, 1, 3, 1, 1, 1, 1]
                                      from sample 1, time_ref 1: residuals [0, 0, 0, 2, 0, 0, 0, 0],
                                      zigzagged [0, 0, 0, 4, 0, 0, 0, 0]: plane 2 = 0x08,
                                      all other planes 0x00
@@ -339,6 +366,12 @@ the encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
   - K0 an integer with |K0| < 2^52,
   - q an integer from 0 to 65,535.
   - Each decodes to the double nearest the decimal: the same one parsing its text gives.
+- **Scaled grids.** A block whose finite values are all (K0 + N·q)·B^p / D, with
+  - B = 2 and e from −1022 to 970, or B = 10 and p from −22 to 0 with D · 5^−p < 2^53,
+  - N and D from 1 to 65,535, K0 an integer with |K0| < 2^52,
+  - q an integer from 0 to 65,535.
+  - Each decodes to the double nearest the rational: thirds, 10 V / 4095 ADC counts, or
+    32 + 0.18·k, bit for bit when the input was that double.
 - **Non-finite values.** +inf and −inf decode exactly. NaN decodes as the canonical quiet NaN:
   its payload and sign are lost.
 - **Negative zero** decodes as +0.0 (equal as floats; the sign bit is lost).

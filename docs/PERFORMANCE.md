@@ -115,7 +115,7 @@ about 31 µs for the bit-plane shuffle, and 8-87 µs of zstd per pass depending 
   4.28 µs/block against 3.53 for plain data (2026-09-25); with both plane passes it is within
   run-to-run noise (5.79-5.98 against 5.23-5.80; single thread,
   [bench/decimal_near_miss.py](../bench/decimal_near_miss.py), results in STRESS_RESULTS.md).
-  `decimal_detection=False` avoids it. The note is in ENCODER.md §5.3.
+  `grids="binary"` avoids it. The note is in ENCODER.md §5.3.
 
 ### Timestamps (`--times`)
 

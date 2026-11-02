@@ -31,18 +31,17 @@ from ._format import (
     BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
+    INDEX_LIMIT,
     P_MAX,
     P_MIN,
     SCALE_MASK,
     SCALE_SHIFT,
-    SCALED_E_MAX,
-    SCALED_E_MIN,
-    SCALED_P_MAX,
     get_int16,
     get_int64,
     get_uint32,
     grid_params_start,
     grid_scale_start,
+    scale_valid,
     value_anchor_start,
 )
 from ._nonfinite import restore_nonfinite
@@ -64,12 +63,7 @@ BAD_SCALE: int = 4
 """Validation status indicating a grid scale on an unscaled block, or a scaled grid's N or D of 0 or
 a D * 10^-p that isn't an exact double."""
 
-MAX_DECIMAL_ANCHOR: int = 1 << 52
-"""Bound on the magnitude of a decimal or scaled grid index: the index plus N q (N q < 2^32) stays an
-exact double below 2^53."""
 
-EXACT_INT_LIMIT: int = 1 << 53
-"""Integers below this are exact doubles: D * 10^-p of a scaled decimal grid must be one."""
 
 
 @njit(nogil=True, cache=True)
@@ -218,20 +212,6 @@ def dequantize_scaled(
             ) / den
 
 
-@njit(inline="always")
-def check_scale(scale: int | np.integer, param_val: int, decimal: bool) -> bool:
-    """Whether a scaled block's grid scale and parameter are valid (SPEC §6.4)."""
-    num, den = scale & SCALE_MASK, scale >> SCALE_SHIFT
-    if num == 0 or den == 0:
-        return False
-    if decimal:
-        if param_val < P_MIN or param_val > SCALED_P_MAX:
-            return False
-        # D * 10^-p = D * 5^-p * 2^-p is an exact double iff D * 5^-p < 2^53
-        return bool(np.int64(5) ** -param_val < EXACT_INT_LIMIT // den)
-    return SCALED_E_MIN <= param_val <= SCALED_E_MAX
-
-
 @njit(nogil=True, cache=True)
 def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
     """Validates block flags, grid parameters and value anchors across all blocks in a block group.
@@ -279,9 +259,9 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
         if flags & BLOCK_FLAG_LONG_TIME and not irregular_time:
             return BAD_FLAGS, block_idx
         if flags & BLOCK_FLAG_SCALED:
-            if not check_scale(scale, param_val, flags & BLOCK_FLAG_DECIMAL != 0):
+            if not scale_valid(flags & BLOCK_FLAG_DECIMAL != 0, param_val, scale & SCALE_MASK, scale >> SCALE_SHIFT):
                 return BAD_SCALE, block_idx
-            if not -MAX_DECIMAL_ANCHOR < anchor_bits[0] < MAX_DECIMAL_ANCHOR:
+            if not -INDEX_LIMIT < anchor_bits[0] < INDEX_LIMIT:
                 return BAD_ANCHOR, block_idx
             continue
         if scale:
@@ -290,7 +270,7 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
             # Check decimal exponent range [-22, 22]
             if param_val < P_MIN or param_val > P_MAX:
                 return BAD_PARAM, block_idx
-            if not -MAX_DECIMAL_ANCHOR < anchor_bits[0] < MAX_DECIMAL_ANCHOR:
+            if not -INDEX_LIMIT < anchor_bits[0] < INDEX_LIMIT:
                 return BAD_ANCHOR, block_idx
         # Check power-of-two exponent range [-1074, 1023]
         elif param_val < E_MIN or param_val > E_MAX:

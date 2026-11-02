@@ -61,8 +61,8 @@ def gated(x, f=0.25):
     """Per block: did the noise floor coarsen the step? Against the same encode without it: an exact
     coarse power-of-two grid coarsens it too (the index gcd). Decimal detection off: p isn't an
     exponent."""
-    _, param = flags_params(encode_series(x, Params(noise_floor_sigma=f, decimal_detection=False))[0])
-    _, plain = flags_params(encode_series(x, Params(noise_floor_sigma=0, decimal_detection=False))[0])
+    _, param = flags_params(encode_series(x, Params(noise_floor_sigma=f, grids="binary"))[0])
+    _, plain = flags_params(encode_series(x, Params(noise_floor_sigma=0, grids="binary"))[0])
     return param > plain
 
 

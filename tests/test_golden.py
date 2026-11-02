@@ -82,7 +82,7 @@ CASES = {
     "random-walk q0.01": (lambda: discrete_minute("random-walk q0.01", 1), Params(), _encode_fixed()),
     "sensor-0.1": (lambda: discrete_minute("sensor-0.1", 1), Params(), _encode_fixed()),
     "0.01-grid walk via float32": (lambda: _decimal_walk_f32(), Params(), _encode_fixed()),
-    "noisy-sine adc12 decimal off": (lambda: discrete_minute("noisy-sine adc12", 1), Params(decimal_detection=False), _encode_fixed()),
+    "noisy-sine adc12 decimal off": (lambda: discrete_minute("noisy-sine adc12", 1), Params(grids="binary"), _encode_fixed()),
     "noisy-sine with gaps": (lambda: _gaps(minute("noisy-sine", 3)), Params(), _encode_fixed()),
     "random-walk with gaps target 6": (lambda: _gaps(minute("random-walk", 3)), Params(target_bits_per_sample=6.0), _encode_fixed()),
     "white noise at 1e-310": (lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1e-310), Params(), _encode_fixed()),

@@ -16,6 +16,10 @@ High level properties:
   max value. Blocks with tight range preserve accuracy better than wide ranges.
 * **Decimals**: If the block's samples fall close to a decimal grid, it is stored as exact
   decimals if the bit range allows. For example, 14.32 will be compressed as 1432e-2.
+* **Grids you don't know**: A sensor's own step is found and stored exactly when it is a fraction
+  N / D (each up to 65,535) of a power of ten or two, with an offset: 0.05 or 0.18 (°F from 0.1 °C)
+  steps, thirds, ADC counts of 10 V / 4096 or 10 V / 4095, a calibration's gain and offset. Such
+  data compresses 19–49% smaller and decodes bit for bit.
 * **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
   difference, whichever has the lowest variance.
 * **Group-Compressed zstd**: Blocks are assembled into block groups; for example, a minute might
@@ -176,7 +180,7 @@ which set the step to 0.25σ.
   a time error.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
-  (≥ 6 when set), `decimal_detection=True`, `effort=4` (1–9), `time_error=0` (0–0.5). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `grids="rational"` (binary, decimal, rational), `effort=4` (1–9), `time_error=0` (0–0.5). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -233,6 +237,8 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Decimal data is lossless.** Values that are decimals of p places (as parsed from text) decode
   to the identical float64, as long as the block spans fewer than 2^16 decimal steps. Decimals
   stored as float32 upstream decode as the decimal itself.
+- **Data on a scaled grid is lossless too** when it is the doubles nearest its rationals (thirds as
+  k / 3, ADC counts as 10·c / 4095); computed as a float product it decodes within a few ulps.
 - **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet
   NaN; −0.0 decodes as +0.0), as do subnormal ranges and blocks spanning ±DBL_MAX.
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
@@ -252,6 +258,10 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
   power-of-two step 2^e with at most 2^16 steps across the block's range, or to the coarsest exact
   decimal step 10^p every sample sits on. Power-of-two steps keep the grid stable when an edit
   changes the range.
+- **Scaled grids:** the gcd N of a block's grid indices scales its grid (0.05 = 5 × 0.01); a block
+  on neither grid is searched for a step N / D · 10^p or N / D · 2^e (an approximate gcd of its
+  differences, then the simplest fraction within the fitted step's uncertainty), stored with an
+  integer anchor on the fine grid and decoded with one rounding.
 - **Noise floor:** a robust (clipped [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation))
   estimate of the noise in the second differences, plus their lag-1 autocorrelation (−2/3 for
   white noise). Blocks that look like white noise get a step of at most 0.25σ (a third of the

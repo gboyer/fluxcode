@@ -54,9 +54,14 @@ def test_round_trip_error_bound(name, x, params):
     err = np.abs(Y - X).max(1)
     rng = hi - lo
     dec = (flags & BLOCK_FLAG_DECIMAL) != 0
+    scaled = (flags & _format.BLOCK_FLAG_SCALED) != 0
     for b in range(len(lo)):
         ulps = 4 * np.spacing(np.abs(X[b]).max())  # x - lo and lo + q * step each round once
-        if dec[b]:
+        if scaled[b]:
+            # every sample was within a quarter of the planned step, at most the min_bits one
+            coarse = _encoder.range_exponent(lo[b], hi[b], params.min_quantize_bits)
+            assert err[b] <= 2.0 ** coarse / 4 + ulps
+        elif dec[b]:
             assert err[b] <= 10.0 ** param[b] / 4 + ulps  # every sample was within 2^e / 4 < 10^p / 4
         else:
             assert err[b] <= 2.0 ** (param[b] - 1) + ulps
@@ -123,7 +128,7 @@ def test_range_just_below_power_of_two():
     x = np.linspace(0.0, rng, 1000)
     x[-1] = rng
     assert _encoder.exponent(rng, 16) == -15
-    groups, _, _, _ = encode_series(x, Params(decimal_detection=False, rational_detection=False, noise_floor_sigma=0))
+    groups, _, _, _ = encode_series(x, Params(grids="binary", noise_floor_sigma=0))
     _, param, _ = rows(groups[0])
     assert param[0] == -15
     assert np.abs(decode_series(groups) - x).max() <= 2.0 ** -16

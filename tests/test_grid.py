@@ -11,7 +11,7 @@ import fluxcode
 from fluxcode import Params, _encoder
 from fluxcode._format import BLOCK_FLAG_DECIMAL
 
-RAW = Params(noise_floor_sigma=0, decimal_detection=False)
+RAW = Params(noise_floor_sigma=0, grids="binary")
 """Just the power-of-two grid: no noise floor, no decimal grids."""
 
 DBL_MAX = float(np.finfo(np.float64).max)
@@ -57,7 +57,7 @@ def test_fencepost_power_of_two_range():
     k = np.random.default_rng(0).integers(0, 4097, 1000)
     k[:2] = 0, 4096
     x = 1 + k / 4096
-    group, e, _ = encode_block(x, Params(max_quantize_bits=12, noise_floor_sigma=0, decimal_detection=False))
+    group, e, _ = encode_block(x, Params(max_quantize_bits=12, noise_floor_sigma=0, grids="binary"))
     assert e == -12
     np.testing.assert_array_equal(decode(group), x)
 
@@ -70,7 +70,7 @@ def test_storage_edge_at_16_bits():
     assert _encoder.exponent(hi - lo, 16) == -10  # the unsnapped rule fits
     assert _encoder.range_exponent(lo, hi, 16) == -9
     x = np.linspace(lo, hi, 1000)
-    group, e, _ = encode_block(x, Params(noise_floor_sigma=0, decimal_detection=False, min_quantize_bits=16))
+    group, e, _ = encode_block(x, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=16))
     assert e == -9
     assert np.abs(decode(group) - x).max() <= 2.0 ** -10
     rng = np.random.default_rng(1)
@@ -121,7 +121,7 @@ def _blocks(rng):
         yield np.cumsum(rng.normal(size=1000)) / 40 * scale
 
 
-@pytest.mark.parametrize("params", [RAW, Params(), Params(max_quantize_bits=9, decimal_detection=False)],
+@pytest.mark.parametrize("params", [RAW, Params(), Params(max_quantize_bits=9, grids="binary")],
                          ids=["raw", "default", "9 bits"])
 def test_decoded_values_are_fixed_points(params):
     """decode(encode(y)) == y bit for bit for y = decode(encode(x)), wherever the re-encode

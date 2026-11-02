@@ -26,10 +26,10 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 |---|---|---|---|
 | `max_quantize_bits` | min–16 | 16 | the finest step (hard), `B` in §5.1 |
 | `min_quantize_bits` | 1–max | 6 | the coarsest step (hard) |
-| `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders to choose from (§5.5) |
-| `decimal_detection` | on / off | on | try a decimal grid before the power-of-two grid (§5.3) |
+| `diff_orders` | non-empty subset of {0, 1, 2, 3} | {0, 1, 2, 3} | predictor orders to choose from (§5.6) |
+| `grids` | binary, decimal, rational | rational | which grids a block may take, each level adding to the one before: 2^e; 10^p too (§5.3); scaled grids too (§5.4) |
 | `noise_floor_sigma` | off (0), or f > 0 | 0.25 | the noise floor (§5.2) |
-| `target_bits_per_sample` | off, or ≥ 6 | off | soft per-block-group size cap (§5.7) |
+| `target_bits_per_sample` | off, or ≥ 6 | off | soft per-block-group size cap (§5.8) |
 | `effort` | 1–9 | 4 | how the body is compressed (below) |
 | `time_error` | 0–0.5 | 0 (exact) | how far a timestamp may move, per interval (§4) |
 
@@ -60,7 +60,8 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 3. it is clamped to e_coarse;
 4. decimal detection looks for a decimal grid coarser than that step (or an exact power-of-two
    grid coarser still, §5.3);
-5. the target (if set and the block group is over budget) coarsens blocks further, never past
+5. the index gcd scales the grid the block is on, or the rational search finds one (§5.4);
+6. the target (if set and the block group is over budget) coarsens blocks further, never past
    e_coarse.
 
 With both the noise floor and the target on, each block takes the coarser step.
@@ -112,9 +113,10 @@ Every block records its size (SPEC.md §1), so a series can be divided in whatev
 
 **Short blocks** (at most 8 samples) aren't analyzed:
 - they take the finest step (e_fine, §5.1) and order 0 (the quantized values themselves);
-- no noise floor, and no part in the target (§5.7);
+- no noise floor, and no part in the target (§5.8);
 - decimal detection (§5.3) still runs, against the finest step: it needs no analysis, so short
   blocks of decimal data stay bit-exact;
+- no scaled grids (§5.4): too few samples to gain from them;
 - non-finite values in them are still coded exactly.
 
 **Summary statistics.** Per block the encoder also returns `lo = min(x)`, `hi = max(x)` and the
@@ -124,7 +126,7 @@ mean, over the finite samples.
 - An empty block's are NaN.
 
 **Any finite block encodes**, from ranges of a few subnormals (2^−1074) to ranges past 2^1023,
-where `hi − lo` itself overflows (§5.1, §5.4, SPEC.md §5).
+where `hi − lo` itself overflows (§5.1, §5.5, SPEC.md §5).
 - Each extreme costs one decision per block; ordinary blocks take the plain formulas.
 
 ## 3. Non-finite values
@@ -276,7 +278,7 @@ ps = 2^e                                 # the power-of-two step
 ```
 
 - rint rounds half to even.
-- **The rule counts the levels the snapped grid uses.** The grid is absolute (§5.4): the points
+- **The rule counts the levels the snapped grid uses.** The grid is absolute (§5.5): the points
   nearest lo and hi can sit up to half a step outside [lo, hi], so the snapped grid can need one
   more level than the range alone.
 - **To compute it,** start from the unsnapped rule and adjust by at most one level:
@@ -427,7 +429,7 @@ d_i   = sqrt(6)·(b·x[i] + a·x[i+2] − (a + b)·x[i+1]) / sqrt((a + b)² + a�
   - Measured over 5 decode/re-encode rounds of 300 noisy 1000-sample blocks (all gated): σ of the
     decoded data averaged 1.0002× the original (at most 1.008×). 8 blocks went one level finer on
     the first round, and none changed after.
-  - Finer is exact on the snapped grid (§5.4), and coarser is one bounded rounding.
+  - Finer is exact on the snapped grid (§5.5), and coarser is one bounded rounding.
   - A merged block can also cross 256 samples, which switches the noise floor on or off between
     updates, with the same two cases.
 - **The gate is per block and all-or-nothing.** Per-sample variants (full precision kept at
@@ -435,7 +437,7 @@ d_i   = sqrt(6)·(b·x[i] + a·x[i+2] − (a + b)·x[i+1]) / sqrt((a + b)² + a�
 
 ### 5.3 Decimal detection
 
-Runs when `decimal_detection` is on and rng > 0, after the noise floor, with `ps` the (possibly
+Runs when `grids` is decimal or rational and rng > 0, after the noise floor, with `ps` the (possibly
 coarsened) step. It finds the coarsest decimal step 10^p that is coarser than `ps` and that every
 sample sits on:
 
@@ -481,10 +483,75 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
     binary-grid data (−1% for multiples of 4 rather than +7%), but not all: near-constant blocks
     (three levels of 0.5) are 6% larger than with zero bits, as the exponent varies from block to
     block (experimental/grids).
-- **Not detected:** other steps (ADC counts in engineering units, 0.2, 0.05, 2⁻ᵏ finer than
-  10^p). They use the power-of-two grid.
+- **Other steps** (0.2, 0.05, ADC counts in engineering units, thirds) are scaled grids (§5.4),
+  at `grids` rational; at decimal, 0.05 data takes 0.01 and the others the power-of-two grid.
 
-### 5.4 Quantize
+### 5.4 Scaled grids
+
+A **scaled grid** is N fine points of B^p / D (SPEC.md §4): (K0 + N·q)·B^p / D. The encoder finds
+one two ways, after the block has its decimal or power-of-two grid (§5.3, §5.5).
+
+**The index gcd** (`grids` rational). N = the gcd of the block's indices q on its own grid:
+
+```
+N = gcd(q[0], …, q[n−1])                          # stops as soon as it is 1
+decimal grid:      N > 1: step N · 10^p, q /= N   (a p > 0 folds into N at p = 0, if N · 10^p < 2^16)
+power-of-two grid: t = the trailing zero bits common to N and the anchor's index K
+                   e += t, K >>= t, N >>= t, q >>= t               # coarser, still absolute
+                   N > 1: step N · 2^e, q /= N, K0 = K             (if −1022 <= e <= 970)
+```
+
+- **Lossless.** The block's values are those of its grid: only the indices shrink. N·10^p holds
+  0.05-grid data (N = 5) and °F from 0.1 °C (0.18, N = 18, on 0.01); N·2^e an ADC's 10 V / 4096
+  (N = 5) or odd integers.
+- **Zero low bits are nearly free in bit planes; odd factors aren't**: 0.05 data on 0.01 is 19%
+  larger, 1/3 on 2^e 49% (experimental/grids). So the power of two goes into the exponent while
+  the grid stays absolute (no grid_scale), and only the rest into N.
+- **Cost.** It stops at the first index the gcd doesn't divide: a few samples on ordinary data.
+  A block whose gcd survives reads every index (a mask while it is a power of two, then one
+  branch-free OR of the rest), about 0.6 µs per 1000 samples.
+- **Exceptions** (constant blocks, unfinite snapped anchors) and blocks of up to 8 samples keep
+  their grid.
+
+**The rational search** (`grids` rational). A power-of-two block with N = 1 (no decimal grid,
+no common factor) is searched for a step S = N / D · B^p coarser than ps = 2^e that holds every
+sample within ps / 4, the tolerance of decimal detection:
+
+```
+seed  = the approximate gcd of the prefix's differences (64 samples)     # each within 2 tol of a multiple
+        Euclid on reals, remainders to the nearest multiple; one between 2 tol and ps proves
+        there's none: reject (a continuous block takes a few differences)
+seed  = least squares on the prefix (k tracked from differences)
+        reject if the prefix drifts from it (a smooth ramp: no finer step fits either)
+for S0 = seed / m, m = 1 … 16:                                           # the prefix may share a factor
+    windows of 64 at the end and the middle: drift rejects, a difference off S0 tries the next m
+    k[i] = k[i−1] + round((x[i] − x[i−1]) / S0)                          # robust to a slightly-off S0
+    a, S  = least squares of x − x[0] on k; every |x − x[0] − a − k S| <= tol, else the next m
+u     = 2 · (largest residual + 1 ulp) / largest |k|                     # S's uncertainty
+for B = 10, then 2, with B^p <= S < B^(p+1):
+    N / D = the smallest-denominator fraction within u / B^p of S / B^p  # continued fractions; D, N < 2^16
+    (a decimal p > 0 folds into N); use it if every sample is within tol of the grid (exact check)
+```
+
+- **N and D together.** The search finds the real step first; continued fractions give N / D in
+  one go. Taking the simplest fraction within S's uncertainty, not the closest one, keeps a
+  long-block fit (16000 / 13107 · 2^−7 for a 4–20 mA loop's 250 kPa / 26214) from being replaced by
+  a nearer fraction of larger D that the exact check would then reject.
+- **The fine grid is absolute,** so a block's minimum needn't be a multiple of the step: the
+  offset of a calibration (−3.21 + 0.0137·c: N = 137, D = 100 on 10^−4) is in K0. An arbitrary
+  float offset isn't (a float anchor would give up exact decoding): those blocks stay on 2^e.
+- **Each block on its own.** Nothing carries over from the block before, so a block encodes as it
+  would alone and `update` stays byte-identical to encoding the updated series. Trying the
+  previous block's grid first would spare about 2 µs per block on data with a hidden grid (and
+  skipping a step the previous block couldn't rationalize, 2.5 µs on a float gain like
+  0.013712345678), but made a block's grid depend on its neighbour: dropped for that.
+- **Cost** (`fit_step` alone, single thread, per 1000 samples, against 4–6 µs to encode a block):
+  0.03 µs to reject a random walk, about 0.2 µs on a smooth ramp, 2.8 µs to fit a hidden grid;
+  the index gcd 0.08 µs on ordinary data, 0.16–0.7 µs when its gcd survives the block. Whole
+  encodes are in bench/RESULTS.md (the hidden grids after each table's total).
+- **Skipped** for wide blocks, subnormal steps (e < −1022) and blocks of up to 8 samples.
+
+### 5.5 Quantize
 
 ```
 power of two:  K    = rint(lo · 2^-e)              anchor = K · 2^e
@@ -521,11 +588,12 @@ decimal:       K0   = floor(lo · 10^-p + 0.5)       anchor = K0
     exact, so x/2 − lo/2 rounds exactly as (x − lo)/2).
 - **Range:** in both grids 0 ≤ q[i] ≤ L ≤ 65,535 (§5.1), and q = 0 at the minimum.
 - When decimal detection succeeds, its candidate pass has already computed these q; they are reused.
+- A scaled grid (§5.4) divides these q by N, or takes the rational search's own.
 - **An unsnapped anchor from another writer** decodes correctly (SPEC.md §4). Updating such a
   block costs at most half a step on its first straddling update; the bound of §6 holds from then
   on.
 
-### 5.5 Order
+### 5.6 Order
 
 For each k in `diff_orders`, compute the variance of `diff(q[0..M−1], k)` over the first
 M = min(250, n) samples (M − k values, no padding):
@@ -540,14 +608,14 @@ order = the k with the smallest v_k; ties go to the lower order
 - Picking on the first 250 samples agrees with the full-block pick on 97% of blocks. It costs
   0.4% in size on continuous data, and nothing on discretized data.
 
-### 5.6 Residuals
+### 5.7 Residuals
 
-The residuals of the order picked in §5.5, mod 2^16 and zigzagged, as specified in SPEC.md §4.
+The residuals of the order picked in §5.6, mod 2^16 and zigzagged, as specified in SPEC.md §4.
 
-### 5.7 Per-block-group target
+### 5.8 Per-block-group target
 
 Runs when `target_bits_per_sample` = t is set, after every block of the block group has been through
-§5.1–5.6.
+§5.1–5.7.
 
 **Estimate.** Each block's size is estimated from its residual by the **class entropy**. With L(u)
 the bit length of the zigzagged residual (0 for 0):
@@ -562,11 +630,14 @@ N their total samples.
 - Otherwise:
 
   ```
-  e_b     = the block's stored exponent (for a decimal block, floor(log2 10^p): its grid is already that coarse)
+  e_b     = the block's planned exponent (§5.1–5.2), also on an exact coarser grid (decimal, scaled)
+  h_b     = the class entropy of the block's residuals at e_b:
+            step = M · 2^e_b, M an integer (power-of-two grids, 10^p with p >= 0, N · 2^e): of M · q
+            otherwise (10^p with p < 0, other scaled grids): h + log2(step / 2^e_b) · (1 − zero share)
   give_b  = min(round(max(h_b − 1, 0)), e_coarse_b − e_b)        # whole bits block b can give
   k       = the smallest k ≥ 1 with Σ_b n_b·min(k, give_b) ≥ Σ_b n_b·h_b − t·N   (k ≤ 16)
   k_b     = min(k, give_b)
-  blocks with k_b > 0: redo §5.3–5.6 at e_b + k_b; keep the result only if its h_b went down
+  blocks with k_b > 0: redo §5.3–5.7 at e_b + k_b; keep the result only if its h_b went down
   ```
 
 - **Expensive blocks end up at equal precision.** Coarsening a block by one bit saves about one
@@ -574,6 +645,19 @@ N their total samples.
   (which would save almost nothing) aren't touched.
 - **"Keep only if h went down"** stops the cap from trading a decimal grid for a coarser
   power-of-two grid that costs more (a 0.01-grid sine: 2.64 → 3.01 bits/sample without it).
+- **One base for every block: the planned exponent,** with h_b in the same units. A block on an
+  exact coarser grid (decimal, or the index gcd's, or a scaled grid) is budgeted as the indices it
+  would have at e_b, which are M · q, exactly what the encoder stored before the index gcd: so
+  the cap coarsens it as it coarsens any block, and coarsening within its grid changes nothing
+  and is rolled back.
+  - Counting from the stored grid instead coarsens decoded data again on every encode: it is
+    exactly on the coarsened grid, which decimal detection or the index gcd recovers. Budgeting
+    compact indices from the planned exponent instead never reaches past the grid: the cap does
+    nothing (a 0.25 walk at 7.54 bits/sample whatever the cap).
+  - Decoded data then re-encodes to itself as it did before the index gcd. The soft cap itself is
+    not exactly idempotent: in a fuzz of random block groups with a target (about 300 per seed,
+    from subnormal to near-DBL_MAX values, grids and gaps), 1–4 move on re-encode, against 1–6
+    before scaled grids.
 - **Cost.** zstd never runs in the loop. Blocks the cap coarsens are quantized a second time;
   without a target every block is quantized once.
 - **It's a soft cap, and t ≥ 6.**
@@ -600,6 +684,8 @@ N their total samples.
   - Noise-floor blocks: ≤ f·σ/2, in the signal's units. This is not bounded relative to the
     range: a block that is all noise has a range of only a few σ.
   - Decimal grid: exact, or within `tol` = 2^e/4 if the samples were within tolerance of the grid.
+  - Scaled grid: exact on the index gcd's (lossless on its grid); the rational search's, within
+    `tol` = 2^e/4 (exact when the samples are the doubles nearest the rationals).
 - **min and max decode within half a step.**
   - Power-of-two grid: the minimum decodes to the grid point nearest it (exactly, when it is on
     the grid, as decoded data always is).
@@ -614,7 +700,11 @@ N their total samples.
     power-of-two grid.
   - float32 rounding artifacts are intentionally lost: a decimal stored as float32 upstream
     decodes as the decimal itself.
-- **Decoded data is a fixed point:** decode(encode(y)) = y for any decoded y. The block group bytes
+- **Data on a scaled grid is bit-exact** when it is the doubles nearest (K0 + N·q)·B^p / D (thirds
+  as k / 3, ADC counts as 10·c / 4095) and the rational search finds the grid; computed as a float
+  product (c · (10 / 4095)) it decodes within a few ulps.
+- **Decoded data is a fixed point:** decode(encode(y)) = y for any decoded y (with a target, nearly
+  always: §5.8). The block group bytes
   are identical from the second encode on.
 - **Edits are stable.** Changing a sample leaves every other sample's q unchanged unless the step
   changes.
@@ -651,12 +741,16 @@ N their total samples.
     - new samples past the block group's end append blocks (empty ones to fill a gap);
     - blocks are never removed: a block emptied by an update stays, empty.
   - **Error of kept samples:**
-    - they are already points of the absolute grid (§5.4), so on the same or a finer step they
+    - they are already points of the absolute grid (§5.5), so on the same or a finer step they
       come back bit for bit, however the merged block's min and max moved;
     - only a coarser step rounds them again, once, without bias (ties to even);
     - repeated coarsening adds a geometric series, so their error stays under one step of the
       coarsest grid the block has used;
-    - decimal data on a decimal grid stays exact.
+    - decimal data on a decimal grid stays exact;
+    - on a scaled grid they are exact on any grid sharing its fine grid B^p / D (new samples from
+      the same sensor: any N), and the index gcd's grids lie inside their base grid; leaving the
+      fine grid rounds them once (half a power-of-two step), after which the bounds above hold.
+      Tested with updates mixing same-grid, other-grid and noisy samples (`tests/test_scaled.py`).
   - The result is byte-identical to `encode_time_blocks` of the resulting series when no block is
     left empty at the end.
   - **New times are stored exactly:** with a time error, new samples are an error. A stored time
@@ -685,6 +779,11 @@ N their total samples.
    - max error ≤ range / (2^min_quantize_bits − ½) always;
    - the decoded minimum within half a step of the minimum.
 2. **Decimal:** values generated as `K / 10^d` with a range under 2^B steps decode bit-identical.
+   **Scaled grids** (`tests/test_scaled.py`): thirds, 0.05, °F from 0.1 °C, 10 V / 4096 and
+   10 V / 4095 ADC counts, a calibration offset and gain, a 4–20 mA scaling, odd integers and
+   100 + 300·k take a scaled grid and decode bit-identical (float-computed steps within a quarter
+   power-of-two step); each block encodes as it would alone; the decoder rounds once (against exact
+   rational arithmetic, down to e = −1022 and up to 970) and rejects invalid scales.
 3. **Fixed point:** y = decode(encode(x)) satisfies decode(encode(y)) = y, and encode(y) is
    byte-identical from the second encode on (§6).
 4. **Edge cases:**
