@@ -103,11 +103,17 @@ def test_short_blocks_skip_the_analysis(size, decimal):
 
 
 def test_short_blocks_honour_decimal_detection_off():
-    x = np.array([1.25, 3.5, 2.75])
+    x = np.array([1.23, 3.5, 2.71])
     rows = group_rows(fluxcode.encode_blocks(x, [3], Params(grids="binary")).group)
     assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL
     rows = group_rows(fluxcode.encode_blocks(x, [3]).group)
     assert rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_params[0] == -2
+
+
+def test_short_blocks_take_a_coarser_exact_binary_grid():
+    """Short blocks choose their grid as longer ones do (§5.3): 0.25 steps on 2^-2, not 0.01."""
+    rows = group_rows(fluxcode.encode_blocks(np.array([1.25, 3.5, 2.75]), [3]).group)
+    assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_params[0] == -2
 
 
 def test_target_weights_blocks_by_size():

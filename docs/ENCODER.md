@@ -114,8 +114,8 @@ Every block records its size (SPEC.md §1), so a series can be divided in whatev
 **Short blocks** (at most 8 samples) aren't analyzed:
 - they take the finest step (e_fine, §5.1) and order 0 (the quantized values themselves);
 - no noise floor, and no part in the target (§5.8);
-- decimal detection (§5.3) still runs, against the finest step: it needs no analysis, so short
-  blocks of decimal data stay bit-exact;
+- the decimal grid (§5.3) is still chosen as for longer blocks, against the finest step: it
+  needs no analysis, so short blocks of decimal data stay bit-exact;
 - no scaled grids (§5.4): too few samples to gain from them;
 - non-finite values in them are still coded exactly.
 
@@ -483,6 +483,16 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
     binary-grid data (−1% for multiples of 4 rather than +7%), but not all: near-constant blocks
     (three levels of 0.5) are 6% larger than with zero bits, as the exponent varies from block to
     block (experimental/grids).
+- **A block exactly on its planned power-of-two grid stays there** when the decimal grid would
+  move it. Decoded power-of-two data are exactly on 2^e, and when they have few distinct values
+  (a short block, or a few levels at 4 bits) they can all fall within the quarter-step tolerance
+  of some 10^p grid by chance; snapping them would move them again on every re-encode. So when
+  every x[i]·2^-e is an integer and some x[i] isn't the double its decimal index decodes to, the
+  block keeps 2^e. One pass, stopping at the first sample off 2^e (sample 0 for ordinary decimal
+  data); skipped when p ≥ 0 and e ≤ p + 1, where a sample on 2^e and within 2^e / 4 of a multiple
+  of 10^p is on it (both are multiples of 2^min(e, p)): integers never pay for it.
+- **Short blocks choose the same way** (the same function as longer blocks, against the finest
+  step).
 - **Other steps** (0.2, 0.05, ADC counts in engineering units, thirds) are scaled grids (§5.4),
   at `grids` rational; at decimal, 0.05 data takes 0.01 and the others the power-of-two grid.
 
@@ -886,6 +896,12 @@ N their total samples.
     - free-running clocks (at a candidate phase, between two, and drifting) round onto their own
       phase, every block at one phase; a regular block off every grid keeps its times; `update`
       keeps a stored block's phase (re-sending gives the block group back).
+12. **Fuzz** (`tests/test_fuzz.py`): random single blocks of 1 to 2500 samples across the double
+    range (noise, scaled, decimal and power-of-two grids, near misses, constants, subnormals, 20%
+    with non-finite values) under six params: no crash, non-finite values kept, the error bound
+    (§7.1) and, without a target, the fixed point in values and bytes. Each case reproduces from
+    its (seed, case); found cases are pinned. `python tests/test_fuzz.py --seeds 0-39` runs
+    60,000 cases (none fail).
 
 ## References
 

@@ -154,17 +154,23 @@ def rational_grid(
     Returns:
         (fits, K0).
     """
-    scale = den * 10.0 ** -param if decimal else den * math.ldexp(1.0, -param)
-    base_index = math.floor(lower_bound * scale + 0.5)
-    scaled_tolerance = tolerance * scale
-    if not abs(base_index) < INDEX_LIMIT:
+    # The fine grid index x * B^-p * D, rounded once: D * 10^-p is exact (scale_valid); on a
+    # power-of-two grid x * 2^-e is exact and goes first, as D * 2^-e can overflow where the
+    # indices don't (2^-1016 / 512)
+    first, second = (den * 10.0 ** -param, 1.0) if decimal else (math.ldexp(1.0, -param), float(den))
+    scaled_tolerance = tolerance * first * second
+    base_scaled = lower_bound * first * second
+    # Checked as floats: an infinite or huge index has no integer
+    if not abs(base_scaled) < INDEX_LIMIT:
         return False, np.int64(0)
-    base_int = np.int64(base_index)
+    base_int = np.int64(math.floor(base_scaled + 0.5))
     for sample_idx in range(samples.shape[0]):
-        scaled = samples[sample_idx] * scale
-        index = math.floor(scaled + 0.5)
+        scaled = samples[sample_idx] * first * second
         # Stop at the first sample off the grid
-        if abs(scaled - index) > scaled_tolerance or not abs(index) < INDEX_LIMIT:
+        if not abs(scaled) < INDEX_LIMIT:
+            return False, np.int64(0)
+        index = math.floor(scaled + 0.5)
+        if abs(scaled - index) > scaled_tolerance:
             return False, np.int64(0)
         offset = np.int64(index) - base_int
         if offset % num:

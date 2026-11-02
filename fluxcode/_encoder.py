@@ -448,6 +448,70 @@ def coarse_binary_exponent(samples: np.ndarray, quant_exp: int, decimal_step: fl
 
 
 @njit(nogil=True, cache=True)
+def moved_off_binary_grid(
+    samples: np.ndarray, binary_exp: int, decimal_exp: int, base_index: np.int64, quantized: np.ndarray
+) -> bool:
+    """Whether the block is exactly on the 2^binary_exp grid and the decimal grid would move it.
+
+    x * 2^-e is exact unless it overflows, and a sample that large is a multiple anyway. A sample
+    on the decimal grid decodes to itself: (base_index + q) / 10^-p, or times 10^p (§6.2).
+    """
+    inv_step = math.ldexp(1.0, -binary_exp)
+    divide = decimal_exp < 0
+    power = 10.0 ** abs(decimal_exp)
+    moved = False
+    for sample_idx in range(samples.shape[0]):
+        sample = samples[sample_idx]
+        scaled = sample * inv_step
+        # Stop at the first sample off the grid (sample 0 for ordinary decimal data)
+        if scaled != math.floor(scaled):
+            return False
+        index = float(base_index + quantized[sample_idx])
+        moved |= (index / power if divide else index * power) != sample
+    return moved
+
+
+@njit(nogil=True, cache=True)
+def decimal_grid(
+    samples: np.ndarray,
+    lower_bound: float,
+    upper_bound: float,
+    quant_exp: int,
+    out_quantized: np.ndarray,
+) -> tuple[int, np.int64, int]:
+    """The block's decimal grid (§5.3), if it takes one, else its power-of-two exponent.
+
+    A block exactly on a power-of-two grid coarser than the decimal grid takes the coarsest such
+    (the decimal grid would store it with an odd factor: 0.25 on 0.01, x 25). A block exactly on
+    its planned power-of-two grid stays there when the decimal grid would move it (detection
+    allows a quarter step): data decoded from a power-of-two block re-encode to themselves.
+
+    Args:
+        samples: 1D float64 array of a non-constant block's samples, range below 2^1023.
+        lower_bound: Minimum value.
+        upper_bound: Maximum value.
+        quant_exp: The planned power-of-two exponent.
+        out_quantized: Output 1D int32 array receiving the decimal grid offsets on a decimal grid.
+
+    Returns:
+        A tuple of (decimal_exp, grid_index, quant_exp): the decimal exponent and the minimum's
+        index on it, or NO_DECIMAL, 0 and the power-of-two exponent (quant_exp or coarser).
+    """
+    decimal_exp, grid_index = detect_decimal(samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), out_quantized)
+    if decimal_exp == NO_DECIMAL:
+        return NO_DECIMAL, np.int64(0), quant_exp
+    binary_exp = coarse_binary_exponent(samples, quant_exp, 10.0 ** decimal_exp)
+    # With p >= 0 and e <= p + 1, a sample on 2^e is a multiple of 2^min(e, p), as its decimal grid
+    # point is, and within 2^e / 4 of it (detect_decimal): on it. Integers skip the check
+    moves = decimal_exp < 0 or quant_exp > decimal_exp + 1
+    if binary_exp != quant_exp or (
+        moves and moved_off_binary_grid(samples, quant_exp, decimal_exp, grid_index, out_quantized)
+    ):
+        return NO_DECIMAL, np.int64(0), binary_exp
+    return decimal_exp, grid_index, quant_exp
+
+
+@njit(nogil=True, cache=True)
 def quantize(
     samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
 ) -> None:
@@ -761,7 +825,8 @@ def encode_block(
     """Encodes one block: quantizes, scales the grid, picks predictor order, and computes residuals.
 
     The grid (§5.3, §5.4), by grids level: GRIDS_DECIMAL and up, a decimal grid if one is detected
-    (unless an exact power-of-two grid is coarser), else the power-of-two grid; GRIDS_RATIONAL, the
+    (unless the block is exactly on a power-of-two grid that is coarser or that the decimal grid
+    would move it off), else the power-of-two grid; GRIDS_RATIONAL, the
     index gcd N of its indices scales it (on a power-of-two grid, the power of two N shares with
     the anchor's index coarsens the exponent instead), and a power-of-two block with no common
     factor tries the rational search.
@@ -793,19 +858,14 @@ def encode_block(
     range_span = upper_bound - lower_bound
     # Attempt decimal grid detection if enabled and range is within 2^1023
     if grids >= GRIDS_DECIMAL and non_constant and range_span < xm.WIDE_RANGE:
-        decimal_exp, grid_index = detect_decimal(
-            samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_quantized
+        decimal_exp, grid_index, quant_exp = decimal_grid(
+            samples, lower_bound, upper_bound, quant_exp, scratch_quantized
         )
+        param_val = quant_exp
         if decimal_exp != NO_DECIMAL:
-            # A power-of-two grid holding the block exactly at a coarser step stores it smaller
-            binary_exp = coarse_binary_exponent(samples, quant_exp, 10.0 ** decimal_exp)
-            if binary_exp != quant_exp:
-                quant_exp = binary_exp
-                param_val = binary_exp
-            else:
-                decimal_detected = True
-                param_val = decimal_exp
-                flags |= BLOCK_FLAG_DECIMAL
+            decimal_detected = True
+            param_val = decimal_exp
+            flags |= BLOCK_FLAG_DECIMAL
     if decimal_detected:
         gcd = _rational.index_gcd(scratch_quantized) if grids >= GRIDS_RATIONAL else 0
         # A decimal p > 0 folds into N, so the grid divides by D * 10^-p (SPEC §5): p <= 4 (10^5 > 2^16)
@@ -1158,8 +1218,8 @@ def encode_group(
             fine_exp = range_exponent(block_min, block_max, max_bits)
             decimal_exp, decimal_base = NO_DECIMAL, np.int64(0)
             if grids >= GRIDS_DECIMAL and block_max > block_min and block_max - block_min < xm.WIDE_RANGE:
-                decimal_exp, decimal_base = detect_decimal(
-                    block_samples, block_min, block_max, math.ldexp(1.0, fine_exp), block_quantized
+                decimal_exp, decimal_base, fine_exp = decimal_grid(
+                    block_samples, block_min, block_max, fine_exp, block_quantized
                 )
             if decimal_exp != NO_DECIMAL:
                 out_block_flags[block_idx] = BLOCK_FLAG_DECIMAL
