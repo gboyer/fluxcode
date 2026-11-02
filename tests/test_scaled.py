@@ -104,7 +104,8 @@ def test_scaled_grids_are_fixed_points(name):
 @pytest.mark.parametrize("name", GRIDS)
 def test_each_block_encodes_as_it_would_alone(name):
     """Nothing carries over from the block before: a block's grid and residuals are those it gets
-    alone (so an update re-encodes a block as a fresh encode would)."""
+    alone. Today's encoder, not a guarantee (ENCODER §6): a change adding state between blocks
+    would change this test."""
     x = GRIDS[name][0]()
     together = group_rows(fluxcode.encode_group(x, block_len=L).group)
     for b in range(x.size // L):

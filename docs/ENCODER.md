@@ -550,11 +550,11 @@ for B = 10, then 2, with B^p <= S < B^(p+1):
 - **The fine grid is absolute,** so a block's minimum needn't be a multiple of the step: the
   offset of a calibration (−3.21 + 0.0137·c: N = 137, D = 100 on 10^−4) is in K0. An arbitrary
   float offset isn't (a float anchor would give up exact decoding): those blocks stay on 2^e.
-- **Each block on its own.** Nothing carries over from the block before, so a block encodes as it
-  would alone and `update` stays byte-identical to encoding the updated series. Trying the
-  previous block's grid first would spare about 2 µs per block on data with a hidden grid (and
-  skipping a step the previous block couldn't rationalize, 2.5 µs on a float gain like
-  0.013712345678), but made a block's grid depend on its neighbour: dropped for that.
+- **Each block on its own.** Nothing carries over from the block before. Trying the previous
+  block's grid first would spare about 2 µs per block on data with a hidden grid (and skipping a
+  step the previous block couldn't rationalize, 2.5 µs on a float gain like 0.013712345678), but
+  wasn't worth the state it adds between blocks. This is a simplicity choice, not a guarantee
+  (§6).
 - **Cost** (`fit_step` alone, single thread, per 1000 samples, against 4–6 µs to encode a block):
   0.03 µs to reject a random walk, about 0.2 µs on a smooth ramp, 2.8 µs to fit a hidden grid;
   the index gcd 0.08 µs on ordinary data, 0.16–0.7 µs when its gcd survives the block. Whole
@@ -735,9 +735,10 @@ N their total samples.
   - With a time axis, `update` takes the new blocks' times (required exactly when the block group
     has one). The updated series must be non-decreasing throughout, which it checks where a new
     block meets its non-empty neighbours.
-  - Without a target, the updated block group is byte-identical to encoding the updated series from
-    scratch (every block is encoded independently); with a time error, unless a new block was
-    clamped to a stored neighbour, or a block before it changed (§4).
+  - Today every block is encoded independently, so without a target the updated block group
+    matches encoding the updated series from scratch (with a time error, unless a new block was
+    clamped to a stored neighbour, or a block before it changed, §4). The tests use that as an
+    oracle; it isn't guaranteed (§6).
 - **`update_time_blocks` is an upsert plus a range deletion, touching only the blocks it affects.**
   - **What it keeps:**
     - it first discards every sample timed in the optional delete ranges (`[start, end)` each);
@@ -758,16 +759,20 @@ N their total samples.
   - **Error of kept samples:**
     - they are already points of the absolute grid (§5.5), so on the same or a finer step they
       come back bit for bit, however the merged block's min and max moved;
-    - only a coarser step rounds them again, once, without bias (ties to even);
-    - repeated coarsening adds a geometric series, so their error stays under one step of the
-      coarsest grid the block has used;
+    - only a coarser step rounds them again, without bias (ties to even);
+    - one coarsening, or two in a row, gives the values rounding the first decode once onto the
+      final grid would (an odd index is a tie and goes to its even neighbour, so the next halving
+      divides exactly);
+    - from the third on, the roundings compound: n halvings move a sample at most ⅔ of the final
+      step from its first decode (about 15% more RMS than rounding once), so its error stays
+      under one step of the coarsest grid the block has used;
     - decimal data on a decimal grid stays exact;
     - on a scaled grid they are exact on any grid sharing its fine grid B^p / D (new samples from
       the same sensor: any N), and the index gcd's grids lie inside their base grid; leaving the
       fine grid rounds them once (half a power-of-two step), after which the bounds above hold.
       Tested with updates mixing same-grid, other-grid and noisy samples (`tests/test_scaled.py`).
-  - The result is byte-identical to `encode_time_blocks` of the resulting series when no block is
-    left empty at the end.
+  - Today the result matches `encode_time_blocks` of the resulting series when no block is left
+    empty at the end (an oracle for the tests, not a guarantee: §6).
   - **New times are stored exactly:** with a time error, new samples are an error. A stored time
     is never rounded again (its original is gone, so a second rounding couldn't know how far it
     had moved already).
@@ -786,8 +791,16 @@ N their total samples.
     included);
   - a time is rounded once: `update_time_blocks` stores new times exactly, and
     `replace_time_blocks` rounds whole blocks from the times given.
+- **Not guaranteed: that an update matches a fresh encode.** Today every block is encoded from its
+  samples alone, so an updated block group matches encoding the updated series from scratch, and
+  the tests use that as a convenient oracle. It is a consequence of keeping the encoder simple,
+  not part of the format or the API: an encoder may use state between blocks, or a block's
+  previous version on update (its grid, its step), as long as the bounds above hold.
 
 ## 7. Conformance tests
+
+Where a test compares an update with a fresh encode, or a block in a group with the same block
+alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
 
 1. **Round trip:** decode(encode(x)) has
    - max error ≤ 2^(e−1) for every block (≤ f·σ/2 on noise-floor blocks);
@@ -866,6 +879,8 @@ N their total samples.
     - decoded values are fixed points block by block wherever the re-encode picks the same step:
       noisy, smooth, stepped, short and at extreme magnitudes;
     - re-encoding decoded values one level coarser keeps their mean (ties to even);
+    - successive halvings of the step move decoded values at most ⅔ of the final step, and the
+      first two no further than rounding once;
     - 200 straddling updates that move the block's min and max keep the kept samples' error under
       one step of the coarsest grid used, unchanged while the step is.
 11. **Time error** (§4, `tests/test_time_error.py`):

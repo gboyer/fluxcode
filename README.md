@@ -245,8 +245,7 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet
   NaN; −0.0 decodes as +0.0), as do subnormal ranges and blocks spanning ±DBL_MAX.
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
-  decode identically; without a size target, the updated block group is byte-identical to encoding
-  the new series from scratch. Decoded data is a fixed point: re-encoding it gives the same bytes.
+  decode identically. Decoded data is a fixed point: re-encoding it gives the same bytes.
 - **Timestamps decode exactly** by default. With `time_error` = e, in each rounded block none
   moves more than e times the block's mean interval (2% more at most; an `update` clamped to a
   stored neighbour, by the neighbour's), at most 5% move more than e times their own interval,

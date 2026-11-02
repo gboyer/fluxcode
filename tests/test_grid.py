@@ -157,6 +157,31 @@ def test_no_tie_bias_when_coarsening():
     assert ties_up.mean() > 0.15 * 2.0 ** e  # what the test would catch
 
 
+def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
+    """Decoded values re-encoded with one bit fewer each time (the step doubling, the range fixed):
+    the first two halvings give what rounding the first decode once would (an odd index is a tie
+    that goes to its even neighbour, so the next halving divides exactly); later ones compound,
+    staying within 2/3 of the final step of the first decode (ENCODER §6)."""
+    rng = np.random.default_rng(11)
+    worst = 0.0
+    for _ in range(20):
+        x = np.cumsum(rng.normal(size=1000))
+        group, first_e, _ = encode_block(x)
+        first = y = decode(group)
+        e = first_e
+        for bits in range(15, 4, -1):
+            group, e, _ = encode_block(y, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=1,
+                                               max_quantize_bits=bits))
+            y = decode(group)
+            step = 2.0 ** e
+            moved = np.abs(y - first).max() / step
+            assert moved <= 2 / 3, (bits, moved)
+            if e - first_e <= 2:
+                np.testing.assert_array_equal(y, np.rint(first / step) * step)
+            worst = max(worst, moved)
+    assert worst > 0.6  # the compounding is real: once from the first decode would be at most 1/2
+
+
 START = np.datetime64("2026-03-01T12:00", "ms")
 SECOND = np.timedelta64(1, "s")
 

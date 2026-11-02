@@ -102,7 +102,11 @@ def check_case(x: np.ndarray, params: Params) -> str | None:
 
 
 def encodes_alone(x: np.ndarray, group: bytes, params: Params) -> bool:
-    """Whether each block of a group has the grid, anchor and residuals it gets encoded alone."""
+    """Whether each block of a group has the grid, anchor and residuals it gets encoded alone.
+
+    Today's encoder keeps no state between blocks (not a guarantee, ENCODER §6): this catches
+    state leaking by accident, such as scratch read before it is written.
+    """
     if x.size <= BLOCK_LEN:
         return True
     together = group_rows(group)
