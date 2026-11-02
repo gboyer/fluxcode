@@ -17,6 +17,7 @@ p.rmse_met, p.max_error_met, p.max_points_met               # which asks were me
 p = fluxprune.prune(t, x, error_per_point=0.002 / 360, max_points=720)  # ... and at most 720
 p = fluxprune.prune(t, x, error_per_point=0, max_points=36) # the best 36 points
 p = fluxprune.prune(t, x, error_per_point=np.inf, max_error=0.5)  # the max_error pass alone
+p = fluxprune.prune(t, x, include_regular_intervals=np.timedelta64(1, "h"))  # each hour's first, min, max
 ```
 
 Two passes choose the points:
@@ -65,6 +66,22 @@ the maximum are always kept. A run of non-finite values (a gap) keeps its first 
 finite points just before and after it; a kept non-finite value holds until the next kept point,
 so the inside of a gap needs none. These gap points are kept even past `max_points`: then
 `max_points_met` is false and `prune` warns.
+
+**`include_regular_intervals`** applies the same rule to each interval of a given length: its first
+point, minimum and maximum are required too, so they can be read back exactly from the kept points
+(an hour's open, low and high in a week-long block, with no side table). The interval is a
+`timedelta64` for `datetime64` times (`np.timedelta64(1, "h")`), a number in the times' units
+otherwise, and intervals are aligned to its multiples from 0: the Unix epoch, so clock hours and days
+in UTC. An interval's first point is its first keepable one (an interval that opens inside a gap: the
+next gap start or finite point); its minimum and maximum are over finite values. Not forced: each
+interval's last point (it sits next to the next interval's first, so it adds little) and its mean
+(no choice of points makes it exact; its error is at most the interval's RMSE). Like the gap points,
+they are kept past `max_points`, with a warning, and the rmse pass's rate doesn't count them as
+points added. They don't make it stop sooner, though: on noisy signals an interval's minimum and
+maximum are noise extremes, and lines pinned to them fit a little worse (a week of 1 s scans with
+noise, hourly: 503 points forced, 115 more bought by the rmse pass, 0.2% higher RMSE). Finding them is
+one O(n) pass (+3.3 ms (+1.6%) on that week). Not with `refit`, whose values could stray past an
+interval's minimum or maximum.
 
 **The noise floor** (`noise_floor=True`, the default). Lines through noisy samples leave about the
 noise's σ against them however many points are kept, until nearly all are, so the rmse pass on a

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
+import datetime
 import itertools
 import warnings
 
@@ -374,6 +375,128 @@ def test_gaps_beat_the_cap():
     assert not p.max_points_met and len(p) == r.min_points
     p = fluxprune.prune(t, x, max_points=r.min_points)
     assert p.max_points_met and len(p) == r.min_points
+
+
+# include_regular_intervals
+
+def keepable(x):
+    """Finite, or the first of a run of non-finite values of one kind (nan, inf, -inf)."""
+    def kind(v):
+        return "finite" if np.isfinite(v) else "nan" if np.isnan(v) else str(v)
+
+    return np.array([not i or kind(v) == "finite" or kind(v) != kind(x[i - 1]) for i, v in enumerate(x)], bool)
+
+
+def interval_oracle(t, x, origin, step):
+    """Each interval's (first keepable index, first minimum, first maximum) by brute force; the minimum
+    and maximum are over finite values."""
+    out = {}
+    ok = keepable(x)
+    for i in range(len(t)):
+        if not ok[i]:
+            continue  # the inside of a gap
+        g = (t[i] - origin) // step
+        first, low, high = out.get(g, (i, None, None))
+        if np.isfinite(x[i]):
+            low = i if low is None or x[i] < x[low] else low
+            high = i if high is None or x[i] > x[high] else high
+        out[g] = (first, low, high)
+    return {i for v in out.values() for i in v if i is not None}
+
+
+def check_intervals(t, x, p, origin, step):
+    """Each interval's first time (its first keepable one), minimum and maximum read back exactly from
+    the kept points."""
+    groups = (t - origin) // step
+    kept = (p.times - origin) // step
+    ok = keepable(x)
+    for g in np.unique(groups[ok]):
+        assert p.times[kept == g][0] == t[(groups == g) & ok][0]
+        xs = x[groups == g]
+        xs = xs[np.isfinite(xs)]
+        if len(xs):
+            vs = p.values[kept == g]
+            vs = vs[np.isfinite(vs)]
+            assert vs.min() == xs.min() and vs.max() == xs.max()
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_regular_intervals(seed):
+    t, x = series(seed)  # 400 points 1-19 s apart: about 70 minutes
+    t = t.astype("datetime64[ns]")
+    step = np.timedelta64(5, "m")
+    r = rank(t, x, step)
+    base = {0, len(x) - 1, int(np.argmin(x)), int(np.argmax(x))}
+    want = interval_oracle(t, x, np.datetime64(0, "ns"), step)
+    assert set(r.required) == base | want and r.intervals == len(want - base) and r.gaps == 0
+    for kw in ({}, {"error_per_point": np.inf}, {"max_error": 0.5}, {"max_points": 60}):
+        p = fluxprune.prune(t, x, include_regular_intervals=step, **kw)
+        assert set(index(t, p)) >= set(r.required)
+        check_intervals(t, x, p, np.datetime64(0, "ns"), step)
+    p = fluxprune.prune(t, x, error_per_point=np.inf, include_regular_intervals=step)
+    assert len(p) == r.min_points
+    # the same in seconds, as integers and as floats, and with a datetime.timedelta
+    secs = (t - np.datetime64(0, "ns")) // np.timedelta64(1, "s")
+    for tt, st in ((secs, 300), (secs.astype(float), 300.0)):
+        assert np.array_equal(rank(tt, x, st).required, r.required)
+    assert np.array_equal(rank(t, x, datetime.timedelta(minutes=5)).required, r.required)
+    # an interval longer than the block only adds its first point if the block starts inside one
+    assert set(rank(t, x, np.timedelta64(1000, "D")).required) == base
+
+
+def test_regular_intervals_are_aligned_to_zero():
+    t = np.arange(25.0, 75.0)
+    x = np.cos(t)
+    p = fluxprune.prune(t, x, error_per_point=np.inf, include_regular_intervals=10)
+    assert {30.0, 40.0, 50.0, 60.0, 70.0} <= set(p.times)  # each interval's first point
+    check_intervals(t, x, p, 0.0, 10.0)
+    p = fluxprune.prune(t, x, error_per_point=np.inf, include_regular_intervals=7.5)
+    assert {30.0, 38.0, 45.0, 53.0, 60.0, 68.0} <= set(p.times)  # boundaries at 37.5, 52.5, 67.5
+
+
+def test_regular_intervals_with_gaps():
+    t = np.arange(300.0)
+    x = np.sin(t / 9) + t / 100
+    x[40:75] = np.nan  # from inside [40, 50), through [50, 70), to inside [70, 80)
+    x[130:150] = np.inf
+    x[150:155] = -np.inf  # a change of kind: a gap start of its own
+    x[200:250] = np.nan  # whole intervals, nothing finite in them
+    r = rank(t, x, 10)
+    want = interval_oracle(t, x, 0.0, 10.0)
+    assert want <= set(r.required)
+    assert not set(r.required) & set(np.flatnonzero(~np.isfinite(x))) - {40, 130, 150, 200}
+    p = fluxprune.prune(t, x, include_regular_intervals=10)
+    check_intervals(t, x, p, 0.0, 10.0)
+
+
+def test_regular_intervals_beat_the_cap():
+    t = np.arange(1000.0)
+    x = np.sin(t / 30)
+    r = rank(t, x, 10)
+    assert r.min_points > 100
+    with pytest.warns(UserWarning, match="for include_regular_intervals"):
+        p = fluxprune.prune(t, x, max_points=100, include_regular_intervals=10)
+    assert not p.max_points_met and len(p) == r.min_points
+    check_intervals(t, x, p, 0.0, 10.0)
+
+
+def test_regular_intervals_arguments():
+    t, x = series(0)
+    t = t.astype("datetime64[ns]")
+    with pytest.raises(ValueError, match="refit"):
+        fluxprune.prune(t, x, refit=True, include_regular_intervals=np.timedelta64(1, "h"))
+    with pytest.raises(TypeError, match="timedelta64"):
+        fluxprune.prune(t, x, include_regular_intervals=3600)
+    with pytest.raises(TypeError, match="number"):
+        fluxprune.prune(np.arange(400.0), x, include_regular_intervals=np.timedelta64(1, "h"))
+    for bad in (0, -1, np.inf, np.nan):
+        with pytest.raises(ValueError, match="positive"):
+            fluxprune.prune(np.arange(400.0), x, include_regular_intervals=bad)
+    with pytest.raises(ValueError, match="positive"):
+        fluxprune.prune(t, x, include_regular_intervals=np.timedelta64(0, "s"))
+    for n in (0, 1, 3):  # degenerate inputs
+        p = fluxprune.prune(np.arange(float(n)), np.ones(n), include_regular_intervals=1)
+        assert len(p) == n
 
 
 # refit

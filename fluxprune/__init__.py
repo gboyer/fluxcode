@@ -8,7 +8,8 @@ relative to the block's range traded against the points spent at a fixed rate (b
 the range at a tenth of the points), read above the block's own white noise (the noise floor:
 points that only trace the noise aren't bought). Two optional guards bound it: max_error (the max_error pass adds points until no input point strays further) and
 max_points, a hard cap. The first and last points (for stitching blocks back together) and the
-minimum and maximum are always kept.
+minimum and maximum are always kept, and with include_regular_intervals the first, minimum and maximum
+of each interval.
 
     import fluxprune
 
@@ -17,6 +18,7 @@ minimum and maximum are always kept.
     p = fluxprune.prune(t, x, error_per_point=0.002 / 360, max_points=720)  # 0.2% at 360 points, at most 720
     p = fluxprune.prune(t, x, error_per_point=0, max_points=36)        # the best 36 points
     p = fluxprune.prune(t, x, error_per_point=np.inf, max_error=0.5)   # the max_error pass alone
+    p = fluxprune.prune(t, x, include_regular_intervals=np.timedelta64(1, "h"))  # each hour's first, min, max
 """
 
 from ._api import ERROR_AT_A_TENTH, Pruned, prune

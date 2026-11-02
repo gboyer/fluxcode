@@ -3,6 +3,7 @@
 """prune(): the points that carry a series' shape, read as straight lines between them, with
 optional guards. rank() and Ranking are its steps, for experimental/; not part of the API."""
 
+import datetime
 import warnings
 from dataclasses import dataclass, field
 
@@ -64,8 +65,9 @@ class Ranking:
 
     Indices are into the input. The inside of a run of non-finite values (all but its first point) is
     never kept, since a kept non-finite value holds until the next kept point: `n` counts the points
-    that can be. Keeping k points keeps the `required` ones (first, last, minimum, maximum, and the
-    first point of each gap with the finite points just before and after it) and the
+    that can be. Keeping k points keeps the `required` ones (first, last, minimum, maximum, the
+    first point of each gap with the finite points just before and after it, and with
+    include_regular_intervals the first, minimum and maximum of each interval) and the
     k - len(required) last removed; a smaller set is always a subset of a larger one.
 
     Errors here are time-weighted RMSE of the kept points' lines against the input's, relative to the
@@ -76,6 +78,9 @@ class Ranking:
     n: int
     gaps: int
     """How many of the required points are there for gaps (beyond first, last, minimum and maximum)."""
+    intervals: int
+    """How many are there for include_regular_intervals (beyond the block's first, last, minimum and
+    maximum; a point that is both counts here, not in gaps)."""
     _required: np.ndarray = field(repr=False)  # indices into the keepable points, as are the next two
     _removed: np.ndarray = field(repr=False)
     _sq_error: np.ndarray = field(repr=False)  # [r]: relative mean squared error after r removals
@@ -265,12 +270,57 @@ def _offsets(times, n):
     return tau - tau[0] if n else tau
 
 
-def rank(times, values):
+def _interval_ids(t, interval):
+    """Which regular interval each time falls in: floor(t / interval), counted from 0 (the Unix epoch
+    for datetime64). interval: a timedelta64 (or datetime.timedelta) for datetime64 or timedelta64
+    times, a number in the times' units otherwise."""
+    if t.dtype.kind in "mM":
+        if not isinstance(interval, (np.timedelta64, datetime.timedelta)):
+            raise TypeError("include_regular_intervals must be a timedelta64 for datetime64 times")
+        step = np.timedelta64(interval)
+        if not step > np.timedelta64(0, "s"):
+            raise ValueError("include_regular_intervals must be positive")
+        if t.dtype.kind == "M":
+            t = t - np.datetime64(0, np.datetime_data(t.dtype)[0])
+        return t // step
+    if isinstance(interval, (np.timedelta64, datetime.timedelta)):
+        raise TypeError("include_regular_intervals must be a number, in the times' units, for numeric times")
+    if not (np.isfinite(interval) and interval > 0):
+        raise ValueError("include_regular_intervals must be finite and positive")
+    return np.floor_divide(t, interval)
+
+
+def _first(groups):
+    """Positions where a run of equal values in groups starts."""
+    if not len(groups):
+        return np.empty(0, np.int64)
+    return np.flatnonzero(np.concatenate(([True], groups[1:] != groups[:-1])))
+
+
+def _interval_points(t, x, live, interval):
+    """Indices into the input of each regular interval's first keepable point and first minimum and
+    maximum of its finite values. O(n)."""
+    ids = _interval_ids(t, interval)
+    out = [live[_first(ids[live])]]
+    f = live[np.isfinite(x[live])]
+    if len(f):
+        g, xf = ids[f], x[f]
+        start = _first(g)
+        counts = np.diff(np.append(start, len(f)))
+        for reduce in (np.minimum, np.maximum):
+            hit = np.flatnonzero(xf == np.repeat(reduce.reduceat(xf, start), counts))
+            out.append(f[hit[_first(g[hit])]])
+    return np.concatenate(out)
+
+
+def rank(times, values, include_regular_intervals=None):
     """Rank the points (times[i], values[i]) of a series read as straight lines between them.
 
     times: non-decreasing, datetime64 or numbers (repeated times are allowed: a vertical step).
     values: floats, same length. A run of non-finite values is a gap: its first point and the finite
     points around it are kept, and a kept non-finite value holds until the next kept point.
+    include_regular_intervals: also require the first, minimum and maximum of each interval of this
+    length (prune()).
     """
     x = np.asarray(values, dtype=np.float64)
     if x.ndim != 1:
@@ -279,7 +329,7 @@ def rank(times, values):
     tau = _offsets(times, n)
 
     finite = np.isfinite(x)
-    base = np.zeros(n, bool)  # first, last, minimum, maximum
+    base = np.zeros(n, bool)  # first, last, minimum, maximum (and each regular interval's below)
     if n:
         base[[0, n - 1]] = True
     lo = hi = 0.0
@@ -290,8 +340,6 @@ def rank(times, values):
             low, high = int(np.argmin(x)), int(np.argmax(x))
             base[low] = base[high] = True
             lo, hi = x[low], x[high]
-        req = base
-        gaps = 0
     else:
         kind = np.where(finite, 0, np.where(np.isnan(x), 1, np.where(x > 0, 2, 3)))
         start = ~finite
@@ -303,8 +351,18 @@ def rank(times, values):
             fi = np.flatnonzero(finite)
             base[fi[np.argmin(x[fi])]] = base[fi[np.argmax(x[fi])]] = True
             lo, hi = x[fi].min(), x[fi].max()
-        required = base | start | near
         live = np.flatnonzero(finite | start)  # the inside of a gap is never kept
+
+    intervals = 0
+    if include_regular_intervals is not None:
+        block = base.copy()
+        base[_interval_points(np.asarray(times), x, live, include_regular_intervals)] = True
+        intervals = int(np.count_nonzero(base & ~block))
+    if every:
+        req = base
+        gaps = 0
+    else:
+        required = base | start | near
         req = required[live]
         gaps = int(np.count_nonzero(required & ~base))
 
@@ -313,17 +371,17 @@ def rank(times, values):
     if m < 3 or duration <= 0 or hi <= lo:
         # nothing to weigh by (all at one time) or nothing to lose (constant): any removal is free
         rest = np.flatnonzero(~req)
-        return Ranking(m, gaps, np.flatnonzero(req), rest, np.zeros(len(rest) + 1), np.empty(0),
+        return Ranking(m, gaps, intervals, np.flatnonzero(req), rest, np.zeros(len(rest) + 1), np.empty(0),
                        np.zeros(m), live, 0.0, _size=n)
     y = (x[live] - lo) / (hi - lo)
     t = (tau[live] - tau[live[0]]) / duration
     order, delta = rank_kernel(t, y if every else np.where(np.isfinite(y), y, 0.0), ~req)
-    return Ranking(m, gaps, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
+    return Ranking(m, gaps, intervals, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
                    float(hi - lo), noise(tau, (x - lo) / (hi - lo)), n)
 
 
 def prune(times, values, error_per_point=None, max_points=None, max_error=None, refit=False,
-          noise_floor=True):
+          noise_floor=True, include_regular_intervals=None):
     """The points to keep of a series read as straight lines between them: a Pruned with their times and
     values, the RMS and largest error they leave, and which of the asks were met.
 
@@ -360,16 +418,26 @@ def prune(times, values, error_per_point=None, max_points=None, max_error=None, 
     refit: experimental: instead of the samples, values at the kept times that fit the input best in
         time-weighted L2 (lower RMSE, mostly on smooth or step-like signals); the first, last, minimum
         and maximum points and the points around gaps keep their samples. max_error isn't checked
-        again: `max_error_met` says whether it still holds.
+        again: `max_error_met` says whether it still holds. Not with include_regular_intervals.
+    include_regular_intervals: also keep the first point and the minimum and maximum of each interval
+        of this length (a timedelta64 for datetime64 times, a number in the times' units otherwise),
+        aligned to multiples of it from 0 (the Unix epoch for datetime64): np.timedelta64(1, "h")
+        keeps each clock hour's first, minimum and maximum (UTC), so they can be read back exactly
+        from the kept points. Like the block's own required points, they cost nothing in the rmse
+        pass's exchange rate, and they are kept past max_points if need be (with a warning). Not with
+        refit, whose values could stray past an interval's minimum or maximum.
 
     The first, last, minimum and maximum points are always kept. A run of non-finite values (a gap)
     keeps its first point and the finite points just before and after it, past max_points if need be
     (with a warning, and `max_points_met` False); a kept non-finite value holds until the next kept
     point.
     """
+    if refit and include_regular_intervals is not None:
+        raise ValueError("refit can't be combined with include_regular_intervals: refit values could stray "
+                         "past an interval's minimum or maximum")
     t = np.asarray(times)
     x = np.asarray(values, dtype=np.float64)
-    r = rank(t, x)
+    r = rank(t, x, include_regular_intervals)
     if max_points is not None and max_points < min(4, len(x)):
         raise ValueError("max_points must be at least 4 (the first, last, minimum and maximum points)")
     if max_error is not None and not (np.isfinite(max_error) and max_error >= 0):
@@ -391,8 +459,10 @@ def prune(times, values, error_per_point=None, max_points=None, max_error=None, 
     max_error_met = max_error is None or worst <= max_error * (1 + 1e-12)
     max_points_met = max_points is None or len(idx) <= max_points
     if not max_points_met:
-        warnings.warn(f"prune: {len(idx)} points kept, over max_points={max_points}: {r.gaps} of them are "
-                      "there for gaps (non-finite values)", stacklevel=2)
+        why = [f"{r.gaps} for gaps (non-finite values)"] if r.gaps else []
+        why += [f"{r.intervals} for include_regular_intervals"] if r.intervals else []
+        warnings.warn(f"prune: {len(idx)} points kept, over max_points={max_points}: the required points alone "
+                      f"are {r.min_points} ({', '.join(why)})", stacklevel=2)
     if max_error is not None and r._span > 0 and r.n >= NOISE_MIN_POINTS:
         sigma = r.noise
         if max_error < sigma:
