@@ -760,12 +760,13 @@ N their total samples.
     - they are already points of the absolute grid (§5.5), so on the same or a finer step they
       come back bit for bit, however the merged block's min and max moved;
     - only a coarser step rounds them again, without bias (ties to even);
-    - one coarsening, or two in a row, gives the values rounding the first decode once onto the
-      final grid would (an odd index is a tie and goes to its even neighbour, so the next halving
-      divides exactly);
-    - from the third on, the roundings compound: n halvings move a sample at most ⅔ of the final
-      step from its first decode (about 15% more RMS than rounding once), so its error stays
-      under one step of the coarsest grid the block has used;
+    - up to a total factor of 4 (one coarsening, or two halvings), the result is what rounding
+      the first decode once onto the final grid would give (after a halving an odd index is a tie
+      and goes to its even neighbour, so a second halving divides exactly);
+    - past that the roundings compound: successive halvings move a sample at most ⅔ of the final
+      step from its first decode (about 15% more RMS than rounding once), and any other mix of
+      coarsenings (×2 then ×4, ×4 then ×4, ...) under one final step (0.71 the worst found);
+      so its error stays under one step of the coarsest grid the block has used;
     - decimal data on a decimal grid stays exact;
     - on a scaled grid they are exact on any grid sharing its fine grid B^p / D (new samples from
       the same sensor: any N), and the index gcd's grids lie inside their base grid; leaving the
@@ -879,8 +880,9 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
     - decoded values are fixed points block by block wherever the re-encode picks the same step:
       noisy, smooth, stepped, short and at extreme magnitudes;
     - re-encoding decoded values one level coarser keeps their mean (ties to even);
-    - successive halvings of the step move decoded values at most ⅔ of the final step, and the
-      first two no further than rounding once;
+    - re-encoding with one bit fewer each time: up to a total factor of 4, exactly rounding the
+      first decode once; within ⅔ of the final step while every step was a halving, and within
+      one final step otherwise;
     - 200 straddling updates that move the block's min and max keep the kept samples' error under
       one step of the coarsest grid used, unchanged while the step is.
 11. **Time error** (§4, `tests/test_time_error.py`):

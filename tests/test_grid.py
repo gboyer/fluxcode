@@ -159,9 +159,10 @@ def test_no_tie_bias_when_coarsening():
 
 def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
     """Decoded values re-encoded with one bit fewer each time (the step doubling, the range fixed):
-    the first two halvings give what rounding the first decode once would (an odd index is a tie
-    that goes to its even neighbour, so the next halving divides exactly); later ones compound,
-    staying within 2/3 of the final step of the first decode (ENCODER §6)."""
+    up to a total factor of 4 they give what rounding the first decode once would (after a halving
+    an odd index is a tie that goes to its even neighbour, so a second halving divides exactly);
+    past that they compound, within 2/3 of the final step of the first decode while every step was
+    a halving, and within one final step after any other mix (ENCODER §6)."""
     rng = np.random.default_rng(11)
     worst = 0.0
     for _ in range(20):
@@ -169,16 +170,19 @@ def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
         group, first_e, _ = encode_block(x)
         first = y = decode(group)
         e = first_e
+        halvings_only = True
         for bits in range(15, 4, -1):
+            previous_e = e
             group, e, _ = encode_block(y, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=1,
                                                max_quantize_bits=bits))
+            halvings_only &= e - previous_e <= 1
             y = decode(group)
             step = 2.0 ** e
             moved = np.abs(y - first).max() / step
-            assert moved <= 2 / 3, (bits, moved)
+            assert moved <= (2 / 3 if halvings_only else 1), (bits, moved)
             if e - first_e <= 2:
                 np.testing.assert_array_equal(y, np.rint(first / step) * step)
-            worst = max(worst, moved)
+            worst = max(worst, moved if halvings_only else 0.0)
     assert worst > 0.6  # the compounding is real: once from the first decode would be at most 1/2
 
 
