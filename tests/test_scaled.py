@@ -114,6 +114,19 @@ def test_each_block_encodes_as_it_would_alone(name):
         np.testing.assert_array_equal(alone.residuals, together.residuals[b * L:(b + 1) * L])
 
 
+def test_the_step_fit_reads_no_stale_scratch():
+    """A prefix difference off the seed ends the fit: the scratch indices past it were never written,
+    and the block before (or uninitialised memory) mustn't decide the grid."""
+    rng = np.random.default_rng(0)
+    for trial in range(3000):  # 1194, 1779 and 2770 depended on the scratch before the fix
+        n = int(rng.integers(3, 120))
+        step = rng.uniform(0.5, 2)
+        pow2_step = step / rng.uniform(2, 40)
+        x = np.cumsum(rng.integers(-40, 41, n)) * step + rng.uniform(-1, 1, n) * pow2_step * rng.uniform(0, 0.3)
+        fits = {_rational.fit_step(x, pow2_step, np.full(n, fill)) for fill in (0.0, np.nan, 1e6)}
+        assert len(fits) == 1, (trial, fits)
+
+
 def test_an_unrationalizable_step_stays_binary():
     """A gain no fraction of 16-bit N and D reaches: power-of-two grid, alone or in a group."""
     x = -3.21 + counts(12, 100, 600) * 0.013712345678

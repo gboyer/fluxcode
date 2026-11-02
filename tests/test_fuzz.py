@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Randomized single-block encodes across the double range: no crash, the error bound
-(ENCODER §7.1) and, without a target, the fixed point (ENCODER §7.3).
+"""Randomized block groups of 1 to 2,500 samples (one to three blocks) across the double range: no
+crash, the error bound (ENCODER §7.1), each block encoded as it would be alone and, without a
+target, the fixed point (ENCODER §7.3).
 
 Each case draws from its own generator, seeded by (seed, case), so a failure reproduces
 from those two numbers alone. The test runs a small budget; for a long run:
 
-    FLUXCODE_RUST=0 uv run python tests/test_fuzz.py --seeds 0-19 --cases 2000
+    FLUXCODE_RUST=0 uv run python tests/test_fuzz.py --seeds 0-39 --cases 1500
 
 which prints the failures by kind and params, with the (seed, case) of the first few, and how
 often the soft target moves decoded data on re-encode.
@@ -24,6 +25,7 @@ if __name__ == "__main__":
 
 import numpy as np
 import pytest
+from _series import group_rows
 
 import fluxcode
 from fluxcode import Params
@@ -38,8 +40,10 @@ PARAMS = [
 ]
 """Params drawn per case; with a target, the cap is soft and not checked for a fixed point (§7.3)."""
 
+BLOCK_LEN = 1000
 LENGTHS = [1, 2, 7, 9, 64, 300, 1000, 2500]
-"""Short blocks (at most 8 samples skip the analysis), a few dozen, and full blocks."""
+"""Short blocks (at most 8 samples skip the analysis), a few dozen, a full block and three blocks
+(the last one short)."""
 
 
 def make_case(seed: int, case: int) -> tuple[np.ndarray, int]:
@@ -70,10 +74,11 @@ def make_case(seed: int, case: int) -> tuple[np.ndarray, int]:
 
 
 def check_case(x: np.ndarray, params: Params) -> str | None:
-    """The first failure of a block ("crash", "bound", "fixed point"), or None."""
+    """The first failure of a block group ("crash", "non-finite", "bound", "not alone", "fixed point",
+    "fixed point bytes"), or None."""
     try:
         with np.errstate(all="ignore"):
-            first = fluxcode.encode_group(x, params).group
+            first = fluxcode.encode_group(x, params, block_len=BLOCK_LEN).group
             y = fluxcode.decode_group(first).values
             finite = np.isfinite(x)
             if not np.array_equal(np.isfinite(y), finite) or not np.array_equal(y[~finite], x[~finite], equal_nan=True):
@@ -83,7 +88,9 @@ def check_case(x: np.ndarray, params: Params) -> str | None:
                 ulps = 4 * np.spacing(np.abs(x[finite]).max())
                 if np.abs(y[finite] - x[finite]).max() > (hi - lo) / (2**params.min_quantize_bits - 0.5) + ulps:
                     return "bound"
-            if params.target_bits_per_sample is None:
+            if params.target_bits_per_sample is None:  # the target caps the whole group
+                if not encodes_alone(x, first, params):
+                    return "not alone"
                 second = fluxcode.encode_group(y, params).group
                 if not np.array_equal(fluxcode.decode_group(second).values, y, equal_nan=True):
                     return "fixed point"
@@ -92,6 +99,21 @@ def check_case(x: np.ndarray, params: Params) -> str | None:
     except Exception:  # noqa: BLE001 (any exception is the finding)
         return "crash"
     return None
+
+
+def encodes_alone(x: np.ndarray, group: bytes, params: Params) -> bool:
+    """Whether each block of a group has the grid, anchor and residuals it gets encoded alone."""
+    if x.size <= BLOCK_LEN:
+        return True
+    together = group_rows(group)
+    for block, start in enumerate(range(0, x.size, BLOCK_LEN)):
+        alone = group_rows(fluxcode.encode_group(x[start:start + BLOCK_LEN], params, block_len=BLOCK_LEN).group)
+        for field in ("block_flags", "grid_params", "grid_scales", "value_anchors"):
+            if getattr(alone, field)[0].tobytes() != getattr(together, field)[block].tobytes():
+                return False
+        if not np.array_equal(alone.residuals, together.residuals[start:start + alone.residuals.size]):
+            return False
+    return True
 
 
 def target_fixed(x: np.ndarray, params: Params) -> bool:
@@ -117,7 +139,7 @@ REGRESSIONS = [
     (6, 119),  # a scaled grid on 2^-1016 / 512: D * 2^-e overflowed, and the anchor was written as -2^63
     (0, 600),  # 2 samples decoded from 2^-e, within a quarter step of a decimal grid: snapped again
     (1, 332),  # 7 samples (a short block), the same
-    (8, 1189),  # 2500 samples at 4 bits: the same with few levels
+    (8, 1189),  # three blocks at 4 bits: the same with few levels
 ]
 
 

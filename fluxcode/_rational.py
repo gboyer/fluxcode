@@ -290,7 +290,9 @@ def fit_step(samples: np.ndarray, pow2_step: float, scratch_index: np.ndarray) -
     if seed == 0.0:
         return 0.0, 0.0, 0.0
     prefix = min(PREFIX_LEN, num_samples)
-    _, _, sum_kk, _, sum_ku, _ = _track(samples, 0, prefix, seed, error, scratch_index)
+    on_grid, _, sum_kk, _, sum_ku, _ = _track(samples, 0, prefix, seed, error, scratch_index)
+    if not on_grid:
+        return 0.0, 0.0, 0.0  # the indices past the stray difference were never written
     if sum_kk > 0:
         seed = sum_ku / sum_kk
     if _largest_residual(samples, 0, prefix, scratch_index, 0.0, seed, error) == math.inf:

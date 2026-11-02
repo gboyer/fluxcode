@@ -237,7 +237,9 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   one step of the coarsest grid their block has used, however many times it runs.
 - **Decimal data is lossless.** Values that are decimals of p places (as parsed from text) decode
   to the identical float64, as long as the block spans fewer than 2^16 decimal steps. Decimals
-  stored as float32 upstream decode as the decimal itself.
+  stored as float32 upstream decode as the decimal itself when the block is wide enough for float32's
+  rounding to sit within a quarter of its power-of-two step; a narrower block encodes the float32
+  values like any other data.
 - **Data on a scaled grid is lossless too** when it is the doubles nearest its rationals (thirds as
   k / 3, ADC counts as 10·c / 4095); computed as a float product it decodes within a few ulps.
 - **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet

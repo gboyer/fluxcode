@@ -712,7 +712,9 @@ N their total samples.
   - This holds when the block's range spans fewer than 2^B decimal steps; wider blocks use the
     power-of-two grid.
   - float32 rounding artifacts are intentionally lost: a decimal stored as float32 upstream
-    decodes as the decimal itself.
+    decodes as the decimal itself, when the float32 rounding is within a quarter of the block's
+    power-of-two step (the detection tolerance, §5.3). A narrower block doesn't detect the
+    decimal and encodes the float32 values like any other data.
 - **Data on a scaled grid is bit-exact** when it is the doubles nearest (K0 + N·q)·B^p / D (thirds
   as k / 3, ADC counts as 10·c / 4095) and the rational search finds the grid; computed as a float
   product (c · (10 / 4095)) it decodes within a few ulps.
@@ -896,10 +898,11 @@ N their total samples.
     - free-running clocks (at a candidate phase, between two, and drifting) round onto their own
       phase, every block at one phase; a regular block off every grid keeps its times; `update`
       keeps a stored block's phase (re-sending gives the block group back).
-12. **Fuzz** (`tests/test_fuzz.py`): random single blocks of 1 to 2500 samples across the double
-    range (noise, scaled, decimal and power-of-two grids, near misses, constants, subnormals, 20%
+12. **Fuzz** (`tests/test_fuzz.py`): random block groups of 1 to 2,500 samples (up to three
+    blocks of 1,000) across the double range (noise, scaled, decimal and power-of-two grids, near misses, constants, subnormals, 20%
     with non-finite values) under six params: no crash, non-finite values kept, the error bound
-    (§7.1) and, without a target, the fixed point in values and bytes. Each case reproduces from
+    (§7.1) and, without a target, each block encoded as it would be alone and the fixed point in
+    values and bytes. Each case reproduces from
     its (seed, case); found cases are pinned. `python tests/test_fuzz.py --seeds 0-39` runs
     60,000 cases (none fail).
 
