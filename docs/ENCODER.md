@@ -915,13 +915,30 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
     - free-running clocks (at a candidate phase, between two, and drifting) round onto their own
       phase, every block at one phase; a regular block off every grid keeps its times; `update`
       keeps a stored block's phase (re-sending gives the block group back).
-12. **Fuzz** (`tests/test_fuzz.py`): random block groups of 1 to 2,500 samples (up to three
-    blocks of 1,000) across the double range (noise, scaled, decimal and power-of-two grids, near misses, constants, subnormals, 20%
-    with non-finite values) under six params: no crash, non-finite values kept, the error bound
-    (§7.1) and, without a target, each block encoded as it would be alone and the fixed point in
-    values and bytes. Each case reproduces from
-    its (seed, case); found cases are pinned. `python tests/test_fuzz.py --seeds 0-39` runs
-    60,000 cases (none fail).
+12. **Fuzz** (`tests/test_fuzz.py`), every case checked with `fluxcode.verify` (below). Each case
+    reproduces from its (seed, case); found cases are pinned.
+    - **Values:** random block groups of 1 to 2,500 samples (up to three blocks of 1,000) across the
+      double range (noise, scaled, decimal and power-of-two grids, near misses, constants,
+      subnormals, 20% with non-finite values) under six params, through `encode_group`: no crash,
+      every check of `verify.encode_group`, and without a target the fixed point in values and
+      bytes and each block encoded as it would be alone. `python tests/test_fuzz.py --seeds 0-39`
+      runs 60,000 cases (none fail).
+    - **Timed:** the same values on random clocks (regular, jittered, with gaps, events, duplicate
+      times) in every time unit, with a time error of 0 to 0.5, through `encode_group` or
+      `encode_time_blocks`, then one to three updates (`update`, `update_time_blocks` upserts and
+      range deletions, `replace_time_blocks` from the source data), each checked against its
+      input. `python tests/test_fuzz.py --fuzzer timed --seeds 0-39 --cases 500` runs 20,000
+      cases; one fails, pinned as an expected failure: a stored time rounded up to its block's end
+      isn't replaced by an upsert at that time (the new sample goes to the next block, and both
+      are kept).
+
+**Checking production output.** `fluxcode.verify` checks a call's result against its arguments:
+`verify.encode_group(result, x, params, times=t)` returns the guarantees of §6 the result broke
+(an empty list if none), for every encode and update function, and `verify.fixed_point(group)`
+re-encodes the decoded data. It decodes the result and uses no encoder code, so an encoder bug
+can't hide itself; the encode path is unchanged. A check costs about as much as the encode,
+so check a sample of block groups. Not checked: the noise floor's f·σ/2, decimal exactness
+(which data are decimals is the caller's knowledge), and bounds over several updates.
 
 ## References
 

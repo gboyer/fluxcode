@@ -252,6 +252,11 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   they stay in order and inside their time blocks (a time rounded up to its block's end stays in
   the block, at the end), and no time is rounded twice.
 
+To check them in production, `fluxcode.verify` takes a call's result and arguments and returns
+what it broke: `verify.encode_group(result, x, params, times=t)` is `[]` when the result keeps
+them. It costs about as much as the encode, so check a sample of block groups
+([docs/ENCODER.md §7](docs/ENCODER.md#7-conformance-tests)).
+
 ## How it works
 
 Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCODER.md)):
@@ -343,6 +348,8 @@ Code layout (`fluxcode/`), from the public API down:
 - `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: the time axis
   kernels (§4); `_noise.py`, `_nonfinite.py` and `_extreme_magnitudes.py`: the noise estimate,
   NaN/inf blocks and extreme ranges, each off the common path.
+- `verify.py`: checks a call's result against the guarantees (ENCODER §6), from the decoded
+  output; nothing on the encode path uses it.
 - `_format.py`: the header, field offsets and row types (§7); `_bitpacking.py`: writing and
   reading the body's fields, and splicing bodies for `update`. `rust/src/` has the same-named
   `format.rs` and `bitpacking.rs`.
