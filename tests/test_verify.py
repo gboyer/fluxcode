@@ -85,6 +85,23 @@ def test_coarser_than_the_params(series):
     assert {"range_bound", "fine_bound"} <= checks(verify.encode_group(coarse, x, Params(noise_floor_sigma=0)))
 
 
+def test_decimals_changed():
+    rng = np.random.default_rng(2)
+    x = np.round(100 + np.cumsum(rng.normal(size=3000)) * 0.05, 2)
+    off = Params(noise_floor_sigma=0)
+    assert verify.encode_group(fluxcode.encode_group(x, off), x, off, decimals=2) == []
+    # Stored on a power-of-two grid (encoded at 8 bits, checked as 16, where cents are exact)
+    coarse = fluxcode.encode_group(x, Params(noise_floor_sigma=0, max_quantize_bits=8))
+    assert "decimal" in checks(verify.encode_group(coarse, x, off, decimals=2))
+    # Where exactness isn't guaranteed, not checked: cents noisier than 1/f steps under the noise floor
+    noisy = np.round(100 + 0.1 * rng.normal(size=1000), 2)
+    result = fluxcode.encode_group(noisy)
+    assert not np.array_equal(fluxcode.decode_group(result.group).values, noisy)
+    assert verify.encode_group(result, noisy, decimals=2) == []
+    # ... nor samples that aren't decimals of the places given
+    assert verify.encode_group(coarse, x, off, decimals=1) == verify.encode_group(coarse, x, off)
+
+
 def test_lost_non_finite_values(series):
     x, _ = series
     finite = np.nan_to_num(x, nan=0.0, neginf=0.0)

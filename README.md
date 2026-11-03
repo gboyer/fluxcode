@@ -235,8 +235,12 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Updates don't drift.** Decoded values are grid points, so re-encoding them on the same or a
   finer step returns them bit for bit. Samples an `update_time_blocks` keeps in a block it re-encodes stay within
   one step of the coarsest grid their block has used, however many times it runs.
-- **Decimal data is lossless.** Values that are decimals of p places (as parsed from text) decode
-  to the identical float64, as long as the block spans fewer than 2^16 decimal steps. Decimals
+- **Decimal data is lossless** unless it is noisier than its decimals. Values that are decimals of
+  p places (as parsed from text) decode to the identical float64 when the block spans fewer than
+  2^15 decimal steps (2^(B−1); up to 2^B for some p), has no `target_bits_per_sample`, and isn't
+  coarsened by the noise floor. The noise floor stores white noise whose σ is above 1/f to 2/f
+  decimal steps (4–8 at the default f; 6.25 for cents) at its own step, like any noisy block: its
+  last digit is noise. `noise_floor_sigma=0` keeps such data exact. Decimals
   stored as float32 upstream decode as the decimal itself when the block is wide enough for float32's
   rounding to sit within a quarter of its power-of-two step; a narrower block encodes the float32
   values like any other data.
@@ -256,7 +260,7 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 
 To check them in production, `fluxcode.verify` takes a call's result and arguments and returns
 what it broke: `verify.encode_group(result, x, params, times=t)` is `[]` when the result keeps
-them. It costs about as much as the encode, so check a sample of block groups
+them (pass `decimals=p` for data of p decimal places to check their exactness too). It costs about as much as the encode, so check a sample of block groups
 ([docs/ENCODER.md §7](docs/ENCODER.md#7-conformance-tests)).
 
 ## How it works

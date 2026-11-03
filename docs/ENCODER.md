@@ -452,7 +452,7 @@ sample sits on:
 
 ```
 tol = ps / 4
-for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, −22):
+for p = min(floor(log10(rng + 2·tol)), 22) down to max(the smallest p with 10^p > ps, −22):
     s = 10^-p                                        # exact integer when p <= 0
     if all |x[i]·s − floor(x[i]·s + 0.5)| <= tol·s  (for every i)
        and max(|lo|, |hi|)·s < 2^52:
@@ -467,6 +467,11 @@ for p = min(floor(log10(rng)), 22) down to max(the smallest p with 10^p > ps, �
 - **Tolerance** is a quarter power-of-two step. The decimal grid is only chosen when every sample
   is within that of it, so its max error is never larger than the power-of-two grid's at the same
   step.
+- **The coarsest candidate** counts the tolerance: samples within `tol` of grid points 10^p apart
+  can lie rng + 2·tol apart. From rng alone, a block spanning exactly one decimal step whose
+  difference rounds a hair under it (672.594568 − 672.594567 = 9.99…e−7) started below its step,
+  and at B = 4 missed it (found by `verify`'s decimal check). The extra candidate costs a probe of
+  sample 0 at most.
 - **Exact powers of ten only:** −22 ≤ p ≤ 22, so 10^|p| is an exact double.
 - **Skipped for wide blocks:** no 10^p grid with p ≤ 22 spans 2^1023.
 - **Worst-case cost.** A block on a decimal grid except for one sample near its end defeats the
@@ -716,10 +721,20 @@ N their total samples.
     value (1000.0): an error within `tol`, as for every sample.
   - The `block_min` and `block_max` that encode returns are the samples' own. Callers using them
     as hard bounds on decoded values (for pruning) should allow half a step either way.
-- **Decimal data is bit-exact:** values that are decimals of p places (as parsed from text)
-  decode to the identical float64.
-  - This holds when the block's range spans fewer than 2^B decimal steps; wider blocks use the
-    power-of-two grid.
+- **Decimal data is bit-exact,** unless the noise floor or a target coarsens it: values that are
+  decimals of p places (as parsed from text) decode to the identical float64 when
+  - the block's range spans fewer than 2^(B−1) decimal steps. Detection needs the power-of-two
+    step ps (§5.1, at least range / 2^B, rounded up to a power of two) finer than 10^p, which that
+    guarantees; up to 2^B steps it depends on where 10^p falls between powers of two (cents to
+    about 0.78·2^B, thousands to 0.51·2^B; integers always, as ps = 1 holds them). Wider blocks
+    use the power-of-two grid;
+  - the noise floor doesn't coarsen the block (off, under 256 samples, or not white noise), or
+    does so to a step still finer than 10^p. On white noise ps becomes 2^floor(log2(f·σ)) (§5.2),
+    which reaches 10^p once σ is between 1/f and 2/f decimal steps (4–8 at f = 0.25; 6.25 for
+    cents). Those blocks are stored like any noisy block, within f·σ/2: their last digit is noise,
+    and keeping it would cost +12% at 12 steps of σ, +42% at 25 and +82% at 100 (cents in blocks
+    of 1,000). `noise_floor_sigma=0` keeps decimal data exact;
+  - there is no `target_bits_per_sample` (§5.8 may coarsen any block).
   - float32 rounding artifacts are intentionally lost: a decimal stored as float32 upstream
     decodes as the decimal itself, when the float32 rounding is within a quarter of the block's
     power-of-two step (the detection tolerance, §5.3). A narrower block doesn't detect the
@@ -942,14 +957,23 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
       input. Some new times and range ends are moved onto block boundaries, preferring those
       holding a stored time (from a stream of their own, so the other draws stay as they were).
       `python tests/test_fuzz.py --fuzzer timed --seeds 0-39 --cases 500` runs 20,000 cases.
+    - **Decimal:** decimals of −3 to 8 places (noise, walks, a few levels; 1 to ~300,000 steps
+      wide) under five params (noise floor off and on, decimal grids only, 10 and 4 bits), through
+      `encode_group` then `update`, or `encode_time_blocks` then `update_time_blocks`, checked with
+      `decimals`. It found a block spanning one decimal step that missed its grid at 4 bits
+      (§5.3, the coarsest candidate), pinned. `--fuzzer decimal --seeds 0-19 --cases 300` runs
+      6,000 cases.
 
 **Checking production output.** `fluxcode.verify` checks a call's result against its arguments:
 `verify.encode_group(result, x, params, times=t)` returns the guarantees of §6 the result broke
 (an empty list if none), for every encode and update function, and `verify.fixed_point(group)`
 re-encodes the decoded data. It decodes the result and uses no encoder code, so an encoder bug
 can't hide itself; the encode path is unchanged. A check costs about as much as the encode,
-so check a sample of block groups. Not checked: the noise floor's f·σ/2, decimal exactness
-(which data are decimals is the caller's knowledge), and bounds over several updates.
+so check a sample of block groups. With `decimals=p` it also checks that blocks of p-place
+decimals decode bit for bit where the guarantee above holds (no target, the noise floor off or
+fewer than 256 samples, fewer than 2^(B−1) steps). Not checked: the noise floor's f·σ/2, decimal
+exactness without `decimals` (which data are decimals is the caller's knowledge), and bounds over
+several updates.
 
 ## References
 

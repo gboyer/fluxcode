@@ -285,6 +285,70 @@ def random_time_update(
     return result.group, verify.replace_time_blocks(result, group, declared, values, ticks[mask], params, **hour)
 
 
+DECIMAL_PARAMS = [
+    Params(noise_floor_sigma=0),
+    Params(),  # only blocks under 256 samples are guaranteed exact
+    Params(grids="decimal", noise_floor_sigma=0),
+    Params(noise_floor_sigma=0, max_quantize_bits=10),
+    Params(noise_floor_sigma=0, min_quantize_bits=1, max_quantize_bits=4),
+]
+
+
+def to_decimals(x: np.ndarray, decimals: int) -> np.ndarray:
+    """The doubles nearest x rounded to the given decimal places (negative: tens, hundreds...)."""
+    if decimals >= 0:
+        return np.round(x * 10.0 ** decimals) / 10.0 ** decimals
+    return np.round(x / 10.0 ** -decimals) * 10.0 ** -decimals
+
+
+def check_decimal_case(seed: int, case: int) -> str | None:
+    """The first failure of a decimal case (encode, then update or update_time_blocks), checked
+    with verify's decimals: "step: check (DECIMAL_PARAMS[i])", or None."""
+    rng = np.random.default_rng([seed, case, 3])
+    decimals = int(rng.integers(-3, 9))
+    params_idx = int(rng.integers(0, len(DECIMAL_PARAMS)))
+    params = DECIMAL_PARAMS[params_idx]
+    n = int(rng.choice(LENGTHS))
+    unit = 10.0 ** -decimals
+
+    def draw(count: int) -> np.ndarray:  # noise, a walk, or a few levels, 1 to ~300,000 steps wide
+        spread = 10 ** rng.uniform(0, 5.5) * unit
+        offset = rng.integers(-(10**9), 10**9) * unit
+        shape = int(rng.integers(0, 3))
+        y = rng.normal(size=count) if shape == 0 else np.cumsum(rng.normal(size=count)) / max(1, count) ** 0.5
+        if shape == 2:
+            y = rng.integers(0, 4, count).astype(np.float64)
+        return to_decimals(offset + spread * y / 6, decimals)
+
+    x = draw(n)
+    step = "encode"
+    try:
+        if rng.random() < 0.5:
+            result = fluxcode.encode_group(x, params, block_len=BLOCK_LEN)
+            found = verify.encode_group(result, x, params, block_len=BLOCK_LEN, decimals=decimals)
+            if not found:
+                step = "update"
+                block = int(rng.integers(0, -(-n // BLOCK_LEN) + 1))
+                blocks = {block: draw(int(rng.choice(LENGTHS)))}
+                updated = fluxcode.update(result.group, blocks, params)
+                found = verify.update(updated, result.group, blocks, params, decimals=decimals)
+        else:
+            hour: TimeBlocks = {"start_time": 0, "block_duration": 1000, "time_unit": "s"}
+            ticks = np.arange(n, dtype=np.int64)
+            result = fluxcode.encode_time_blocks(x, ticks, params, **hour)
+            found = verify.encode_time_blocks(result, x, ticks, params, decimals=decimals, **hour)
+            if not found:
+                step = "update_time_blocks"
+                new_ticks = np.sort(rng.integers(0, n + 1000, int(rng.choice(LENGTHS)))).astype(np.int64)
+                new = draw(new_ticks.size)
+                updated = fluxcode.update_time_blocks(result.group, new, new_ticks, params, **hour)
+                found = verify.update_time_blocks(updated, result.group, new, new_ticks, params, decimals=decimals,
+                                                  **hour)
+    except Exception:  # noqa: BLE001 (any exception is the finding)
+        return f"{step}: crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
+    return f"{step}: {failure(found)} (DECIMAL_PARAMS[{params_idx}])" if found else None
+
+
 @pytest.mark.parametrize("seed", range(4))
 def test_fuzz(seed):
     failures = []
@@ -303,6 +367,12 @@ def test_fuzz_timed(seed):
         found = check_timed_case(seed, case)
         if found:
             failures.append((*found, seed, case))
+    assert not failures, failures[:5]
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_fuzz_decimal(seed):
+    failures = [(what, seed, case) for case in range(250) if (what := check_decimal_case(seed, case))]
     assert not failures, failures[:5]
 
 
@@ -332,9 +402,21 @@ def test_fuzz_timed_regressions(seed, case):
     assert check_timed_case(seed, case) is None
 
 
+# Decimal cases the fuzz found, pinned: (seed, case) of check_decimal_case
+DECIMAL_REGRESSIONS = [
+    (0, 295),  # 672.594568 and .594567 at 4 bits: the range came out under 1e-6, so 1e-6 wasn't tried
+    (6, 81),  # the same over a block of 7
+]
+
+
+@pytest.mark.parametrize("seed,case", DECIMAL_REGRESSIONS)
+def test_fuzz_decimal_regressions(seed, case):
+    assert check_decimal_case(seed, case) is None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--fuzzer", choices=["values", "timed"], default="values")
+    ap.add_argument("--fuzzer", choices=["values", "timed", "decimal"], default="values")
     ap.add_argument("--seeds", default="0-9", help="a range like 0-9, or a single seed")
     ap.add_argument("--cases", type=int, default=1500, help="cases per seed")
     a = ap.parse_args()
@@ -346,6 +428,8 @@ def main() -> None:
             if a.fuzzer == "timed":
                 found = check_timed_case(seed, case)
                 what = None if found is None else f"{found[0]}: {found[1]}"
+            elif a.fuzzer == "decimal":
+                what = check_decimal_case(seed, case)
             else:
                 params = PARAMS[params_idx]
                 what = check_case(x, params)

@@ -42,10 +42,14 @@ Checked, per block (the `check` of each Violation):
         more than time_error times their own interval.
     "time_block": a time decoded outside its time block, end included.
     "fixed_point": re-encoding the decoded data changed it, or the bytes from the second encode.
+    "decimal" (with decimals=p, the places of decimal data): a block whose finite samples are all
+        the doubles nearest k / 10^p didn't decode them bit for bit, where that is guaranteed:
+        fewer than 2^(max_quantize_bits - 1) decimal steps, decimal grids on, no target, and the noise
+        floor off or fewer than 256 samples.
 
 Not checked: the noise floor's f sigma / 2 (it needs the encoder's estimate of sigma), the
-bit-exactness of decimal data (which data are decimals is the caller's knowledge), and bounds
-spanning several updates (they need the original samples).
+bit-exactness of decimal data unless the caller passes decimals (which data are decimals is the
+caller's knowledge), and bounds spanning several updates (they need the original samples).
 """
 
 from collections.abc import Iterable, Mapping
@@ -103,6 +107,7 @@ def encode_group(
     block_len: int = _api.DEFAULT_BLOCK_LEN,
     times: npt.ArrayLike | None = None,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.encode_group(samples, params, ...), given the same arguments.
 
@@ -111,7 +116,8 @@ def encode_group(
     """
     series = _args.as_series(samples)
     ticks, unit = _args.series_ticks(times, time_unit, series.shape[0])
-    return _check_encode(result, series, _args.fixed_sizes(series.shape[0], block_len), ticks, unit, params)
+    return _check_encode(result, series, _args.fixed_sizes(series.shape[0], block_len), ticks, unit, params,
+                         decimals=decimals)
 
 
 def encode_blocks(
@@ -122,6 +128,7 @@ def encode_blocks(
     *,
     times: npt.ArrayLike | None = None,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.encode_blocks(samples, block_sizes, params, ...).
 
@@ -130,7 +137,7 @@ def encode_blocks(
     """
     series = _args.as_series(samples, allow_empty=True)
     ticks, unit = _args.series_ticks(times, time_unit, series.shape[0])
-    return _check_encode(result, series, _args.as_block_sizes(block_sizes), ticks, unit, params)
+    return _check_encode(result, series, _args.as_block_sizes(block_sizes), ticks, unit, params, decimals=decimals)
 
 
 def encode_time_blocks(
@@ -142,6 +149,7 @@ def encode_time_blocks(
     start_time: TimeLike,
     block_duration: DurationLike,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.encode_time_blocks(samples, times, params, ...).
 
@@ -155,7 +163,8 @@ def encode_time_blocks(
     duration = _args.to_ticks(block_duration, unit, "block_duration", duration=True)
     ids = _time_block_ids(ticks, start, duration)
     sizes = np.bincount(ids, minlength=0).astype(np.int64) if ids.shape[0] else np.zeros(0, np.int64)
-    return _check_encode(result, series, sizes, ticks, unit, params, time_blocks=(start, duration))
+    return _check_encode(result, series, sizes, ticks, unit, params, time_blocks=(start, duration),
+                         decimals=decimals)
 
 
 def encode(
@@ -167,6 +176,7 @@ def encode(
     blocks_per_group: int = _api.DEFAULT_BLOCKS_PER_GROUP,
     times: npt.ArrayLike | None = None,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.encode(samples, params, ...). Each message names its block group.
 
@@ -186,7 +196,7 @@ def encode(
                                result.block_means[group_idx])
         chunk = series[part]
         for violation in _check_encode(encoded, chunk, _args.fixed_sizes(chunk.shape[0], block_len),
-                                       None if ticks is None else ticks[part], unit, params):
+                                       None if ticks is None else ticks[part], unit, params, decimals=decimals):
             found.append(violation._replace(message=f"block group {group_idx}: {violation.message}"))
     return found
 
@@ -201,6 +211,7 @@ def update(
     *,
     times: Mapping[int, npt.ArrayLike] | None = None,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.update(group, blocks, params, ...), given the same arguments.
 
@@ -228,7 +239,7 @@ def update(
     if old.ticks is not None and params.time_error > 0:
         allowance = _neighbour_intervals(old, encoded, sizes)
     return _check_result(result, values, ticks, sizes, encoded, old.unit, params, params.time_error,
-                         allowance=allowance)
+                         allowance=allowance, decimals=decimals)
 
 
 def update_time_blocks(
@@ -242,6 +253,7 @@ def update_time_blocks(
     block_duration: DurationLike,
     delete_ranges: RangesLike | None = None,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.update_time_blocks(group, samples, times, params, ...).
 
@@ -284,7 +296,7 @@ def update_time_blocks(
         return [Violation("layout", -1, f"re-encoded blocks {_summary(reported)}: must include "
                           f"{_summary(np.flatnonzero(changed))} and lie within {_summary(np.flatnonzero(changed | met))}")]
     return _check_result(result, merged_values, merged_ticks[order], sizes, encoded, old.unit, params, 0.0,
-                         time_blocks=(start, duration))
+                         time_blocks=(start, duration), decimals=decimals)
 
 
 def replace_time_blocks(
@@ -298,6 +310,7 @@ def replace_time_blocks(
     start_time: TimeLike,
     block_duration: DurationLike,
     time_unit: TimeUnit | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Checks the result of fluxcode.replace_time_blocks(group, blocks, samples, times, params, ...).
 
@@ -329,7 +342,7 @@ def replace_time_blocks(
                               [_block_positions(old.offsets, ~encoded[:old.num_blocks], old.sizes),
                                np.arange(new_values.shape[0])])
     return _check_result(result, values, ticks, sizes, encoded, old.unit, params, params.time_error,
-                         time_blocks=(start, duration))
+                         time_blocks=(start, duration), decimals=decimals)
 
 
 def fixed_point(group: bytes, params: Params = DEFAULT_PARAMS) -> list[Violation]:
@@ -484,11 +497,11 @@ def _neighbour_intervals(old: _Decoded, encoded: np.ndarray, sizes: np.ndarray) 
 
 def _check_encode(
     result: EncodedGroup, series: np.ndarray, sizes: np.ndarray, ticks: np.ndarray | None, unit: int, params: Params,
-    time_blocks: tuple[int, int] | None = None,
+    time_blocks: tuple[int, int] | None = None, decimals: int | None = None,
 ) -> list[Violation]:
     """Checks a fresh encode: every block encoded from the given samples."""
     return _check_result(result, series, ticks, sizes, np.ones(sizes.shape[0], np.bool_), unit, params,
-                         params.time_error, time_blocks=time_blocks)
+                         params.time_error, time_blocks=time_blocks, decimals=decimals)
 
 
 def _check_result(
@@ -503,6 +516,7 @@ def _check_result(
     *,
     allowance: np.ndarray | None = None,
     time_blocks: tuple[int, int] | None = None,
+    decimals: int | None = None,
 ) -> list[Violation]:
     """Compares a block group with the expected series.
 
@@ -526,6 +540,8 @@ def _check_result(
         changed = ~np.repeat(encoded, sizes) & ~_same_doubles_mask(new.values, values)
         _report_samples(found, "untouched", changed, new.offsets, "samples of a block not re-encoded changed")
     _check_values(found, values, new, sizes, encoded, params, result)
+    if decimals is not None:
+        _check_decimals(found, values, new, sizes, encoded, params, decimals)
     if ticks is not None and new.ticks is not None:
         _check_times(found, ticks, new.ticks, sizes, new.offsets, encoded, time_error, allowance, time_blocks)
     return found
@@ -558,6 +574,39 @@ def _check_values(
                 found.append(Violation(check, block_idx, f"max error {2 * half_error[block_idx]:.17g} over "
                                        f"{what} {2 * half_bound[block_idx]:.17g}"))
     _check_stats(found, result, encoded, count, lo, hi, mean, magnitude)
+
+
+def _check_decimals(
+    found: list[Violation], given: np.ndarray, new: _Decoded, sizes: np.ndarray, encoded: np.ndarray,
+    params: Params, decimals: int,
+) -> None:
+    """Decimal data decode bit for bit in the encoded blocks where that is guaranteed (ENCODER §6).
+
+    A block is checked if its finite samples are all decimals of the given places (the doubles
+    nearest k / 10^decimals), they span fewer than 2^(max_quantize_bits - 1) decimal steps (then
+    the B-bit power-of-two step is finer than 10^-decimals, which detection needs), k stays
+    under 2^52, the params detect decimal grids, there is no target, and the noise floor is off
+    or the block is under 256 samples. Other blocks aren't.
+    """
+    if not -22 <= decimals <= 22:
+        raise ValueError(f"decimals must be from -22 to 22, got {decimals}")
+    if params.target_bits_per_sample is not None or params.grids == "binary" or not given.shape[0]:
+        return
+    finite = np.isfinite(given)
+    with np.errstate(all="ignore"):
+        k = np.round(given * 10.0 ** decimals) if decimals >= 0 else np.round(given / 10.0 ** -decimals)
+        nearest = k / 10.0 ** decimals if decimals >= 0 else k * 10.0 ** -decimals
+    off = finite & ~((nearest == given) & (np.abs(k) < 2.0 ** 52))
+    block_ids = np.repeat(np.arange(sizes.shape[0]), sizes)
+    k = np.where(finite, k, np.nan)
+    k_lo = np.full(sizes.shape[0], np.inf)
+    k_hi = np.full(sizes.shape[0], -np.inf)
+    np.fmin.at(k_lo, block_ids, k)
+    np.fmax.at(k_hi, block_ids, k)
+    checked = (encoded & (np.bincount(block_ids, off, sizes.shape[0]) == 0) & (k_hi - k_lo < 2.0 ** (params.max_quantize_bits - 1))
+               & ((params.noise_floor_sigma == 0) | (sizes < NOISE_FLOOR_MIN_SAMPLES)))
+    bad = np.repeat(checked, sizes) & finite & (new.values != given)
+    _report_samples(found, "decimal", bad, new.offsets, "decimal samples of a block guaranteed exact changed")
 
 
 @njit(nogil=True, cache=True)

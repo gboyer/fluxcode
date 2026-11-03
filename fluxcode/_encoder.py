@@ -380,9 +380,10 @@ def detect_decimal(
     # Tolerance is 1/4 of the power-of-two step size
     tolerance = 0.25 * pow2_step
     max_abs_val = max(abs(lower_bound), abs(upper_bound))
-    # Coarsest plausible decimal exponent spanning the block's range
+    # Coarsest plausible decimal exponent: samples within tolerance of two grid points are at most
+    # range + 2 tolerance apart (a range of one step can come out a hair under it, 1e-6 as 9.99...e-7)
     range_span = upper_bound - lower_bound
-    decimal_exp = min(math.floor(math.log10(range_span)), P_MAX)
+    decimal_exp = min(math.floor(math.log10(range_span + 2.0 * tolerance)), P_MAX)
     while decimal_exp >= P_MIN and 10.0 ** decimal_exp > pow2_step:
         # Scale factor 10^-decimal_exp (an exact double for p <= 0)
         inv_decimal_step = 10.0 ** -decimal_exp
