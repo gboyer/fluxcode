@@ -418,8 +418,9 @@ def _end_blocks(
     num_blocks = parsed.header.num_blocks
     lows, _ = block_bounds(new_ids, start, duration)
     candidates = [new_ids[ticks == lows] - 1]
-    edges = [edge for edge in ranges.ravel().tolist() if edge > start and (edge - start) % duration == 0]
-    candidates.append(np.array([(edge - start) // duration - 1 for edge in edges], np.int64))
+    edge_ids = [(edge - start) // duration - 1 for edge in ranges.ravel().tolist()
+                if edge > start and (edge - start) % duration == 0]
+    candidates.append(np.array([idx for idx in edge_ids if idx < num_blocks], np.int64))
     blocks = np.unique(np.concatenate(candidates))
     blocks = blocks[(blocks >= 0) & (blocks < num_blocks)]
     blocks = blocks[parsed.block_sizes[blocks] > 0]
