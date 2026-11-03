@@ -12,7 +12,7 @@ import pytest
 from _series import group_rows
 
 import fluxcode
-from fluxcode import Params, _time
+from fluxcode import Params, _time, verify
 from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME
 
 MS = 1_000_000  # ns
@@ -350,6 +350,55 @@ def test_a_time_rounding_up_to_its_block_end_stays_in_its_block():
     assert ((decoded_ticks[early] - START) % SECOND == 0).all()
     ends = np.cumsum(decoded.block_sizes) - 1
     assert np.isin(np.flatnonzero(early), ends).all()
+
+
+def _block_end_case():
+    """A block group whose block holds a time at its end, the next block's start: (group, block, end, kwargs)."""
+    ticks = at_or_after(jittered(3000, jitter=0.01, seed=4))
+    group = encode_seconds(np.arange(ticks.size, dtype=np.float64), ticks).group
+    decoded, decoded_ticks = check_time_blocks(group)
+    last = decoded_ticks[np.cumsum(decoded.block_sizes) - 1]
+    block = int(np.flatnonzero((last - START) % SECOND == 0)[0])
+    kwargs = {"start_time": np.datetime64(START, "ns"), "block_duration": np.timedelta64(SECOND, "ns")}
+    return group, block, START + (block + 1) * SECOND, kwargs
+
+
+def _times_and_values(group):
+    decoded = fluxcode.decode_group(group)
+    return decoded.times.view(np.int64), decoded.values, decoded.block_sizes
+
+
+@pytest.mark.parametrize("delete_ranges, new_time", [
+    (None, True),  # an upsert at the end time replaces the stored sample there
+    ([(0, 1)], False),  # a range starting at the end time deletes it
+    ([(0, SECOND)], False),  # ... and the whole next block
+    ([(-SECOND, 0)], False),  # a range covering the block but not its end keeps the end time
+    ([(-SECOND // 2, 0)], False),
+    ([(-SECOND, 0)], True),  # and an upsert there still replaces it
+])
+def test_update_time_blocks_reaches_a_time_stored_at_its_block_end(delete_ranges, new_time):
+    group, block, end, kwargs = _block_end_case()
+    old_ticks, old_values, _ = _times_and_values(group)
+    ranges = None if delete_ranges is None else [(end + a, end + b) for a, b in delete_ranges]
+    new_ticks = np.array([end] if new_time else [], np.int64)
+    result = fluxcode.update_time_blocks(group, -np.ones(new_ticks.size), new_ticks.view("datetime64[ns]"),
+                                         Params(noise_floor_sigma=0), delete_ranges=ranges, **kwargs)
+    assert not verify.update_time_blocks(result, group, -np.ones(new_ticks.size), new_ticks.view("datetime64[ns]"),
+                                         Params(noise_floor_sigma=0), delete_ranges=ranges, **kwargs)
+    ticks, values, sizes = _times_and_values(result.group)
+    # Expected by time alone: deleted if a range holds it, replaced if a new sample has its time
+    kept = np.ones(old_ticks.size, bool)
+    for a, b in ranges or []:
+        kept &= (old_ticks < a) | (old_ticks >= b)
+    kept &= ~np.isin(old_ticks, new_ticks)
+    expected = np.concatenate([old_ticks[kept], new_ticks])
+    order = np.argsort(expected, kind="stable")
+    np.testing.assert_array_equal(ticks, expected[order])
+    np.testing.assert_array_equal(values, np.concatenate([old_values[kept], -np.ones(new_ticks.size)])[order])
+    # A new sample at the end time goes to the block its time is in, the next one
+    if new_time:
+        assert sizes[block + 1] == np.sum(kept & (old_ticks >= end) & (old_ticks < end + SECOND)) + 1
+        assert ticks[np.cumsum(sizes)[block] - 1] < end
 
 
 def test_update_time_blocks_stores_new_times_exactly():

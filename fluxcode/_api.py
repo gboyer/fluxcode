@@ -318,9 +318,11 @@ def update_time_blocks(
     and new samples sharing a timestamp are all kept (in their order). So with only samples it
     is an upsert, with only delete_ranges a deletion, and with both a range replacement
     (new samples may be timed anywhere; those in a deleted range are kept, as they're added
-    after the deletion). New times are stored exactly: with params.time_error > 0 new samples
-    are an error (replace_time_blocks re-encodes whole blocks with a time error; stored times
-    are never rounded again). start_time and block_duration must be the ones the block group was
+    after the deletion). Both go by time, whichever block a time is stored in: a time rounded
+    up to its block's end (the next block's start) is replaced or deleted like any other, and a
+    new sample at it goes to the later block. New times are stored exactly: with
+    params.time_error > 0 new samples are an error (replace_time_blocks re-encodes whole blocks
+    with a time error; stored times are never rounded again). start_time and block_duration must be the ones the block group was
     encoded with: they aren't stored in it, so they can't be checked.
 
     Blocks that no range meets and no new sample falls in are carried over untouched,

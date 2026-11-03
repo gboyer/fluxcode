@@ -14,6 +14,8 @@ that would round below the block's start is raised to it, and one that would rou
 is lowered to the end itself (the next block's start, kept in this block so that its grid stays
 whole). Times are rounded only from the values given: update_time_blocks stores new times exactly,
 and replace_time_blocks re-encodes whole blocks, so a stored time is never rounded again.
+update_time_blocks replaces and deletes by time, so it also reaches a time stored at the end of
+the block before a boundary (_end_blocks).
 """
 
 from collections.abc import Iterable
@@ -272,10 +274,15 @@ def update_time_blocks(
         raise _args.decrease_error(ticks, int(np.flatnonzero(steps < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
     touched, covered = _block_masks(ranges, start, duration, num_old_blocks)
+    time_rows = _group.read_time_rows(parsed, np.zeros(0, np.int64))
+    # A block holding a time at its end is reached there too, and isn't covered without it
+    ends = _end_blocks(parsed, time_rows, ticks, new_ids, ranges, start, duration, covered)
+    touched[ends] = True
+    covered[ends] = False
     touched &= ~covered
     # Decode existing blocks touched by deletions or new samples (excluding fully covered ones)
     decoded = np.flatnonzero(touched | _new_blocks_mask(new_ids, num_old_blocks, covered))
-    time_rows = _group.read_time_rows(parsed, decoded)
+    _group.read_time_residuals(parsed, time_rows, decoded)
     gathered_ticks, gathered_values, gathered_blocks = _gather(parsed, decoded, time_rows)
     # Determine total block count including newly appended blocks
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
@@ -373,6 +380,65 @@ def replace_time_blocks(
             ticks, sizes, params.time_error, seed_ticks, seed_steps, block_bounds(indices, start, duration)
         )
     return _group.splice(parsed, indices, series_samples, sizes, ticks, params, time_rows, snap=False)
+
+
+def _end_blocks(
+    parsed: _group.ParsedGroup,
+    time_rows: _format.TimeRows,
+    ticks: np.ndarray,
+    new_ids: np.ndarray,
+    ranges: np.ndarray,
+    start: int,
+    duration: int,
+    covered: np.ndarray,
+) -> np.ndarray:
+    """Finds the stored blocks that hold a time at their end which an update reaches.
+
+    Rounding can store a time at a block's end, the next block's start (module docstring), so
+    a block's times lie in [its start, its end], the end included. A new sample or a delete
+    range at that time reaches the block although its block index is the next one's, and a
+    range covering [its start, its end) leaves that time. Only blocks whose end is a new time
+    or a range's start or end are candidates, and only their last stored times are read.
+
+    Args:
+        parsed: The block group.
+        time_rows: Its time rows (the columns at least; candidate irregular blocks' residuals
+            are unpacked into them).
+        ticks: 1D int64 array of the new samples' ticks.
+        new_ids: 1D int64 array of their blocks.
+        ranges: 2D int64 array of sorted, disjoint [start, end) deletion ranges.
+        start: Starting tick of block 0.
+        duration: Block duration in ticks.
+        covered: 1D bool array of the stored blocks the ranges cover, by [start, end).
+
+    Returns:
+        1D int64 array of the blocks, increasing: those not covered whose end is a new time or
+        deleted, and those covered whose end isn't deleted.
+    """
+    num_blocks = parsed.header.num_blocks
+    lows, _ = block_bounds(new_ids, start, duration)
+    candidates = [new_ids[ticks == lows] - 1]
+    edges = [edge for edge in ranges.ravel().tolist() if edge > start and (edge - start) % duration == 0]
+    candidates.append(np.array([(edge - start) // duration - 1 for edge in edges], np.int64))
+    blocks = np.unique(np.concatenate(candidates))
+    blocks = blocks[(blocks >= 0) & (blocks < num_blocks)]
+    blocks = blocks[parsed.block_sizes[blocks] > 0]
+    if not blocks.shape[0]:
+        return blocks
+    _, ends = block_bounds(blocks, start, duration)
+    deleted = _in_ranges(ends, ranges)
+    reached = np.where(covered[blocks], ~deleted, deleted | np.isin(ends, ticks))
+    blocks, ends = blocks[reached], ends[reached]
+    last_ticks, _ = _group.stored_tails(parsed, time_rows, blocks)
+    return blocks[last_ticks == ends]
+
+
+def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
+    """Which ticks lie in one of the sorted, disjoint [start, end) ranges."""
+    if not ranges.shape[0]:
+        return np.zeros(ticks.shape[0], np.bool_)
+    idx = np.searchsorted(ranges[:, 0], ticks, side="right") - 1
+    return (idx >= 0) & (ticks < ranges[np.maximum(idx, 0), 1])
 
 
 def _new_blocks_mask(new_ids: np.ndarray, num_old_blocks: int, covered: np.ndarray) -> np.ndarray:

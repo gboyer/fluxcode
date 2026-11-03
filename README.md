@@ -250,7 +250,9 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   moves more than e times the block's mean interval (2% more at most; an `update` clamped to a
   stored neighbour, by the neighbour's), at most 5% move more than e times their own interval,
   they stay in order and inside their time blocks (a time rounded up to its block's end stays in
-  the block, at the end), and no time is rounded twice.
+  the block, at the end), and no time is rounded twice. `update_time_blocks` matches and deletes
+  by time, so it finds a time stored at its block's end; a reader that takes a time range by
+  block index should filter the decoded times, as that time comes with the block before.
 
 To check them in production, `fluxcode.verify` takes a call's result and arguments and returns
 what it broke: `verify.encode_group(result, x, params, times=t)` is `[]` when the result keeps

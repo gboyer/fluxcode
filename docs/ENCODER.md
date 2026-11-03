@@ -239,6 +239,15 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
     whole; a block's last time can equal the next block's first). One that would round below the
     block's start is raised to it. Clamping moves a tick back towards where it was, so the check
     still holds, and blocks never cross.
+  - **Updates at a block's end.** `update_time_blocks` replaces and deletes by time, so it must
+    find a time stored at its block's end, although that time's block index is the next block's.
+    For each boundary it reaches (a new time on it, a range starting or ending on it), it reads
+    the last stored time of the block before (from the time columns of a regular block, the
+    residuals of an irregular one; no values) and, if it is the boundary, decodes that block too,
+    and doesn't treat it as covered by a range that stops at the boundary. A new sample at that
+    time goes to the block its time is in, the later one. Groups without a time error never hold
+    such a time, so they pay only those reads. A reader taking a time range by block index should
+    filter by time.
   - **Order across blocks** (blocks without bounds): rounding keeps each block in order. Where a
     block's first tick rounded below the ticks before it, the boundary gets a point m between the
     two ticks next to it as given; every earlier tick above m is lowered to it, and the block's
@@ -903,6 +912,9 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
       overlap beyond the clamp is rejected;
     - time blocks: a time rounding up to its block's end stays in its block, at the end; every
       block's times stay in its range; a `start_time` off the grid still rounds;
+    - `update_time_blocks` reaches a time stored at its block's end: an upsert at it replaces it
+      (the new sample goes to the later block), a range starting at it deletes it, and a range
+      covering the block up to it keeps it;
     - `update_time_blocks` stores new times exactly and rejects new samples with a time error;
     - `replace_time_blocks` replaces only the declared blocks (emptying one without samples),
       appends past a gap, rejects samples outside the declared blocks, fills an empty block
@@ -927,10 +939,9 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
       times) in every time unit, with a time error of 0 to 0.5, through `encode_group` or
       `encode_time_blocks`, then one to three updates (`update`, `update_time_blocks` upserts and
       range deletions, `replace_time_blocks` from the source data), each checked against its
-      input. `python tests/test_fuzz.py --fuzzer timed --seeds 0-39 --cases 500` runs 20,000
-      cases; one fails, pinned as an expected failure: a stored time rounded up to its block's end
-      isn't replaced by an upsert at that time (the new sample goes to the next block, and both
-      are kept).
+      input. Some new times and range ends are moved onto block boundaries, preferring those
+      holding a stored time (from a stream of their own, so the other draws stay as they were).
+      `python tests/test_fuzz.py --fuzzer timed --seeds 0-39 --cases 500` runs 20,000 cases.
 
 **Checking production output.** `fluxcode.verify` checks a call's result against its arguments:
 `verify.encode_group(result, x, params, times=t)` returns the guarantees of §6 the result broke

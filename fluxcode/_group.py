@@ -411,6 +411,17 @@ def read_time_rows(parsed: ParsedGroup, block_ids: np.ndarray) -> _format.TimeRo
     return time_rows
 
 
+def read_time_residuals(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np.ndarray) -> None:
+    """Unpacks the given blocks' time residuals into time rows read with the columns only.
+
+    Args:
+        parsed: The block group.
+        time_rows: Its time rows (read_time_rows).
+        block_ids: 1D int64 array of the blocks.
+    """
+    _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
+
+
 def expand_times(
     block_flags: np.ndarray,
     offsets: np.ndarray,
@@ -512,7 +523,7 @@ def _block_ticks(parsed: ParsedGroup, time_rows: _format.TimeRows, block_ids: np
     Returns:
         1D int64 array of every sample of the block group, written at the given blocks' samples.
     """
-    _bitpacking.read_time_residuals(parsed.raw_body, *parsed.layout, block_ids, time_rows.residuals)
+    read_time_residuals(parsed, time_rows, block_ids)
     out_ticks = np.empty(parsed.header.num_samples, np.int64)
     expand_times(parsed.block_flags, parsed.layout.sample_offsets, time_rows, block_ids, out_ticks)
     return out_ticks

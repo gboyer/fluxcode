@@ -197,9 +197,10 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
                 if found:
                     return step, cast(str, failure(found))
                 group = result.group
+                edges = np.random.default_rng([seed, case, 2])  # its own stream: the cases above stay as they were
                 for update_idx in range(int(rng.integers(1, 4))):
                     step = f"update {update_idx + 1}"
-                    group, found = random_time_update(rng, group, x, ticks, params, hour)
+                    group, found = random_time_update(rng, edges, group, x, ticks, params, hour)
                     if found:
                         return step, cast(str, failure(found))
     except Exception:  # noqa: BLE001 (any exception is the finding)
@@ -231,9 +232,14 @@ def random_update(rng: np.random.Generator, group: bytes, params: Params) -> tup
 
 
 def random_time_update(
-    rng: np.random.Generator, group: bytes, x: np.ndarray, ticks: np.ndarray, params: Params, hour: TimeBlocks,
+    rng: np.random.Generator, edges: np.random.Generator, group: bytes, x: np.ndarray, ticks: np.ndarray,
+    params: Params, hour: TimeBlocks,
 ) -> tuple[bytes, list[verify.Violation]]:
-    """update_time_blocks (an upsert, a range deletion, or both) or replace_time_blocks from the source."""
+    """update_time_blocks (an upsert, a range deletion, or both) or replace_time_blocks from the source.
+
+    edges moves some new times and range ends onto block boundaries, where a time rounded up to its
+    block's end is stored in the block before.
+    """
     decoded = fluxcode.decode_group(group)
     assert decoded.times is not None
     stored = decoded.times.view(np.int64)
@@ -253,6 +259,17 @@ def random_time_update(
             ranges = (int(a), int(b) + int(rng.integers(0, 2)))
             if rng.random() < 0.5:
                 new_ticks, values = new_ticks[:0], values[:0]
+        # Boundaries holding a stored time if there are any (it may be the block before's end), else any
+        bounds = stored[(stored > start) & ((stored - start) % duration == 0)]
+        if not bounds.size or edges.random() < 0.2:
+            bounds = start + duration * np.arange(1, decoded.block_sizes.size + 2, dtype=np.int64)
+        if edges.random() < 0.3 and new_ticks.size:
+            moved = edges.random(new_ticks.size) < 0.5
+            new_ticks = np.sort(np.where(moved, edges.choice(bounds, new_ticks.size), new_ticks))
+        if ranges is not None and edges.random() < 0.5:
+            a, b = (int(edges.choice(bounds)) if edges.random() < 0.6 else r for r in ranges)
+            a, b = min(a, b), max(a, b)
+            ranges = (a, b if b > a else a + duration)
         result = fluxcode.update_time_blocks(group, values, new_ticks, exact, delete_ranges=ranges, **hour)
         return result.group, verify.update_time_blocks(result, group, values, new_ticks, exact, delete_ranges=ranges,
                                                        **hour)
@@ -306,9 +323,7 @@ def test_fuzz_regressions(seed, case):
 
 # Timed cases the fuzz found, pinned: (seed, case) of check_timed_case
 TIMED_REGRESSIONS = [
-    pytest.param(28, 178, marks=pytest.mark.xfail(strict=True, reason=(
-        "update_time_blocks: a stored time rounded up to its block's end (the next block's start) isn't "
-        "replaced by a new sample at that time, which goes to the next block: both are kept"))),
+    (28, 178),  # update_time_blocks: an upsert at a time stored at its block's end (rounded up to it) kept both
 ]
 
 
