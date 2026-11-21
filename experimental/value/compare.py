@@ -2,6 +2,10 @@
 import json, sys
 import numpy as np
 runs = [json.load(open(p)) for p in sys.argv[1:]]
+# match by (set, name): keep the signals every run has, in the last run's order
+keys = [(r["set"], r["name"]) for r in runs[-1]]
+keys = [k for k in keys if all(any((r["set"], r["name"]) == k for r in run) for run in runs)]
+runs = [[next(r for r in run if (r["set"], r["name"]) == k) for k in keys] for run in runs]
 labels = [p.rsplit("/", 1)[-1].removesuffix(".json") for p in sys.argv[1:]]
 base = runs[0]
 print("| set | signal | " + " | ".join(labels) + " | rmse " + " / ".join(labels) + " |")

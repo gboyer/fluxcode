@@ -96,6 +96,9 @@ NUM_BIT_LENGTH_BINS: int = 17
 UINT16_MASK: int = 0xFFFF
 """Bitmask for 16-bit unsigned integers (65535)."""
 
+TRIM_STRIDE: int = 4
+"""The trimmed mean of an order-0 block reads every TRIM_STRIDE-th index."""
+
 TRIM_DEVIATIONS: float = 3.0
 """An order-0 block centers on the mean of its indices within this many mean absolute deviations
 of their mean (center)."""
@@ -1018,20 +1021,22 @@ def center(
     # The mean from halved indices (an int32 sum of 2^15 of them can't overflow): within one of it
     wanted = (2 * total + num_samples // 2) // num_samples if order == 0 else np.int64(quantized[0])
     if order == 0:
-        # Trimmed: spikes would pull the plain mean off the bulk of the block
-        mean = float(wanted)
-        abs_dev = 0.0
-        for sample_idx in range(num_samples):
-            abs_dev += abs(quantized[sample_idx] - mean)
-        limit = TRIM_DEVIATIONS * abs_dev / num_samples
-        kept_sum = 0.0
-        kept = 0
-        for sample_idx in range(num_samples):
-            inside = abs(quantized[sample_idx] - mean) <= limit
-            kept_sum += quantized[sample_idx] * inside
-            kept += inside
+        # Trimmed: spikes would pull the plain mean off the bulk of the block (integer loops vectorize)
+        mean = np.int32(wanted)
+        # On every 4th index: a center needn't be exact, and this keeps the pass cheap
+        sub = quantized[::TRIM_STRIDE]
+        abs_dev = np.int64(0)
+        for sample_idx in range(sub.shape[0]):
+            abs_dev += abs(sub[sample_idx] - mean)
+        limit = TRIM_DEVIATIONS * abs_dev / sub.shape[0]
+        kept_sum = np.int64(0)
+        kept = np.int64(0)
+        for sample_idx in range(sub.shape[0]):
+            if abs(sub[sample_idx] - mean) <= limit:
+                kept_sum += sub[sample_idx]
+                kept += 1
         if kept > 0:
-            wanted = np.int64(round(kept_sum / kept))
+            wanted = (2 * kept_sum + kept) // (2 * kept)
     shift = min(max(wanted, low), high)
     if flags & (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED):
         num = scale & SCALE_MASK if flags & BLOCK_FLAG_SCALED else np.int64(1)

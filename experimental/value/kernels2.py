@@ -7,11 +7,11 @@ import sys; sys.path.insert(0, str(H.ROOT / "tests"))
 from _signals import minute
 
 @njit
-def loop_center(q, qq, reps, e, a):
+def loop_center(q, qq, reps, e, a, order=0):
     s = 0.0
     for _ in range(reps):
         qq[:] = q
-        g, an = _encoder.center(qq, 0, 0, e, np.int64(0), a, np.int64(0))
+        g, an = _encoder.center(qq, order, 0, e, np.int64(0), a, np.int64(0))
         s += an
     return s
 

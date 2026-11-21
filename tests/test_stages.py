@@ -476,3 +476,31 @@ def test_cadence_without_most_scans():
         gaps = rng.choice([1, 2, 3], 5000, p=[one, two, 1 - one - two])
         assert not gets_floor(np.cumsum(gaps) * 1000)
         assert not gets_floor(np.cumsum(gaps) * 1000 + rng.normal(0, 150, 5000).astype(np.int64))
+
+
+def lowpass(x, cutoff, taps=191):
+    """A linear-phase windowed-sinc low-pass at `cutoff` of the sample rate (a DAQ's anti-alias filter)."""
+    t = np.arange(taps) - (taps - 1) / 2
+    h = 2 * cutoff * np.sinc(2 * cutoff * t) * np.hamming(taps)
+    return np.convolve(x, h / h.sum(), "valid")
+
+
+@pytest.mark.parametrize("cutoff", [0.45, 0.4, 0.3])
+def test_band_limited_noise_is_floored(cutoff):
+    """Under an anti-alias filter the top band is the stopband: the level of a lower band of noise
+    is the floor, at most the passband's (white noise of that density: sigma / sqrt(2 cutoff))."""
+    rng = np.random.default_rng(21)
+    noise = lowpass(rng.normal(size=3000), cutoff)[:1000]
+    x = noise + 50 * np.sin(np.arange(1000) / 80)  # a slow signal on top
+    sigma, rho = _noise.noise(x, _encoder.range_scale(x.min(), x.max()), np.empty(1000))
+    density = np.std(noise) / math.sqrt(2 * cutoff)
+    assert rho > _encoder.NOISE_GATE and 0.4 * density < sigma < 1.25 * density
+
+
+@pytest.mark.parametrize("freq", [0.2, 0.3, 0.37, 0.42, 0.44, 0.47])
+def test_clean_tones_are_not_noise(freq):
+    """A clean tone at any frequency, with rounding noise only, gets no floor that could coarsen it:
+    its differences stay correlated at long lags (_noise.DECAY_LAGS), white noise's don't."""
+    x = 100 * np.sin(2 * np.pi * freq * np.arange(1000) + 0.3)
+    sigma, rho = _noise.noise(x, _encoder.range_scale(x.min(), x.max()), np.empty(1000))
+    assert not (rho > _encoder.NOISE_GATE and 0.25 * sigma > 200 / 65536)

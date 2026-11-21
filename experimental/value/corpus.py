@@ -65,6 +65,14 @@ def fast(name, seed=0):
         x += 0.4 * lfilter([1.0], [1, -2 * r * np.cos(w), r * r], imp)
         x += rng.normal(0, 0.03, n)
         return _f32(x)
+    if name == "accel-sigma-delta":  # the gearbox through a sigma-delta DAQ: decimation filter flat to 0.45 fs
+        from scipy.signal import firwin, lfilter
+
+        rng2 = np.random.default_rng(1000 + seed)
+        raw = fast("accel-gearbox", seed).astype(np.float64)
+        # the sensor's own noise is broadband; the DAQ's filter removes everything above 0.45 fs
+        raw = raw + rng2.normal(0, 0.02, n)
+        return _f32(lfilter(firwin(191, 0.9), 1, np.r_[np.zeros(200), raw])[200:])
     if name == "motor-current":  # 5 kHz phase current, A, 16-bit ADC over ±50 A
         fs = 5000.0
         t = np.arange(n) / fs
@@ -144,7 +152,7 @@ def fast(name, seed=0):
     raise ValueError(name)
 
 
-FAST_NAMES = ["accel-gearbox", "motor-current", "line-voltage", "pressure-pump", "loadcell", "servo-position",
+FAST_NAMES = ["accel-gearbox", "accel-sigma-delta", "motor-current", "line-voltage", "pressure-pump", "loadcell", "servo-position",
               "flow-turbulent", "tach-rpm", "thermocouple-10hz"]
 
 

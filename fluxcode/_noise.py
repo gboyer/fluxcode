@@ -60,6 +60,41 @@ RHO2_TOLERANCE: float = 0.2
 a tone near half the sample rate (a toggle every sample or few), which k-th differences turn into
 an alternation of rho -1 and lag-2 rho +1."""
 
+def _band_kernel(center: float) -> np.ndarray:
+    """12th differences moved to center a band at `center` of the sample rate (modulated by
+    cos 2 pi (0.5 - center) j), with 4 more zeros at 0 so slow signals stay out."""
+    taps = np.array([(-1) ** (NOISE_ORDER - j) * math.comb(NOISE_ORDER, j) for j in range(NOISE_ORDER + 1)], np.float64)
+    taps = taps * np.cos(2 * np.pi * (0.5 - center) * np.arange(NOISE_ORDER + 1))
+    return np.convolve(taps, np.array([1.0, -4.0, 6.0, -4.0, 1.0]))
+
+
+BAND_CENTERS = (0.375, 0.25, 0.125)
+"""Lower bands, as shares of the sample rate, the noise level is looked for in when the top band's
+gate fails: under an anti-alias filter (flat to about 0.45 of the rate in a sigma-delta DAQ) the
+top band is the filter's stopband, and the noise plateau sits below it."""
+
+BAND_KERNELS = tuple(_band_kernel(center) for center in BAND_CENTERS)
+"""Each band's taps (17)."""
+
+BAND_GAINS = tuple(float(np.sqrt(np.dot(kernel, kernel))) for kernel in BAND_KERNELS)
+"""Each band kernel's output standard deviation on white noise of sigma 1."""
+
+PLATEAU_RATIO: float = 1.25
+"""A lower band is taken only if its level is at most this factor over the next lower band's: the
+spectrum may fall toward the top (an anti-alias filter's roll-off) but not rise into the band."""
+
+DECAY_LAGS: tuple[int, ...] = (20, 21, 22, 23)
+"""Lags past the span of every kernel (13 and 17 taps): white noise through a kernel is uncorrelated
+there, a tone stays correlated at every lag."""
+
+DECAY_LIMIT: float = 0.25
+"""The largest |autocorrelation| at DECAY_LAGS for noise, or DECAY_SCALE / sqrt(n) on fewer than
+1024 differences: white noise reads about 0.05-0.07 at 1000 samples and up to 0.3 at 256, a tone
+0.7-1."""
+
+DECAY_SCALE: float = 8.0
+"""About 4 standard errors of a long-lag autocorrelation of k-th differences on n of them."""
+
 CAP_RATIO: float = 1.25
 """The first differences cap the noise level only when they read at least 1/CAP_RATIO lower: on
 white noise the two agree, and the cap's smaller sample would otherwise bias the minimum low."""
@@ -344,10 +379,16 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_si
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
     sigma = spread / SIGMA_GAIN
     rho_share = rho / WHITE_RHO
-    # The checks of a gated block, unless its sigma is too small to coarsen it anyway (min_sigma)
-    if rho_share > NOISE_GATE and math.ldexp(sigma, scale_exp) >= min_sigma:
-        if not _lag2_white(diffs):
+    top_white = rho_share > NOISE_GATE and _lag2_white(diffs) and _decayed(diffs)
+    if not top_white:
+        # The top band isn't white noise: an anti-alias filter's stopband, a tone, or signal. The
+        # highest lower band with noise in it is the floor; else there is none
+        sigma = _lower_band(samples, scale_factor, scratch_diffs)
+        if not math.ldexp(sigma, scale_exp) >= min_sigma or not sigma > 0:
             return 0.0, 0.0
+        rho_share = 1.0
+    # The cap, unless sigma is too small to coarsen the block anyway (min_sigma)
+    if rho_share > NOISE_GATE and math.ldexp(sigma, scale_exp) >= min_sigma:
         sigma = min(sigma, CAP_RATIO * _first_difference_cap(samples, NO_CODES, scale_factor, scratch_diffs, scratch_diffs))
     # Scale the robust standard deviation back to signal units
     return math.ldexp(sigma, scale_exp), rho_share
@@ -489,6 +530,72 @@ def noise_weighted(
     if num_valid < max(min_valid, 2):
         return 0.0, 0.0
     return _weighted_spread(diffs, weights, num_valid, sum_diffs, scale_exp, CHORD_GAIN, CHORD_WHITE_RHO)
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _band_level(samples: np.ndarray, scale_factor: float, band: int, scratch_diffs: np.ndarray) -> tuple[float, bool]:
+    """A lower band's noise level (scaled units) and whether its output decays like noise (_decayed)."""
+    kernel = BAND_KERNELS[band]
+    num_taps = kernel.shape[0]
+    num_out = samples.shape[0] - num_taps + 1
+    if num_out < 2 * NOISE_WINDOW // 2:
+        return 0.0, False
+    out = scratch_diffs[:num_out]
+    total = 0.0
+    for out_idx in range(num_out):
+        out[out_idx] = 0.0
+    for tap in range(num_taps):
+        coef = kernel[tap] * scale_factor
+        shifted = samples[tap:tap + num_out]
+        for out_idx in range(num_out):
+            out[out_idx] += coef * shifted[out_idx]
+    for out_idx in range(num_out):
+        total += out[out_idx]
+    spread, _ = _robust_noise(out, total / num_out)
+    if not spread > 0:
+        return 0.0, False
+    return spread / BAND_GAINS[band], _decayed(out)
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _lower_band(samples: np.ndarray, scale_factor: float, scratch_diffs: np.ndarray) -> float:
+    """The noise level of the highest lower band that decays like noise and isn't over PLATEAU_RATIO
+    of the next band's (scaled units); 0.0 if none."""
+    level, decayed = _band_level(samples, scale_factor, 0, scratch_diffs)
+    for band in range(1, len(BAND_CENTERS) + 1):
+        if band < len(BAND_CENTERS):
+            next_level, next_decayed = _band_level(samples, scale_factor, band, scratch_diffs)
+        else:
+            next_level, next_decayed = math.inf, False
+        if decayed and level > 0 and level <= PLATEAU_RATIO * next_level:
+            return level
+        level, decayed = next_level, next_decayed
+    return 0.0
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _decayed(clipped: np.ndarray) -> bool:
+    """Whether the clipped, mean-removed differences' autocorrelations at DECAY_LAGS are all under
+    DECAY_LIMIT: noise through a short kernel, not a tone."""
+    num_diffs = clipped.shape[0]
+    longest = DECAY_LAGS[len(DECAY_LAGS) - 1]
+    if num_diffs <= 2 * longest:
+        return False
+    sum_sq = 0.0
+    for diff_idx in range(num_diffs):
+        sum_sq += clipped[diff_idx] * clipped[diff_idx]
+    if not sum_sq > 0:
+        return False
+    # The estimate's spread grows on short blocks (k-th differences are correlated: ~sqrt(4 / n))
+    limit = max(DECAY_LIMIT, DECAY_SCALE / math.sqrt(num_diffs))
+    for lag in DECAY_LAGS:
+        cross = 0.0
+        later, earlier = clipped[lag:], clipped[:num_diffs - lag]
+        for diff_idx in range(num_diffs - lag):
+            cross += later[diff_idx] * earlier[diff_idx]
+        if abs(cross / sum_sq) >= limit:
+            return False
+    return True
 
 
 @njit(nogil=True, cache=True, fastmath=True)

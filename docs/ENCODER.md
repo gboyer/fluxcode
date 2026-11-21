@@ -341,7 +341,13 @@ per window: mad = mean |d|; twice: mad = mean of |d| over |d| <= 4·sqrt(π/2)·
             sd_w = sqrt(π/2)·mad;  clip the window's d to ±4·sd_w
 σ     = min(mean_w sd_w, min_w sd_w / 0.75) / sqrt(C(24, 12))               # sqrt(2,704,156)
 ρ1    = lag-1 autocorrelation of the clipped d;  ρ2 = lag-2 autocorrelation
-gated = ρ1 / (−12/13) > 0.9  and  |ρ2 / (C(24, 10)/C(24, 12)) − 1| < 0.2   # white: −0.923, 0.725
+decays = max |ρ_L| over L = 20..23 < max(0.25, 8/sqrt(n_d))                 # noise, not a tone
+gated = ρ1 / (−12/13) > 0.9  and  |ρ2 / (C(24, 10)/C(24, 12)) − 1| < 0.2  and decays   # white: −0.923, 0.725
+if not gated:                                       # an anti-alias filter's stopband, a tone, or signal
+    for band b = 0.375, 0.25, 0.125 of the sample rate:
+        h_b = (12th-difference taps · cos(2π(0.5 − b)j)) convolved with (1, −4, 6, −4, 1)   # 17 taps
+        σ_b = robust spread (as above) of h_b * x over ‖h_b‖
+    take the first b whose output decays (as above) and σ_b ≤ 1.25·σ_(next band): σ = σ_b, gated
 if gated:
     σ1 = robust spread (as above, around a trimmed mean) of the first differences on 8 evenly
          spread windows of 32, over sqrt(2)
@@ -425,8 +431,22 @@ sensitive to jitter, and a jittered clock's slope must cancel.
     ρ1 = cos 2πf), as do smooth signals, whose 12th differences are rounding noise far under the
     B-bit step anyway.
   - The lag-2 check rejects a tone at 0.4–0.5 of the rate (a toggle every sample or few), which
-    the lag-1 test alone passes; a tone at about 0.44, where the kernel peaks, still passes it, as
-    one above 0.35 passed the second differences' gate.
+    the lag-1 test alone passes; the decay test (below) rejects the rest, a tone near 0.44 where
+    the kernel peaks included.
+- **Anti-alias filters and lower bands.** A sigma-delta DAQ's decimation filter keeps the band
+  flat to about 0.45 of the sample rate and removes the rest: the top band is then its stopband,
+  and neither the 12th nor the second differences found the noise (white noise cut at 0.25–0.45
+  stored at full precision, +90–110%; main had the same gap). The noise plateau is below the cut,
+  so three lower bands are tried, highest first; white error in an empty stopband is harmless
+  (as if the filter leaked). They take a band whose output decays like noise and whose level
+  isn't over 1.25× the next band's (the spectrum may fall toward the top, not rise into the band).
+  Cut at 0.25–0.48 the floor reads 0.45–1.0 of the passband density (conservative, below 0.4);
+  the gearbox accelerometer through a 0.45 filter (`accel-sigma-delta`) 13.7 → 6.5 bits/sample.
+  Only blocks whose top band fails pay for the bands (about 3 × 1.4 µs).
+- **The decay test.** White noise through a kernel of 13 or 17 taps is uncorrelated at lags 20–23;
+  a tone stays correlated at every lag (|ρ| 0.7–1, against 0.05–0.07 for noise on 1000 samples).
+  It rejects the tone near 0.44 of the rate that the lag-1 and lag-2 tests pass (the kernel's
+  peak), and guards the lower bands, where a tone at a band's center would look like its noise.
 - **The first differences' cap.** Steps a few samples apart (a square wave of period 20, a
   staircase) put a burst into every window of 13 samples, so the 12th differences read them as
   noise of about 0.15 of the step; first differences see each step once and the clipping drops
@@ -951,8 +971,10 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
 8. **Noise gate:**
    - it fires on white Gaussian noise, with or without a signal under it (a tone, a resonance,
      colored noise), and on a random walk (its top band is white: σ_e/2);
-   - it never fires on a clean sine below 0.39 of the sample rate, a chirp, a ramp or a square
-     wave (with or without noise, its step stays within 0.16σ of that noise);
+   - it never fires on a clean sine at any frequency, a chirp, a ramp or a square wave (with or
+     without noise, its step stays within 0.16σ of that noise);
+   - it fires on band-limited noise (an anti-alias filter cut at 0.25–0.48 of the sample rate) at
+     no more than the passband's level;
    - it may fire on the float rounding noise of a smooth polynomial (the quadratic), with no
      effect, since that σ is far below the B-bit step;
    - on all clean test signals the block group is byte-identical with the noise floor on

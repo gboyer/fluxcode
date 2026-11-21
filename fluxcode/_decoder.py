@@ -93,9 +93,8 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
     """
     num_samples = residuals_in_out.shape[0]
     if order == 0:
-        for sample_idx in range(num_samples):
-            # Read as signed 16-bit
-            residuals_in_out[sample_idx] = ((residuals_in_out[sample_idx] + 32768) & 0xFFFF) - 32768
+        # Unzigzagged residuals are already signed 16-bit: q = v
+        return
     elif order == 1:
         sum_order1 = np.int32(0)
         for sample_idx in range(num_samples):
