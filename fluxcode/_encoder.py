@@ -66,12 +66,12 @@ estimate's own movement."""
 NOISE_GATE: float = _noise_mod.NOISE_GATE
 """The noise gate (_noise.NOISE_GATE)."""
 
-NOISE_MIN_LEN: int = 256
-"""Smallest block the noise floor applies to. Below it the rho test can't tell white noise (rho
-= -2/3) from a random walk (-1/2): the estimate's standard error is about
-sqrt((1 - 3 rho^2 + 4 rho^4) / m) on m differences (0.044 at 256 samples, so -0.6 is 2.25 of them
-from -1/2). Random walks pass the gate 9% of the time at 64 samples, 0.8% at 256 and none at 1000,
-while white noise still passes 96% of the time at 256 (ENCODER §5.2)."""
+NOISE_MIN_LEN: int = 128
+"""Smallest block the noise floor applies to. Below it one clean step or spike is most of the
+12th differences (at 64 samples a step of 10 read sigma 0.004, at 32 samples 0.78); from 128 up
+such shapes read far under the B-bit step and white noise passes the gate 96% of the time (ENCODER
+§5.2). Irregular times keep their own minimum (_noise.MIN_ONE_SCAN_TRIPLETS), as their chords'
+gate must still tell a random walk from white noise."""
 
 PICK_LEN: int = 256
 """Blocks up to this many samples pick their predictor order on every sample; longer ones on

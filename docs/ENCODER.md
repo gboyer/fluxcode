@@ -324,7 +324,7 @@ ps = 2^e                                 # the power-of-two step
 ### 5.2 Noise floor
 
 Runs when the noise floor f is on (`noise_floor_sigma` > 0), rng > 0 and the block has at least
-256 samples.
+128 samples.
 
 **What the floor is.** The spectral density of the block at the top of its band, where that band
 is flat: there it is a white noise of some σ, and the step is at most f·σ. At 1 kHz that is
@@ -481,11 +481,13 @@ sensitive to jitter, and a jittered clock's slope must cancel.
   - A noisy block's noise-floor step spans range/(f·σ) steps: ≈ 230 (about 7.8 bits) on the
     noisy sine at f = 0.25. A minimum above that would override the noise floor.
   - The default minimum of 6 bits costs ≤ 1% on the noisy test signals.
-- **Why 256 samples.** On shorter blocks a single clean step or spike is most of the 12th
-  differences: at 64 samples a step of 10 read σ = 0.004, at 32 samples 0.78. From 128 up the
-  estimate stays under the B-bit step on such clean shapes, and white noise passes the gate 100%
-  of the time; 256 keeps the margin of the second differences' rule (which needed it to tell a
-  random walk from white noise).
+- **Why 128 samples.** On shorter blocks a single clean step or spike is most of the 12th
+  differences: at 64 samples a step of 10 read σ = 0.004, at 32 samples 0.78. From 128 up such
+  shapes read far under the B-bit step (σ ≈ 1e−9 on a clean step), and white noise passes the
+  gate 92–100% of the time. (Second differences needed 256 to tell a random walk from white noise.)
+  Fixed time buckets often hold that few: the slow 1 s tags in 4-minute blocks of 240 average
+  5.0 → 3.6 bits/sample (white noise 15.7 → 5.3, pH 14.0 → 6.0, motor current 9.3 → 5.3).
+  Irregular times keep 254 one-scan triplets: their chords' gate still separates random walks.
 - **Re-encoding decoded data** (a merging `update_time_blocks`) computes the noise floor again
   from the merged block: kept samples, now decoded, plus the new ones. Nothing is reused, as when
   encoding from scratch.
@@ -500,7 +502,7 @@ sensitive to jitter, and a jittered clock's slope must cancel.
     f·σ is within 2% past a power of two and whose samples all lie on the grid one finer keeps
     that grid: decoded data is then a fixed point (a random walk of σ_e = 1 sits at 0.4999 of a
     boundary on some blocks).
-  - A merged block can also cross 256 samples, which switches the noise floor on or off between
+  - A merged block can also cross 128 samples, which switches the noise floor on or off between
     updates, with the same two cases.
 - **The gate is per block and all-or-nothing.** Per-sample variants (full precision kept at
   spikes) cost 20–35% more for an error already below the noise on the spike ([REPORT.md §11](../experimental/REPORT.md#11-power-of-two-quantization-the-fluxcode-design)).
@@ -822,7 +824,7 @@ N their total samples.
     guarantees; up to 2^B steps it depends on where 10^p falls between powers of two (cents to
     about 0.78·2^B, thousands to 0.51·2^B; integers always, as ps = 1 holds them). Wider blocks
     use the power-of-two grid;
-  - the noise floor doesn't coarsen the block (off, under 256 samples, or not flat at the top of
+  - the noise floor doesn't coarsen the block (off, under 128 samples, or not flat at the top of
     the band), or does so to a step still finer than 10^p. There ps becomes 2^floor(log2(f·σ))
     (§5.2), which reaches 10^p once σ is between 1/f and 2/f decimal steps (4–8 at f = 0.25; 6.25
     for cents). σ is white noise's, or a random walk's σ_e/2: a decimal walk whose steps are
@@ -1069,7 +1071,7 @@ re-encodes the decoded data. It decodes the result and uses no encoder code, so 
 can't hide itself; the encode path is unchanged. A check costs about as much as the encode,
 so check a sample of block groups. With `decimals=p` it also checks that blocks of p-place
 decimals decode bit for bit where the guarantee above holds (no target, the noise floor off or
-fewer than 256 samples, fewer than 2^(B−1) steps). Not checked: the noise floor's f·σ/2, decimal
+fewer than 128 samples, fewer than 2^(B−1) steps). Not checked: the noise floor's f·σ/2, decimal
 exactness without `decimals` (which data are decimals is the caller's knowledge), and bounds over
 several updates.
 

@@ -28,7 +28,7 @@ Checked, per block (the `check` of each Violation):
         finite.
     "range_bound": a sample decoded further than range / (2^min_quantize_bits - 1/2).
     "fine_bound": a block neither the noise floor nor the target can coarsen (no target, and
-        the noise floor off or fewer than 256 samples) is off by more than
+        the noise floor off or fewer than 128 samples) is off by more than
         range / (2^max_quantize_bits - 1/2).
     "step_bound": a sample decoded further than its block's stored grid allows: half the step
         2^e, a quarter of a decimal step 10^p (the detection tolerance), half a scaled step.
@@ -45,7 +45,7 @@ Checked, per block (the `check` of each Violation):
     "decimal" (with decimals=p, the places of decimal data): a block whose finite samples are all
         the doubles nearest k / 10^p didn't decode them bit for bit, where that is guaranteed:
         fewer than 2^(max_quantize_bits - 1) decimal steps, decimal grids on, no target, and the noise
-        floor off or fewer than 256 samples.
+        floor off or fewer than 128 samples.
 
 Not checked: the noise floor's f sigma / 2 (it needs the encoder's estimate of sigma), the
 bit-exactness of decimal data unless the caller passes decimals (which data are decimals is the
@@ -75,7 +75,7 @@ from ._types import (
 TIME_SLACK: float = 1.02
 """How far past time_error mean intervals a rounded time may move (ENCODER.md §6: 2% more)."""
 
-NOISE_FLOOR_MIN_SAMPLES: int = 256
+NOISE_FLOOR_MIN_SAMPLES: int = 128
 """Blocks shorter than this never get the noise floor (ENCODER.md §5.2)."""
 
 
@@ -586,7 +586,7 @@ def _check_decimals(
     nearest k / 10^decimals), they span fewer than 2^(max_quantize_bits - 1) decimal steps (then
     the B-bit power-of-two step is finer than 10^-decimals, which detection needs), k stays
     under 2^52, the params detect decimal grids, there is no target, and the noise floor is off
-    or the block is under 256 samples. Other blocks aren't.
+    or the block is under 128 samples. Other blocks aren't.
     """
     if not -22 <= decimals <= 22:
         raise ValueError(f"decimals must be from -22 to 22, got {decimals}")

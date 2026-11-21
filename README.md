@@ -44,8 +44,8 @@ type:
   every interval is one scan (a jittered clock, or one with gaps), measured on consecutive scans: a
   historian's swinging-door archive looks like white noise without being noise, and gets none.
   Without timestamps the samples are taken as evenly spaced, so store an archive with its times
-  (or with the noise floor off). It only applies to blocks of at least 256 samples, so a fixed
-  `block_len` under 256 never gets one.
+  (or with the noise floor off). It only applies to blocks of at least 128 samples, so a fixed
+  `block_len` under 128 never gets one.
 * **Time error**: Optionally lets timestamps move by up to a share of their interval
   (`time_error`, off by default): each block's times round to a coarse grid of a 1-2-5 step
   (1, 2, 5, 10, ... ticks) for which 95% of them move by at most that share of their own interval
@@ -283,7 +283,7 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
   lag-1 and lag-2 autocorrelations (−12/13 and 0.725 for white noise), capped by the first
   differences' level (steps a few samples apart). Blocks flat at the top get a step of at most
   0.25σ (a third of the quietest part's σ where the noise varies within the block). Blocks under
-  256 samples keep their finest step: a single step or spike is too much of their differences. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
+  128 samples keep their finest step: a single step or spike is too much of their differences. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
   and only consecutive scans count, so sparse archives and events keep their values.
 - **Fixed polynomial predictors** of order 0–3, picked per block by residual variance, as in
   [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and
