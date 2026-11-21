@@ -16,6 +16,7 @@ from numba import njit
 from numba.cpython.unsafe.numbers import leading_zeros as _leading_zeros
 
 from . import _extreme_magnitudes as xm
+from . import _noise as _noise_mod
 from . import _rational
 from ._format import (
     BLOCK_FLAG_DECIMAL,
@@ -35,7 +36,6 @@ from ._format import (
     SCALED_P_MAX,
     SHORT_BLOCK_LEN,
 )
-from . import _noise as _noise_mod
 from ._noise import block_noise
 from ._nonfinite import fill_nonfinite
 from ._time import CADENCE_SAMPLES
