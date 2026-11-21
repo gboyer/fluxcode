@@ -164,18 +164,19 @@ if __name__ == "__main__":
 
 
 def _self_check():
-    """Fail loudly if the compiled noise kernel doesn't match the FLUXCODE_X_NOISE_ORDER in effect (stale cache)."""
+    """Fail loudly if the compiled noise kernel doesn't match the FLUXCODE_X_NOISE_ORDER in effect (stale cache):
+    its rho on white noise must be the k-th differences' own."""
     import math
 
     from fluxcode import _noise
 
     x = np.random.default_rng(1).normal(0, 1, 1000)
-    buf = np.zeros(1000)
-    _noise.noise(x, math.frexp(np.ptp(x))[1], buf)
     k = _noise.NOISE_ORDER
+    _, rho_share = _noise.noise(x, math.frexp(np.ptp(x))[1], np.zeros(1000))
     d = np.diff(x, k)
-    got = buf[:len(d)] * 2.0 ** math.frexp(np.ptp(x))[1]
-    if not np.corrcoef(got, d - d.mean())[0, 1] > 0.999:
+    d = d - d.mean()
+    rho = np.dot(d[1:], d[:-1]) / np.dot(d, d)
+    if abs(rho_share * _noise.WHITE_RHO - rho) > 0.02:
         raise RuntimeError(f"stale numba cache: noise kernel isn't order {k} ({os.environ['NUMBA_CACHE_DIR']})")
 
 

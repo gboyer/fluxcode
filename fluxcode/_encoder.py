@@ -35,6 +35,7 @@ from ._format import (
     SCALED_P_MAX,
     SHORT_BLOCK_LEN,
 )
+from . import _noise as _noise_mod
 from ._noise import block_noise
 from ._nonfinite import fill_nonfinite
 from ._time import CADENCE_SAMPLES
@@ -62,9 +63,8 @@ FLOOR_MARGIN: float = 1.02
 finer to keep it (keep_floor_grid): above the 0.26% quantizing adds to sigma, with room for the
 estimate's own movement."""
 
-NOISE_GATE: float = 0.9
-"""The noise gate: the differences' lag-1 autocorrelation must be over NOISE_GATE of white noise's
-(-k/(k+1) for k-th differences: -12/13; -2/3 for the chords of irregular times)."""
+NOISE_GATE: float = _noise_mod.NOISE_GATE
+"""The noise gate (_noise.NOISE_GATE)."""
 
 NOISE_MIN_LEN: int = 256
 """Smallest block the noise floor applies to. Below it the rho test can't tell white noise (rho

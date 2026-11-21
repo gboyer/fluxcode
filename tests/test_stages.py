@@ -284,7 +284,33 @@ def ref_robust_noise(d, ok):
         start = end
     pairs = (ok[1:] & ok[:-1]).sum()
     spread = min(np.mean(spreads), min(spreads) / 0.75)
+    ref_robust_noise.clipped = dv
     return spread, (np.sum(dv[1:] * dv[:-1]) / pairs) / (np.sum(dv ** 2) / num_valid)
+
+
+def ref_lag2_white(dv, ok):
+    """_noise._lag2_white(_weighted): the clipped differences' lag-2 autocorrelation within
+    RHO2_TOLERANCE of white noise's, over valid pairs two apart."""
+    pair = ok[2:] & ok[:-2]
+    sum_sq = np.sum((dv[2:] ** 2)[pair])
+    return sum_sq > 0 and abs(np.sum((dv[2:] * dv[:-2])[pair]) / sum_sq / _noise.WHITE_RHO2 - 1) < _noise.RHO2_TOLERANCE
+
+
+def ref_cap(xr, finite):
+    """_noise._first_difference_cap: first differences of finite pairs in CAP_WINDOWS spread windows of
+    CAP_WINDOW_LEN, their robust spread around a trimmed mean, over sqrt(2)."""
+    n = len(xr)
+    num, length = (_noise.CAP_WINDOWS, _noise.CAP_WINDOW_LEN) if n - 1 > _noise.CAP_WINDOWS * _noise.CAP_WINDOW_LEN \
+        else (1, n - 1)
+    idx = np.concatenate([w * (n - 1 - length) // max(num - 1, 1) + np.arange(length) for w in range(num)])
+    idx = idx[finite[idx] & finite[idx + 1]]
+    d = xr[idx + 1] - xr[idx]
+    m0 = d.mean()
+    inside = np.abs(d - m0) <= 4 * math.sqrt(math.pi / 2) * np.abs(d - m0).mean()
+    trimmed = d[inside].mean()
+    # ref_robust_noise removes the plain mean: shift so its plain mean is the trimmed one
+    spread, _ = ref_robust_noise(d - trimmed + d.mean(), np.ones(len(d), bool))
+    return spread / math.sqrt(2)
 
 
 K = _noise.NOISE_ORDER
@@ -313,12 +339,19 @@ def test_noise_weighted_matches_reference(kind, frac, scale_k):
         ok = np.lib.stride_tricks.sliding_window_view(codes == 0, order + 1).all(axis=1)
         spread, rr = ref_robust_noise(np.where(ok, np.diff(yr, order), 0.0), ok)
         rr /= -order / (order + 1)
+        ref_sigma = spread / math.sqrt(math.comb(2 * order, order))
+        if order == K and rr > _encoder.NOISE_GATE:
+            # Gated: the lag-2 check, then the first differences' cap
+            if not ref_lag2_white(ref_robust_noise.clipped, ok):
+                ref_sigma = rr = 0.0
+            else:
+                ref_sigma = min(ref_sigma, _noise.CAP_RATIO * ref_cap(yr, codes == 0))
         if scale_k == -1060:  # subnormal samples are already rounded: compare the gate only
             assert (rho > _encoder.NOISE_GATE) == (rr > _encoder.NOISE_GATE)
             continue
         # 12th differences of a smooth signal cancel down to rounding noise: fastmath's order shows at ~1e-6
         assert rho == pytest.approx(rr, abs=1e-4)
-        assert sigma == pytest.approx(math.ldexp(spread, k) / math.sqrt(math.comb(2 * order, order)), rel=1e-4)
+        assert sigma == pytest.approx(math.ldexp(ref_sigma, k), rel=1e-4)
 
 
 def test_noise_matches_reference():

@@ -26,6 +26,9 @@ from . import _extreme_magnitudes as xm
 from ._format import CODE_FINITE
 from ._time import CADENCE_SHARE, one_scan
 
+NO_CODES = np.zeros(0, np.uint8)
+"""No non-finite codes: every sample finite."""
+
 MAD_TO_SD: float = math.sqrt(math.pi / 2)
 """Ratio of standard deviation to mean absolute deviation for a normal distribution."""
 
@@ -48,6 +51,28 @@ SIGMA_GAIN: float = math.sqrt(math.comb(2 * NOISE_ORDER, NOISE_ORDER))
 
 WHITE_RHO: float = -NOISE_ORDER / (NOISE_ORDER + 1)
 """Lag-1 autocorrelation of white noise's k-th differences."""
+
+WHITE_RHO2: float = math.comb(2 * NOISE_ORDER, NOISE_ORDER - 2) / math.comb(2 * NOISE_ORDER, NOISE_ORDER)
+"""Lag-2 autocorrelation of white noise's k-th differences (C(2k, k-2) / C(2k, k): 0.725 at k = 12)."""
+
+RHO2_TOLERANCE: float = 0.2
+"""The lag-2 autocorrelation must be within this share of white noise's: the lag-1 test alone passes
+a tone near half the sample rate (a toggle every sample or few), which k-th differences turn into
+an alternation of rho -1 and lag-2 rho +1."""
+
+CAP_RATIO: float = 1.25
+"""The first differences cap the noise level only when they read at least 1/CAP_RATIO lower: on
+white noise the two agree, and the cap's smaller sample would otherwise bias the minimum low."""
+
+CAP_WINDOWS: int = 8
+"""Windows of first differences the cap on the noise level is measured on (_first_difference_cap)."""
+
+CAP_WINDOW_LEN: int = 32
+"""First differences per cap window."""
+
+NOISE_GATE: float = 0.9
+"""The noise gate: the differences' lag-1 autocorrelation must be over NOISE_GATE of white noise's
+(-k/(k+1) for k-th differences: -12/13; -2/3 for the chords of irregular times)."""
 
 CHORD_GAIN: float = math.sqrt(6.0)
 """Ratio of a chord (second divided) difference's standard deviation to white noise's, on irregular times."""
@@ -315,10 +340,16 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
                 diffs[diff_idx] += coef * shifted[diff_idx]
         for diff_idx in range(num_diffs):
             sum_diffs += diffs[diff_idx]
-    # Subtract mean second difference to remove pure parabolic trends (quadratics)
+    # Subtract the mean difference (a polynomial trend of degree k)
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
-    # Scale robust standard deviation back to signal units and divide by sqrt(6)
-    return math.ldexp(spread / SIGMA_GAIN, scale_exp), rho / WHITE_RHO
+    sigma = spread / SIGMA_GAIN
+    rho_share = rho / WHITE_RHO
+    if rho_share > NOISE_GATE:
+        if not _lag2_white(diffs):
+            return 0.0, 0.0
+        sigma = min(sigma, CAP_RATIO * _first_difference_cap(samples, NO_CODES, scale_factor, scratch_diffs, scratch_diffs))
+    # Scale the robust standard deviation back to signal units
+    return math.ldexp(sigma, scale_exp), rho_share
 
 
 @njit(nogil=True, cache=True)
@@ -404,10 +435,16 @@ def noise_weighted(
             samples, codes, scale_factor, NOISE_ORDER, scratch_diffs, scratch_weights
         )
         if num_valid >= max(min_valid, 2):
-            return _weighted_spread(
+            sigma, rho = _weighted_spread(
                 scratch_diffs[:num_diffs], scratch_weights[:num_diffs], num_valid, sum_diffs, scale_exp, SIGMA_GAIN,
                 WHITE_RHO,
             )
+            if rho > NOISE_GATE:
+                if not _lag2_white_weighted(scratch_diffs[:num_diffs], scratch_weights[:num_diffs]):
+                    return 0.0, 0.0
+                cap = _first_difference_cap(samples, codes, scale_factor, scratch_diffs, scratch_weights)
+                sigma = min(sigma, math.ldexp(CAP_RATIO * cap, scale_exp))
+            return sigma, rho
         num_diffs, num_valid, sum_diffs = _coded_diffs(samples, codes, scale_factor, 2, scratch_diffs, scratch_weights)
         if num_valid < max(min_valid, 2):
             return 0.0, 0.0
@@ -453,11 +490,96 @@ def noise_weighted(
 
 
 @njit(nogil=True, cache=True, fastmath=True)
+def _lag2_white(clipped: np.ndarray) -> bool:
+    """Whether the clipped, mean-removed k-th differences' lag-2 autocorrelation is within
+    RHO2_TOLERANCE of white noise's."""
+    num_diffs = clipped.shape[0]
+    sum_sq = 0.0
+    lag2 = 0.0
+    later, earlier = clipped[2:], clipped[:num_diffs - 2]
+    for diff_idx in range(num_diffs - 2):
+        sum_sq += later[diff_idx] * later[diff_idx]
+        lag2 += later[diff_idx] * earlier[diff_idx]
+    if not sum_sq > 0:
+        return False
+    return abs((lag2 / sum_sq) / WHITE_RHO2 - 1.0) < RHO2_TOLERANCE
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _lag2_white_weighted(clipped: np.ndarray, weights: np.ndarray) -> bool:
+    """_lag2_white over pairs of valid differences two apart."""
+    num_diffs = clipped.shape[0]
+    sum_sq = 0.0
+    lag2 = 0.0
+    for diff_idx in range(2, num_diffs):
+        pair = weights[diff_idx] * weights[diff_idx - 2]
+        sum_sq += clipped[diff_idx] * clipped[diff_idx] * pair
+        lag2 += clipped[diff_idx] * clipped[diff_idx - 2] * pair
+    if not sum_sq > 0:
+        return False
+    return abs((lag2 / sum_sq) / WHITE_RHO2 - 1.0) < RHO2_TOLERANCE
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _first_difference_cap(
+    samples: np.ndarray, codes: np.ndarray, scale_factor: float, scratch_diffs: np.ndarray,
+    scratch_weights: np.ndarray,
+) -> float:
+    """The robust spread of the first differences over sqrt(2), in scaled units: a cap on the k-th
+    differences' noise level.
+
+    Steps a few samples apart put a burst into every window of k + 1 samples, so the k-th
+    differences read them as noise; first differences see each step once, and the clipping drops
+    it. On white noise the two agree; a random walk, a slope or a tone raise the first
+    differences only, so the cap leaves them to the k-th differences. Measured on CAP_WINDOWS
+    evenly spread windows of CAP_WINDOW_LEN (a safety net needs no more), finite pairs only.
+    """
+    num_samples = samples.shape[0]
+    has_codes = codes.shape[0] > 0
+    num_windows, window_len = 1, num_samples - 1
+    if num_samples - 1 > CAP_WINDOWS * CAP_WINDOW_LEN:
+        num_windows, window_len = CAP_WINDOWS, CAP_WINDOW_LEN
+    num_diffs = num_windows * window_len
+    if num_diffs < 2:
+        return 0.0
+    diffs = scratch_diffs[:num_diffs]
+    num_valid = 0
+    sum_diffs = 0.0
+    for window_idx in range(num_windows):
+        start = window_idx * (num_samples - 1 - window_len) // max(num_windows - 1, 1)
+        for offset in range(window_len):
+            sample_idx = start + offset
+            diff_val = samples[sample_idx + 1] * scale_factor - samples[sample_idx] * scale_factor
+            if has_codes and (codes[sample_idx] | codes[sample_idx + 1]) != CODE_FINITE:
+                continue
+            diffs[num_valid] = diff_val
+            sum_diffs += diff_val
+            num_valid += 1
+    if num_valid < 2:
+        return 0.0
+    diffs = diffs[:num_valid]
+    # A trimmed mean: steps would offset the plain mean (by their imbalance over the windows)
+    plain_mean = sum_diffs / num_valid
+    abs_dev = 0.0
+    for diff_idx in range(num_valid):
+        abs_dev += abs(diffs[diff_idx] - plain_mean)
+    threshold = CLIP_SIGMAS * MAD_TO_SD * abs_dev / num_valid
+    kept_sum = 0.0
+    kept = 0
+    for diff_idx in range(num_valid):
+        inside = abs(diffs[diff_idx] - plain_mean) <= threshold
+        kept_sum += diffs[diff_idx] * inside
+        kept += inside
+    spread, _ = _robust_noise(diffs, kept_sum / kept if kept > 0 else plain_mean)
+    return spread / math.sqrt(2.0)
+
+
+@njit(nogil=True, cache=True, fastmath=True)
 def _coded_diffs(
     samples: np.ndarray, codes: np.ndarray, scale_factor: float, order: int, scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
 ) -> tuple[int, float, float]:
-    """Writes the order-k differences (k = 2 or NOISE_ORDER) of the scaled samples, valid (weight 1) where
+    """Writes the order-k differences (k = 1, 2 or NOISE_ORDER) of the scaled samples, valid (weight 1) where
     the window of k + 1 samples is all finite, else 0 with weight 0.
 
     Returns:
@@ -478,7 +600,9 @@ def _coded_diffs(
         if has_codes and codes[diff_idx + order] != CODE_FINITE:
             last_bad = diff_idx + order
         diff_val = 0.0
-        if order == 2:
+        if order == 1:
+            diff_val = samples[diff_idx + 1] * scale_factor - samples[diff_idx] * scale_factor
+        elif order == 2:
             diff_val = (
                 samples[diff_idx + 2] * scale_factor
                 - 2.0 * (samples[diff_idx + 1] * scale_factor)

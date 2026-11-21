@@ -12,7 +12,7 @@ def rate(make, n, trials=400):
     for _ in range(trials):
         x = make(n)
         s, rho = _noise.noise(x, math.frexp(np.ptp(x))[1], buf)
-        p += rho < _encoder.NOISE_RHO and s > 0
+        p += rho > _encoder.NOISE_GATE and s > 0
     return p / trials
 
 def tone(f, snr_noise):
@@ -22,7 +22,7 @@ cases = {"white": lambda n: rng.normal(0, 1, n), "random walk": lambda n: np.cum
 for f in (0.05, 0.2, 0.3, 0.35, 0.38, 0.4, 0.45):
     cases[f"tone {f}fs + 1e-3 noise"] = tone(f, 1e-3)
     cases[f"tone {f}fs + 1 noise (40 dB)"] = tone(f, 1.0)
-print(f"k = {_noise.NOISE_ORDER}, gate rho < {_encoder.NOISE_RHO:.3f}")
+print(f"k = {_noise.NOISE_ORDER}, gate share > {_encoder.NOISE_GATE}")
 print("| case | n=256 | n=1000 | n=3600 |"); print("|---|---|---|---|")
 for name, mk in cases.items():
     print(f"| {name} | " + " | ".join(f"{rate(mk, n):.0%}" for n in (256, 1000, 3600)) + " |")
