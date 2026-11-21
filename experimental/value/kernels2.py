@@ -48,6 +48,6 @@ for kind in ("sin-4.12hz", "noisy-sine"):
     lo, hi = x.min(), x.max()
     e = _encoder.range_exponent(lo, hi, 16)
     q = np.empty(1000, np.int32); _encoder.quantize(x, lo, e, q)
-    qq = q.copy(); buf = np.empty(1000); sc = _encoder.range_scale(lo, hi); a = math.ldexp(3.0, e)
+    qq = q.copy(); buf = np.empty(1000); sc = _encoder.range_scale(lo, hi); a = math.ldexp(3.0, e); ms16 = math.ldexp(1.0, e) / 0.25
     c = best(lambda r: loop_center(q, qq, r, e, a)) - best(lambda r: loop_copy(q, qq, r))
-    print(kind, f"center {c:.3f}", f"noise {best(lambda r: loop_noise(x, sc, buf, r, 0.0)):.2f} base {best(lambda r: loop_noise(x, sc, buf, r, np.inf)):.2f}", f"pick {best(lambda r: loop_pick(q, r)):.3f} µs")
+    print(kind, f"center {c:.3f}", f"noise {best(lambda r: loop_noise(x, sc, buf, r, 0.0)):.2f} at-16-bits {best(lambda r: loop_noise(x, sc, buf, r, ms16)):.2f} base {best(lambda r: loop_noise(x, sc, buf, r, np.inf)):.2f}", f"pick {best(lambda r: loop_pick(q, r)):.3f} µs")

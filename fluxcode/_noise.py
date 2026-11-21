@@ -79,6 +79,9 @@ BAND_KERNELS = tuple(_band_kernel(center) for center in BAND_CENTERS)
 BAND_GAINS = tuple(float(np.sqrt(np.dot(kernel, kernel))) for kernel in BAND_KERNELS)
 """Each band kernel's output standard deviation on white noise of sigma 1."""
 
+LOWER_BAND_REACH: float = 256.0
+"""The lower bands are looked at only when the top band's level is over min_sigma / LOWER_BAND_REACH."""
+
 PLATEAU_RATIO: float = 1.25
 """A lower band is taken only if its level is at most this factor over the next lower band's: the
 spectrum may fall toward the top (an anti-alias filter's roll-off) but not rise into the band."""
@@ -379,10 +382,14 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_si
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
     sigma = spread / SIGMA_GAIN
     rho_share = rho / WHITE_RHO
-    top_white = rho_share > NOISE_GATE and _lag2_white(diffs) and _decayed(diffs)
+    top_white = rho_share > NOISE_GATE and _white_shape(diffs)
     if not top_white:
         # The top band isn't white noise: an anti-alias filter's stopband, a tone, or signal. The
-        # highest lower band with noise in it is the floor; else there is none
+        # highest lower band with noise in it is the floor; else there is none. A top band this far
+        # under min_sigma has no noise under it that could matter (a stopband reads over 1/125 of
+        # its passband even cut at a quarter of the rate): a clean signal's rounding skips the bands
+        if math.ldexp(sigma, scale_exp) * LOWER_BAND_REACH < min_sigma:
+            return 0.0, 0.0
         sigma = _lower_band(samples, scale_factor, scratch_diffs)
         if not math.ldexp(sigma, scale_exp) >= min_sigma or not sigma > 0:
             return 0.0, 0.0
@@ -596,6 +603,36 @@ def _decayed(clipped: np.ndarray) -> bool:
         if abs(cross / sum_sq) >= limit:
             return False
     return True
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _white_shape(clipped: np.ndarray) -> bool:
+    """_lag2_white and _decayed in one pass: the lag-2 and long-lag autocorrelations of the clipped
+    differences (over the pairs past the longest lag)."""
+    num_diffs = clipped.shape[0]
+    first = DECAY_LAGS[len(DECAY_LAGS) - 1]
+    if num_diffs <= 2 * first:
+        return False
+    count = num_diffs - first
+    base = clipped[first:]
+    lag2s, lag_a, lag_b = clipped[first - 2:num_diffs - 2], clipped[first - DECAY_LAGS[0]:num_diffs - DECAY_LAGS[0]], clipped[first - DECAY_LAGS[1]:num_diffs - DECAY_LAGS[1]]
+    lag_c, lag_d = clipped[first - DECAY_LAGS[2]:num_diffs - DECAY_LAGS[2]], clipped[:count]
+    sum_sq = cross2 = cross_a = cross_b = cross_c = cross_d = 0.0
+    for idx in range(count):
+        value = base[idx]
+        sum_sq += value * value
+        cross2 += value * lag2s[idx]
+        cross_a += value * lag_a[idx]
+        cross_b += value * lag_b[idx]
+        cross_c += value * lag_c[idx]
+        cross_d += value * lag_d[idx]
+    if not sum_sq > 0:
+        return False
+    if not abs((cross2 / sum_sq) / WHITE_RHO2 - 1.0) < RHO2_TOLERANCE:
+        return False
+    limit = max(DECAY_LIMIT, DECAY_SCALE / math.sqrt(num_diffs))
+    longest = max(max(abs(cross_a), abs(cross_b)), max(abs(cross_c), abs(cross_d)))
+    return longest < limit * sum_sq
 
 
 @njit(nogil=True, cache=True, fastmath=True)

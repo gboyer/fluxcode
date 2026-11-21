@@ -442,7 +442,10 @@ sensitive to jitter, and a jittered clock's slope must cancel.
   isn't over 1.25× the next band's (the spectrum may fall toward the top, not rise into the band).
   Cut at 0.25–0.48 the floor reads 0.45–1.0 of the passband density (conservative, below 0.4);
   the gearbox accelerometer through a 0.45 filter (`accel-sigma-delta`) 13.7 → 6.5 bits/sample.
-  Only blocks whose top band fails pay for the bands (about 3 × 1.4 µs).
+  Only blocks whose top band fails pay for the bands (about 3 × 1.4 µs), and not those whose top
+  band reads under 1/256 of the smallest σ that could coarsen their step: a stopband reads over
+  1/125 of its passband even cut at a quarter of the rate, while a clean signal's top band is its
+  rounding (a clean sine would otherwise spend 10 µs there).
 - **The decay test.** White noise through a kernel of 13 or 17 taps is uncorrelated at lags 20–23;
   a tone stays correlated at every lag (|ρ| 0.7–1, against 0.05–0.07 for noise on 1000 samples).
   It rejects the tone near 0.44 of the rate that the lag-1 and lag-2 tests pass (the kernel's
