@@ -685,7 +685,7 @@ The block's indices so far run from 0 (its minimum) to m ≤ 65,535. They become
 around a reference index c, and the anchor moves to c (SPEC.md §4):
 
 ```
-c = round(mean q)  for order 0;   c = q[0]  for orders 1–3
+c = round(mean of q within 3 mean absolute deviations of mean q)  for order 0;   c = q[0]  for orders 1–3
 c = clamp(c, max(0, m − 32767), min(m, 32768))         # every q − c in [−32768, 32767]
 q = q − c;  anchor: power of two (k + c)·2^e, k = anchor / 2^e;  decimal K0 + c;  scaled K0 + N·c
 ```
@@ -698,6 +698,8 @@ then the residuals of the order picked in §5.6, mod 2^16 and zigzagged, as spec
   `experimental/value/`: fast −1.5%, slow −2.9% (slow motor current −11%, a quiet tank level
   −18%, a load cell −10%, a servo's dwells −19%, the pyrometer −23% with the floor). For orders
   1–3 the first residual becomes 0, moved into the anchor.
+- **Trimmed:** spikes pull a plain mean off the bulk of a block (impulses, the pyrometer: about
+  1% each).
 - **Blocks wider than 2^15 steps** can't put c at the first sample: c moves just enough for
   every index to fit, and the first residual is the rest (the 16-bit `quadratic` 0.24 → 0.32
   bits/sample).

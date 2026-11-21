@@ -96,6 +96,10 @@ NUM_BIT_LENGTH_BINS: int = 17
 UINT16_MASK: int = 0xFFFF
 """Bitmask for 16-bit unsigned integers (65535)."""
 
+TRIM_DEVIATIONS: float = 3.0
+"""An order-0 block centers on the mean of its indices within this many mean absolute deviations
+of their mean (center)."""
+
 INT16_MAX: int = 32767
 """Largest signed 16-bit index (SPEC §4: q is read as int16)."""
 
@@ -1013,6 +1017,21 @@ def center(
     low, high = max(max_index - INT16_MAX, np.int64(0)), min(max_index, np.int64(-INT16_MIN))
     # The mean from halved indices (an int32 sum of 2^15 of them can't overflow): within one of it
     wanted = (2 * total + num_samples // 2) // num_samples if order == 0 else np.int64(quantized[0])
+    if order == 0:
+        # Trimmed: spikes would pull the plain mean off the bulk of the block
+        mean = float(wanted)
+        abs_dev = 0.0
+        for sample_idx in range(num_samples):
+            abs_dev += abs(quantized[sample_idx] - mean)
+        limit = TRIM_DEVIATIONS * abs_dev / num_samples
+        kept_sum = 0.0
+        kept = 0
+        for sample_idx in range(num_samples):
+            inside = abs(quantized[sample_idx] - mean) <= limit
+            kept_sum += quantized[sample_idx] * inside
+            kept += inside
+        if kept > 0:
+            wanted = np.int64(round(kept_sum / kept))
     shift = min(max(wanted, low), high)
     if flags & (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED):
         num = scale & SCALE_MASK if flags & BLOCK_FLAG_SCALED else np.int64(1)
