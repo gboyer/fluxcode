@@ -92,15 +92,19 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
 
 ## 4. Anchors and residuals
 
-- **Grid indices.** Each finite sample of a block is a grid index q, with 0 ≤ q < 2^16.
+- **Grid indices.** Each finite sample of a block is a signed grid index q, with
+  −2^15 ≤ q < 2^15, relative to the block's anchor. A block spans at most 2^16 − 1 steps, so an
+  anchor near its middle reaches every sample; the reference encoder puts it at the block's mean
+  index for order 0, so the residuals are centered, and at the first sample's for higher orders,
+  so the first residual is 0, as far as the 16 bits allow ([ENCODER.md §5.7](ENCODER.md#57-residuals)).
 - **The anchor** is what a decoder adds q to. It is one of:
   - on a power-of-two grid: a finite float64, giving the value anchor + q·2^e;
   - on a decimal grid (block flag bit 2): an integer K0 with |K0| < 2^52, giving (K0 + q)·10^p;
   - on a scaled grid (block flag bit 6): an integer K0 with |K0| < 2^52, giving
     (K0 + N·q)·B^p / D, with B = 10 (bit 2 set) or 2, and N and D from `grid_scale` (§6).
-    - K0 is the index of the block's minimum on the **fine grid** B^p / D; the step is N fine
-      points. The minimum needn't be a multiple of the step: 32 + 0.18·k (°F from 0.1 °C) is
-      K0 = 1600, N = 9 on the fine grid 0.1 / 5.
+    - K0 is an index on the **fine grid** B^p / D, of a value on the block's grid (one of its
+      samples' or between them); the step is N fine points. K0 needn't be a multiple of the step:
+      32 + 0.18·k (°F from 0.1 °C) is K0 = 1600 + 9c, N = 9 on the fine grid 0.1 / 5.
     - With D = 1 it is N times a decimal or power-of-two grid (a 0.05 grid is N = 5 on 10^−2).
   - Each defines the block's values exactly (a binary fraction, a decimal, or a rational).
     float64 enters only at the final rounding (§5).
@@ -120,16 +124,17 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
   ```
 
   - Order-k differences of 16-bit values need up to 16 + k + 1 bits. But every q is in
-    [0, 2^16), so integrating mod 2^16 (§5) recovers q exactly: two bytes per sample suffice.
+    [−2^15, 2^15), so integrating mod 2^16 and reading the result as int16 (§5) recovers q
+    exactly: two bytes per sample suffice.
   - The prepended zeros make the first residuals the start values, so there's no separate header.
 
 ## 5. Decoding one block
 
 ```
 v = (u >> 1) XOR −(u & 1)                   # un-zigzag
-repeat `order` times:  prefix-sum v, each partial sum mod 2^16     # q
-order 0: q = v mod 2^16
-power of two: y[i] = a + q[i] · 2^e, rounded once, clamped to the largest finite double   (a: the anchor)
+repeat `order` times:  prefix-sum v, each partial sum mod 2^16
+q = the result read as int16: ((s + 32768) mod 2^16) − 32768          # −32768 ≤ q < 32768
+power of two: y[i] = a + q[i] · 2^e, rounded once, clamped to ±the largest finite double   (a: the anchor)
 decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integer divided by an exact power of ten)
               p >= 0: y[i] = float64(K0 + q[i]) · 10^p
 scaled, decimal:      y[i] = float64(K0 + N · q[i]) / (D · 10^-p)          (p <= 0)
@@ -139,17 +144,17 @@ scaled, power of two: y[i] = (float64(K0 + N · q[i]) · 2^e) / D            (�
 - **Decimal reconstruction** is the same double that parsing the decimal text (e.g. "12.345")
   produces, because IEEE division is correctly rounded.
 - **Scaled reconstruction rounds once,** to the double nearest the rational (K0 + N·q)·B^p / D:
-  - K0 + N·q is an exact integer below 2^53 (|K0| < 2^52, N·q < 2^32);
+  - K0 + N·q is an exact integer below 2^53 (|K0| < 2^52, |N·q| < 2^31);
   - decimal: D · 10^−p is an exact double (validated, §6.4), and the division rounds once;
   - power of two: the product with 2^e is exact (a normal double, as e ≥ −1022) and can't
     overflow (2^53 · 2^970 < 2^1024), and the division by D rounds once.
 - **The clamp** only matters for e ≥ 971.
-  - There, a sample near the largest double can reconstruct up to half a step above it, which
-    would round to inf. Clamping moves it closer to the original.
+  - There, a sample near the largest double (or the most negative) can reconstruct up to half a
+    step beyond it, which would round to ±inf. Clamping moves it closer to the original.
   - Below 971, `a + q·2^e` can't overflow (the excess is under half an ulp of the largest
     double): decoders compute it directly.
   - From 971 up, `q·2^e` itself can overflow while the sum doesn't. Evaluate at half scale:
-    `y = min(2·(a/2 + q·2^(e−1)), DBL_MAX)`, with `y = a` where q = 0 (a/2 rounds if a is
+    `y = max(min(2·(a/2 + q·2^(e−1)), DBL_MAX), −DBL_MAX)`, with `y = a` where q = 0 (a/2 rounds if a is
     subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
 - **Non-finite codes** (block flag bit 3): after dequantizing, overwrite samples with code
   01, 10 or 11 with NaN (the canonical quiet NaN), +inf or −inf.
@@ -358,18 +363,18 @@ the encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
 - **Power-of-two grids.** A block whose finite values are all a + q·2^e, with
   - a a finite float64,
   - e an integer from −1074 to 1023,
-  - q an integer from 0 to 65,535.
+  - q an integer from −32,768 to 32,767.
   - This covers a constant block of any finite value (q = 0, a the value), and any block of
     values on a grid of 2^e spanning at most 65,535 steps, e.g. integers, or multiples of 2^−4.
 - **Decimal grids.** A block whose finite values are all decimals (K0 + q)·10^p, with
   - p an integer from −22 to 22,
   - K0 an integer with |K0| < 2^52,
-  - q an integer from 0 to 65,535.
+  - q an integer from −32,768 to 32,767.
   - Each decodes to the double nearest the decimal: the same one parsing its text gives.
 - **Scaled grids.** A block whose finite values are all (K0 + N·q)·B^p / D, with
   - B = 2 and e from −1022 to 970, or B = 10 and p from −22 to 0 with D · 5^−p < 2^53,
   - N and D from 1 to 65,535, K0 an integer with |K0| < 2^52,
-  - q an integer from 0 to 65,535.
+  - q an integer from −32,768 to 32,767.
   - Each decodes to the double nearest the rational: thirds, 10 V / 4095 ADC counts, or
     32 + 0.18·k, bit for bit when the input was that double.
 - **Non-finite values.** +inf and −inf decode exactly. NaN decodes as the canonical quiet NaN:

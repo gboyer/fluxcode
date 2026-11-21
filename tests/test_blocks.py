@@ -79,7 +79,7 @@ def test_short_blocks_skip_the_analysis(size, decimal):
     x = np.round(rng.normal(size=size) * 100, 2) if decimal else rng.normal(size=size) * 100
     x[size // 2] = np.nan
     params = Params(diff_orders={2}, noise_floor_sigma=1.0, target_bits_per_sample=6.0)
-    group, lo, _, _ = fluxcode.encode_blocks(x, [size], params)
+    group, _, _, _ = fluxcode.encode_blocks(x, [size], params)
     rows = group_rows(group)
     flags = int(rows.block_flags[0])
     assert flags & BLOCK_FLAG_ORDER == 0 and flags & BLOCK_FLAG_NONFINITE
@@ -97,8 +97,11 @@ def test_short_blocks_skip_the_analysis(size, decimal):
         fine = _encoder.range_exponent(finite.min(), finite.max(), 16) if finite.size else 0
         assert rows.grid_params[0] == fine
         assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2 ** 16 - 0.5)
-        q = (np.rint(finite / 2.0 ** fine) - np.rint(lo[0] / 2.0 ** fine)).astype(np.int64)
-    # Order 0: the residuals are the quantized values themselves
+        anchor = rows.value_anchors[0:1].view(np.float64)[0]
+        if rng_x > 0:  # a constant block's anchor is its value
+            assert anchor == np.rint(anchor / 2.0 ** fine) * 2.0 ** fine  # a grid point
+        q = (np.rint(finite / 2.0 ** fine) - anchor / 2.0 ** fine).astype(np.int64)
+    # Order 0: the residuals are the quantized values themselves, from the (centered) anchor
     np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64) & 0xFFFF, q & 0xFFFF)
 
 

@@ -256,7 +256,7 @@ def _robust_noise_weighted(
 
 
 @njit(nogil=True, cache=True, fastmath=True)
-def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tuple[float, float]:
+def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_sigma: float = 0.0) -> tuple[float, float]:
     """Estimates white-noise standard deviation and lag-1 autocorrelation.
 
     Evaluates second differences of finite samples scaled by 2^-scale_exp (which brings the
@@ -317,8 +317,8 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
         t4, t5, t6 = samples[4:num_diffs + 4], samples[5:num_diffs + 5], samples[6:num_diffs + 6]
         t7, t8, t9 = samples[7:num_diffs + 7], samples[8:num_diffs + 8], samples[9:num_diffs + 9]
         t10, t11, t12 = samples[10:num_diffs + 10], samples[11:num_diffs + 11], samples[12:num_diffs + 12]
+        # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
         for diff_idx in range(num_diffs):
-            # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
             diff_val = (
                 (t0[diff_idx] * scale_factor + t12[diff_idx] * scale_factor)
                 - 12.0 * (t1[diff_idx] * scale_factor + t11[diff_idx] * scale_factor)
@@ -344,7 +344,8 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
     sigma = spread / SIGMA_GAIN
     rho_share = rho / WHITE_RHO
-    if rho_share > NOISE_GATE:
+    # The checks of a gated block, unless its sigma is too small to coarsen it anyway (min_sigma)
+    if rho_share > NOISE_GATE and math.ldexp(sigma, scale_exp) >= min_sigma:
         if not _lag2_white(diffs):
             return 0.0, 0.0
         sigma = min(sigma, CAP_RATIO * _first_difference_cap(samples, NO_CODES, scale_factor, scratch_diffs, scratch_diffs))
@@ -391,6 +392,7 @@ def noise_weighted(
     min_valid: int,
     scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
+    min_sigma: float = 0.0,
 ) -> tuple[float, float]:
     """Estimates white-noise parameters on the valid windows of a block.
 
@@ -439,7 +441,7 @@ def noise_weighted(
                 scratch_diffs[:num_diffs], scratch_weights[:num_diffs], num_valid, sum_diffs, scale_exp, SIGMA_GAIN,
                 WHITE_RHO,
             )
-            if rho > NOISE_GATE:
+            if rho > NOISE_GATE and sigma >= min_sigma:
                 if not _lag2_white_weighted(scratch_diffs[:num_diffs], scratch_weights[:num_diffs]):
                     return 0.0, 0.0
                 cap = _first_difference_cap(samples, codes, scale_factor, scratch_diffs, scratch_weights)
@@ -570,8 +572,20 @@ def _first_difference_cap(
         inside = abs(diffs[diff_idx] - plain_mean) <= threshold
         kept_sum += diffs[diff_idx] * inside
         kept += inside
-    spread, _ = _robust_noise(diffs, kept_sum / kept if kept > 0 else plain_mean)
-    return spread / math.sqrt(2.0)
+    trimmed_mean = kept_sum / kept if kept > 0 else plain_mean
+    # One clipped pass around it: a cap only binds far below the 12th differences' level
+    for _ in range(CLIP_PASSES):
+        clipped_sum = 0.0
+        clipped = 0
+        for diff_idx in range(num_valid):
+            dev = abs(diffs[diff_idx] - trimmed_mean)
+            inside = dev <= threshold
+            clipped_sum += dev * inside
+            clipped += inside
+        if clipped == 0:
+            return 0.0
+        threshold = CLIP_SIGMAS * MAD_TO_SD * clipped_sum / clipped
+    return MAD_TO_SD * (clipped_sum / clipped) / math.sqrt(2.0)
 
 
 @njit(nogil=True, cache=True, fastmath=True)
@@ -644,6 +658,7 @@ def block_noise(
     scratch_pivots: np.ndarray,
     scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
+    min_sigma: float = 0.0,
 ) -> tuple[float, float]:
     """Estimates a block's white noise for the noise floor.
 
@@ -667,7 +682,7 @@ def block_noise(
     """
     irregular = ticks.shape[0] > 0
     if not irregular and codes.shape[0] == 0:
-        return noise(samples, scale_exp, scratch_diffs)
+        return noise(samples, scale_exp, scratch_diffs, min_sigma)
     lower, upper = 0, 0
     if irregular:
         lower, upper, _ = cadence(ticks, scratch_pivots)
@@ -683,4 +698,5 @@ def block_noise(
         MIN_ONE_SCAN_TRIPLETS if irregular else samples.shape[0] // 2,
         scratch_diffs,
         scratch_weights,
+        min_sigma,
     )

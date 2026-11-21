@@ -228,7 +228,7 @@ def test_decoding_rounds_once(decimal):
         if decimal and not 5 ** -int(param) < (1 << 53) // den:
             den = 1
         k0 = int(rng.integers(-2 ** 51, 2 ** 51))
-        q = rng.integers(0, 2 ** 16, 64)
+        q = rng.integers(-2 ** 15, 2 ** 15, 64)  # signed 16-bit indices (SPEC §4)
         y = decode(scaled_group(BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if decimal else 0), int(param), num, den, k0, q))
         base = Fraction(10) if decimal else Fraction(2)
         want = [float((k0 + num * int(v)) * base ** int(param) / den) for v in q]

@@ -84,25 +84,24 @@ def unzigzag(low_bytes: np.ndarray, high_bytes: np.ndarray, out_residuals: np.nd
 def integrate(residuals_in_out: np.ndarray, order: int) -> None:
     """Reconstructs quantized indices by integrating residuals mod 2^16 in-place.
 
-    Computes `order` successive prefix sums modulo 65536. For order 0, masks the
-    elements to the uint16 range.
+    Computes `order` successive prefix sums modulo 65536, read as signed 16-bit (SPEC §4).
 
     Args:
         residuals_in_out: In-out 1D int32 array containing residuals, modified in-place to hold
-            quantized grid offsets q in [0, 65535].
+            quantized grid offsets q in [-32768, 32767].
         order: Difference order (0, 1, 2, or 3).
     """
     num_samples = residuals_in_out.shape[0]
     if order == 0:
         for sample_idx in range(num_samples):
-            # Mask to 16-bit unsigned range
-            residuals_in_out[sample_idx] &= 0xFFFF
+            # Read as signed 16-bit
+            residuals_in_out[sample_idx] = ((residuals_in_out[sample_idx] + 32768) & 0xFFFF) - 32768
     elif order == 1:
         sum_order1 = np.int32(0)
         for sample_idx in range(num_samples):
             # First-order prefix sum, mod 2^16
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
-            residuals_in_out[sample_idx] = sum_order1
+            residuals_in_out[sample_idx] = ((sum_order1 + 32768) & 0xFFFF) - 32768
     elif order == 2:
         sum_order1 = np.int32(0)
         sum_order2 = np.int32(0)
@@ -110,7 +109,7 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
             # Second-order double prefix sum mod 2^16
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
             sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
-            residuals_in_out[sample_idx] = sum_order2
+            residuals_in_out[sample_idx] = ((sum_order2 + 32768) & 0xFFFF) - 32768
     else:
         sum_order1 = np.int32(0)
         sum_order2 = np.int32(0)
@@ -120,7 +119,7 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
             sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
             sum_order3 = (sum_order3 + sum_order2) & 0xFFFF
-            residuals_in_out[sample_idx] = sum_order3
+            residuals_in_out[sample_idx] = ((sum_order3 + 32768) & 0xFFFF) - 32768
 
 
 @njit(nogil=True, cache=True)
@@ -134,8 +133,8 @@ def dequantize_pow2(
 
     Args:
         quantized_samples: 1D int32 array of quantized grid offsets.
-        lower_bound: Anchor of the block: the grid point nearest its minimum (the minimum itself
-            for a constant block or a non-finite snapped anchor); the value for q = 0.
+        lower_bound: Anchor of the block: a grid point (its value itself for a constant block, or an
+            unsnapped value near +-DBL_MAX); the value for q = 0, with q signed (SPEC §4).
         quant_exp: Power-of-two quantization exponent.
         out_samples: Output 1D float64 array receiving reconstructed samples.
     """
@@ -193,7 +192,7 @@ def dequantize_scaled(
 
     Args:
         quantized_samples: 1D int32 array of quantized grid offsets q.
-        base_index: The anchor K0: the minimum's index on the fine grid B^param / den.
+        base_index: The anchor K0: an index on the fine grid B^param / den (q is signed, SPEC §4).
         num: N, the step in fine grid points.
         den: D.
         param: The grid parameter: the decimal power p or the power-of-two exponent e.
@@ -328,7 +327,7 @@ def decode_group(
             continue
         flags = raw_group[block_idx]
         param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
-        # Anchor: float64 bits of the grid point nearest the minimum (power-of-two blocks) or the decimal grid index
+        # Anchor: float64 bits of a grid point (power-of-two blocks) or the decimal grid index
         anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
         block_residuals = scratch_residuals[:block_len]
         block_out = out_samples[first_sample:first_sample + block_len]

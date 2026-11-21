@@ -120,7 +120,7 @@ def test_residual_and_integrate(order):
     np.testing.assert_array_equal(v, ((ref + 32768) % 65536 - 32768).astype(np.int16))
     w = v.astype(np.int32)
     _decoder.integrate(w, order)
-    np.testing.assert_array_equal(w, q)
+    np.testing.assert_array_equal(w, (q + 32768) % 65536 - 32768)  # read as signed 16-bit
 
 
 def test_dequantize():

@@ -96,6 +96,12 @@ NUM_BIT_LENGTH_BINS: int = 17
 UINT16_MASK: int = 0xFFFF
 """Bitmask for 16-bit unsigned integers (65535)."""
 
+INT16_MAX: int = 32767
+"""Largest signed 16-bit index (SPEC §4: q is read as int16)."""
+
+INT16_MIN: int = -32768
+"""Smallest signed 16-bit index."""
+
 INT16_WRAP_OFFSET: int = 32768
 """Half-range offset (2^15) used for modular symmetric signed int16 wrapping."""
 
@@ -959,11 +965,75 @@ def encode_block(
                     scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
-    # Select difference order minimizing residual variance
+    # Select difference order minimizing residual variance (a shift of q doesn't change it)
     selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
+    grid_index, anchor = center(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
     return flags | selected_order, param_val, grid_index, anchor, scale
+
+
+@njit(nogil=True, cache=True)
+def center(
+    quantized: np.ndarray, order: int, flags: int, param: int, grid_index: np.int64, anchor: float, scale: np.int64,
+) -> tuple[np.int64, float]:
+    """Moves a block's anchor to its reference index c and its indices to q - c, signed 16-bit (SPEC §4).
+
+    c is the rounded mean index for order 0 (the residuals are then the indices themselves,
+    centered on the block), else the first index (the first residual is then 0), clamped so that
+    every q - c fits in [-32768, 32767] and the anchor stays exact: an integer anchor (decimal or
+    scaled grid) moves by c grid steps (N c fine points), a power-of-two one to the grid point
+    (k + c) 2^e when its index k = anchor / 2^e is an integer under 2^52; an unsnapped anchor (near
+    +-DBL_MAX) moves only as far as the 16 bits require, by an exact sum there (e >= 971).
+
+    Args:
+        quantized: 1D int32 array of the block's indices from its minimum (0 to 65,535), shifted in place.
+        order: The block's predictor order.
+        flags, param, grid_index, anchor, scale: The block's grid, as encode_block returns them.
+
+    Returns:
+        A tuple of (grid_index, anchor), moved to index c.
+    """
+    num_samples = quantized.shape[0]
+    if num_samples == 0:
+        return grid_index, anchor
+    # int32 max and sum (|sum| < 2^16 * 2^16 fits int64 only: widen per 2^15 samples) vectorize
+    max_q = np.int32(0)
+    total = np.int64(0)
+    for chunk_start in range(0, num_samples, 1 << 15):
+        chunk = quantized[chunk_start:min(chunk_start + (1 << 15), num_samples)]
+        chunk_total = np.int32(0)
+        chunk_max = np.int32(0)
+        for sample_idx in range(chunk.shape[0]):
+            chunk_max = max(chunk_max, chunk[sample_idx])
+            chunk_total += chunk[sample_idx] >> 1
+        max_q = max(max_q, chunk_max)
+        total += np.int64(chunk_total)
+    max_index = np.int64(max_q)
+    low, high = max(max_index - INT16_MAX, np.int64(0)), min(max_index, np.int64(-INT16_MIN))
+    # The mean from halved indices (an int32 sum of 2^15 of them can't overflow): within one of it
+    wanted = (2 * total + num_samples // 2) // num_samples if order == 0 else np.int64(quantized[0])
+    shift = min(max(wanted, low), high)
+    if flags & (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED):
+        num = scale & SCALE_MASK if flags & BLOCK_FLAG_SCALED else np.int64(1)
+        # The anchor stays an index under 2^52, as the samples' own indices are (§5.3, §5.4)
+        if abs(grid_index + num * shift) >= INDEX_LIMIT:
+            shift = low
+        grid_index = grid_index + num * shift
+    else:
+        anchor_index = math.ldexp(anchor, -param)
+        if anchor_index == math.floor(anchor_index) and abs(anchor_index) < FLOAT64_EXACT_INT_LIMIT:
+            anchor = math.ldexp(anchor_index + float(shift), param) + 0.0
+        else:
+            # Unsnapped (or beyond exact indices): only the shift the 16 bits need, at half scale
+            shift = low
+            if shift:
+                anchor = 2.0 * (0.5 * anchor + float(shift) * math.ldexp(1.0, param - 1))
+    if shift:
+        shift32 = np.int32(shift)
+        for sample_idx in range(num_samples):
+            quantized[sample_idx] -= shift32
+    return grid_index, anchor
 
 
 @njit(inline="always")
@@ -1272,11 +1342,14 @@ def encode_group(
             if decimal_exp != NO_DECIMAL:
                 out_block_flags[block_idx] = BLOCK_FLAG_DECIMAL
                 out_grid_params[block_idx] = decimal_exp
-                out_value_anchors[block_idx] = decimal_base
+                out_value_anchors[block_idx], _ = center(
+                    block_quantized, 0, BLOCK_FLAG_DECIMAL, decimal_exp, decimal_base, 0.0, np.int64(0)
+                )
             else:
                 out_block_flags[block_idx] = 0
                 out_grid_params[block_idx] = fine_exp
-                anchor_floats[block_idx] = quantize_block(block_samples, block_min, block_max, fine_exp, block_quantized)
+                anchor = quantize_block(block_samples, block_min, block_max, fine_exp, block_quantized)
+                _, anchor_floats[block_idx] = center(block_quantized, 0, 0, fine_exp, np.int64(0), anchor, np.int64(0))
             residual(block_quantized, 0, block_residuals)
             if has_nonfinite:
                 out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
@@ -1295,6 +1368,8 @@ def encode_group(
                 scratch_pivots,
                 scratch_noise_diffs,
                 scratch_noise_weights,
+                # A sigma under this can't coarsen the finest step: its block skips the gate's checks
+                math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
             )
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
