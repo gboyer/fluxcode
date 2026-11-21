@@ -31,7 +31,6 @@ from ._format import (
     P_MAX,
     P_MIN,
     PERIOD_SHIFT,
-    PERIOD_WEIGHT_SHIFT,
     SCALE_MASK,
     SCALE_SHIFT,
     SCALED_E_MAX,
@@ -119,8 +118,8 @@ predictor to be tried."""
 PERIOD_SEARCH_LEN: int = 512
 """Samples the period's integer lag is refined on."""
 
-PERIOD_MIN_RATE: float = 2.0
-"""The fixed order's estimated bits per sample under which a block isn't tried."""
+PERIOD_MIN_VARIANCE: float = 4.0
+"""The fixed order's residual variance (steps^2, about 2 bits a sample) under which a block isn't tried."""
 
 PERIOD_SIDE_BITS: float = 64.0
 """Bits the period predictor must save over the block (class-entropy estimate) to be taken: its
@@ -1080,64 +1079,68 @@ def try_period(
     if spread > PERIOD_MAX_JITTER * mean_interval:
         return False, 0, np.int64(0)
     guess = (2 * (last_cross - first_cross) + num_cross - 1) // (2 * (num_cross - 1))
-    fixed_rate = estimate_bits(fixed_residuals)
-    if fixed_rate < PERIOD_MIN_RATE:
-        # Nearly free already: the estimate can't tell a few bytes apart (zstd's runs and matches)
+    # The fixed order's residual variance (exact int64 sums): blocks under PERIOD_MIN_VARIANCE are
+    # nearly free already, where zstd's runs and matches decide and a variance can't tell
+    fixed_total = fixed_sq = np.int64(0)
+    for sample_idx in range(num_samples):
+        value = np.int64(fixed_residuals[sample_idx])
+        fixed_total += value
+        fixed_sq += value * value
+    fixed_variance = fixed_sq / num_samples - (fixed_total / num_samples) ** 2
+    if fixed_variance < PERIOD_MIN_VARIANCE:
         return False, 0, np.int64(0)
     # The integer lag of least squared difference within 3 of the guess, on the block's head
     span = min(num_samples, PERIOD_SEARCH_LEN)
-    best_period, best_energy = -1, np.int64(0)
-    for period in range(max(2, guess - 3), min(span // 3, guess + 3) + 1):
+    first_lag = max(2, guess - 3)
+    last_lag = min(span // 3, guess + 3)
+    if last_lag < first_lag:
+        return False, 0, np.int64(0)
+    energies = np.empty(last_lag - first_lag + 1, np.int64)
+    for period in range(first_lag, last_lag + 1):
         energy = np.int64(0)
         later, earlier = quantized[period:span], quantized[:span - period]
         for sample_idx in range(span - period):
             diff = np.int64(later[sample_idx] - earlier[sample_idx])
             energy += diff * diff
-        energy = energy * span // (span - period)
-        if best_period < 0 or energy < best_energy:
-            best_period, best_energy = period, energy
-    if best_period < 0:
+        energies[period - first_lag] = energy * span // (span - period)
+    best = int(np.argmin(energies))
+    best_period = first_lag + best
+    # The true period lies toward the lower of the two neighbouring lags: interpolate from there
+    if 0 < best and (best == energies.shape[0] - 1 or energies[best - 1] < energies[best + 1]):
+        best_period -= 1
+    if best_period < 2 or best_period + 1 >= num_samples:
         return False, 0, np.int64(0)
-    # Candidates by the variance of their residuals (lags P - 1 and P, no difference or a first one)
-    best_variance, best_order, best_bits_value = math.inf, -1, np.int64(0)
-    for period in (best_period - 1, best_period):
-        if period < 2 or period + 1 >= num_samples:
-            continue
-        # Least squares for w: y = q[n] - q[n - P], z = q[n - P - 1] - q[n - P]
-        cross = squares = 0.0
-        current, near, far = quantized[period + 1:], quantized[1:num_samples - period], quantized[:num_samples - period - 1]
-        for sample_idx in range(num_samples - period - 1):
-            y = float(current[sample_idx] - near[sample_idx])
-            z = float(far[sample_idx] - near[sample_idx])
-            cross += y * z
-            squares += z * z
-        weight = 0 if squares == 0 else int(min(max(round(64.0 * cross / squares), -128), 127))
-        period_errors(quantized, period, weight, scratch)
-        tail = scratch[period + 1:]
-        total = total_sq = 0.0
-        for sample_idx in range(tail.shape[0]):
-            value = float(tail[sample_idx])
-            total += value
-            total_sq += value * value
-        count = max(tail.shape[0], 1)
-        variance = total_sq / count - (total / count) ** 2
-        if variance < best_variance:
-            best_variance, best_order = variance, 0
-            best_bits_value = (np.int64(period) | (np.int64(weight & 0xFF) << 16)) << PERIOD_SHIFT
-    if best_order < 0:
+    # Least squares for w on the head: y = q[n] - q[n - P], z = q[n - P - 1] - q[n - P]
+    cross = squares = np.int64(0)
+    stop = max(span, best_period + 2)
+    current, near, far = (
+        quantized[best_period + 1:stop], quantized[1:stop - best_period], quantized[:stop - best_period - 1]
+    )
+    for sample_idx in range(stop - best_period - 1):
+        y = np.int64(current[sample_idx] - near[sample_idx])
+        z = np.int64(far[sample_idx] - near[sample_idx])
+        cross += y * z
+        squares += z * z
+    weight = 0 if squares == 0 else int(min(max(round(64.0 * cross / squares), -128), 127))
+    period_errors(quantized, best_period, weight, scratch)
+    # Past the head, the errors' variance against the fixed order's residuals': the head is the same
+    total = total_sq = fixed_tail = fixed_tail_sq = np.int64(0)
+    errors, fixed_part = scratch[best_period + 1:], fixed_residuals[best_period + 1:]
+    tail_len = num_samples - best_period - 1
+    for sample_idx in range(tail_len):
+        value = np.int64(errors[sample_idx])
+        total += value
+        total_sq += value * value
+        reference = np.int64(fixed_part[sample_idx])
+        fixed_tail += reference
+        fixed_tail_sq += reference * reference
+    variance = total_sq / tail_len - (total / tail_len) ** 2
+    fixed_tail_variance = fixed_tail_sq / tail_len - (fixed_tail / tail_len) ** 2
+    if not variance > 0 or 0.5 * tail_len * math.log2(max(fixed_tail_variance, 1e-9) / variance) < PERIOD_SIDE_BITS:
         return False, 0, np.int64(0)
-    period = (best_bits_value >> PERIOD_SHIFT) & 0xFFFF
-    weight = np.int8((best_bits_value >> PERIOD_WEIGHT_SHIFT) & 0xFF)
-    period_errors(quantized, period, weight, scratch)
-    # The head keeps the fixed order's residuals; the tail takes the errors
-    candidate = np.empty(num_samples, np.int16)
-    candidate[:] = fixed_residuals
-    for sample_idx in range(period + 1, num_samples):
-        candidate[sample_idx] = scratch[sample_idx]
-    if estimate_bits(candidate) * num_samples > fixed_rate * num_samples - PERIOD_SIDE_BITS:
-        return False, 0, np.int64(0)
-    fixed_residuals[:] = candidate
-    return True, fixed_order, best_bits_value
+    for sample_idx in range(best_period + 1, num_samples):
+        fixed_residuals[sample_idx] = scratch[sample_idx]
+    return True, fixed_order, (np.int64(best_period) | (np.int64(weight & 0xFF) << 16)) << PERIOD_SHIFT
 
 
 @njit(nogil=True, cache=True)

@@ -735,6 +735,29 @@ then the residuals of the order picked in §5.6, mod 2^16 and zigzagged, as spec
 - **Cost:** one pass for the maximum and the mean, one to subtract c: 0.13 µs per 1000-sample
   block. Decoding reads each index as int16, one operation per sample.
 
+### 5.7.1 Period predictor (effort ≥ 6)
+
+From `effort` 6, and never with `target_bits_per_sample` (its bit estimates steer the target's steps,
+and effort must not change decoded values), a block of at least 64 samples with order ≥ 1 may predict
+each index from one a period earlier (SPEC.md §4, block flag bit 7):
+
+```
+crossings of the mean, upward: at least 3, their intervals' spread under 10% of their mean
+skip if the fixed order's residual variance < 4 (steps²): nearly free blocks
+P0 = mean crossing interval; P = the lag in P0 ± 3 of least Σ(q[n] − q[n−P])² over the first 512
+interpolate from the lower neighbour: P − 1 if E(P − 1) < E(P + 1)
+w = round(64 · Σ y·z / Σ z²) (int8), y = q[n] − q[n−P], z = q[n−P−1] − q[n−P], over the first 512
+take it if ½ (n − P − 1) log2(variance of the fixed residuals past P / variance of the errors) ≥ 64 bits
+```
+
+The first P + 1 residuals stay the block's fixed order's (no history to predict from), so a period
+costs nothing where it can't help. Measured at effort 6 (`experimental/value/`): motor current on a
+16-bit ADC −15%, line voltage (128 samples a cycle) −18%, no other realistic signal changed; an
+exactly repeating synthetic sine can come out larger (zstd already matches its fixed-order residuals'
+repeats, which a variance can't see). Cost on a periodic block: about 3.5 µs to encode (motor current
+6.4 → 9.7 µs per 1000-sample block) and +0.3–0.5 µs to decode (the prediction is sequential); a
+non-periodic block pays the crossing pass, about 0.3 µs.
+
 ### 5.8 Per-block-group target
 
 Runs when `target_bits_per_sample` = t is set, after every block of the block group has been through
