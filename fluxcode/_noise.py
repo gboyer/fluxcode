@@ -35,8 +35,10 @@ CLIP_SIGMAS: float = 4.0
 CLIP_PASSES: int = 2
 """Number of iterative outlier clipping passes used in scale re-estimation."""
 
-NOISE_ORDER: int = int(os.environ.get("FLUXCODE_X_NOISE_ORDER", "2"))
-"""Order k of the differences the noise is measured on (EXPERIMENT; 2 is the shipped estimator)."""
+NOISE_ORDER: int = int(os.environ.get("FLUXCODE_X_NOISE_ORDER", "12"))
+"""Order k of the differences the noise is measured on, on regular (or no) times: its kernel
+(2 sin(pi f))^(2k) / C(2k, k) reads the spectral density at the top of the band, so a signal's
+content below about a third of the sample rate barely leaks in (FLUXCODE_X_NOISE_ORDER: experiment)."""
 
 NOISE_COEFS = tuple((-1) ** (NOISE_ORDER - j) * math.comb(NOISE_ORDER, j) for j in range(NOISE_ORDER + 1))
 """The k-th difference's coefficients, oldest sample first."""
@@ -46,6 +48,12 @@ SIGMA_GAIN: float = math.sqrt(math.comb(2 * NOISE_ORDER, NOISE_ORDER))
 
 WHITE_RHO: float = -NOISE_ORDER / (NOISE_ORDER + 1)
 """Lag-1 autocorrelation of white noise's k-th differences."""
+
+CHORD_GAIN: float = math.sqrt(6.0)
+"""Ratio of a chord (second divided) difference's standard deviation to white noise's, on irregular times."""
+
+CHORD_WHITE_RHO: float = -2.0 / 3.0
+"""Lag-1 autocorrelation of white noise's second differences."""
 
 NOISE_WINDOW: int = 256
 """Valid second differences per window of the noise level (up to twice as many are one window)."""
@@ -278,6 +286,25 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
             )
             diffs[diff_idx] = diff_val
             sum_diffs += diff_val
+    elif NOISE_ORDER == 12:
+        # Offset slices from index 0 vectorize; symmetric taps C(12, j) with alternating signs
+        t0, t1, t2, t3 = samples[:num_diffs], samples[1:num_diffs + 1], samples[2:num_diffs + 2], samples[3:num_diffs + 3]
+        t4, t5, t6 = samples[4:num_diffs + 4], samples[5:num_diffs + 5], samples[6:num_diffs + 6]
+        t7, t8, t9 = samples[7:num_diffs + 7], samples[8:num_diffs + 8], samples[9:num_diffs + 9]
+        t10, t11, t12 = samples[10:num_diffs + 10], samples[11:num_diffs + 11], samples[12:num_diffs + 12]
+        for diff_idx in range(num_diffs):
+            # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
+            diff_val = (
+                (t0[diff_idx] * scale_factor + t12[diff_idx] * scale_factor)
+                - 12.0 * (t1[diff_idx] * scale_factor + t11[diff_idx] * scale_factor)
+                + 66.0 * (t2[diff_idx] * scale_factor + t10[diff_idx] * scale_factor)
+                - 220.0 * (t3[diff_idx] * scale_factor + t9[diff_idx] * scale_factor)
+                + 495.0 * (t4[diff_idx] * scale_factor + t8[diff_idx] * scale_factor)
+                - 792.0 * (t5[diff_idx] * scale_factor + t7[diff_idx] * scale_factor)
+                + 924.0 * (t6[diff_idx] * scale_factor)
+            )
+            diffs[diff_idx] = diff_val
+            sum_diffs += diff_val
     else:
         for diff_idx in range(num_diffs):
             diffs[diff_idx] = 0.0
@@ -291,7 +318,7 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
     # Subtract mean second difference to remove pure parabolic trends (quadratics)
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
     # Scale robust standard deviation back to signal units and divide by sqrt(6)
-    return math.ldexp(spread, scale_exp) / SIGMA_GAIN, rho
+    return math.ldexp(spread / SIGMA_GAIN, scale_exp), rho / WHITE_RHO
 
 
 @njit(nogil=True, cache=True)
@@ -334,80 +361,87 @@ def noise_weighted(
     scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
 ) -> tuple[float, float]:
-    """Estimates white-noise parameters on the valid triplets of a block.
+    """Estimates white-noise parameters on the valid windows of a block.
 
-    A triplet (three consecutive samples) is valid if all three are finite (when codes are
-    given) and both its intervals are one scan, lower < d < upper (when ticks are given). With
-    ticks, its difference is the middle sample's from the straight line through its
-    neighbours, scaled to the variance of a regular second difference on white noise: for
-    intervals a (before) and b (after), sqrt(6) (b x0 + a x2 - (a + b) x1) / sqrt((a + b)^2 +
-    a^2 + b^2). A slope cancels however the intervals differ, white noise of sigma gives
-    6 sigma^2 for any intervals, and equal intervals give the plain second difference.
-    If every triplet is valid, the plain estimator takes the differences (_robust_noise).
+    Without ticks (non-finite samples on a regular block): the k-th differences of windows of
+    NOISE_ORDER + 1 finite samples, as noise takes them, while at least min_valid windows are
+    valid; with denser gaps, second differences of finite triplets.
+
+    With ticks (irregular times): triplets whose samples are finite and whose two intervals are
+    one scan, lower < d < upper. Each difference is the middle sample's from the straight line
+    through its neighbours, scaled to the variance of a regular second difference on white noise:
+    for intervals a (before) and b (after), sqrt(6) (b x0 + a x2 - (a + b) x1) / sqrt((a + b)^2 +
+    a^2 + b^2). A slope cancels however the intervals differ, white noise of sigma gives 6 sigma^2
+    for any intervals, and equal intervals give the plain second difference.
 
     Args:
         samples: 1D float64 array of the block's samples (non-finite ones sample-and-held).
         codes: 1D uint8 array of the samples' 2-bit codes, or an empty array if all are finite.
-        ticks: 1D int64 array of the samples' ticks, or an empty array to use plain second
-            differences.
+        ticks: 1D int64 array of the samples' ticks, or an empty array for plain differences.
         lower: Exclusive lower bound of a one-scan interval (read with ticks).
         upper: Exclusive upper bound of a one-scan interval (read with ticks).
         scale_exp: Power-of-two scaling exponent that normalizes range to [0.5, 1.0).
-        min_valid: Minimum number of valid triplets required to gate.
+        min_valid: Minimum number of valid windows required to gate.
         scratch_diffs: 1D float64 scratch array of at least len(samples) - 2.
         scratch_weights: 1D float64 scratch array of at least len(samples) - 2.
 
     Returns:
-        A tuple of (sigma, rho):
-            sigma: Estimated white-noise standard deviation in original units.
-            rho: Lag-1 autocorrelation of valid differences.
-            Both are 0.0 if there are fewer than min_valid (and at least 2) valid triplets,
-            or if their variance is negligible.
+        A tuple of (sigma, rho): the estimated white-noise standard deviation in original units,
+        and the lag-1 autocorrelation of the valid differences as a share of white noise's (1 on
+        white noise). Both are 0.0 with fewer than min_valid (and at least 2) valid windows, or
+        if their variance is negligible.
     """
-    num_diffs = samples.shape[0] - NOISE_ORDER
-    if num_diffs < 2:
-        return 0.0, 0.0
+    timed = ticks.shape[0] > 0
     # Apply power-of-two scaling to prevent intermediate overflow/underflow
     if abs(scale_exp) <= xm.SCALE_LIMIT:
         scale_factor = math.ldexp(1.0, -scale_exp)
     else:
         samples, scale_factor = xm.prescale(samples, scale_exp)
+    if not timed:
+        # Around non-finite samples: k-th differences of all-finite windows, as on a clean block, while
+        # at least min_valid remain (a few dropouts); else triplets, which survive denser gaps
+        num_diffs, num_valid, sum_diffs = _coded_diffs(
+            samples, codes, scale_factor, NOISE_ORDER, scratch_diffs, scratch_weights
+        )
+        if num_valid >= max(min_valid, 2):
+            return _weighted_spread(
+                scratch_diffs[:num_diffs], scratch_weights[:num_diffs], num_valid, sum_diffs, scale_exp, SIGMA_GAIN,
+                WHITE_RHO,
+            )
+        num_diffs, num_valid, sum_diffs = _coded_diffs(samples, codes, scale_factor, 2, scratch_diffs, scratch_weights)
+        if num_valid < max(min_valid, 2):
+            return 0.0, 0.0
+        return _weighted_spread(
+            scratch_diffs[:num_diffs], scratch_weights[:num_diffs], num_valid, sum_diffs, scale_exp, CHORD_GAIN,
+            CHORD_WHITE_RHO,
+        )
+    # Irregular times: chords of triplets, slope-exact whatever the intervals
+    num_diffs = samples.shape[0] - 2
+    if num_diffs < 2:
+        return 0.0, 0.0
     has_codes = codes.shape[0] > 0
-    timed = ticks.shape[0] > 0
     diffs = scratch_diffs[:num_diffs]
     weights = scratch_weights[:num_diffs]
     num_valid = 0.0
     sum_diffs = 0.0
-    divided = np.empty(NOISE_ORDER + 1)
     for diff_idx in range(num_diffs):
         is_valid = True
         if has_codes:
-            for j in range(NOISE_ORDER + 1):
-                is_valid &= codes[diff_idx + j] == CODE_FINITE
-        if timed:
-            for j in range(NOISE_ORDER):
-                interval = ticks[diff_idx + j + 1] - ticks[diff_idx + j]
-                is_valid &= (interval > lower) & (interval < upper)
-        diff_val = 0.0
-        if is_valid:
-            if timed:
-                # The k-th divided difference over the window's times, scaled to the variance of
-                # a regular k-th difference on white noise: a polynomial of degree < k cancels
-                # however the intervals differ
-                sum_sq = 0.0
-                for j in range(NOISE_ORDER + 1):
-                    prod = 1.0
-                    for m in range(NOISE_ORDER + 1):
-                        if m != j:
-                            prod *= np.float64(ticks[diff_idx + j] - ticks[diff_idx + m])
-                    divided[j] = 1.0 / prod
-                    sum_sq += divided[j] * divided[j]
-                norm = SIGMA_GAIN / math.sqrt(sum_sq)
-                for j in range(NOISE_ORDER + 1):
-                    diff_val += divided[j] * norm * (samples[diff_idx + j] * scale_factor)
-            else:
-                for j in range(NOISE_ORDER + 1):
-                    diff_val += NOISE_COEFS[j] * (samples[diff_idx + j] * scale_factor)
+            is_valid = (codes[diff_idx] | codes[diff_idx + 1] | codes[diff_idx + 2]) == CODE_FINITE
+        before = ticks[diff_idx + 1] - ticks[diff_idx]
+        after = ticks[diff_idx + 2] - ticks[diff_idx + 1]
+        is_valid &= (before > lower) & (before < upper) & (after > lower) & (after < upper)
+        # (a + b) times the middle's distance below the line through its neighbours, over
+        # sqrt((a + b)^2 + a^2 + b^2) / sqrt(6): the line weighs each by the other's interval
+        after_f, before_f = np.float64(after), np.float64(before)
+        span = after_f + before_f
+        norm = math.sqrt(max(span * span + after_f * after_f + before_f * before_f, 1.0))
+        first = samples[diff_idx] * scale_factor
+        middle = samples[diff_idx + 1] * scale_factor
+        last = samples[diff_idx + 2] * scale_factor
+        diff_val = CHORD_GAIN * (after_f * first + before_f * last - span * middle) / norm
+        # Selects rather than branches
+        diff_val = diff_val if is_valid else 0.0
         weight = 1.0 if is_valid else 0.0
         diffs[diff_idx] = diff_val
         weights[diff_idx] = weight
@@ -415,11 +449,66 @@ def noise_weighted(
         sum_diffs += diff_val
     if num_valid < max(min_valid, 2):
         return 0.0, 0.0
-    if num_valid == num_diffs:
+    return _weighted_spread(diffs, weights, num_valid, sum_diffs, scale_exp, CHORD_GAIN, CHORD_WHITE_RHO)
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _coded_diffs(
+    samples: np.ndarray, codes: np.ndarray, scale_factor: float, order: int, scratch_diffs: np.ndarray,
+    scratch_weights: np.ndarray,
+) -> tuple[int, float, float]:
+    """Writes the order-k differences (k = 2 or NOISE_ORDER) of the scaled samples, valid (weight 1) where
+    the window of k + 1 samples is all finite, else 0 with weight 0.
+
+    Returns:
+        A tuple of (num_diffs, num_valid, sum of the valid differences).
+    """
+    num_diffs = samples.shape[0] - order
+    if num_diffs < 2:
+        return 0, 0.0, 0.0
+    has_codes = codes.shape[0] > 0
+    num_valid = 0.0
+    sum_diffs = 0.0
+    last_bad = -1  # the latest non-finite sample seen
+    if has_codes:
+        for sample_idx in range(order):
+            if codes[sample_idx] != CODE_FINITE:
+                last_bad = sample_idx
+    for diff_idx in range(num_diffs):
+        if has_codes and codes[diff_idx + order] != CODE_FINITE:
+            last_bad = diff_idx + order
+        diff_val = 0.0
+        if order == 2:
+            diff_val = (
+                samples[diff_idx + 2] * scale_factor
+                - 2.0 * (samples[diff_idx + 1] * scale_factor)
+                + samples[diff_idx] * scale_factor
+            )
+        else:
+            for j in range(order + 1):
+                diff_val += NOISE_COEFS[j] * (samples[diff_idx + j] * scale_factor)
+        is_valid = last_bad < diff_idx
+        diff_val = diff_val if is_valid else 0.0
+        weight = 1.0 if is_valid else 0.0
+        scratch_diffs[diff_idx] = diff_val
+        scratch_weights[diff_idx] = weight
+        num_valid += weight
+        sum_diffs += diff_val
+    return num_diffs, num_valid, sum_diffs
+
+
+@njit(nogil=True, cache=True, fastmath=True)
+def _weighted_spread(
+    diffs: np.ndarray, weights: np.ndarray, num_valid: float, sum_diffs: float, scale_exp: int, gain: float,
+    white_rho: float,
+) -> tuple[float, float]:
+    """(sigma, rho as a share of white noise's) from the valid differences, for differences of the given
+    gain (their standard deviation on white noise of sigma 1) and white-noise autocorrelation."""
+    if num_valid == diffs.shape[0]:
         spread, rho = _robust_noise(diffs, sum_diffs / num_valid)
     else:
         spread, rho = _robust_noise_weighted(diffs, weights, num_valid, sum_diffs / num_valid)
-    return math.ldexp(spread, scale_exp) / SIGMA_GAIN, rho
+    return math.ldexp(spread / gain, scale_exp), rho / white_rho
 
 
 @njit(nogil=True, cache=True)

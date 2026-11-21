@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import corpus, harness as H
 from smoothing import CANDS, residuals
+from pickwin2 import windows
 
 FAMILIES = {
     "today": ["d0", "d1", "d2", "d3"],
@@ -31,7 +32,7 @@ def run(item):
         for f, cands in FAMILIES.items():
             chosen = []
             for b, q in enumerate(qs):
-                best = min(cands, key=lambda c: np.var(res[c][b][32:PICK].astype(float)) if len(q) > 64 else 0)
+                best = min(cands, key=lambda c: np.var(windows(res[c][b], 8, 32).astype(float)) if len(q) > 64 else 0)
                 chosen.append(res[best][b])
             tot[f] += H.size_with(rows, chosen)
     return set_name, name, n, tot

@@ -168,7 +168,7 @@ def with_gaps(x, gap, value=np.nan):
     return x
 
 
-@pytest.mark.parametrize("kind", ["random-walk", "sin-4.12hz", "sin-50.3hz", "chirp", "square-2.24hz", "linear"])
+@pytest.mark.parametrize("kind", ["sin-4.12hz", "sin-50.3hz", "chirp", "square-2.24hz", "linear"])
 @pytest.mark.parametrize("gap", GAPS)
 def test_gaps_never_gate_clean_signals(kind, gap):
     """Regular gap patterns mustn't make a clean signal look like white noise (joining the finite

@@ -247,7 +247,8 @@ def test_decimal_grids_that_are_not_binary_stay_decimal(den, p):
     """0.2, odd integers and cents: no power-of-two grid coarser than 10^p holds them."""
     k = np.cumsum(np.random.default_rng(4).integers(-9, 10, 1000)) * 2 + 1  # odd: not on 2
     x = k / den if den > 1 else k.astype(np.float64)
-    group, _, _ = encode_block(x, Params())
+    # Steps of up to 18 integers: the floor (ENCODER §5.2) would take the integers' own grid; off here
+    group, _, _ = encode_block(x, Params(noise_floor_sigma=0))
     rows = group_rows(group)
     assert rows.block_flags[0] & BLOCK_FLAG_DECIMAL and rows.grid_params[0] == p
     np.testing.assert_array_equal(decode(group), x)
@@ -257,7 +258,7 @@ def test_the_target_coarsens_past_a_coarse_binary_grid():
     """A 0.25-grid walk of about 11 bits/sample, capped at 6: stored at -2, the target coarsens it past
     that (counting from the planned exponent, so decoded data re-encodes to itself) within half a step."""
     x = np.round(np.cumsum(np.random.default_rng(6).normal(0, 300, 1000)) * 4) / 4
-    exact, e0, _ = encode_block(x, Params())
-    capped, e1, _ = encode_block(x, Params(target_bits_per_sample=6))
+    exact, e0, _ = encode_block(x, Params(noise_floor_sigma=0))  # a walk this wide is floored first
+    capped, e1, _ = encode_block(x, Params(noise_floor_sigma=0, target_bits_per_sample=6))
     assert e0 == -2 and e1 > e0 and len(capped) < len(exact)
     assert np.max(np.abs(decode(capped) - x)) <= 2.0 ** (e1 - 1)

@@ -80,7 +80,9 @@ def test_decimal_bit_exact(d, f32):
     K = np.cumsum(rng.integers(-step, step + 1, 5000)) + 12345
     decimals = K / 10.0 ** d
     x = decimals.astype(np.float32).astype(np.float64) if f32 else decimals
-    groups, _, _, _ = encode_series(x)
+    # Steps of up to 300 decimal places are a random walk whose top band is ~85 of them: the noise
+    # floor's step would be coarser than the decimals (ENCODER §6), so the float32 case has it off
+    groups, _, _, _ = encode_series(x, OFF if f32 else Params())
     flags, _ = flags_params(groups)
     assert (flags & BLOCK_FLAG_DECIMAL).all()
     y = decode_series(groups)
@@ -146,7 +148,7 @@ def test_decimal_too_wide_falls_back():
 def test_lengths_and_short_groups(n):
     """N < 60, partial last block (padded), several block groups."""
     x = np.cumsum(np.random.default_rng(n).normal(size=n))
-    groups, lo, hi, mean = encode_series(x)
+    groups, lo, hi, mean = encode_series(x, OFF)  # a random walk gets a floor (ENCODER §5.2)
     assert len(groups) == -(-n // 60_000)
     assert len(lo) == -(-n // 1000)
     y = decode_series(groups)
@@ -166,13 +168,21 @@ def test_noise_gate_fires_on_white_noise(seed):
     assert gated(50 * np.sin(t / 3000) + rng.normal(0, 1, 60_000)).all()
 
 
-@pytest.mark.parametrize("name", ["random-walk", "sin-4.12hz", "sin-9.87hz", "sin-50.3hz", "chirp", "linear",
-                                  "square-2.24hz"])
+@pytest.mark.parametrize("name", ["sin-4.12hz", "sin-9.87hz", "sin-50.3hz", "chirp", "linear", "square-2.24hz"])
 def test_noise_gate_never_fires_on_clean_signals(name):
     assert not gated(minute(name, 31)).any()
 
 
-@pytest.mark.parametrize("name", CLEAN)
+def test_a_random_walk_is_floored_at_its_top_band():
+    """A random walk's spectral density at the top of the band is a white noise of sigma_e / 2 (its
+    12th differences read sqrt(12 / 46) sigma_e): the floor treats it like that noise (ENCODER §5.2)."""
+    x = minute("random-walk", 31)  # sigma_e = 1
+    assert gated(x).all()
+    _, param = flags_params(encode_series(x, Params(grids="binary"))[0])
+    assert set(param.tolist()) <= {-4, -3}  # 2^floor(log2(0.25 * 0.51)) = 2^-3, or one finer at the boundary
+
+
+@pytest.mark.parametrize("name", [k for k in CLEAN if k != "random-walk"])
 @pytest.mark.parametrize("f", [0.01, 0.25, 1.0])
 def test_noise_floor_no_effect_on_clean_signals(name, f):
     x = minute(name, 32)

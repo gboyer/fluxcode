@@ -35,7 +35,6 @@ from ._format import (
     SCALED_P_MAX,
     SHORT_BLOCK_LEN,
 )
-from . import _noise as _noise_mod
 from ._noise import block_noise
 from ._nonfinite import fill_nonfinite
 from ._time import CADENCE_SAMPLES
@@ -58,8 +57,14 @@ GRIDS_RATIONAL: int = 2
 GRIDS_LEVELS: dict[str, int] = {"binary": GRIDS_BINARY, "decimal": GRIDS_DECIMAL, "rational": GRIDS_RATIONAL}
 """Params.grids to its level: each level adds grids to the one before."""
 
-NOISE_RHO: float = 0.9 * _noise_mod.WHITE_RHO
-"""Autocorrelation threshold for noise gating (white noise gives rho = -2/3)."""
+FLOOR_MARGIN: float = 1.02
+"""How far past a power of two the noise floor's step may be for a block exactly on the grid one
+finer to keep it (keep_floor_grid): above the 0.26% quantizing adds to sigma, with room for the
+estimate's own movement."""
+
+NOISE_GATE: float = 0.9
+"""The noise gate: the differences' lag-1 autocorrelation must be over NOISE_GATE of white noise's
+(-k/(k+1) for k-th differences: -12/13; -2/3 for the chords of irregular times)."""
 
 NOISE_MIN_LEN: int = 256
 """Smallest block the noise floor applies to. Below it the rho test can't tell white noise (rho
@@ -351,12 +356,34 @@ def plan_step(
         return 0
     # Start with finest allowed step at max_bits
     planned_exp = range_exponent(lower_bound, upper_bound, max_bits)
-    # Check noise gate: white noise gives rho = -2/3; the gate is rho < NOISE_RHO
-    if noise_factor > 0 and noise_rho < NOISE_RHO and noise_sigma > 0:
+    # Check noise gate: the autocorrelation as a share of white noise's
+    if noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0:
         # Coarsen the step up to noise_factor * noise_sigma
         planned_exp = max(planned_exp, math.floor(math.log2(noise_factor * noise_sigma)))
     # Clamp to coarsest allowed step at min_bits
     return min(planned_exp, range_exponent(lower_bound, upper_bound, min_bits))
+
+
+@njit(nogil=True, cache=True)
+def keep_floor_grid(samples: np.ndarray, planned_exp: int, floor_step: float) -> int:
+    """The planned exponent, or one finer for a block already exactly on that finer grid when the
+    noise floor's step f·sigma is under FLOOR_MARGIN past 2^planned_exp.
+
+    Decoded data sits on its step's grid, and quantizing it raised sigma slightly (at most 0.26%):
+    a floor that was just under a power of two can cross it on re-encode. Keeping the finer grid
+    makes decoded data a fixed point; data not exactly on it (any original data in practice) and
+    floors clear of the boundary are unaffected.
+    """
+    if not floor_step > 0 or math.floor(math.log2(floor_step)) != planned_exp:
+        return planned_exp
+    if floor_step >= math.ldexp(1.0, planned_exp) * FLOOR_MARGIN:
+        return planned_exp
+    inv_step = math.ldexp(1.0, 1 - planned_exp)
+    for sample_idx in range(samples.shape[0]):
+        scaled = samples[sample_idx] * inv_step
+        if scaled != math.floor(scaled) or not math.isfinite(scaled):
+            return planned_exp
+    return planned_exp - 1
 
 
 @njit(nogil=True, cache=True)
@@ -1271,6 +1298,8 @@ def encode_group(
             )
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+        if noise_rho > NOISE_GATE:
+            planned_exp = keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma)
         block_exponents[block_idx] = planned_exp
         (
             out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor, out_grid_scales[block_idx],
