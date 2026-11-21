@@ -18,7 +18,25 @@ def period_residual(q, P, f8):
         r[P + 1:] = q[P + 1:] - pred
     return r
 
+def zc_period(q, pmin=8):
+    """Period from upward zero crossings of the mean-removed block (O(n)), refined over +-3 lags."""
+    d = q.astype(float) - q.mean()
+    up = np.nonzero((d[:-1] < 0) & (d[1:] >= 0))[0]
+    if len(up) < 3:
+        return None
+    P0 = int(round((up[-1] - up[0]) / (len(up) - 1)))
+    best = None
+    for P in range(max(pmin, P0 - 3), min(len(q) // 3, P0 + 4)):
+        e = np.mean((d[P:] - d[:-P]) ** 2)
+        if best is None or e < best[0]:
+            best = (e, P)
+    return best[1] if best else None
+
+
 def best_period(q, pmin=8, pmax=None):
+    import os
+    if os.environ.get("ZC"):
+        return zc_period(q, pmin) or pmin
     q = q.astype(float)
     n = len(q)
     pmax = pmax or n // 3
