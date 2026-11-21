@@ -7,7 +7,7 @@ to 4 significant figures, or more when the range is narrow.
 
 High level properties:
 
-* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s at the
+* **Fast**: A single MacBook Air M3 core decodes at 4.4 GiB/s, and encodes at 1.2 GiB/s at the
   default effort (about a third faster at effort 1).
 * **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
   data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
@@ -194,24 +194,27 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 |0.0000%| 2.40 | 1.36 |
-| square wave | 0.04 |0.0000%| 2.96 | 1.57 |
-| sine, 4.12 Hz | 2.40 |0.0010%| 6.10 | 2.12 |
-| sine, 50.3 Hz | 6.74 |0.0010%| 6.06 | 2.16 |
-| chirp | 7.81 |0.0010%| 7.48 | 2.05 |
-| random walk | 12.62 |0.0015%| 5.63 | 1.82 |
-| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.32 | 1.88 |
-| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.23 | 2.19 |
-| noisy sine (σ = 5) | 5.24 |0.2334%| 4.26 | 1.58 |
-| Gaussian spikes on uniform noise | 6.60 |1.4661%| 5.06 | 1.86 |
-| **all 15 signals** | **4.76** | | **5.12** | **1.79** |
-| random walk on thirds (not in the 15) | 3.97 |0% (exact)| 10.82 | 2.36 |
+| linear ramp | 0.02 |0.0000%| 3.06 | 1.20 |
+| square wave | 0.04 |0.0000%| 4.40 | 1.30 |
+| sine, 4.12 Hz | 2.40 |0.0010%| 7.07 | 1.97 |
+| sine, 50.3 Hz | 6.73 |0.0010%| 7.01 | 2.02 |
+| chirp | 7.80 |0.0010%| 8.28 | 1.89 |
+| random walk | 5.63 |0.3303%| 5.73 | 1.68 |
+| random walk rounded to 0.01 | 5.63 |0.3501%| 5.74 | 1.63 |
+| sensor drift rounded to 0.1 | 1.71 |0% (exact)| 7.59 | 2.18 |
+| noisy sine (σ = 5) | 5.22 |0.2334%| 5.58 | 1.57 |
+| Gaussian spikes on uniform noise | 6.04 |1.4661%| 5.97 | 1.91 |
+| **all 15 signals** | **4.01** | | **6.01** | **1.69** |
+| random walk on thirds (not in the 15) | 3.92 |0% (exact)| 12.09 | 2.22 |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
-the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The default
-effort compresses each block group with bit and with byte planes and keeps the smaller. The whole
-set at effort 1 is 4.83 bits/sample at 3.53 µs/block to encode, and at effort 5 4.66 at 5.96
+the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The random walks
+are floored too: their finest-scale variation (a step's σ_e) reads as a noise of σ_e/2, so they are
+stored within σ_e/16 (0.35% of the range at most here), and the walk on 0.01 loses its last digit
+(`noise_floor_sigma=0` keeps it). The default effort compresses each block group with bit and with
+byte planes and keeps the smaller. The whole set at effort 1 is 4.11 bits/sample at 4.50 µs/block to
+encode, and at effort 5 3.95 at 6.78
 ([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits` (see
 the [research report](experimental/report/index.html#scatter-kinds)).
 
