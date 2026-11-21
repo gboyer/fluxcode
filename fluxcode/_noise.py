@@ -17,6 +17,7 @@ consecutive scans count.
 """
 
 import math
+import os
 
 import numpy as np
 from numba import njit
@@ -34,8 +35,17 @@ CLIP_SIGMAS: float = 4.0
 CLIP_PASSES: int = 2
 """Number of iterative outlier clipping passes used in scale re-estimation."""
 
-SIGMA_GAIN: float = math.sqrt(6.0)
-"""Ratio of second-difference standard deviation to white-noise standard deviation."""
+NOISE_ORDER: int = int(os.environ.get("FLUXCODE_X_NOISE_ORDER", "2"))
+"""Order k of the differences the noise is measured on (EXPERIMENT; 2 is the shipped estimator)."""
+
+NOISE_COEFS = tuple((-1) ** (NOISE_ORDER - j) * math.comb(NOISE_ORDER, j) for j in range(NOISE_ORDER + 1))
+"""The k-th difference's coefficients, oldest sample first."""
+
+SIGMA_GAIN: float = math.sqrt(math.comb(2 * NOISE_ORDER, NOISE_ORDER))
+"""Ratio of k-th-difference standard deviation to white-noise standard deviation."""
+
+WHITE_RHO: float = -NOISE_ORDER / (NOISE_ORDER + 1)
+"""Lag-1 autocorrelation of white noise's k-th differences."""
 
 NOISE_WINDOW: int = 256
 """Valid second differences per window of the noise level (up to twice as many are one window)."""
@@ -233,8 +243,8 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
                 noise, -1/2 for random walks, and positive for smooth signals). Returns
                 (0.0, 0.0) if fewer than 4 samples are present.
     """
-    num_diffs = samples.shape[0] - 2
-    # Need at least two second differences to compute lag-1 autocorrelation
+    num_diffs = samples.shape[0] - NOISE_ORDER
+    # Need at least two differences to compute lag-1 autocorrelation
     if num_diffs < 2:
         return 0.0, 0.0
     # Use single-step scaling within normal range, or two-step prescaling for extreme exponents
@@ -244,15 +254,26 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
         samples, scale_factor = xm.prescale(samples, scale_exp)
     diffs = scratch_diffs[:num_diffs]
     sum_diffs = 0.0
-    for diff_idx in range(num_diffs):
-        # Second difference: samples[i + 2] - 2 * samples[i + 1] + samples[i]
-        diff_val = (
-            samples[diff_idx + 2] * scale_factor
-            - 2.0 * (samples[diff_idx + 1] * scale_factor)
-            + samples[diff_idx] * scale_factor
-        )
-        diffs[diff_idx] = diff_val
-        sum_diffs += diff_val
+    if NOISE_ORDER == 2:
+        for diff_idx in range(num_diffs):
+            # Second difference: samples[i + 2] - 2 * samples[i + 1] + samples[i]
+            diff_val = (
+                samples[diff_idx + 2] * scale_factor
+                - 2.0 * (samples[diff_idx + 1] * scale_factor)
+                + samples[diff_idx] * scale_factor
+            )
+            diffs[diff_idx] = diff_val
+            sum_diffs += diff_val
+    else:
+        for diff_idx in range(num_diffs):
+            diffs[diff_idx] = 0.0
+        for j in range(NOISE_ORDER + 1):
+            coef = NOISE_COEFS[j] * scale_factor
+            shifted = samples[j:j + num_diffs]
+            for diff_idx in range(num_diffs):
+                diffs[diff_idx] += coef * shifted[diff_idx]
+        for diff_idx in range(num_diffs):
+            sum_diffs += diffs[diff_idx]
     # Subtract mean second difference to remove pure parabolic trends (quadratics)
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
     # Scale robust standard deviation back to signal units and divide by sqrt(6)
@@ -329,7 +350,7 @@ def noise_weighted(
             Both are 0.0 if there are fewer than min_valid (and at least 2) valid triplets,
             or if their variance is negligible.
     """
-    num_diffs = samples.shape[0] - 2
+    num_diffs = samples.shape[0] - NOISE_ORDER
     if num_diffs < 2:
         return 0.0, 0.0
     # Apply power-of-two scaling to prevent intermediate overflow/underflow
@@ -341,33 +362,38 @@ def noise_weighted(
     timed = ticks.shape[0] > 0
     diffs = scratch_diffs[:num_diffs]
     weights = scratch_weights[:num_diffs]
-    # Offset slices from index 0 allow SIMD vectorization without negative index checks
-    samples_0, samples_1, samples_2 = samples[:num_diffs], samples[1:num_diffs + 1], samples[2:num_diffs + 2]
-    codes_0, codes_1, codes_2 = codes[:num_diffs], codes[1:num_diffs + 1], codes[2:num_diffs + 2]
-    ticks_0, ticks_1, ticks_2 = ticks[:num_diffs], ticks[1:num_diffs + 1], ticks[2:num_diffs + 2]
     num_valid = 0.0
     sum_diffs = 0.0
+    divided = np.empty(NOISE_ORDER + 1)
     for diff_idx in range(num_diffs):
         is_valid = True
         if has_codes:
-            is_valid = (codes_0[diff_idx] | codes_1[diff_idx] | codes_2[diff_idx]) == CODE_FINITE
-        first = samples_0[diff_idx] * scale_factor
-        middle = samples_1[diff_idx] * scale_factor
-        last = samples_2[diff_idx] * scale_factor
+            for j in range(NOISE_ORDER + 1):
+                is_valid &= codes[diff_idx + j] == CODE_FINITE
         if timed:
-            before = ticks_1[diff_idx] - ticks_0[diff_idx]
-            after = ticks_2[diff_idx] - ticks_1[diff_idx]
-            is_valid &= (before > lower) & (before < upper) & (after > lower) & (after < upper)
-            # (a + b) times the middle's distance below the line through its neighbours, over
-            # sqrt((a + b)^2 + a^2 + b^2) / sqrt(6): the line weighs each by the other's interval
-            after_f, before_f = np.float64(after), np.float64(before)
-            span = after_f + before_f
-            norm = math.sqrt(max(span * span + after_f * after_f + before_f * before_f, 1.0))
-            diff_val = SIGMA_GAIN * (after_f * first + before_f * last - span * middle) / norm
-        else:
-            diff_val = last - 2.0 * middle + first
-        # Selects rather than branches, so that the loop vectorizes
-        diff_val = diff_val if is_valid else 0.0
+            for j in range(NOISE_ORDER):
+                interval = ticks[diff_idx + j + 1] - ticks[diff_idx + j]
+                is_valid &= (interval > lower) & (interval < upper)
+        diff_val = 0.0
+        if is_valid:
+            if timed:
+                # The k-th divided difference over the window's times, scaled to the variance of
+                # a regular k-th difference on white noise: a polynomial of degree < k cancels
+                # however the intervals differ
+                sum_sq = 0.0
+                for j in range(NOISE_ORDER + 1):
+                    prod = 1.0
+                    for m in range(NOISE_ORDER + 1):
+                        if m != j:
+                            prod *= np.float64(ticks[diff_idx + j] - ticks[diff_idx + m])
+                    divided[j] = 1.0 / prod
+                    sum_sq += divided[j] * divided[j]
+                norm = SIGMA_GAIN / math.sqrt(sum_sq)
+                for j in range(NOISE_ORDER + 1):
+                    diff_val += divided[j] * norm * (samples[diff_idx + j] * scale_factor)
+            else:
+                for j in range(NOISE_ORDER + 1):
+                    diff_val += NOISE_COEFS[j] * (samples[diff_idx + j] * scale_factor)
         weight = 1.0 if is_valid else 0.0
         diffs[diff_idx] = diff_val
         weights[diff_idx] = weight

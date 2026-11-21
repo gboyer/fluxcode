@@ -35,6 +35,7 @@ from ._format import (
     SCALED_P_MAX,
     SHORT_BLOCK_LEN,
 )
+from . import _noise as _noise_mod
 from ._noise import block_noise
 from ._nonfinite import fill_nonfinite
 from ._time import CADENCE_SAMPLES
@@ -57,7 +58,7 @@ GRIDS_RATIONAL: int = 2
 GRIDS_LEVELS: dict[str, int] = {"binary": GRIDS_BINARY, "decimal": GRIDS_DECIMAL, "rational": GRIDS_RATIONAL}
 """Params.grids to its level: each level adds grids to the one before."""
 
-NOISE_RHO: float = -0.6
+NOISE_RHO: float = 0.9 * _noise_mod.WHITE_RHO
 """Autocorrelation threshold for noise gating (white noise gives rho = -2/3)."""
 
 NOISE_MIN_LEN: int = 256
