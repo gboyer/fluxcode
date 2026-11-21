@@ -264,6 +264,20 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray) -> tup
             )
             diffs[diff_idx] = diff_val
             sum_diffs += diff_val
+    elif NOISE_ORDER == 6:
+        # Offset slices from index 0 vectorize; the taps are 1, -6, 15, -20, 15, -6, 1
+        s0, s1, s2, s3 = samples[:num_diffs], samples[1:num_diffs + 1], samples[2:num_diffs + 2], samples[3:num_diffs + 3]
+        s4, s5, s6 = samples[4:num_diffs + 4], samples[5:num_diffs + 5], samples[6:num_diffs + 6]
+        for diff_idx in range(num_diffs):
+            # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
+            diff_val = (
+                (s0[diff_idx] * scale_factor + s6[diff_idx] * scale_factor)
+                - 6.0 * (s1[diff_idx] * scale_factor + s5[diff_idx] * scale_factor)
+                + 15.0 * (s2[diff_idx] * scale_factor + s4[diff_idx] * scale_factor)
+                - 20.0 * (s3[diff_idx] * scale_factor)
+            )
+            diffs[diff_idx] = diff_val
+            sum_diffs += diff_val
     else:
         for diff_idx in range(num_diffs):
             diffs[diff_idx] = 0.0

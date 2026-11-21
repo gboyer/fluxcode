@@ -9,13 +9,14 @@ from smoothing import CANDS, residuals
 FAMILIES = {
     "today": ["d0", "d1", "d2", "d3"],
     "all": list(CANDS),
-    "m≤8": [c for c in CANDS if c[2:] == "" or int(c.split("m")[1]) <= 8],
-    "d0-2,x4": ["d0", "d1", "d2", "d3", "d0m4", "d1m8", "d2m12"],
+    "d0m8 d1m16 d2m12 d3m16": ["d0", "d1", "d2", "d3", "d0m8", "d1m16", "d2m12", "d3m16"],
+    "d0m8 d1m16 d2m24": ["d0", "d1", "d2", "d3", "d0m8", "d1m16", "d2m24"],
     "x2,x4,x8 d≤2": ["d0", "d1", "d2", "d3", "d0m2", "d0m4", "d0m8", "d1m4", "d1m8", "d1m16", "d2m6", "d2m12", "d2m24"],
     "x4 all d": ["d0", "d1", "d2", "d3", "d0m4", "d1m8", "d2m12", "d3m16"],
     "x4,x8 all d": ["d0", "d1", "d2", "d3", "d0m4", "d1m8", "d2m12", "d3m16", "d0m8", "d1m16", "d2m24", "d3m32"],
 }
-PICK = 250
+import os
+PICK = int(os.environ.get("PICK", "250"))
 
 def run(item):
     set_name, name, x, bl, bpg = item
