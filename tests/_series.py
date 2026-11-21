@@ -31,7 +31,7 @@ def planes(layout, flush=True, zstd_levels=(3,)):
     extension has no such option."""
     saved = _compress._rust, _compress.pack
 
-    def pack(body, offsets, num_blocks, num_samples, effort, time_unit):
+    def pack(body, offsets, num_blocks, num_samples, effort, time_unit, allow_rust=True):
         if layout == "byte":
             candidates = [(True, body)]
         else:

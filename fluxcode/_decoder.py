@@ -319,6 +319,8 @@ def decode_group(
     out_samples: np.ndarray,
     byte_planes: bool,
     has_time: bool,
+    escapes: np.ndarray,
+    escape_offsets: np.ndarray,
 ) -> None:
     """Decodes the given blocks of an uncompressed body into the output array.
 
@@ -335,6 +337,8 @@ def decode_group(
             block's samples are written at its sample offsets (others are left unmodified).
         byte_planes: Whether the residuals are stored as byte planes (group flags bit 0).
         has_time: Whether the block group has a time axis (time columns before the residuals).
+        escapes: 1D float64 array of the block group's escaped values (read_escapes).
+        escape_offsets: 1D int64 array of each block's first escaped value (num_blocks + 1).
     """
     num_blocks = sample_offsets.shape[0] - 1
     num_octets = int(octet_offsets[num_blocks])
@@ -398,4 +402,7 @@ def decode_group(
             dequantize_pow2(block_residuals, anchor_float[0], param_val, block_out)
         # Restore non-finite samples (NaN, +/-inf) from code planes
         if flags & BLOCK_FLAG_NONFINITE:
-            restore_nonfinite(code_planes, code_offsets[block_idx], block_out)
+            restore_nonfinite(
+                code_planes, code_offsets[block_idx], escapes[escape_offsets[block_idx]:escape_offsets[block_idx + 1]],
+                block_out,
+            )

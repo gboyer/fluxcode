@@ -258,6 +258,7 @@ def pack(
     num_samples: int,
     effort: Effort,
     time_unit: int,
+    allow_rust: bool = True,
 ) -> bytes:
     """Compresses an uncompressed byte-plane body into complete block group bytes.
 
@@ -275,7 +276,7 @@ def pack(
     has_time = time_unit != 0
     num_octets = int(offsets.octet_offsets[-1])
     # Fast path: delegate to Rust extension if available
-    if _rust is not None:
+    if _rust is not None and allow_rust:
         return _rust.pack_group(  # type: ignore[no-any-return]
             body, num_blocks, num_samples, num_octets, time_unit, effort.layout, effort.flush,
             list(effort.zstd_levels),
@@ -312,7 +313,9 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     Returns:
         The block group bytes.
     """
-    if _rust is not None and rows.time_rows is None:
+    # The Rust extension packs bodies without escaped values (the common case); others take the Python path
+    has_escapes = rows.escapes.shape[0] > 0
+    if _rust is not None and rows.time_rows is None and not has_escapes:
         return _rust.compress_group(  # type: ignore[no-any-return]
             rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
             rows.codes, effort.layout, effort.flush, list(effort.zstd_levels),
@@ -324,4 +327,6 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
         rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
         rows.codes, rows.time_rows, offsets,
     )
-    return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)
+    if has_escapes:
+        body = np.concatenate([body, _format.escape_bytes(rows.escapes)])
+    return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit, allow_rust=not has_escapes)

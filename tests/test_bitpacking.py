@@ -101,7 +101,7 @@ def test_round_trip(size, byte_planes, has_time):
     rng = np.random.default_rng(size)
     for _ in range(3):
         rows = random_rows(rng, [size, 5, size, 0, size, 9], has_time)
-        body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows)
+        body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows, escapes=rows.escapes)
         assert body.shape[0] == _format.group_size(6, _format.layout(rows.block_flags, rows.block_sizes), has_time)
         assert_rows_equal(_oracle.read_group(body, 6, byte_planes, has_time), rows)
         assert_padding_zero(body, rows, byte_planes, has_time)
@@ -115,7 +115,7 @@ def test_round_trip_largest_block(byte_planes, has_time):
     assert rows.block_flags[0] & BLOCK_FLAG_NONFINITE
     if has_time:
         assert rows.block_flags[0] & BLOCK_FLAG_LONG_TIME and rows.block_flags[3] & BLOCK_FLAG_IRREGULAR_TIME
-    body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows)
+    body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows, escapes=rows.escapes)
     assert_rows_equal(_oracle.read_group(body, 4, byte_planes, has_time), rows)
     assert_padding_zero(body, rows, byte_planes, has_time)
 
@@ -307,7 +307,7 @@ def test_plane_conversion_matches_write_group(seed, has_time):
     """One transpose of the residual region gives the other layout's body, for all blocks at once."""
     rng = np.random.default_rng(seed)
     rows = random_rows(rng, rng.choice([0, 1, 7, 8, 9, 300], int(rng.integers(0, 12))), has_time)
-    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows)
+    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
     bit_body = _oracle.write_group(*rows[:7], byte_planes=False, time_rows=rows.time_rows)
     num_blocks = rows.block_flags.shape[0]
     num_octets = int(_format.layout(rows.block_flags, rows.block_sizes).octet_offsets[-1])

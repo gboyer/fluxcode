@@ -321,6 +321,37 @@ ps = 2^e                                 # the power-of-two step
   - At e = 1023 (only reachable with few bits on a range near 2^1024), q stays below 3.
 - The encoder computes e_fine with B = `max_quantize_bits` and e_coarse with B = `min_quantize_bits`.
 
+### 5.1.1 Escaped outliers
+
+A glitch (an error code such as −9999, an overrange reading, a 1e6 placeholder) stretches its
+block's range, and with it every other sample's step: a single −9999 on a 5 ± 0.3 bar signal left
+the rest of its second within 0.125 (42 noise σ), a 1e6 one within 5. After the noise estimate (its
+clipping shrugs off outliers), a block of at least 16 samples stores such samples apart (code 10b,
+SPEC.md §2) when that pays:
+
+```
+skip unless the noise floor's exponent is at least 2 under the full range's (else it sets the step)
+trigger: the mean within 5% of the range from one end, or the range over 16 standard deviations
+center = trimmed mean (3 rounds, |x − c| ≤ 4·sqrt(π/2)·mean deviation); candidates beyond 16 robust deviations
+take them if: at most n/16; the bulk's exponent and the floor's at least 2 under the full range's;
+              the block not already exact at the full range (binary grid 2^e, or a decimal one)
+```
+
+The block is then quantized on the bulk's range and its escaped samples held (as non-finite ones);
+the reported min, max and mean still count every sample.
+
+- **Payload:** a float64 at the end of the body. A value float32 holds (an error code: −9999,
+  32767, 1e6; ±inf) is kept exact; any other is rounded to the step its block would have had
+  without escaping (2^e of the full range at B bits), so no sample decodes worse than before and the
+  low mantissa bytes compress away. A run of one value (a 20-second dropout at −9999) stores it
+  once: code 11b repeats the previous escaped value.
+- **Measured** (`experimental/value/escapes_real.py`): single and two-sided glitches and dropout
+  runs keep the rest of their blocks at the clean blocks' precision; 0.01-decimal data with a
+  −99999 code decodes exactly again; the codes decode exactly. Spikes in noise whose floor already
+  sets the step aren't escaped. No signal of the realistic corpus changes. Encode: +0.1–0.2 µs a
+  block (the triggers), more only on blocks that trigger.
+- ±inf are escaped values too (the 2-bit code has no room for both signs and an escape).
+
 ### 5.2 Noise floor
 
 Runs when the noise floor f is on (`noise_floor_sigma` > 0), rng > 0 and the block has at least

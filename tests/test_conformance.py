@@ -51,7 +51,16 @@ def test_round_trip_error_bound(name, x, params):
     np.testing.assert_array_equal(hi, X.max(1))
     np.testing.assert_allclose(mean, X.mean(1), rtol=1e-12, atol=1e-12 * np.abs(X).max())
     flags, param = flags_params(groups)
-    err = np.abs(Y - X).max(1)
+    # Escaped samples (an outlier stored apart, ENCODER §5.1.1) are within half the step of the block's
+    # full range at max_bits, the rest within half the block's own step
+    codes = np.concatenate([group_rows(g).codes for g in groups])
+    flagged = np.repeat((flags & _format.BLOCK_FLAG_NONFINITE) != 0, [len(r) for r in X])
+    escaped = blockwise(flagged & (codes >= _format.CODE_ESCAPE) & np.isfinite(x))
+    for b in range(len(lo)):
+        if escaped[b].any():
+            full_exp = _encoder.range_exponent(lo[b], hi[b], params.max_quantize_bits)
+            assert np.abs(Y[b] - X[b])[escaped[b]].max() <= 2.0 ** (full_exp - 1) + 4 * np.spacing(np.abs(X[b]).max())
+    err = np.where(escaped, 0.0, np.abs(Y - X)).max(1)
     rng = hi - lo
     dec = (flags & BLOCK_FLAG_DECIMAL) != 0
     scaled = (flags & _format.BLOCK_FLAG_SCALED) != 0
@@ -65,7 +74,8 @@ def test_round_trip_error_bound(name, x, params):
             assert err[b] <= 10.0 ** param[b] / 4 + ulps  # every sample was within 2^e / 4 < 10^p / 4
         else:
             assert err[b] <= 2.0 ** (param[b] - 1) + ulps
-            assert abs(Y[b].min() - lo[b]) <= 2.0 ** (param[b] - 1) + ulps
+            if not escaped[b].any():
+                assert abs(Y[b].min() - lo[b]) <= 2.0 ** (param[b] - 1) + ulps
         assert err[b] <= rng[b] / (2 ** params.min_quantize_bits - 0.5) + ulps
 
 
@@ -367,7 +377,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows)
+    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
     lay = _format.layout(rows.block_flags, sizes)
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):
@@ -411,7 +421,7 @@ def _with_header(group, **fields):
     ({"num_samples": 0}, "doesn't fit"),
     ({"num_samples": 2499}, "add up"),  # the body's block sizes add up to 2500
     ({"num_samples": 3001}, "doesn't fit"),
-    ({"num_samples": 1000}, "doesn't fit"),
+    ({"num_samples": 1000}, "add up"),  # within the bounds (escapes may follow), but the sizes say 2500
     ({"num_blocks": 2000, "num_samples": _format.MAX_GROUP_SAMPLES + 1}, "sample count"),
 ])
 def test_bad_headers_are_rejected(fields, msg):

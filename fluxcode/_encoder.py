@@ -25,6 +25,8 @@ from ._format import (
     BLOCK_FLAG_ORDER,
     BLOCK_FLAG_PERIOD,
     BLOCK_FLAG_SCALED,
+    CODE_ESCAPE,
+    CODE_FINITE,
     E_MAX,
     E_MIN,
     INDEX_LIMIT,
@@ -38,8 +40,8 @@ from ._format import (
     SCALED_P_MAX,
     SHORT_BLOCK_LEN,
 )
-from ._noise import block_noise
-from ._nonfinite import fill_nonfinite
+from ._noise import MAD_TO_SD, block_noise
+from ._nonfinite import fill_nonfinite, hold_coded
 from ._time import CADENCE_SAMPLES
 
 leading_zeros = cast("Callable[[int | np.integer], int]", _leading_zeros)
@@ -124,6 +126,24 @@ PERIOD_MIN_VARIANCE: float = 4.0
 PERIOD_SIDE_BITS: float = 64.0
 """Bits the period predictor must save over the block (class-entropy estimate) to be taken: its
 parameters, compressed, and the estimate's slack."""
+
+ESCAPE_MIN_LEN: int = 16
+"""Smallest block whose outliers may be escaped."""
+
+ESCAPE_TRIGGER: float = 0.05
+"""A block is looked at for outliers when its mean is within this share of its range from one end."""
+
+ESCAPE_RANGE_SPREAD: float = 16.0
+"""... or when its range is over this many standard deviations."""
+
+ESCAPE_DEVIATIONS: float = 16.0
+"""Outliers are beyond this many robust deviations of the block's trimmed center."""
+
+ESCAPE_MAX_SHARE: int = 16
+"""At most 1/ESCAPE_MAX_SHARE of a block is escaped."""
+
+ESCAPE_MIN_GAIN: int = 2
+"""Escapes are taken when the bulk's step is at least 2^ESCAPE_MIN_GAIN times finer."""
 
 TRIM_STRIDE: int = 4
 """The trimmed mean of an order-0 block reads every TRIM_STRIDE-th index."""
@@ -899,6 +919,171 @@ def planned_multiple(step: float, planned_exp: int) -> int:
     return int(ratio) if ratio == math.floor(ratio) and 1 <= ratio <= SCALE_MASK + 1 else 0
 
 
+@njit(nogil=True, cache=True, fastmath=True)
+def _sum_squares(samples: np.ndarray, mean: float) -> float:
+    """Sum of squared deviations from mean (fastmath: a reassociated sum vectorizes; a trigger only)."""
+    total = 0.0
+    for sample_idx in range(samples.shape[0]):
+        dev = samples[sample_idx] - mean
+        total += dev * dev
+    return total
+
+
+@njit(inline="always")
+def _on_decimal_grid(samples: np.ndarray, codes: np.ndarray, coded: bool, decimal_exp: int) -> bool:
+    """Whether every uncoded sample is the double nearest k 10^p (as the decoder makes it)."""
+    for sample_idx in range(samples.shape[0]):
+        if coded and codes[sample_idx] != CODE_FINITE:
+            continue
+        value = samples[sample_idx]
+        if decimal_exp < 0:
+            divisor = 10.0 ** -decimal_exp
+            if float(round(value * divisor)) / divisor != value:
+                return False
+        else:
+            multiplier = 10.0 ** decimal_exp
+            if float(round(value / multiplier)) * multiplier != value:
+                return False
+    return True
+
+
+@njit(inline="always")
+def _on_binary_grid(samples: np.ndarray, codes: np.ndarray, coded: bool, exponent: int) -> bool:
+    """Whether every uncoded sample is a multiple of 2^exponent."""
+    for sample_idx in range(samples.shape[0]):
+        if coded and codes[sample_idx] != CODE_FINITE:
+            continue
+        scaled = math.ldexp(samples[sample_idx], -exponent)
+        if scaled != math.floor(scaled):
+            return False
+    return True
+
+
+@njit(nogil=True, cache=True)
+def escape_outliers(
+    samples: np.ndarray, held: np.ndarray, codes: np.ndarray, coded: bool, mean: float, lower_bound: float,
+    upper_bound: float, floor_exp: int, max_bits: int, grids: int, scratch_quantized: np.ndarray,
+) -> tuple[bool, float, float]:
+    """Escapes a block's outliers when that refines the rest of it (ENCODER §5.1.1).
+
+    A glitch (an error code, an overrange reading) stretches the block's range, and with it the
+    step of every other sample. Escaped samples get code 10b (their values go to the escapes field)
+    and are held; the block is then quantized on the bulk's range. Taken only if it pays: the mean
+    within ESCAPE_TRIGGER of the range from one end (a few points far from the rest), at most
+    1/ESCAPE_MAX_SHARE of the block beyond ESCAPE_DEVIATIONS mean deviations of a trimmed center,
+    the bulk's step at least 4 times finer than the block's and than its noise floor's, and the
+    block not already exact at its full range (a decimal grid).
+
+    Args:
+        samples: 1D float64 array of the block's samples (held where already coded).
+        held: 1D float64 array (not samples) receiving the held samples when escapes are taken.
+        codes: 1D uint8 array of the block's codes (written in full if escapes are taken).
+        coded: Whether codes already holds the block's non-finite codes.
+        mean, lower_bound, upper_bound: The block's finite mean, minimum and maximum.
+        floor_exp: The noise floor's exponent for the block (its estimate shrugs off outliers), or a
+            very negative one without a floor.
+        max_bits, grids: Params.
+        scratch_quantized: 1D int32 scratch of the block's length.
+
+    Returns:
+        A tuple of (escaped, bulk_min, bulk_max).
+    """
+    num_samples = samples.shape[0]
+    span = upper_bound - lower_bound
+    if num_samples < ESCAPE_MIN_LEN or not span > 0 or not math.isfinite(span):
+        return False, lower_bound, upper_bound
+    old_exp = range_exponent(lower_bound, upper_bound, max_bits)
+    # The noise floor sets the step within 2 levels of the full range's anyway: nothing to gain
+    if old_exp - floor_exp < ESCAPE_MIN_GAIN:
+        return False, lower_bound, upper_bound
+    if not (mean - lower_bound < ESCAPE_TRIGGER * span or upper_bound - mean < ESCAPE_TRIGGER * span):
+        # Outliers on both sides leave the mean mid-range, but stretch the range far past the spread
+        # (a sine's range is 2.8 standard deviations, Gaussian noise's 6-7 on 1000 samples)
+        squares = 0.0
+        count = num_samples
+        if coded:
+            count = 0
+            for sample_idx in range(num_samples):
+                if codes[sample_idx] == CODE_FINITE:
+                    dev = samples[sample_idx] - mean
+                    squares += dev * dev
+                    count += 1
+        else:
+            squares = _sum_squares(samples, mean)
+        if not span * span > ESCAPE_RANGE_SPREAD * ESCAPE_RANGE_SPREAD * squares / max(count, 1):
+            return False, lower_bound, upper_bound
+    # A trimmed center and mean deviation of the uncoded samples
+    center_val = mean
+    deviation = 0.0
+    for _ in range(3):
+        total = 0.0
+        count = 0
+        for sample_idx in range(num_samples):
+            if not coded or codes[sample_idx] == CODE_FINITE:
+                total += abs(samples[sample_idx] - center_val)
+                count += 1
+        if count == 0:
+            return False, lower_bound, upper_bound
+        limit = 4.0 * MAD_TO_SD * total / count
+        kept_sum = 0.0
+        kept = 0
+        deviation = 0.0
+        for sample_idx in range(num_samples):
+            if not coded or codes[sample_idx] == CODE_FINITE:
+                dev = abs(samples[sample_idx] - center_val)
+                if dev <= limit:
+                    kept_sum += samples[sample_idx]
+                    deviation += dev
+                    kept += 1
+        if kept == 0:
+            return False, lower_bound, upper_bound
+        center_val = kept_sum / kept
+        deviation /= kept
+    threshold = ESCAPE_DEVIATIONS * MAD_TO_SD * deviation
+    if not threshold > 0:
+        return False, lower_bound, upper_bound
+    num_escaped = 0
+    bulk_min, bulk_max = math.inf, -math.inf
+    for sample_idx in range(num_samples):
+        if coded and codes[sample_idx] != CODE_FINITE:
+            continue
+        value = samples[sample_idx]
+        if abs(value - center_val) > threshold:
+            num_escaped += 1
+        else:
+            bulk_min = min(bulk_min, value)
+            bulk_max = max(bulk_max, value)
+    if num_escaped == 0 or num_escaped * ESCAPE_MAX_SHARE > num_samples or not bulk_max >= bulk_min:
+        return False, lower_bound, upper_bound
+    new_exp = range_exponent(bulk_min, bulk_max, max_bits) if bulk_max > bulk_min else old_exp - ESCAPE_MIN_GAIN
+    # The noise floor would set the step anyway: nothing to gain
+    if old_exp - max(new_exp, floor_exp) < ESCAPE_MIN_GAIN:
+        return False, lower_bound, upper_bound
+    # Already exact at the full range (every sample on the binary grid 2^old_exp, or on a decimal grid
+    # detection finds): nothing to gain
+    if _on_binary_grid(samples, codes, coded, old_exp):
+        return False, lower_bound, upper_bound
+    if grids >= GRIDS_DECIMAL and span < xm.WIDE_RANGE:
+        decimal_exp, _, _ = decimal_grid(samples, lower_bound, upper_bound, old_exp, scratch_quantized)
+        if decimal_exp != NO_DECIMAL and _on_decimal_grid(samples, codes, coded, decimal_exp):
+            return False, lower_bound, upper_bound
+    # Hold the escaped samples (in held, apart from samples)
+    held[:] = samples
+    previous = center_val
+    for sample_idx in range(num_samples):
+        uncoded = not coded or codes[sample_idx] == CODE_FINITE
+        if uncoded and abs(samples[sample_idx] - center_val) <= threshold:
+            previous = samples[sample_idx]
+        elif uncoded:
+            held[sample_idx] = previous
+    if not coded:
+        codes[:] = CODE_FINITE
+    for sample_idx in range(num_samples):
+        if codes[sample_idx] == CODE_FINITE and abs(samples[sample_idx] - center_val) > threshold:
+            codes[sample_idx] = CODE_ESCAPE
+    return True, bulk_min, bulk_max
+
+
 @njit(nogil=True, cache=True)
 def encode_block(
     samples: np.ndarray,
@@ -1366,7 +1551,8 @@ def _apply_target_reallocation(
             block_samples = samples[first_sample:first_sample + block_len]
             has_nonfinite = prev_flags & BLOCK_FLAG_NONFINITE
             if has_nonfinite:
-                fill_nonfinite(block_samples, scratch_held[:block_len], out_codes[first_sample:first_sample + block_len])
+                # Hold the coded samples (non-finite or escaped) as the first pass did
+                hold_coded(block_samples, out_codes[first_sample:first_sample + block_len], scratch_held[:block_len])
                 block_samples = scratch_held[:block_len]
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
             (
@@ -1558,6 +1744,20 @@ def encode_group(
                 # A sigma under this can't coarsen the finest step: its block skips the gate's checks
                 math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
             )
+        # Outliers stored apart (escapes), when that refines the rest of the block (§5.1.1)
+        if finite_count > 0 and block_len >= ESCAPE_MIN_LEN:
+            gated = noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0
+            escaped, bulk_min, bulk_max = escape_outliers(
+                block_samples, scratch_index[:block_len], block_codes, has_nonfinite, block_mean, block_min, block_max,
+                math.floor(math.log2(noise_factor * noise_sigma)) if gated else E_MIN - 64, max_bits, grids,
+                block_quantized,
+            )
+            if escaped:
+                scratch_held[:block_len] = scratch_index[:block_len]
+                block_samples = scratch_held[:block_len]
+                block_min, block_max = bulk_min + 0.0, bulk_max + 0.0
+                base_lower_bounds[block_idx], base_upper_bounds[block_idx] = block_min, block_max
+                has_nonfinite = True
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
         if noise_rho > NOISE_GATE:

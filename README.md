@@ -254,6 +254,9 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
   values like any other data.
 - **Data on a scaled grid is lossless too** when it is the doubles nearest its rationals (thirds as
   k / 3, ADC counts as 10·c / 4095); computed as a float product it decodes within a few ulps.
+- **Glitches don't cost their neighbours.** An outlier such as an error code (−9999, 1e6) is
+  stored apart, exactly when float32 holds it, so the rest of its block keeps its fine step; never
+  worse than half the step of the block's full range.
 - **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet
   NaN; −0.0 decodes as +0.0), as do subnormal ranges and blocks spanning ±DBL_MAX.
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they

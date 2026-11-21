@@ -26,18 +26,23 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
   - This is not a field limit (the header field holds up to 2^32 − 1).
   - It is the bound decoders use to reject implausible headers before decompressing.
 
-## 2. Non-finite values
+## 2. Non-finite and escaped values
 
-- NaN, +inf and −inf are stored exactly, as a 2-bit code per sample:
+- A block may code some samples apart from its grid, with a 2-bit code per sample:
 
   | code | sample |
   |---|---|
-  | 00 | finite |
+  | 00 | on the grid |
   | 01 | NaN |
-  | 10 | +inf |
-  | 11 | −inf |
+  | 10 | escaped: the block's next value in the `escapes` field |
+  | 11 | the block's previous escaped value again |
 
-- Only a block holding a non-finite value stores codes.
+- Escaped values are float64: ±inf, and outliers a writer stores apart (an error code, an
+  overrange reading) so that the rest of the block keeps a fine grid ([ENCODER.md §5.1.1](ENCODER.md)).
+  A run of one value stores it once (11).
+- `escapes` (§6) holds every block's escaped values, in block and sample order: as many as codes 10
+  in blocks' samples (not their padding).
+- Only a block holding a coded sample stores codes.
   - It sets block flag bit 3.
   - Its codes go in the `nonfinite_code_planes` field (§6): n/4 bytes, mostly zero, before
     compression.
@@ -170,9 +175,9 @@ scaled, power of two: y[i] = (float64(K0 + N · q[i]) · 2^e) / D            (�
 - **Period blocks** (block flag bit 7): after integrating, the result is e; undo the prediction in
   sample order: q[0] = e[0], q[n] = e[n] + q[n−1] for 1 ≤ n ≤ P, then q[n] = e[n] + (((64 − w)·q[n−P]
   + w·q[n−P−1] + 32) >> 6), each read as int16.
-- **Non-finite codes** (block flag bit 3): after dequantizing, overwrite samples with code
-  01, 10 or 11 with NaN (the canonical quiet NaN), +inf or −inf.
-  - Octets whose two code bytes are both 0 can be skipped.
+- **Codes** (block flag bit 3): after dequantizing, overwrite samples with code 01 with NaN (the
+  canonical quiet NaN), 10 with the block's next escaped value, 11 with its previous one again. A
+  block's escaped values start after those of the blocks before it.
 - **Time axis** (header time unit ≠ 0):
   - Block starts are the running sum of the `time_start` field (§6).
   - Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64. Residuals
@@ -241,10 +246,11 @@ The body is these fields, in this order. The four time fields are present only w
 | `residual_planes` | 16 × `O` | the residuals u (§4) |
 | `nonfinite_code_planes` | 2 × `O_nonfinite` | the non-finite codes (§2) |
 | `time_residual_planes` | 32 × (`O_irregular` + `O_long`) | the time residuals (§3) |
+| `escapes` | 8 × E | the escaped values (§2), float64, byte-planed; E = the number of codes 10 |
 
 ```
 body_size = 21 × num_blocks + 16 × O + 2 × O_nonfinite
-          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long))
+          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long)) + 8 × E
 ```
 
 Every column is 0 for an empty block. Per field:
@@ -309,6 +315,7 @@ A decoder rejects a block group when any of these fail.
 - **Before decompressing:** the frame's recorded content size lies between the body sizes with
   - the fewest plane bytes: ceil(`num_samples` / 8) per plane, no flags;
   - the most: up to 7 padding samples per block, every block flagged and long.
+- **Escapes:** no code 11 before a code 10 in its block; E counts blocks' samples only.
 - **Sizes:** the block sizes add up to `num_samples`, and the content size is exactly
   `body_size` once `block_flags` and `block_sizes` give the sums.
 - **Per block:**

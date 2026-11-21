@@ -8,6 +8,7 @@ in `_api` divide their input into blocks and call `encode`, `encode_series`, `de
 through `update` and `_time_blocks`).
 """
 
+import math
 from collections.abc import Mapping
 from typing import NamedTuple
 
@@ -15,7 +16,16 @@ import numpy as np
 import numpy.typing as npt
 import zstandard
 
-from . import _args, _bitpacking, _compress, _decoder, _encoder, _format, _time
+from . import (
+    _args,
+    _bitpacking,
+    _compress,
+    _decoder,
+    _encoder,
+    _format,
+    _nonfinite,
+    _time,
+)
 from ._types import DecodedGroup, EncodedGroup, EncodedSeries, Params, UpdatedGroup
 
 
@@ -126,7 +136,46 @@ def encode_rows(
     )
     # The kernel writes the value flags; the time rows set the time flags
     rows.block_flags[:] |= block_flags
+    rows = rows._replace(
+        escapes=collect_escapes(samples, block_sizes, rows.block_flags, rows.codes, stats, params.max_quantize_bits)
+    )
     return rows, stats
+
+
+def collect_escapes(
+    samples: np.ndarray, block_sizes: np.ndarray, block_flags: np.ndarray, in_out_codes: np.ndarray, stats: BlockStats,
+    max_bits: int,
+) -> np.ndarray:
+    """The escaped values of the samples coded 10b, in order; a value equal to its block's previous
+    escaped one becomes code 11b (a run of an error code stores it once).
+
+    A value float32 holds (an error code: -9999, 32767, 1e6; +-inf) is kept exact; any other is
+    rounded to the step its block would have had without escapes (2^e of its full range at max_bits),
+    so no sample decodes worse than that and the low mantissa bytes compress away.
+    """
+    if not (block_flags & _format.BLOCK_FLAG_NONFINITE).any():
+        return np.zeros(0)
+    offsets = sample_offsets(block_sizes)
+    flagged = np.repeat((block_flags & _format.BLOCK_FLAG_NONFINITE) != 0, block_sizes)  # codes are only written there
+    positions = np.flatnonzero(flagged & (in_out_codes == _format.CODE_ESCAPE))
+    if not positions.shape[0]:
+        return np.zeros(0)
+    blocks = np.searchsorted(offsets, positions, side="right") - 1
+    values: list[float] = []
+    previous_block, previous_value = -1, math.nan
+    for position, block in zip(positions.tolist(), blocks.tolist()):
+        value = float(samples[position])
+        # Kept exact when float32 holds it (an error code: -9999, 32767, 1e6), else rounded
+        if math.isfinite(value) and float(np.float32(value)) != value:
+            exponent = _encoder.range_exponent(float(stats.block_min[block]), float(stats.block_max[block]), max_bits)
+            rounded = math.ldexp(round(math.ldexp(value, -exponent)), exponent)
+            value = rounded if math.isfinite(rounded) else value
+        if block == previous_block and value == previous_value:
+            in_out_codes[position] = _format.CODE_REPEAT
+            continue
+        values.append(value)
+        previous_block, previous_value = block, value
+    return np.array(values, np.float64)
 
 
 def encode_time_rows(ticks: np.ndarray, block_sizes: np.ndarray, in_out_block_flags: np.ndarray) -> _format.TimeRows:
@@ -327,6 +376,8 @@ class ParsedGroup(NamedTuple):
         block_flags: 1D uint8 array of block flags (a view of the body).
         block_sizes: 1D int64 array of block sizes.
         layout: The blocks' Layout.
+        escapes: 1D float64 array of the escaped values (the end of the body).
+        escape_offsets: 1D int64 array of each block's first escaped value (num_blocks + 1).
     """
 
     raw_body: np.ndarray
@@ -334,6 +385,8 @@ class ParsedGroup(NamedTuple):
     block_flags: np.ndarray
     block_sizes: np.ndarray
     layout: _format.Layout
+    escapes: np.ndarray
+    escape_offsets: np.ndarray
 
     @property
     def has_time(self) -> bool:
@@ -372,11 +425,26 @@ def decompress(group: bytes) -> ParsedGroup:
     block_sizes, offsets = _format.read_layout(raw_body, num_blocks)
     if int(offsets.sample_offsets[-1]) != num_samples:
         raise ValueError(f"block group's block sizes add up to {int(offsets.sample_offsets[-1])}, not its {num_samples} samples")
-    # The exact size depends on which blocks carry non-finite code planes and time residual planes
-    if raw_body.shape[0] != _format.group_size(num_blocks, offsets, has_time):
-        raise ValueError(
-            f"block group body of {raw_body.shape[0]} bytes doesn't match its blocks' sizes and flags"
+    # The exact size depends on which blocks carry non-finite code planes and time residual planes,
+    # and on the escaped values after them (8 bytes each, one per escape code)
+    fields_size = _format.group_size(num_blocks, offsets, has_time)
+    escape_offsets = np.zeros(num_blocks + 1, np.int64)
+    if raw_body.shape[0] >= fields_size:
+        escapes_ok = _nonfinite.escape_offsets(
+            raw_body, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets, has_time, escape_offsets
         )
+    if (
+        raw_body.shape[0] < fields_size or not escapes_ok
+        or raw_body.shape[0] - fields_size != _format.BYTES_PER_ESCAPE * int(escape_offsets[-1])
+    ):
+        raise ValueError(
+            f"block group body of {raw_body.shape[0]} bytes doesn't match its blocks' sizes, flags and codes"
+        )
+    num_escapes = int(escape_offsets[-1])
+    escapes = (
+        raw_body[fields_size:].reshape(_format.BYTES_PER_ESCAPE, num_escapes).T.copy().view(np.float64).ravel()
+        if num_escapes else np.zeros(0)
+    )
     validation_status, failing_block_idx = _decoder.check_group(raw_body, offsets.sample_offsets, has_time)
     if validation_status == _decoder.BAD_FLAGS:
         raise ValueError(
@@ -389,7 +457,7 @@ def decompress(group: bytes) -> ParsedGroup:
         raise ValueError(f"block {failing_block_idx}: anchor out of range (corrupt block group)")
     if validation_status == _decoder.BAD_SCALE:
         raise ValueError(f"block {failing_block_idx}: grid scale invalid for its grid (corrupt block group)")
-    return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets)
+    return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets, escapes, escape_offsets)
 
 
 def read_time_rows(parsed: ParsedGroup, block_ids: np.ndarray) -> _format.TimeRows:
@@ -475,7 +543,7 @@ def decode_blocks(
     values = np.empty(parsed.header.num_samples)
     _decoder.decode_group(
         parsed.raw_body, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets, block_ids, values,
-        parsed.header.byte_planes, parsed.has_time,
+        parsed.header.byte_planes, parsed.has_time, parsed.escapes, parsed.escape_offsets,
     )
     ticks = None
     if parsed.has_time:
@@ -836,11 +904,37 @@ def splice(
         )
     # Splice modified block rows directly into the binary body
     body, offsets = _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets)
+    # The escaped values, in block order: the kept blocks' as stored, the new blocks' as encoded
+    escapes = _spliced_escapes(parsed, num_blocks, indices, new_rows, new_offsets)
+    if escapes.shape[0]:
+        body = np.concatenate([body, _format.escape_bytes(escapes)])
     # Repack and compress the spliced block group
     group = _compress.pack(
         body, offsets, num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,
+        allow_rust=not escapes.shape[0],
     )
     return UpdatedGroup(group, indices, *stats)
+
+
+def _spliced_escapes(
+    parsed: ParsedGroup, num_blocks: int, indices: np.ndarray, new_rows: _format.GroupRows, new_offsets: np.ndarray
+) -> np.ndarray:
+    """The escaped values of a spliced block group: each kept block's stored ones, each new block's encoded ones."""
+    if not parsed.escapes.shape[0] and not new_rows.escapes.shape[0]:
+        return np.zeros(0)
+    flagged = np.repeat((new_rows.block_flags & _format.BLOCK_FLAG_NONFINITE) != 0, np.diff(new_offsets))
+    escaped = (flagged & (new_rows.codes == _format.CODE_ESCAPE)).astype(np.int64)
+    new_escape_offsets = np.concatenate([[0], np.cumsum(escaped)])[new_offsets]
+    rank = {int(block): r for r, block in enumerate(indices.tolist())}
+    parts = []
+    num_old_blocks = parsed.escape_offsets.shape[0] - 1
+    for block in range(num_blocks):
+        if block in rank:
+            r = rank[block]
+            parts.append(new_rows.escapes[new_escape_offsets[r]:new_escape_offsets[r + 1]])
+        elif block < num_old_blocks:
+            parts.append(parsed.escapes[parsed.escape_offsets[block]:parsed.escape_offsets[block + 1]])
+    return np.concatenate(parts) if parts else np.zeros(0)
 
 
 def update(

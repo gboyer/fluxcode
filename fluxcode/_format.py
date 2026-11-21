@@ -133,11 +133,16 @@ CODE_FINITE: int = 0
 CODE_NAN: int = 1
 """Two-bit code representing a NaN sample (01b)."""
 
-CODE_POS_INF: int = 2
-"""Two-bit code representing positive infinity (+inf, 10b)."""
+CODE_ESCAPE: int = 2
+"""Two-bit code of an escaped sample (10b): its value is the block's next one in the escapes field
+(±inf, or an outlier stored apart so the rest of the block keeps its precision)."""
 
-CODE_NEG_INF: int = 3
-"""Two-bit code representing negative infinity (-inf, 11b)."""
+CODE_REPEAT: int = 3
+"""Two-bit code of a sample equal to the block's previous escaped one (11b): a run of an error code
+stores its value once."""
+
+BYTES_PER_ESCAPE: int = 8
+"""Bytes of an escaped value: a float64, byte-planed at the end of the body."""
 
 
 class TimeUnitCode(enum.IntEnum):
@@ -422,7 +427,8 @@ def group_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tupl
     if has_time:
         plane_bytes_per_octet += 2 * TIME_SHORT_PLANES
     smallest = columns + fewest_octets * 8 * BYTES_PER_RESIDUAL_SAMPLE
-    return smallest, columns + most_octets * plane_bytes_per_octet
+    # At most every sample escaped (an escapes field of 8 bytes each)
+    return smallest, columns + most_octets * plane_bytes_per_octet + BYTES_PER_ESCAPE * num_samples
 
 
 class GroupHeader(NamedTuple):
@@ -769,6 +775,7 @@ class GroupRows(NamedTuple):
         residuals: 1D int16 array of every sample's residual.
         codes: 1D uint8 array of every sample's code (zeros in unflagged blocks).
         time_rows: The time axis rows, or None for a block group without a time axis.
+        escapes: 1D float64 array of the escaped values, in block and sample order (the codes' 10b).
     """
 
     block_flags: np.ndarray
@@ -779,3 +786,9 @@ class GroupRows(NamedTuple):
     residuals: np.ndarray
     codes: np.ndarray
     time_rows: TimeRows | None
+    escapes: np.ndarray = np.zeros(0)
+
+
+def escape_bytes(escapes: np.ndarray) -> np.ndarray:
+    """The escapes field: the float64 values byte-planed (byte 0 of every value, then byte 1, ...)."""
+    return np.ascontiguousarray(np.asarray(escapes, np.float64).view(np.uint8).reshape(-1, BYTES_PER_ESCAPE).T).ravel()

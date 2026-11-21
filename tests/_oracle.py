@@ -35,7 +35,7 @@ from fluxcode._format import (
 
 
 def write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes=None,
-                byte_planes=False, time_rows: TimeRows | None = None, offsets=None):
+                byte_planes=False, time_rows: TimeRows | None = None, offsets=None, escapes=None):
     """Serializes rows into a body. The residuals are 16 bit planes unless byte_planes, packed here
     with numpy (everything else is the package's writer's)."""
     block_sizes = np.asarray(block_sizes, np.int64)
@@ -47,6 +47,8 @@ def write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchor
         codes = np.zeros(0, np.uint8)
     body = _bitpacking.write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes,
                                    time_rows, offsets)
+    if escapes is not None and len(escapes):
+        body = np.concatenate([body, _format.escape_bytes(escapes)])
     if byte_planes:
         return body
     num_blocks = block_flags.shape[0]
@@ -134,8 +136,12 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Grou
         raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold {num_blocks} blocks")
     block_flags = raw_arr[:num_blocks].copy()
     block_sizes, offsets = read_layout(raw_arr, num_blocks)
-    if raw_arr.shape[0] != group_size(num_blocks, offsets, has_time):
+    fields_size = group_size(num_blocks, offsets, has_time)
+    # Escaped values (8 bytes each) may follow the fields
+    if raw_arr.shape[0] < fields_size or (raw_arr.shape[0] - fields_size) % 8:
         raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold its {num_blocks} blocks")
+    num_escapes = (raw_arr.shape[0] - fields_size) // 8
+    escapes = raw_arr[fields_size:].reshape(8, num_escapes).T.copy().view(np.float64).ravel() if num_escapes else np.zeros(0)
     num_samples = int(offsets.sample_offsets[-1])
     grid_params = np.empty(num_blocks, np.int64)
     grid_scales = np.empty(num_blocks, np.int64)
@@ -151,7 +157,8 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Grou
         time_rows.residuals[:] = 0
         everyone = np.arange(num_blocks, dtype=np.int64)
         _bitpacking.check_time_rows_status(*_bitpacking.read_time_rows(raw_arr, *offsets, *time_rows, everyone))
-    return GroupRows(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, time_rows)
+    return GroupRows(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, time_rows,
+                     escapes)
 
 
 def read_rows(parsed: _group.ParsedGroup) -> GroupRows:

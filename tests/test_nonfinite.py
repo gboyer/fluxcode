@@ -9,7 +9,7 @@ from _series import decode_series, encode_series, gated, group_rows, planes
 from _signals import KINDS, minute
 
 import fluxcode
-from fluxcode import Params
+from fluxcode import Params, _format, verify
 from fluxcode._format import BLOCK_FLAG_NONFINITE
 
 L = 1000
@@ -90,8 +90,8 @@ def test_finite_blocks_unchanged():
     y = x.copy()
     y[30_500] = np.nan  # block 30
     group, _, _, _ = fluxcode.encode_group(y)
-    ha, _, pa, _, _, ra, _, _ = group_rows(ref)
-    hb, _, pb, _, _, rb, codes, _ = group_rows(group)
+    ha, _, pa, _, _, ra, _, _ = group_rows(ref)[:8]
+    hb, _, pb, _, _, rb, codes, _ = group_rows(group)[:8]
     ra, rb, codes = ra.reshape(60, L), rb.reshape(60, L), codes.reshape(60, L)
     keep = np.arange(60) != 30
     np.testing.assert_array_equal(ha[keep], hb[keep])
@@ -232,10 +232,13 @@ def test_whole_blocks_between_finite_ones(pname):
     x = np.concatenate(blocks)
     check_round_trip(x, PARAMS[pname])
     group, _, _, _ = fluxcode.encode_group(x, PARAMS[pname])
-    flags, _, _, _, _, _, codes, _ = group_rows(group)
+    flags, _, _, _, _, _, codes, _ = group_rows(group)[:8]
     codes = codes.reshape(-1, L)
     assert [bool(h & BLOCK_FLAG_NONFINITE) for h in flags] == [False, True, False, True, False, True, True, False, True]
-    assert (codes[1] == 1).all() and (codes[3] == 2).all() and (codes[5] == 3).all()
+    # NaN is 01b; +-inf are escaped values (10b), stored once: a run repeats the previous (11b)
+    assert (codes[1] == 1).all()
+    assert codes[3][0] == 2 and (codes[3][1:] == 3).all() and codes[5][0] == 2 and (codes[5][1:] == 3).all()
+    assert group_rows(group).escapes[:2].tolist() == [np.inf, -np.inf]
 
 
 def test_update_whole_non_finite_blocks():
@@ -277,3 +280,53 @@ def test_block_len_limit():
     fluxcode.decode_group(fluxcode.encode_group(np.arange(70_000.0), block_len=65_535)[0])
     with pytest.raises(ValueError, match="65535"):
         fluxcode.encode_group(np.arange(10.0), block_len=65_536)
+
+
+def _glitched(seed=3, n=60_000):
+    rng = np.random.default_rng(seed)
+    x = 5 + 0.3 * np.sin(np.arange(n) / 3000) + rng.normal(0, 0.002, n)
+    idx = rng.choice(n, 30, replace=False)
+    x[idx[:10]] = -9999.0
+    x[idx[10:20]] = 1e6
+    x[idx[20:]] = 32767.0
+    x[30_000:30_020] = -9999.0  # a dropout run
+    return x, np.r_[idx, np.arange(30_000, 30_020)]
+
+
+def test_glitches_are_escaped_and_keep_their_blocks_precision():
+    """ENCODER §5.1.1: an error code or overrange sample is stored apart (code 10b, exact when float32
+    holds it), and the rest of its block keeps the step it would have without it; a run repeats (11b)."""
+    x, idx = _glitched()
+    group = fluxcode.encode_group(x).group
+    y = fluxcode.decode_group(group).values
+    np.testing.assert_array_equal(y[idx], x[idx])
+    others = np.ones(x.size, bool)
+    others[idx] = False
+    assert np.abs(y - x)[others].max() < 3e-4  # the clean blocks' error (step 2^-12 of a 0.3-wide bulk)
+    rows = group_rows(group)
+    assert (rows.codes == _format.CODE_REPEAT).sum() >= 19 and len(rows.escapes) <= 40
+    assert verify.encode_group(fluxcode.encode_group(x), x) == []
+
+
+def test_noisy_spikes_are_not_escaped():
+    """Spikes in noise whose floor already sets the step stay in the grid: escaping gains nothing."""
+    rng = np.random.default_rng(4)
+    x = 5 + rng.normal(0, 2.0, 60_000)
+    x[rng.choice(60_000, 40, replace=False)] = 500.0
+    assert not len(group_rows(fluxcode.encode_group(x).group).escapes)
+
+
+def test_update_keeps_other_blocks_escapes():
+    """Replacing a block keeps every other block's escaped values (the field follows block order)."""
+    x, _ = _glitched()
+    group = fluxcode.encode_group(x).group
+    new = 5 + np.zeros(1000)
+    new[10] = -9999.0
+    updated = fluxcode.update(group, {7: new}).group
+    y = fluxcode.decode_group(updated).values
+    expected = fluxcode.decode_group(group).values
+    expected[7000:8000] = new
+    keep = np.ones(x.size, bool)
+    keep[7000:8000] = False
+    np.testing.assert_array_equal(y[keep], expected[keep])
+    assert y[7010] == -9999.0 and np.abs(y[7000:8000] - new).max() < 1e-3

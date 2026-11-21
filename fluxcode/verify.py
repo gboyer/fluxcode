@@ -385,6 +385,7 @@ class _Decoded(NamedTuple):
     scales: np.ndarray
     values: np.ndarray
     ticks: np.ndarray | None
+    escaped: np.ndarray  # per block: holds escaped values (ENCODER §5.1.1)
 
     @property
     def num_blocks(self) -> int:
@@ -406,7 +407,8 @@ def _decode(group: bytes) -> _Decoded:
         scales |= raw[start + byte_idx * num_blocks:start + (byte_idx + 1) * num_blocks] << (8 * byte_idx)
     sizes = parsed.block_sizes.astype(np.int64)
     return _Decoded(parsed.header.time_unit, sizes, np.concatenate([[0], np.cumsum(sizes)]),
-                    parsed.block_flags.astype(np.int64), grid_params, scales, values, ticks)
+                    parsed.block_flags.astype(np.int64), grid_params, scales, values, ticks,
+                    np.diff(parsed.escape_offsets) > 0)
 
 
 def _decode_or_report(group: bytes, found: list[Violation]) -> _Decoded | None:
@@ -562,7 +564,9 @@ def _check_values(
         half_ulps = 2 * np.spacing(magnitude)  # x - lo and lo + q step each round once (4 ulps)
         bounds = [
             ("range_bound", half_range / (2.0 ** params.min_quantize_bits - 0.5), "range / (2^min_quantize_bits - 1/2)"),
-            ("step_bound", _grid_bounds(new) / 2, "the stored grid's"),
+            # Escaped samples keep the bound of the block's full range at max_quantize_bits, not the bulk's grid
+            ("step_bound", np.where(new.escaped, np.maximum(_grid_bounds(new) / 2, half_range / (2.0 ** params.max_quantize_bits - 1) * 2),
+                                    _grid_bounds(new) / 2), "the stored grid's (or, with escapes, the full range's)"),
         ]
         if params.target_bits_per_sample is None:
             fine = (params.noise_floor_sigma == 0) | (sizes < NOISE_FLOOR_MIN_SAMPLES)
