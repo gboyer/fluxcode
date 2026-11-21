@@ -142,12 +142,14 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
     encodes as a constant 0 (anchor 0.0) that the codes then overwrite.
   - A −0.0 minimum, maximum or mean is reported as +0.0, matching what decodes.
 - **Estimates the noise floor from runs of finite samples.** Held runs would bias the estimate.
-  - A flagged block uses only the second differences whose three samples are all finite, and in
-    ρ only pairs of consecutive such differences (each sum normalized by its own count).
+  - A flagged block uses only the 12th differences whose 13 samples are all finite, and in ρ only
+    pairs of such differences (each sum normalized by its own count); with fewer than n/2 of them
+    (10% of samples missing at random leaves about 25%), the second differences of finite triplets
+    and their gate, as on irregular times (§5.2).
   - Why not join the finite samples across gaps: a regular gap pattern (every third sample
     missing, say) would alternate the time step and look like white noise.
-  - The estimate needs at least n/2 such differences (500 at n = 1000). Below that a random walk
-    starts passing the gate, so the block keeps its full precision.
+  - Either estimate needs at least n/2 valid differences (500 at n = 1000), else the block keeps
+    its full precision.
   - One NaN per block on the noisy test signals costs nothing (noisy-sine 5.42 → 5.41
     bits/sample); skipping the noise floor there would cost 2.5×.
 - **Cost:** a block with no non-finite values encodes exactly as it would without the feature.
@@ -322,16 +324,30 @@ ps = 2^e                                 # the power-of-two step
 ### 5.2 Noise floor
 
 Runs when the noise floor f is on (`noise_floor_sigma` > 0), rng > 0 and the block has at least
-256 samples:
+256 samples.
+
+**What the floor is.** The spectral density of the block at the top of its band, where that band
+is flat: there it is a white noise of some σ, and the step is at most f·σ. At 1 kHz that is
+usually the sensor's noise; at one sample a minute it is how much the process moves between
+samples. Either way the added error (white, f·σ/√12 RMS at most) sits 20·log10(√12/f) ≈ 23 dB
+under the signal's own spectrum at every frequency where that spectrum is at or above its top
+band: steps, ramps, transients and oscillations keep their shape, and what goes is detail that
+couldn't be told from the finest-scale variation anyway.
 
 ```
-d     = x[i+2] − 2·x[i+1] + x[i]  for i = 0..n−3,  minus its mean   # second differences
+d     = 12th differences of x (taps C(12, j)·(−1)^(12−j)), minus their mean   # n − 12 of them
 split d into W = max(1, n_d // 256) windows of n_d / W differences each
 per window: mad = mean |d|; twice: mad = mean of |d| over |d| <= 4·sqrt(π/2)·mad  # clipped
             sd_w = sqrt(π/2)·mad;  clip the window's d to ±4·sd_w
-σ     = min(mean_w sd_w, min_w sd_w / 0.75) / sqrt(6)
-ρ     = lag-1 autocorrelation of the clipped d
-if ρ < −0.6:   e = max(e, floor(log2(f·σ)))
+σ     = min(mean_w sd_w, min_w sd_w / 0.75) / sqrt(C(24, 12))               # sqrt(2,704,156)
+ρ1    = lag-1 autocorrelation of the clipped d;  ρ2 = lag-2 autocorrelation
+gated = ρ1 / (−12/13) > 0.9  and  |ρ2 / (C(24, 10)/C(24, 12)) − 1| < 0.2   # white: −0.923, 0.725
+if gated:
+    σ1 = robust spread (as above, around a trimmed mean) of the first differences on 8 evenly
+         spread windows of 32, over sqrt(2)
+    σ  = min(σ, 1.25·σ1)
+    e  = max(e, floor(log2(f·σ)))
+    if f·σ < 1.02·2^e and every sample is a multiple of 2^(e−1):  e = e − 1  # decoded data: fixed point
 e = min(e, e_coarse)                                                # min_quantize_bits is hard
 ```
 
@@ -344,7 +360,13 @@ one_scan_i = c/2 < Δ_i < 3c/2                                             # in 
 if fewer than 90% of the Δ_i are one scan: no floor
 d_i   = sqrt(6)·(b·x[i] + a·x[i+2] − (a + b)·x[i+1]) / sqrt((a + b)² + a² + b²)   # a = Δ_i, b = Δ_{i+1}
         only where one_scan_i and one_scan_{i+1}; at least 254 of them, else no floor
+σ, ρ1 as above on these chords (gain sqrt(6), white ρ1 = −2/3); gated = ρ1 / (−2/3) > 0.9
 ```
+
+On a regular block with non-finite samples, the 12th differences of windows of 13 finite samples,
+while at least half of the windows are; with denser gaps, second differences of finite triplets
+(the chords' gate). Irregular times keep the chords: a 12th divided difference is costly and
+sensitive to jitter, and a jittered clock's slope must cancel.
 
 - **Times are given, or the samples are evenly spaced.** Without times the encoder assumes a
   regular grid. A block group of irregular samples (an archive exported without its time column)
@@ -388,11 +410,31 @@ d_i   = sqrt(6)·(b·x[i] + a·x[i+2] − (a + b)·x[i+1]) / sqrt((a + b)² + a�
     low over 3 windows (1,000 samples) and 18% low over 255 (65,536), a step one level finer on
     7% and 28% of blocks. Over up to 255 windows the quietest never measured below 0.77 of the
     mean, so steady noise takes the mean, unbiased.
-- **What the gate separates,** by ρ on second differences:
-  - white measurement noise: −2/3;
-  - a random walk (whose increments are signal): −1/2;
-  - smooth or fast deterministic signals: positive.
-  - Only white noise passes; the rest keep the B-bit step.
+- **Why 12th differences.** Their kernel, (2 sin πf)^24 / C(24, 12), reads the spectral density
+  near half the sample rate and hardly anything below a third of it (2·10⁻⁵ of a tone's power at
+  0.2 of the rate, 0.03 at 0.28): a busy signal (a motor's 60 Hz with harmonics, a gearbox's mesh
+  and resonance, colored turbulence) leaves the white noise under it readable. Second differences
+  saw the signal too, so their gate failed and those blocks kept the B-bit step: 30–53% larger on
+  the realistic signals of `experimental/value/` (motor current, flow, a thermocouple, an
+  accelerometer).
+- **What the gate separates,** by ρ1 as a share of white noise's (−12/13):
+  - white noise, and anything flat at the top of the band, passes: measurement noise, colored
+    noise whose spectrum flattens there, a random walk (whose top band is a white noise of σ_e/2,
+    so it is floored at that: σ_e/8 at f = 0.25);
+  - a clean tone below about 0.39 of the sample rate fails (its differences alternate with
+    ρ1 = cos 2πf), as do smooth signals, whose 12th differences are rounding noise far under the
+    B-bit step anyway.
+  - The lag-2 check rejects a tone at 0.4–0.5 of the rate (a toggle every sample or few), which
+    the lag-1 test alone passes; a tone at about 0.44, where the kernel peaks, still passes it, as
+    one above 0.35 passed the second differences' gate.
+- **The first differences' cap.** Steps a few samples apart (a square wave of period 20, a
+  staircase) put a burst into every window of 13 samples, so the 12th differences read them as
+  noise of about 0.15 of the step; first differences see each step once and the clipping drops
+  it. On white noise the two agree, and a random walk, a slope or a tone raise only the first
+  differences, so the cap binds only when it reads at least 20% lower. Their mean is trimmed:
+  the steps' imbalance would offset it. Measured on noisy square waves of periods 6 to 1000 at
+  off-grid levels: every one keeps its error within 0.16σ of its noise (main's estimator kept
+  them at full precision).
 - **Effect.**
   - The step stays a power of two, so edit stability and the format are unchanged. The decoder
     doesn't know or care.
@@ -416,18 +458,11 @@ d_i   = sqrt(6)·(b·x[i] + a·x[i+2] − (a + b)·x[i+1]) / sqrt((a + b)² + a�
   - A noisy block's noise-floor step spans range/(f·σ) steps: ≈ 230 (about 7.8 bits) on the
     noisy sine at f = 0.25. A minimum above that would override the noise floor.
   - The default minimum of 6 bits costs ≤ 1% on the noisy test signals.
-- **Why 256 samples.** The ρ test separates white noise (−2/3) from a random walk (−1/2) only on
-  enough differences.
-  - On m differences, the estimate of ρ has a standard error of about √((1 − 3ρ² + 4ρ⁴)/m)
-    (Bartlett's formula for a lag-1 autocorrelation): 0.044 for a random walk and 0.042 for white
-    noise at m = 254.
-  - The threshold −0.6 is then 2.25 standard errors from −1/2 (random walks pass about 1% of the
-    time) and 1.6 from −2/3 (white noise is missed about 6% of the time). At 64 samples random
-    walks would pass about 13% of the time.
-  - Measured: pure random walks pass 21% of the time at 9 samples, 9.4% at 64, 4.3% at 128, 0.8%
-    at 256 and never at 1000. White noise passes 96% of the time at 256.
-  - So 256 is a chosen trade-off (about 1% false positives, 5% missed white noise), not a hard
-    limit. Smaller blocks keep the B-bit step.
+- **Why 256 samples.** On shorter blocks a single clean step or spike is most of the 12th
+  differences: at 64 samples a step of 10 read σ = 0.004, at 32 samples 0.78. From 128 up the
+  estimate stays under the B-bit step on such clean shapes, and white noise passes the gate 100%
+  of the time; 256 keeps the margin of the second differences' rule (which needed it to tell a
+  random walk from white noise).
 - **Re-encoding decoded data** (a merging `update_time_blocks`) computes the noise floor again
   from the merged block: kept samples, now decoded, plus the new ones. Nothing is reused, as when
   encoding from scratch.
@@ -438,7 +473,10 @@ d_i   = sqrt(6)·(b·x[i] + a·x[i+2] − (a + b)·x[i+1]) / sqrt((a + b)² + a�
   - Measured over 5 decode/re-encode rounds of 300 noisy 1000-sample blocks (all gated): σ of the
     decoded data averaged 1.0002× the original (at most 1.008×). 8 blocks went one level finer on
     the first round, and none changed after.
-  - Finer is exact on the snapped grid (§5.5), and coarser is one bounded rounding.
+  - Finer is exact on the snapped grid (§5.5). Coarser would round once more, so a block whose
+    f·σ is within 2% past a power of two and whose samples all lie on the grid one finer keeps
+    that grid: decoded data is then a fixed point (a random walk of σ_e = 1 sits at 0.4999 of a
+    boundary on some blocks).
   - A merged block can also cross 256 samples, which switches the noise floor on or off between
     updates, with the same two cases.
 - **The gate is per block and all-or-nothing.** Per-sample variants (full precision kept at
@@ -622,18 +660,24 @@ decimal:       K0   = floor(lo · 10^-p + 0.5)       anchor = K0
 
 ### 5.6 Order
 
-For each k in `diff_orders`, compute the variance of `diff(q[0..M−1], k)` over the first
-M = min(250, n) samples (M − k values, no padding):
+For each k in `diff_orders`, compute the variance of the k-th differences of q within windows: the
+whole block if n ≤ 256, else 8 windows of 32 samples starting at w·(n − 32) // 7 for w = 0..7
+(each window's own differences, 32 − k of them; no padding):
 
 ```
-v_k = (m·Σd² − (Σd)²) / m²,   d = diff(q[:M], k),   m = M − k
+v_k = (m·Σd² − (Σd)²) / m²,   d = the windows' k-th differences,   m = 8·(32 − k)
 order = the k with the smallest v_k; ties go to the lower order
 ```
 
 - Sums are exact integers (int64).
 - The order only has to be *a* valid choice: the decoder reads it from the block group.
-- Picking on the first 250 samples agrees with the full-block pick on 97% of blocks. It costs
-  0.4% in size on continuous data, and nothing on discretized data.
+- **Spread windows, not the first 256 samples.** A block that changes part way (a servo move after
+  a dwell, a batch ramp, a compressor starting) was judged on its start. The same 256 samples
+  spread over the block pick as well as the whole block does: on the realistic corpus of
+  `experimental/value/`, 1.7% smaller for fast signals and 6% for slow (1 s, hourly blocks:
+  batch −13%, compressor −8%, a servo −13%), at the same cost.
+- Variance over the whole block picked no better; a clipped variance or mean absolute deviation
+  instead of the variance changed the total by under 0.1%.
 
 ### 5.7 Residuals
 
@@ -728,10 +772,11 @@ N their total samples.
     guarantees; up to 2^B steps it depends on where 10^p falls between powers of two (cents to
     about 0.78·2^B, thousands to 0.51·2^B; integers always, as ps = 1 holds them). Wider blocks
     use the power-of-two grid;
-  - the noise floor doesn't coarsen the block (off, under 256 samples, or not white noise), or
-    does so to a step still finer than 10^p. On white noise ps becomes 2^floor(log2(f·σ)) (§5.2),
-    which reaches 10^p once σ is between 1/f and 2/f decimal steps (4–8 at f = 0.25; 6.25 for
-    cents). Those blocks are stored like any noisy block, within f·σ/2: their last digit is noise,
+  - the noise floor doesn't coarsen the block (off, under 256 samples, or not flat at the top of
+    the band), or does so to a step still finer than 10^p. There ps becomes 2^floor(log2(f·σ))
+    (§5.2), which reaches 10^p once σ is between 1/f and 2/f decimal steps (4–8 at f = 0.25; 6.25
+    for cents). σ is white noise's, or a random walk's σ_e/2: a decimal walk whose steps are
+    8–16 decimal places or more is floored too. Those blocks are stored like any noisy block, within f·σ/2: their last digit is noise,
     and keeping it would cost +12% at 12 steps of σ, +42% at 25 and +82% at 100 (cents in blocks
     of 1,000). `noise_floor_sigma=0` keeps decimal data exact;
   - there is no `target_bits_per_sample` (§5.8 may coarsen any block).
@@ -877,9 +922,10 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
    - ranges from a few subnormals to past 2^1023 round-trip within the bounds, with no inf, and
      exponents, anchors and q matching exact rational arithmetic.
 8. **Noise gate:**
-   - it fires on white Gaussian noise, with or without a slow signal under it;
-   - it never fires on a random walk, a clean sine at any frequency, a chirp, a ramp or a square
-     wave;
+   - it fires on white Gaussian noise, with or without a signal under it (a tone, a resonance,
+     colored noise), and on a random walk (its top band is white: σ_e/2);
+   - it never fires on a clean sine below 0.39 of the sample rate, a chirp, a ramp or a square
+     wave (with or without noise, its step stays within 0.16σ of that noise);
    - it may fire on the float rounding noise of a smooth polynomial (the quadratic), with no
      effect, since that σ is far below the B-bit step;
    - on all clean test signals the block group is byte-identical with the noise floor on

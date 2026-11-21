@@ -241,9 +241,9 @@ None of these change the format.
   GIL, so threads and processes scale the same.
 
 **Encode**
-- **Order selection on the first 250 samples** agrees with a full-block pick on 97% of blocks,
-  costs 0.4% in size on continuous data (none on discretized), and cuts the pick from ~2.7 to
-  ~0.15 µs. One fused pass computes all four sums of squares.
+- **Order selection on 8 spread windows of 32 samples** picks as well as the whole block (ENCODER
+  §5.6) at the cost of the first 256 samples' pick, ~0.15 µs against ~2.7 for the whole block. One
+  fused pass per window computes all four sums of squares.
 - **Single-pass residual per order:** the first `order` samples separately, then one
   branch-free loop per order (difference, then mod 2^16). LLVM vectorizes it.
 - **Quantize** (`floor(x·2^-e + 0.5)`) is a straight vectorizable loop, separate from detection.

@@ -205,6 +205,38 @@ true noise σ, against the input and against the same signal generated without n
   step: the noisy sine on a 0.1 grid goes from exact at 8.88 bits/sample to 4.39 at f = 0.5, the
   same as its continuous version.
 
+### The estimator: 12th differences (2026-11-21)
+
+Measured on `experimental/value/` (corpus.py): nine high-rate DAQ-like signals (an accelerometer with
+gear mesh and a resonance, motor current and line voltage on 16-bit ADCs, pump pressure on a 12-bit
+4–20 mA input, a load cell, a servo axis on a 0.001 mm encoder, turbulent flow, a tachometer and a
+10 Hz thermocouple, 240,000 samples each), the 19 slow 1 s tags of fluxprune's corpus in hourly
+blocks, and the 15 benchmark signals. Bytes against main (second differences, first-256 order pick):
+
+| | fast | slow | synth |
+|---|---|---|---|
+| 12th differences + windowed order pick | −26.1% | −10.3% | −11.8% |
+| of which the order pick | −1.4% | −5.4% | 0% |
+
+- **Where it fired that the second differences didn't:** motor current −30%, turbulent flow −53%,
+  the thermocouple −55%, the accelerometer −47%, pH stored as float32 −52%, the pyrometer −17%:
+  white noise under a signal that also shows in second differences, whose gate then failed and
+  left the B-bit step. Their added RMS error is 0.06σ of the noise, as on noisy blocks before.
+- **Random walks are floored** at σ_e/8 (σ_e/2 is their top-band level): random-walk 12.6 → 5.7
+  bits/sample, its decimal and ADC variants likewise (lossy now), +0.31% of range max error.
+- **One process across sample rates** (`rates.py`: a lagged setpoint, an OU disturbance, a 0.2 Hz
+  loop oscillation, sensor noise σ = 0.05): at 1 kHz–10 Hz the floor is the sensor's noise (RMS
+  error 0.045σ); at 1 Hz–1/min it is the process's move between samples (RMS error 1.5–4% of that
+  move), 13.3–14.5 → 5.2–6.4 bits/sample. Second differences gated only at 10 Hz and above.
+- **Clean shapes:** the sines, chirp, ramps and square waves are byte-identical with the floor on
+  and off; noisy square waves at off-grid levels (periods 6–1000) keep their error within 0.16σ
+  of their noise (`squares.py`).
+- **Higher orders read lower leakage:** k = 6 left the accelerometer (a 2.8 kHz resonance at 10 kHz)
+  unfloored and k = 10–12 floored it; past 12 nothing else changed.
+- **Cost:** +0.45 µs/block of encode for the 12th differences (1.15 → 1.6 µs), +0.5 µs more on
+  gated blocks for the lag-2 check and the first differences' cap; about +5% of encode on the 15
+  benchmark signals, while floored blocks encode faster (a coarser step).
+
 ## Validating on your data
 
 What to measure per tag before settling `noise_floor_sigma` (and `target_bits_per_sample`, if used):

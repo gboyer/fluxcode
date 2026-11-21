@@ -35,10 +35,12 @@ High level properties:
 Encoding features to balance size, accuracy, and performance depending on data
 type:
 
-* **Noise floor**: For data with high frequency noise, you can optionally specify the sigma
-  multiplier that you want to preserve, and the quantization grid is reduced accordingly. This helps
-  compression for noisy data, but preserves clean periodic data (unless the frequency approaches the
-  sample rate). By default, 0.25 sigmas. With irregular timestamps, it applies only where nearly
+* **Noise floor**: Detail finer than a block's own finest-scale variation (its spectral density at
+  the top of the band: sensor noise at 1 kHz, the process's move between samples at one a minute)
+  isn't kept: the step is a share f of that level, 0.25 by default, so the error stays about 23 dB
+  under the signal's spectrum at every frequency and the shape survives. It reads that level under
+  a busy signal (a motor's 60 Hz, a gearbox's resonance, turbulence) and on random walks, and
+  leaves clean periodic data alone (below about 0.39 of the sample rate). With irregular timestamps, it applies only where nearly
   every interval is one scan (a jittered clock, or one with gaps), measured on consecutive scans: a
   historian's swinging-door archive looks like white noise without being noise, and gets none.
   Without timestamps the samples are taken as evenly spaced, so store an archive with its times
@@ -238,9 +240,10 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Decimal data is lossless** unless it is noisier than its decimals. Values that are decimals of
   p places (as parsed from text) decode to the identical float64 when the block spans fewer than
   2^15 decimal steps (2^(B−1); up to 2^B for some p), has no `target_bits_per_sample`, and isn't
-  coarsened by the noise floor. The noise floor stores white noise whose σ is above 1/f to 2/f
-  decimal steps (4–8 at the default f; 6.25 for cents) at its own step, like any noisy block: its
-  last digit is noise. `noise_floor_sigma=0` keeps such data exact. Decimals
+  coarsened by the noise floor. The noise floor stores a block whose top-band level σ is above 1/f
+  to 2/f decimal steps (4–8 at the default f; 6.25 for cents) at its own step, like any noisy block:
+  its last digit is noise. σ is white noise's, or half a random walk's step σ_e: a decimal walk
+  moving 8–16 places a sample or more is floored too. `noise_floor_sigma=0` keeps such data exact. Decimals
   stored as float32 upstream decode as the decimal itself when the block is wide enough for float32's
   rounding to sit within a quarter of its power-of-two step; a narrower block encodes the float32
   values like any other data.
@@ -276,11 +279,11 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
   differences, then the simplest fraction within the fitted step's uncertainty), stored with an
   integer anchor on the fine grid and decoded with one rounding.
 - **Noise floor:** a robust (clipped [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation))
-  estimate of the noise in the second differences, plus their lag-1 autocorrelation (−2/3 for
-  white noise). Blocks that look like white noise get a step of at most 0.25σ (a third of the
-  quietest part's σ where the noise varies within the block). Blocks under 256 samples keep their
-  finest step: the autocorrelation estimate is too noisy there to tell white noise from a random
-  walk. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
+  estimate of the level in the 12th differences, which see only the top of the band, plus their
+  lag-1 and lag-2 autocorrelations (−12/13 and 0.725 for white noise), capped by the first
+  differences' level (steps a few samples apart). Blocks flat at the top get a step of at most
+  0.25σ (a third of the quietest part's σ where the noise varies within the block). Blocks under
+  256 samples keep their finest step: a single step or spike is too much of their differences. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
   and only consecutive scans count, so sparse archives and events keep their values.
 - **Fixed polynomial predictors** of order 0–3, picked per block by residual variance, as in
   [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and
