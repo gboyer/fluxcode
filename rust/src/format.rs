@@ -17,7 +17,7 @@ pub const HEADER_BYTES: usize = 8;
 pub const BYTES_PER_FLAGS: usize = 1;
 pub const BYTES_PER_SIZE: usize = 2;
 pub const BYTES_PER_PARAM: usize = 2;
-pub const BYTES_PER_SCALE: usize = 4;
+pub const BYTES_PER_SCALE: usize = 8;
 pub const BYTES_PER_ANCHOR: usize = 8;
 /// Bytes of the value columns (flags, size, grid parameter, grid scale, anchor) per block.
 pub const METADATA_BYTES_PER_BLOCK: usize =

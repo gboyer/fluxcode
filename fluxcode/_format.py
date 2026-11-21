@@ -86,8 +86,22 @@ BLOCK_FLAG_SCALED: int = 0x40
 """Block flags: a scaled grid (bit 6): the step is N / D times 2^e (or 10^p with bit 2), the anchor
 an int64 index on the fine grid 2^e / D (10^p / D), N and D in the grid_scale field."""
 
-BLOCK_FLAG_RESERVED: int = 0x80
-"""Block flags: reserved bit (7); decoders reject it."""
+BLOCK_FLAG_PERIOD: int = 0x80
+"""Block flags: period predictor (bit 7): the block's indices are predicted from those a period earlier
+(SPEC §4), whose parameters are in the high half of the grid_scale field."""
+
+BLOCK_FLAG_RESERVED: int = 0x00
+"""Block flags: no reserved bits are left."""
+
+PERIOD_SHIFT: int = 32
+"""grid_scale holds a period block's period P in bits 32-47 (2 to 65,535)."""
+
+PERIOD_WEIGHT_SHIFT: int = 48
+"""... and its fractional weight w, int8, in bits 48-55: the prediction is
+((64 - w) q[n - P] + w q[n - P - 1] + 32) >> 6. Bits 56-63 are 0."""
+
+SCALE_FIELD_MASK: int = 0xFFFFFFFF
+"""The low half of grid_scale: N | D << 16 of a scaled block."""
 
 GROUP_FLAG_BYTE_PLANES: int = 0x01
 """Block group header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
@@ -203,8 +217,9 @@ BYTES_PER_SIZE: int = 2
 BYTES_PER_PARAM: int = 2
 """Bytes of grid_params per block (int16)."""
 
-BYTES_PER_SCALE: int = 4
-"""Bytes of grid_scale per block (uint32: N | D << 16, 0 on an unscaled block)."""
+BYTES_PER_SCALE: int = 8
+"""Bytes of grid_scale per block (int64: N | D << 16 of a scaled block in the low half, a period
+block's P | w << 16 in the high half, 0 otherwise)."""
 
 BYTES_PER_ANCHOR: int = 8
 """Bytes of value_anchor per block (float64 bits or int64 grid index)."""

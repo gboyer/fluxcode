@@ -27,6 +27,7 @@ from ._format import (
     BLOCK_FLAG_LONG_TIME,
     BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
+    BLOCK_FLAG_PERIOD,
     BLOCK_FLAG_RESERVED,
     BLOCK_FLAG_SCALED,
     E_MAX,
@@ -34,11 +35,12 @@ from ._format import (
     INDEX_LIMIT,
     P_MAX,
     P_MIN,
+    PERIOD_SHIFT,
+    SCALE_FIELD_MASK,
     SCALE_MASK,
     SCALE_SHIFT,
     get_int16,
     get_int64,
-    get_uint32,
     grid_params_start,
     grid_scale_start,
     scale_valid,
@@ -119,6 +121,27 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
             sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
             sum_order3 = (sum_order3 + sum_order2) & 0xFFFF
             residuals_in_out[sample_idx] = ((sum_order3 + 32768) & 0xFFFF) - 32768
+
+
+@njit(nogil=True, cache=True)
+def unpredict_period(errors_in_out: np.ndarray, period: int | np.integer, weight: int | np.integer) -> None:
+    """Reconstructs a period block's indices past its first P + 1 in place (SPEC §4).
+
+    q[n] = e[n] + ((64 - w) q[n - P] + w q[n - P - 1] + 32) >> 6 for n > P, read as signed 16-bit
+    (mod 2^16); the first P + 1 are already q (integrated as the block's order).
+
+    Args:
+        errors_in_out: 1D int32 array: q up to P, the prediction errors after; overwritten with q.
+        period: The period P (>= 2).
+        weight: The fractional weight w (int8).
+    """
+    num_samples = errors_in_out.shape[0]
+    head = min(num_samples, period + 1)
+    near_weight = np.int32(64 - weight)
+    far_weight = np.int32(weight)
+    for sample_idx in range(head, num_samples):
+        prediction = (near_weight * errors_in_out[sample_idx - period] + far_weight * errors_in_out[sample_idx - period - 1] + 32) >> 6
+        errors_in_out[sample_idx] = ((errors_in_out[sample_idx] + prediction + 32768) & 0xFFFF) - 32768
 
 
 @njit(nogil=True, cache=True)
@@ -238,18 +261,26 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
         flags = raw_group[block_idx]
         param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
         anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
-        scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+        scale_field = get_int64(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+        scale = scale_field & SCALE_FIELD_MASK
+        period_bits = scale_field >> PERIOD_SHIFT
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
             # An empty block stores nothing: its columns are 0
             if flags:
                 return BAD_FLAGS, block_idx
             if param_val:
                 return BAD_PARAM, block_idx
-            if scale:
+            if scale_field:
                 return BAD_SCALE, block_idx
             if anchor_bits[0]:
                 return BAD_ANCHOR, block_idx
             continue
+        # A period block's parameters: P >= 2 in bits 32-47, w in 48-55, 0 above; else the high half is 0
+        if flags & BLOCK_FLAG_PERIOD:
+            if (period_bits & 0xFFFF) < 2 or period_bits >> 24:
+                return BAD_SCALE, block_idx
+        elif period_bits:
+            return BAD_SCALE, block_idx
         # Reserved bit 7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
         irregular_time = flags & BLOCK_FLAG_IRREGULAR_TIME
         if flags & BLOCK_FLAG_RESERVED or (irregular_time and not has_time):
@@ -346,11 +377,17 @@ def decode_group(
             )
             # Unzigzag into signed differences
             unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
-        # Integrate mod 2^16 by predictor order (bits 0-1)
-        integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
+        # Integrate mod 2^16 by predictor order (bits 0-1); a period block only its first P + 1
+        if flags & BLOCK_FLAG_PERIOD:
+            period_bits = get_int64(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx) >> PERIOD_SHIFT
+            period = period_bits & 0xFFFF
+            integrate(block_residuals[:min(block_len, period + 1)], flags & BLOCK_FLAG_ORDER)
+            unpredict_period(block_residuals, period, np.int8(period_bits >> 16 & 0xFF))
+        else:
+            integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
         # Dequantize according to grid type (scaled, decimal or power-of-two)
         if flags & BLOCK_FLAG_SCALED:
-            scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+            scale = get_int64(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx) & SCALE_FIELD_MASK
             dequantize_scaled(
                 block_residuals, anchor_bits[0], scale & SCALE_MASK, scale >> SCALE_SHIFT, param_val,
                 flags & BLOCK_FLAG_DECIMAL != 0, block_out,

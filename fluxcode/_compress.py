@@ -20,7 +20,7 @@ import zstandard
 
 from . import _bitpacking, _format
 
-RUST_INTERFACE_VERSION: int = 4
+RUST_INTERFACE_VERSION: int = 5
 """Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 

@@ -164,7 +164,7 @@ def test_update_with_non_finite_blocks():
     np.testing.assert_array_equal(y3[[10, 20]], np.ones((2, L)))
 
 
-@pytest.mark.parametrize("head_bits", [0x10, 0x20, 0x80])
+@pytest.mark.parametrize("head_bits", [0x10, 0x20])
 def test_update_refuses_groups_it_cannot_read(head_bits):
     """A block group with reserved flags bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""

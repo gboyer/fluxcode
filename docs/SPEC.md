@@ -127,6 +127,17 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
     [−2^15, 2^15), so integrating mod 2^16 and reading the result as int16 (§5) recovers q
     exactly: two bytes per sample suffice.
   - The prepended zeros make the first residuals the start values, so there's no separate header.
+- **Period predictor** (block flag bit 7): the residuals are those of the prediction errors e of q,
+  with k (0–3) the difference order taken on top of them, P and w from `grid_scale`:
+
+  ```
+  e[0] = q[0];   e[n] = q[n] − q[n−1]  for 1 ≤ n ≤ P
+  e[n] = q[n] − (((64 − w)·q[n−P] + w·q[n−P−1] + 32) >> 6)   for n > P      # >> rounds down
+  r = k-th difference of (0, …, 0, e[0], …, e[n-1]), as above
+  ```
+
+  - The prediction is q a period earlier, between lags P and P + 1 by w/64 (a fractional period),
+    with unit gain, so a level carries over exactly. Every e and q is read as int16 (mod 2^16).
 
 ## 5. Decoding one block
 
@@ -156,6 +167,9 @@ scaled, power of two: y[i] = (float64(K0 + N · q[i]) · 2^e) / D            (�
   - From 971 up, `q·2^e` itself can overflow while the sum doesn't. Evaluate at half scale:
     `y = max(min(2·(a/2 + q·2^(e−1)), DBL_MAX), −DBL_MAX)`, with `y = a` where q = 0 (a/2 rounds if a is
     subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
+- **Period blocks** (block flag bit 7): after integrating, the result is e; undo the prediction in
+  sample order: q[0] = e[0], q[n] = e[n] + q[n−1] for 1 ≤ n ≤ P, then q[n] = e[n] + (((64 − w)·q[n−P]
+  + w·q[n−P−1] + 32) >> 6), each read as int16.
 - **Non-finite codes** (block flag bit 3): after dequantizing, overwrite samples with code
   01, 10 or 11 with NaN (the canonical quiet NaN), +inf or −inf.
   - Octets whose two code bytes are both 0 can be skipped.
@@ -219,7 +233,7 @@ The body is these fields, in this order. The four time fields are present only w
 | `block_flags` | `num_blocks` | per block: order, grid kind and what it stores (below) |
 | `block_sizes` | 2 × `num_blocks` | sample count, uint16, byte-planed |
 | `grid_params` | 2 × `num_blocks` | grid parameter, int16, byte-planed |
-| `grid_scale` | 4 × `num_blocks` | N \| D << 16, uint32, byte-planed: 0 on an unscaled block |
+| `grid_scale` | 8 × `num_blocks` | N \| D << 16 \| (P \| w << 16) << 32, int64, byte-planed: 0 on a plain block |
 | `value_anchor` | 8 × `num_blocks` | anchor (§4), byte-planed |
 | `time_start` | 8 × `num_blocks` | start time, byte-planed |
 | `time_step` | 8 × `num_blocks` | time step, int64, byte-planed |
@@ -229,7 +243,7 @@ The body is these fields, in this order. The four time fields are present only w
 | `time_residual_planes` | 32 × (`O_irregular` + `O_long`) | the time residuals (§3) |
 
 ```
-body_size = 17 × num_blocks + 16 × O + 2 × O_nonfinite
+body_size = 21 × num_blocks + 16 × O + 2 × O_nonfinite
           + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long))
 ```
 
@@ -242,14 +256,15 @@ Every column is 0 for an empty block. Per field:
   - bit 4: irregular times, with time residual planes (§3);
   - bit 5: long time residuals, 64 planes instead of 32;
   - bit 6: scaled grid (with bit 2: a scaled decimal grid);
-  - bit 7: 0.
+  - bit 7: period predictor (§4), its parameters in `grid_scale`'s high half.
 - **`grid_params`**:
   - power-of-two grid: the exponent e, −1074 to 1023;
   - decimal grid: the decimal power p, −22 to 22;
   - scaled power-of-two grid: e, −1022 to 970;
   - scaled decimal grid: p, −22 to 0, with D · 5^−p < 2^53 (so D · 10^−p is an exact double).
-- **`grid_scale`**: on a scaled grid, N (bits 0–15) and D (bits 16–31), each 1 to 65,535; 0 on
-  every other block.
+- **`grid_scale`**: on a scaled grid, N (bits 0–15) and D (bits 16–31), each 1 to 65,535, else 0;
+  on a period block (block flag bit 7), P (bits 32–47, 2 to 65,535) and w (bits 48–55, int8),
+  else 0; bits 56–63 are 0.
   - N and D needn't be coprime: any pair decodes.
   - It is a fixed column rather than one only for scaled blocks: zstd stores the zeros of a block
     group without scaled blocks in a few bytes, and every column's offset stays a function of
@@ -297,10 +312,10 @@ A decoder rejects a block group when any of these fail.
 - **Sizes:** the block sizes add up to `num_samples`, and the content size is exactly
   `body_size` once `block_flags` and `block_sizes` give the sums.
 - **Per block:**
-  - `block_flags` bit 7 zero; bit 4 only with a time axis; bit 5 only with bit 4;
+  - `block_flags` bit 4 only with a time axis; bit 5 only with bit 4;
   - the grid parameter in range for its grid;
-  - `grid_scale` 0 on an unscaled block; on a scaled one N ≥ 1, D ≥ 1 and, on a decimal one,
-    D · 5^−p < 2^53;
+  - `grid_scale`'s low half 0 on an unscaled block; on a scaled one N ≥ 1, D ≥ 1 and, on a decimal
+    one, D · 5^−p < 2^53; its high half 0 unless bit 7 is set, then P ≥ 2 and bits 56–63 zero;
   - a finite float anchor, or a decimal or scaled anchor with |K0| < 2^52;
   - all columns 0 in an empty block.
 - **Time axis:**
@@ -334,22 +349,22 @@ values  constant per block: 2.5, 2.25, 3.0   (power-of-two grid)
 ```
 
 - Header: `01 08 03 00 14 00 00 00` (flags 0x08: `time_unit` 4 in bits 1–3; 3 blocks; 20 samples).
-- Body: 203 bytes = 17 × 3 + 16 × 3 + 24 × 3 + 32 × 1.
+- Body: 215 bytes = 21 × 3 + 16 × 3 + 24 × 3 + 32 × 1.
 
 ```
 offset   field                size   byte planes (3 bytes each: blocks 0, 1, 2)
 0–2      block_flags          3      bit 4 set on block 1 only
 3–8      block_sizes          6      low bytes 08 08 04, high bytes 00 00 00
 9–14     grid_params          6      exponent 0 (constant blocks): all 00
-15–26    grid_scale           12     0 (unscaled): all 00
-27–50    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
+15–38    grid_scale           24     0 (unscaled, no period): all 00
+39–62    value_anchor         24     raw bits 0x4004…, 0x4002…, 0x4008…: planes 0–5 = 00 00 00,
                                      plane 6 = 04 02 08, plane 7 = 40 40 40
-51–74    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
+63–86    time_start           24     stored 1000, 80, 100: plane 0 = E8 50 64, plane 1 = 03 00 00,
                                      planes 2–7 = 00 00 00
-75–98    time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
-99–122   time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
-123–170  residual_planes      48     one byte per plane per block (block 2's last 4 bits padding)
-171–202  time_residual_planes 32     block 1 (short: planes 0–31 only), quotients [1, 1, 3, 1, 1, 1, 1]
+87–110   time_step            24     10, 10, 10: plane 0 = 0A 0A 0A, planes 1–7 = 00 00 00
+111–134  time_ref             24     1, 1, 1: plane 0 = 01 01 01, planes 1–7 = 00 00 00
+135–182  residual_planes      48     one byte per plane per block (block 2's last 4 bits padding)
+183–214  time_residual_planes 32     block 1 (short: planes 0–31 only), quotients [1, 1, 3, 1, 1, 1, 1]
                                      from sample 1, time_ref 1: residuals [0, 0, 0, 2, 0, 0, 0, 0],
                                      zigzagged [0, 0, 0, 4, 0, 0, 0, 0]: plane 2 = 0x08,
                                      all other planes 0x00

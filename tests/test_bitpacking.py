@@ -137,8 +137,8 @@ def _columns(raw, N):
     """The block_flags, block_sizes, grid_params, grid_scale and value_anchor columns of a body."""
     sizes = raw[N:2 * N].astype(np.int64) | (raw[2 * N:3 * N].astype(np.int64) << 8)
     param = raw[3 * N:5 * N].reshape(2, N).T.copy().view(np.int16).ravel().astype(np.int64)
-    scale = raw[5 * N:9 * N].reshape(4, N).T.copy().view(np.uint32).ravel().astype(np.int64)
-    anchor = raw[9 * N:17 * N].reshape(8, N).T.copy().view(np.int64).ravel()
+    scale = raw[5 * N:13 * N].reshape(8, N).T.copy().view(np.int64).ravel()
+    anchor = raw[13 * N:21 * N].reshape(8, N).T.copy().view(np.int64).ravel()
     return raw[:N], sizes, param, scale, anchor
 
 
@@ -158,7 +158,7 @@ def test_shuffle_round_trip_and_layout(sizes):
         np.testing.assert_array_equal(got, want)
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[17 * N:].reshape(16, -1)
+    planes = raw[21 * N:].reshape(16, -1)
     offsets = np.concatenate([[0], np.cumsum(sizes)])
     for b in range(N):
         block_planes = planes[:, lay.octet_offsets[b]:lay.octet_offsets[b + 1]]
@@ -186,7 +186,7 @@ def test_byte_planes_round_trip_and_layout():
     np.testing.assert_array_equal(raw[:17 * N], _oracle.write_group(flags, sizes, param, scale, anchor, resid)[:17 * N])
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
-    planes = raw[17 * N:].reshape(2, N * n)  # every low byte, then every high byte
+    planes = raw[21 * N:].reshape(2, N * n)  # every low byte, then every high byte
     np.testing.assert_array_equal(planes[0], u & 0xFF)
     np.testing.assert_array_equal(planes[1], u >> 8)
     rows = _oracle.read_group(raw, N, byte_planes=True)
@@ -201,7 +201,7 @@ def test_bit_order_vector():
     v[6] = 0x0200  # zigzag(512) = 1024 = 0x0400
     zero = np.zeros(1, np.int64)
     raw = _oracle.write_group(np.zeros(1, np.uint8), np.array([8]), zero, zero, zero, v)
-    planes = raw[17:].reshape(16, 1)  # after flags (1), size (2), param (2), scale (4) and anchor (8)
+    planes = raw[21:].reshape(16, 1)  # after flags (1), size (2), param (2), scale (8) and anchor (8)
     expect = np.zeros(16, np.uint8)
     expect[5], expect[10] = 0b00001000, 0b01000000
     np.testing.assert_array_equal(planes[:, 0], expect)

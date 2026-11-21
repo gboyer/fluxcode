@@ -39,7 +39,6 @@ from ._format import (
     plane_octets,
     put_int16,
     put_int64,
-    put_uint32,
     residual_start,
     time_ref_start,
     time_start_start,
@@ -1031,7 +1030,7 @@ def write_rows(
         out_raw_group[block_sizes_start(num_blocks) + num_blocks + block_idx] = np.uint8(block_len >> 8)
         # Store the grid parameter (int16), grid scale (uint32) and value anchor (int64) byte-planed
         put_int16(out_raw_group, grid_params_start(num_blocks), num_blocks, block_idx, grid_params[block_idx])
-        put_uint32(out_raw_group, grid_scale_start(num_blocks), num_blocks, block_idx, grid_scales[block_idx])
+        put_int64(out_raw_group, grid_scale_start(num_blocks), num_blocks, block_idx, grid_scales[block_idx])
         put_int64(out_raw_group, value_anchor_start(num_blocks), num_blocks, block_idx, value_anchors[block_idx])
         block_residuals = residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]]
         # Zigzag and store the low and high bytes in place, then zero the padding
@@ -1246,7 +1245,7 @@ def _splice_body(
         out_body[block_sizes_start(num_blocks) + block_idx] = np.uint8(block_len & 0xFF)
         out_body[block_sizes_start(num_blocks) + num_blocks + block_idx] = np.uint8(block_len >> 8)
         put_int16(out_body, grid_params_start(num_blocks), num_blocks, block_idx, new_params[rank])
-        put_uint32(out_body, grid_scale_start(num_blocks), num_blocks, block_idx, new_scales[rank])
+        put_int64(out_body, grid_scale_start(num_blocks), num_blocks, block_idx, new_scales[rank])
         put_int64(out_body, value_anchor_start(num_blocks), num_blocks, block_idx, new_anchors[rank])
         if has_time:
             start_increase, time_step, time_ref = np.int64(0), np.int64(0), np.int64(0)

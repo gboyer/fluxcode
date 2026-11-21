@@ -402,7 +402,7 @@ def _decode(group: bytes) -> _Decoded:
     grid_params -= (grid_params & 0x8000) << 1
     start = _format.grid_scale_start(num_blocks)
     scales = np.zeros(num_blocks, np.int64)
-    for byte_idx in range(4):
+    for byte_idx in range(4):  # the low half: N | D << 16 (the high half holds a period block's parameters)
         scales |= raw[start + byte_idx * num_blocks:start + (byte_idx + 1) * num_blocks] << (8 * byte_idx)
     sizes = parsed.block_sizes.astype(np.int64)
     return _Decoded(parsed.header.time_unit, sizes, np.concatenate([[0], np.cumsum(sizes)]),

@@ -23,12 +23,15 @@ from ._format import (
     BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
+    BLOCK_FLAG_PERIOD,
     BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
     INDEX_LIMIT,
     P_MAX,
     P_MIN,
+    PERIOD_SHIFT,
+    PERIOD_WEIGHT_SHIFT,
     SCALE_MASK,
     SCALE_SHIFT,
     SCALED_E_MAX,
@@ -95,6 +98,33 @@ NUM_BIT_LENGTH_BINS: int = 17
 
 UINT16_MASK: int = 0xFFFF
 """Bitmask for 16-bit unsigned integers (65535)."""
+
+PERIOD_ENABLED: int = 1 << 4
+"""Bit of orders_mask (above the orders' bits 0-3) that lets the encoder try the period predictor:
+set from Params.effort PERIOD_EFFORT (_group.kernel_args), as it costs encode time on oscillating blocks."""
+
+PERIOD_EFFORT: int = 6
+"""The lowest effort that tries the period predictor."""
+
+PERIOD_MIN_LEN: int = 64
+"""Smallest block the period predictor is tried on."""
+
+PERIOD_MIN_CROSSINGS: int = 3
+"""Fewest upward crossings of its mean a block needs for the period predictor to be tried."""
+
+PERIOD_MAX_JITTER: float = 0.1
+"""Largest spread of a block's mean-crossing intervals, as a share of their mean, for the period
+predictor to be tried."""
+
+PERIOD_SEARCH_LEN: int = 512
+"""Samples the period's integer lag is refined on."""
+
+PERIOD_MIN_RATE: float = 2.0
+"""The fixed order's estimated bits per sample under which a block isn't tried."""
+
+PERIOD_SIDE_BITS: float = 64.0
+"""Bits the period predictor must save over the block (class-entropy estimate) to be taken: its
+parameters, compressed, and the estimate's slack."""
 
 TRIM_STRIDE: int = 4
 """The trimmed mean of an order-0 block reads every TRIM_STRIDE-th index."""
@@ -977,7 +1007,137 @@ def encode_block(
     grid_index, anchor = center(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
+    if orders_mask & PERIOD_ENABLED and selected_order > 0 and samples.shape[0] >= PERIOD_MIN_LEN:
+        use, period_order, period_bits = try_period(
+            scratch_quantized[:samples.shape[0]], out_residuals, scratch_rational[:samples.shape[0]], selected_order
+        )
+        if use:
+            return flags | BLOCK_FLAG_PERIOD | period_order, param_val, grid_index, anchor, scale | period_bits
     return flags | selected_order, param_val, grid_index, anchor, scale
+
+
+@njit(nogil=True, cache=True)
+def period_errors(quantized: np.ndarray, period: int, weight: int, out_errors: np.ndarray) -> None:
+    """The period predictor's errors of signed indices past the first P + 1 (SPEC §4), wrapped to
+    signed 16 bits (the first P + 1 are left as they are)."""
+    num_samples = quantized.shape[0]
+    head = min(num_samples, period + 1)
+    near_weight = np.int32(64 - weight)
+    far_weight = np.int32(weight)
+    current, near, far = quantized[head:], quantized[head - period:num_samples - period], quantized[head - period - 1:num_samples - period - 1]
+    out = out_errors[head:]
+    for sample_idx in range(num_samples - head):
+        prediction = (near_weight * near[sample_idx] + far_weight * far[sample_idx] + 32) >> 6
+        out[sample_idx] = _wrap16(current[sample_idx] - prediction)
+
+
+@njit(nogil=True, cache=True)
+def try_period(
+    quantized: np.ndarray, fixed_residuals: np.ndarray, scratch: np.ndarray, fixed_order: int,
+) -> tuple[bool, int, np.int64]:
+    """Whether a period predictor beats the block's fixed order, and its order and parameters.
+
+    The period is the mean spacing of the block's upward crossings of its mean (at least
+    PERIOD_MIN_CROSSINGS), refined to the integer lag of least squared difference within 3; the
+    fraction w (in 64ths, for lags P and P + 1 from either P - 1 or P) by least squares. Taken when
+    the class-entropy estimate (estimate_bits) beats the fixed order's by PERIOD_SIDE_BITS over the
+    block, with no difference or a first difference on top.
+
+    Args:
+        quantized: 1D int32 array of the block's signed indices.
+        fixed_residuals: 1D int16 array of the fixed order's residuals.
+        scratch: 1D int32 scratch array of the block's length.
+        fixed_order: The block's order: its first P + 1 residuals stay that order's.
+
+    Returns:
+        A tuple of (use, order, period_bits): period_bits = (P | w << 16) << 32 for grid_scale.
+    """
+    num_samples = quantized.shape[0]
+    total = np.int64(0)
+    for sample_idx in range(num_samples):
+        total += quantized[sample_idx]
+    # Crossings of the mean, upward, in units of num_samples (exact integers)
+    first_cross = last_cross = -1
+    num_cross = 0
+    interval_sq = 0.0
+    previous_below = quantized[0] * np.int64(num_samples) < total
+    for sample_idx in range(1, num_samples):
+        below = quantized[sample_idx] * np.int64(num_samples) < total
+        if previous_below and not below:
+            if first_cross < 0:
+                first_cross = sample_idx
+            else:
+                interval = float(sample_idx - last_cross)
+                interval_sq += interval * interval
+            last_cross = sample_idx
+            num_cross += 1
+        previous_below = below
+    if num_cross < PERIOD_MIN_CROSSINGS:
+        return False, 0, np.int64(0)
+    # A period crosses at even intervals; a random walk or noise chattering at the mean doesn't
+    mean_interval = (last_cross - first_cross) / (num_cross - 1)
+    spread = math.sqrt(max(interval_sq / (num_cross - 1) - mean_interval * mean_interval, 0.0))
+    if spread > PERIOD_MAX_JITTER * mean_interval:
+        return False, 0, np.int64(0)
+    guess = (2 * (last_cross - first_cross) + num_cross - 1) // (2 * (num_cross - 1))
+    fixed_rate = estimate_bits(fixed_residuals)
+    if fixed_rate < PERIOD_MIN_RATE:
+        # Nearly free already: the estimate can't tell a few bytes apart (zstd's runs and matches)
+        return False, 0, np.int64(0)
+    # The integer lag of least squared difference within 3 of the guess, on the block's head
+    span = min(num_samples, PERIOD_SEARCH_LEN)
+    best_period, best_energy = -1, np.int64(0)
+    for period in range(max(2, guess - 3), min(span // 3, guess + 3) + 1):
+        energy = np.int64(0)
+        later, earlier = quantized[period:span], quantized[:span - period]
+        for sample_idx in range(span - period):
+            diff = np.int64(later[sample_idx] - earlier[sample_idx])
+            energy += diff * diff
+        energy = energy * span // (span - period)
+        if best_period < 0 or energy < best_energy:
+            best_period, best_energy = period, energy
+    if best_period < 0:
+        return False, 0, np.int64(0)
+    # Candidates by the variance of their residuals (lags P - 1 and P, no difference or a first one)
+    best_variance, best_order, best_bits_value = math.inf, -1, np.int64(0)
+    for period in (best_period - 1, best_period):
+        if period < 2 or period + 1 >= num_samples:
+            continue
+        # Least squares for w: y = q[n] - q[n - P], z = q[n - P - 1] - q[n - P]
+        cross = squares = 0.0
+        current, near, far = quantized[period + 1:], quantized[1:num_samples - period], quantized[:num_samples - period - 1]
+        for sample_idx in range(num_samples - period - 1):
+            y = float(current[sample_idx] - near[sample_idx])
+            z = float(far[sample_idx] - near[sample_idx])
+            cross += y * z
+            squares += z * z
+        weight = 0 if squares == 0 else int(min(max(round(64.0 * cross / squares), -128), 127))
+        period_errors(quantized, period, weight, scratch)
+        tail = scratch[period + 1:]
+        total = total_sq = 0.0
+        for sample_idx in range(tail.shape[0]):
+            value = float(tail[sample_idx])
+            total += value
+            total_sq += value * value
+        count = max(tail.shape[0], 1)
+        variance = total_sq / count - (total / count) ** 2
+        if variance < best_variance:
+            best_variance, best_order = variance, 0
+            best_bits_value = (np.int64(period) | (np.int64(weight & 0xFF) << 16)) << PERIOD_SHIFT
+    if best_order < 0:
+        return False, 0, np.int64(0)
+    period = (best_bits_value >> PERIOD_SHIFT) & 0xFFFF
+    weight = np.int8((best_bits_value >> PERIOD_WEIGHT_SHIFT) & 0xFF)
+    period_errors(quantized, period, weight, scratch)
+    # The head keeps the fixed order's residuals; the tail takes the errors
+    candidate = np.empty(num_samples, np.int16)
+    candidate[:] = fixed_residuals
+    for sample_idx in range(period + 1, num_samples):
+        candidate[sample_idx] = scratch[sample_idx]
+    if estimate_bits(candidate) * num_samples > fixed_rate * num_samples - PERIOD_SIDE_BITS:
+        return False, 0, np.int64(0)
+    fixed_residuals[:] = candidate
+    return True, fixed_order, best_bits_value
 
 
 @njit(nogil=True, cache=True)
@@ -1434,7 +1594,7 @@ def encode_group(
             multiple = planned_multiple(step, planned_exp)
             if multiple == 1:
                 budget_bits[block_idx] = estimated_bits_per_block[block_idx]
-            elif multiple > 1:
+            elif multiple > 1 and not out_block_flags[block_idx] & BLOCK_FLAG_PERIOD:
                 planned_quantized = scratch_rational[:block_len]
                 for sample_idx in range(block_len):
                     planned_quantized[sample_idx] = block_quantized[sample_idx] * multiple

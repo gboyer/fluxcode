@@ -453,7 +453,7 @@ def test_bad_block_sizes_are_rejected():
         fluxcode.decode_group(rebuilt(param))
 
     def anchor(b):
-        b[11 * 3 + 1] = 1  # byte 0 of its anchor
+        b[13 * 3 + 1] = 1  # byte 0 of its anchor
     with pytest.raises(ValueError, match="block 1: anchor"):
         fluxcode.decode_group(rebuilt(anchor))
 
@@ -471,9 +471,9 @@ def test_best_planes_is_the_smaller_and_decodes_the_same(kind):
     x[123] = np.nan  # a flagged block too
     for bits in (10, 16):
         with planes("bit"):
-            bit_group = fluxcode.encode_group(x, Params(max_quantize_bits=bits)).group
+            bit_group = fluxcode.encode_group(x, Params(max_quantize_bits=bits, effort=7)).group
         with planes("byte"):
-            byte_group = fluxcode.encode_group(x, Params(max_quantize_bits=bits)).group
+            byte_group = fluxcode.encode_group(x, Params(max_quantize_bits=bits, effort=7)).group
         best_group = fluxcode.encode_group(x, Params(max_quantize_bits=bits, effort=7)).group
         assert not _format.unpack_header(bit_group).byte_planes and _format.unpack_header(byte_group).byte_planes
         assert best_group == (byte_group if len(byte_group) <= len(bit_group) else bit_group)
@@ -486,7 +486,8 @@ def test_byte_planes_on_repeating_cycles(effort):
     group = fluxcode.encode_group(_periodic(), Params(max_quantize_bits=10, effort=effort)).group
     assert _format.unpack_header(group).byte_planes
     with planes("bit"):
-        assert len(group) < 0.8 * len(fluxcode.encode_group(_periodic(), Params(max_quantize_bits=10)).group)
+        # The period predictor takes out most of the cycles' repetition that byte planes let zstd match
+        assert len(group) < 0.85 * len(fluxcode.encode_group(_periodic(), Params(max_quantize_bits=10)).group)
 
 
 def test_update_byte_plane_group():
@@ -535,3 +536,38 @@ def test_encode_group_limit():
         fluxcode.encode_group(np.zeros(10), block_len=65_536)
     with pytest.raises(ValueError, match="2\\^26|67108864"):
         fluxcode.encode_group(np.zeros(_format.MAX_GROUP_SAMPLES + 1), block_len=65_535)
+
+
+def _mains(n=60_000, fs=5000.0, seed=3):
+    """A 60 Hz motor current on a 16-bit ADC: harmonics, a slow load change, noise (a fractional period)."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(n) / fs
+    ph = 2 * np.pi * 60.01 * t
+    load = 14 + 2 * np.sin(2 * np.pi * t / 7)
+    x = load * (np.sin(ph) + 0.03 * np.sin(5 * ph) + 0.02 * np.sin(7 * ph)) + rng.normal(0, 0.05, n)
+    return np.round(x / (50 / 32768)) * (50 / 32768)
+
+
+def test_period_predictor_from_effort_6():
+    """From effort 6 a periodic block may predict from a period earlier (SPEC §4): smaller, the same
+    values as at the default effort (effort never changes them), and a fixed point. (An exactly
+    repeating synthetic sine can come out larger: zstd matches its fixed-order residuals' repeats,
+    which the bit estimate doesn't see; measured data doesn't repeat exactly.)"""
+    x = _mains()
+    plain = fluxcode.encode_group(x).group
+    periodic = fluxcode.encode_group(x, Params(effort=6)).group
+    flags = group_rows(periodic).block_flags
+    assert (flags & _format.BLOCK_FLAG_PERIOD).mean() > 0.9
+    assert not group_rows(plain).block_flags.astype(int).__and__(_format.BLOCK_FLAG_PERIOD).any()
+    assert len(periodic) < 0.95 * len(plain)
+    y = fluxcode.decode_group(periodic).values
+    np.testing.assert_array_equal(y, fluxcode.decode_group(plain).values)
+    assert fluxcode.encode_group(y, Params(effort=6)).group == fluxcode.encode_group(
+        fluxcode.decode_group(fluxcode.encode_group(y, Params(effort=6)).group).values, Params(effort=6)).group
+
+
+def test_period_predictor_stays_out_of_targets():
+    """With a size target the period predictor isn't used: its estimates would steer the target."""
+    x = _mains()
+    rows = group_rows(fluxcode.encode_group(x, Params(effort=9, target_bits_per_sample=6.0)).group)
+    assert not (rows.block_flags & _format.BLOCK_FLAG_PERIOD).any()

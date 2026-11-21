@@ -25,7 +25,6 @@ from fluxcode._format import (
     allocate_time_rows,
     get_int16,
     get_int64,
-    get_uint32,
     grid_params_start,
     grid_scale_start,
     group_size,
@@ -105,7 +104,7 @@ def _read_rows(raw_group, byte_planes, has_time, sample_offsets, octet_offsets, 
     cplanes = code_planes_view(raw_group, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in range(num_blocks):
         out_grid_params[block_idx] = get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx)
-        out_grid_scales[block_idx] = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+        out_grid_scales[block_idx] = get_int64(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
         out_value_anchors[block_idx] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample

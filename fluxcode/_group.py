@@ -61,7 +61,11 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, int]:
     return (
         params.min_quantize_bits,
         params.max_quantize_bits,
-        sum(1 << order for order in params.diff_orders),
+        sum(1 << order for order in params.diff_orders)
+        # The period predictor from PERIOD_EFFORT, but not with a target: its bit estimates steer the
+        # target's steps, and effort must not change decoded values
+        | (_encoder.PERIOD_ENABLED if params.effort >= _encoder.PERIOD_EFFORT and not params.target_bits_per_sample
+           else 0),
         float(params.noise_floor_sigma),
         float(params.target_bits_per_sample or 0.0),
         _encoder.GRIDS_LEVELS[params.grids],
