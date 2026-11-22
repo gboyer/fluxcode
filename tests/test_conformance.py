@@ -410,8 +410,9 @@ def _with_header(group, **fields):
 
 @pytest.mark.parametrize("fields,msg", [
     ({"version": 2}, "version 2"),
-    ({"flags": 0x10}, "reserved"),
+    ({"flags": 0x20}, "reserved"),
     ({"flags": 0x80}, "reserved"),
+    ({"flags": 0x10}, "quantum without a time axis"),
     ({"flags": 5 << 1}, "time unit 5"),
     ({"flags": 7 << 1}, "time unit 7"),
     ({"flags": 4 << 1}, "doesn't fit"),  # a time axis, but the body has no time fields

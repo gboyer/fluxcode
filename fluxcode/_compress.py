@@ -259,6 +259,7 @@ def pack(
     effort: Effort,
     time_unit: int,
     allow_rust: bool = True,
+    _quantized: bool = False,
 ) -> bytes:
     """Compresses an uncompressed byte-plane body into complete block group bytes.
 
@@ -275,6 +276,16 @@ def pack(
     """
     has_time = time_unit != 0
     num_octets = int(offsets.octet_offsets[-1])
+    if has_time and not _quantized:
+        # Start increases and steps share a factor (seconds in ns ticks): stored over it (header flag bit 4)
+        quantum = _format.time_quantum(body, offsets.sample_offsets)
+        if quantum > 1:
+            body = body.copy()
+            _format.scale_time_columns(body, offsets.sample_offsets, quantum, True)
+            body = np.concatenate([body, np.array([quantum], np.uint64).view(np.uint8)])
+            group = pack(body, offsets, num_blocks, num_samples, effort, time_unit, allow_rust=allow_rust,
+                         _quantized=True)
+            return group[:1] + bytes([group[1] | _format.GROUP_FLAG_TIME_QUANTUM]) + group[2:]
     # Fast path: delegate to Rust extension if available
     if _rust is not None and allow_rust:
         return _rust.pack_group(  # type: ignore[no-any-return]

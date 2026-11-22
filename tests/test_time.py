@@ -11,7 +11,7 @@ from _series import group_rows, planes
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _format
+from fluxcode import Params, _compress, _format, _group
 from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_LONG_TIME
 
 INT64_MAX = np.iinfo(np.int64).max
@@ -504,3 +504,47 @@ def test_events_without_a_cadence_get_no_noise_floor():
     values = np.round(rng.normal(0, 1, 5000), 2)
     group = fluxcode.encode_group(values, times=ticks.view("datetime64[us]")).group
     np.testing.assert_array_equal(fluxcode.decode_group(group).values, values)
+
+
+def _seconds_in_ns(num_blocks=6, per_block=5, seed=0):
+    """Sparse times on whole seconds, as datetime64[ns] (pandas' default unit)."""
+    rng = np.random.default_rng(seed)
+    seconds = np.sort(rng.choice(3600 * num_blocks, num_blocks * per_block, replace=False))
+    return np.datetime64("2026-01-01", "ns") + seconds.astype("timedelta64[s]"), rng.normal(size=seconds.shape[0])
+
+
+def test_time_columns_stored_over_their_quantum():
+    times, values = _seconds_in_ns()
+    group = fluxcode.encode_group(values, times=times, block_len=5).group
+    assert group[1] & _format.GROUP_FLAG_TIME_QUANTUM
+    decoded = fluxcode.decode_group(group)
+    np.testing.assert_array_equal(decoded.times, times)
+    # Stored over 10^9: the start increases and steps are whole seconds
+    parsed = _group.decompress(group)
+    assert not parsed.header.time_quantum  # decompress hands on plain ticks
+
+
+def test_time_quantum_follows_updates():
+    times, values = _seconds_in_ns()
+    group = fluxcode.encode_group(values, times=times, block_len=5).group
+    # A new block off the seconds: the quantum drops (to 1 ms), times stay exact
+    new_times = times[10:15] + np.timedelta64(1, "ms")
+    updated = fluxcode.update(group, {2: values[10:15]}, times={2: new_times}).group
+    edited = times.copy()
+    edited[10:15] = new_times
+    np.testing.assert_array_equal(fluxcode.decode_group(updated).times, edited)
+    assert updated == fluxcode.encode_group(values, times=edited, block_len=5).group
+    # Back on the seconds: the quantum returns
+    restored = fluxcode.update(updated, {2: values[10:15]}, times={2: times[10:15]}).group
+    assert restored == group
+
+
+@pytest.mark.parametrize("quantum,msg", [(0, "time quantum"), (1, "time quantum"), (2 ** 62, "time quantum")])
+def test_bad_time_quantum_is_rejected(quantum, msg):
+    times, values = _seconds_in_ns()
+    group = fluxcode.encode_group(values, times=times, block_len=5).group
+    raw = bytearray(_compress.zstd()[1].decompress(group[_format.HEADER_BYTES:]))
+    raw[-8:] = np.array([quantum], np.uint64).tobytes()
+    frame = _compress.zstd(3)[0].compress(bytes(raw))
+    with pytest.raises(ValueError, match=msg):
+        fluxcode.decode_group(group[:_format.HEADER_BYTES] + frame)

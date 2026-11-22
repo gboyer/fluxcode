@@ -425,6 +425,16 @@ def decompress(group: bytes) -> ParsedGroup:
     raw_body = np.frombuffer(_compress.zstd()[1].decompress(frame), np.uint8)
     block_flags = raw_body[:num_blocks]
     block_sizes, offsets = _format.read_layout(raw_body, num_blocks)
+    if header.time_quantum:
+        # The time columns over a quantum: back to ticks, which everything after reads
+        quantum = (raw_body[-_format.TIME_QUANTUM_BYTES:].copy().view(np.uint64)[0]
+                   if raw_body.shape[0] >= _format.group_size(num_blocks, offsets, has_time) + _format.TIME_QUANTUM_BYTES
+                   else np.uint64(0))
+        raw_body = raw_body[:-_format.TIME_QUANTUM_BYTES].copy()
+        if quantum < 2 or not _format.scale_time_columns(raw_body, offsets.sample_offsets, quantum, False):
+            raise ValueError("block group's time quantum is under 2 or overflows its time columns (corrupt block group)")
+        block_flags = raw_body[:num_blocks]
+        header = header._replace(time_quantum=False)
     if int(offsets.sample_offsets[-1]) != num_samples:
         raise ValueError(f"block group's block sizes add up to {int(offsets.sample_offsets[-1])}, not its {num_samples} samples")
     # The exact size depends on which blocks carry non-finite code planes and time residual planes,

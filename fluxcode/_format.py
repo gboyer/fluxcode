@@ -112,8 +112,12 @@ GROUP_FLAG_TIME_UNIT_SHIFT: int = 1
 GROUP_FLAG_TIME_UNIT_MASK: int = 0x0E
 """Block group header flag bits holding the time unit."""
 
-GROUP_FLAG_RESERVED: int = 0xF0
-"""Reserved block group header flag bits (4-7); decoders must reject these."""
+GROUP_FLAG_TIME_QUANTUM: int = 0x10
+"""Block group header flag bit 4: the time_start increases and time_step are stored divided by a
+quantum q >= 2, a uint64 in the body's last 8 bytes (time axis only)."""
+
+GROUP_FLAG_RESERVED: int = 0xE0
+"""Reserved block group header flag bits (5-7); decoders must reject these."""
 
 MAX_BLOCK_LEN: int = 0xFFFF
 """Largest block size: the block_sizes field is uint16."""
@@ -428,7 +432,7 @@ def group_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tupl
         plane_bytes_per_octet += 2 * TIME_SHORT_PLANES
     smallest = columns + fewest_octets * 8 * BYTES_PER_RESIDUAL_SAMPLE
     # At most every sample escaped (an escapes field of 8 bytes each)
-    return smallest, columns + most_octets * plane_bytes_per_octet + BYTES_PER_ESCAPE * num_samples
+    return smallest, columns + most_octets * plane_bytes_per_octet + BYTES_PER_ESCAPE * num_samples + TIME_QUANTUM_BYTES * has_time
 
 
 class GroupHeader(NamedTuple):
@@ -439,12 +443,14 @@ class GroupHeader(NamedTuple):
         num_samples: Sample count of the block group (the sum of its block sizes).
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
         time_unit: Time unit code (TimeUnitCode; 0 for a block group without a time axis).
+        time_quantum: Whether the time columns are stored over a quantum (flags bit 4).
     """
 
     num_blocks: int
     num_samples: int
     byte_planes: bool
     time_unit: int
+    time_quantum: bool = False
 
 
 def pack_header(num_blocks: int, num_samples: int, byte_planes: bool, time_unit: int) -> bytes:
@@ -491,7 +497,10 @@ def unpack_header(group: bytes) -> GroupHeader:
         raise ValueError(
             f"block group sample count {num_samples} is over {MAX_GROUP_SAMPLES} or what {num_blocks} blocks can hold"
         )
-    return GroupHeader(num_blocks, num_samples, bool(flags & GROUP_FLAG_BYTE_PLANES), time_unit)
+    if flags & GROUP_FLAG_TIME_QUANTUM and not time_unit:
+        raise ValueError("block group header sets a time quantum without a time axis")
+    return GroupHeader(num_blocks, num_samples, bool(flags & GROUP_FLAG_BYTE_PLANES), time_unit,
+                       bool(flags & GROUP_FLAG_TIME_QUANTUM))
 
 
 @njit(inline="always")
@@ -792,3 +801,58 @@ class GroupRows(NamedTuple):
 def escape_bytes(escapes: np.ndarray) -> np.ndarray:
     """The escapes field: the float64 values byte-planed (byte 0 of every value, then byte 1, ...)."""
     return np.ascontiguousarray(np.asarray(escapes, np.float64).view(np.uint8).reshape(-1, BYTES_PER_ESCAPE).T).ravel()
+
+
+TIME_QUANTUM_BYTES: int = 8
+"""Bytes of the time quantum at the end of a body (GROUP_FLAG_TIME_QUANTUM)."""
+
+
+@njit(inline="always")
+def _gcd64(a: np.uint64, b: np.uint64) -> np.uint64:
+    while b:
+        a, b = b, a % b
+    return a
+
+
+@njit(nogil=True, cache=True)
+def time_quantum(raw_group: np.ndarray, sample_offsets: np.ndarray) -> np.uint64:
+    """The GCD of a body's stored start increases (every non-empty block's but the first) and time
+    steps: what they can be stored divided by (0 if all are 0)."""
+    num_blocks = sample_offsets.shape[0] - 1
+    quantum = np.uint64(0)
+    seen = False
+    for block_idx in range(num_blocks):
+        if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
+            continue
+        if seen:
+            quantum = _gcd64(quantum, np.uint64(get_int64(raw_group, time_start_start(num_blocks), num_blocks, block_idx)))
+        seen = True
+        quantum = _gcd64(quantum, np.uint64(get_int64(raw_group, time_step_start(num_blocks), num_blocks, block_idx)))
+        if quantum == 1:
+            break
+    return quantum
+
+
+@njit(nogil=True, cache=True)
+def scale_time_columns(raw_group: np.ndarray, sample_offsets: np.ndarray, quantum: np.uint64, divide: bool) -> bool:
+    """Divides (or multiplies back) a body's stored start increases and time steps by the quantum, in
+    place; False if a product overflows (a corrupt block group)."""
+    num_blocks = sample_offsets.shape[0] - 1
+    limit = np.uint64(0xFFFFFFFFFFFFFFFF) // quantum
+    seen = False
+    for block_idx in range(num_blocks):
+        if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
+            continue
+        for field_start, scaled in ((time_start_start(num_blocks), seen), (time_step_start(num_blocks), True)):
+            if not scaled:
+                continue
+            value = np.uint64(get_int64(raw_group, field_start, num_blocks, block_idx))
+            if divide:
+                value = value // quantum
+            else:
+                if value > limit:
+                    return False
+                value = value * quantum
+            put_int64(raw_group, field_start, num_blocks, block_idx, np.int64(value))
+        seen = True
+    return True

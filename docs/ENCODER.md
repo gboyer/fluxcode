@@ -189,6 +189,12 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
   - Why: zigzagged residuals from the mean are about 2σ. Those from the minimum are
     non-negative, so zigzag only shifts them up a bit plane (plane 0 all zero), and they are about
     √(σ² + (mean − min)²).
+- **Time quantum.** On packing, the GCD q of the block group's stored start increases and steps
+  (SPEC.md §3); q ≥ 2 stores them over it. It is computed on the body, so an update recomputes it
+  (a new block off the seconds drops it; restoring the block restores it, byte for byte). Measured
+  on simulated historian archives (`experimental/value/archive_time.py`, a day per group, hourly
+  blocks, ns ticks on whole seconds): tank level 577 → 473 bytes a day (−18%), valve 461 → 355
+  (−23%), dense tags −0.1 to −0.5%.
 - **Time error** (`time_error` = e > 0): each block's ticks are rounded before the analysis
   above, once, from the values given (never again: `update_time_blocks` stores new times exactly,
   and `replace_time_blocks` re-encodes whole blocks). The format is unchanged.

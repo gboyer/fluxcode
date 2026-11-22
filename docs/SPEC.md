@@ -94,6 +94,11 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
     is stored as `time_ref`, over a `time_step` of 1.
 - **Empty blocks** have 0 in all three columns and are skipped in the chain of starts: each
   non-empty block's start is stored relative to the previous non-empty block's.
+- **Time quantum** (header flags bit 4). The start increases (every non-empty block's but the
+  first's) and the steps may be stored divided by a quantum q ≥ 2: a uint64 in the body's last 8
+  bytes, after the escapes. A reader multiplies them back. Whole seconds in ns ticks (pandas'
+  default) otherwise fill every byte plane of those columns: a writer stores them over their GCD,
+  which takes a sparse tag's daily group (hourly blocks of 2 points) from 577 to 473 bytes.
 
 ## 4. Anchors and residuals
 
@@ -208,7 +213,8 @@ All fields are little-endian.
 Header flags:
 - bit 0: `residual_planes` are byte planes instead of bit planes;
 - bits 1–3: `time_unit` (§3): 0 for no time axis, 1 s, 2 ms, 3 µs, 4 ns;
-- bits 4–7: 0.
+- bit 4: a time quantum (§3; with a time axis only);
+- bits 5–7: 0.
 
 ### 6.2 Planes and padding
 
@@ -247,10 +253,12 @@ The body is these fields, in this order. The four time fields are present only w
 | `nonfinite_code_planes` | 2 × `O_nonfinite` | the non-finite codes (§2) |
 | `time_residual_planes` | 32 × (`O_irregular` + `O_long`) | the time residuals (§3) |
 | `escapes` | 8 × E | the escaped values (§2), float64, byte-planed; E = the number of codes 10 |
+| `time_quantum` | 8 if header flags bit 4 | the time quantum q (§3), uint64 |
 
 ```
 body_size = 21 × num_blocks + 16 × O + 2 × O_nonfinite
           + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long)) + 8 × E
+          + 8 × (header flags bit 4)
 ```
 
 Every column is 0 for an empty block. Per field:
@@ -310,7 +318,8 @@ A decoder rejects a block group when any of these fail.
 
 - **Header:**
   - version 1;
-  - header flags bits 4–7 zero, `time_unit` 0 to 4;
+  - header flags bits 5–7 zero, `time_unit` 0 to 4, bit 4 only with a time axis;
+  - with bit 4, a quantum q ≥ 2 whose products with the stored increases and steps fit 64 bits;
   - `num_samples` ≤ 2^26 and no more than `num_blocks` blocks can hold.
 - **Before decompressing:** the frame's recorded content size lies between the body sizes with
   - the fewest plane bytes: ceil(`num_samples` / 8) per plane, no flags;
