@@ -477,6 +477,10 @@ sensitive to jitter, and a jittered clock's slope must cancel.
   band reads under 1/256 of the smallest σ that could coarsen their step: a stopband reads over
   1/125 of its passband even cut at a quarter of the rate, while a clean signal's top band is its
   rounding (a clean sine would otherwise spend 10 µs there).
+- **Early exit.** A block whose first 128 12th differences read (plain mean deviation, which
+  outliers only raise) under 1/1024 of the smallest σ that could coarsen its step has no noise that
+  could matter, in the top band or under it: its estimate stops there. Clean blocks (float rounding
+  in the top band) take 0.11 µs instead of 1.6; others pay +0.1 µs. Same bytes.
 - **The decay test.** White noise through a kernel of 13 or 17 taps is uncorrelated at lags 20–23;
   a tone stays correlated at every lag (|ρ| 0.7–1, against 0.05–0.07 for noise on 1000 samples).
   It rejects the tone near 0.44 of the rate that the lag-1 and lag-2 tests pass (the kernel's

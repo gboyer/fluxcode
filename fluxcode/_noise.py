@@ -79,6 +79,13 @@ BAND_KERNELS = tuple(_band_kernel(center) for center in BAND_CENTERS)
 BAND_GAINS = tuple(float(np.sqrt(np.dot(kernel, kernel))) for kernel in BAND_KERNELS)
 """Each band kernel's output standard deviation on white noise of sigma 1."""
 
+HEAD_DIFFS: int = 128
+"""Differences the early exit of noise looks at first (a long block's head)."""
+
+HEAD_MARGIN: float = 4.0
+"""The head's level times this, and LOWER_BAND_REACH, under min_sigma: no noise that could matter
+(the full estimate is at most 1/QUIET_RATIO of any window's, and a head is about one)."""
+
 LOWER_BAND_REACH: float = 256.0
 """The lower bands are looked at only when the top band's level is over min_sigma / LOWER_BAND_REACH."""
 
@@ -294,6 +301,30 @@ def _robust_noise_weighted(
 
 
 @njit(nogil=True, cache=True, fastmath=True)
+def _twelfth_differences(samples: np.ndarray, scale_factor: float, out: np.ndarray, count: int) -> float:
+    """Writes the first count 12th differences of the scaled samples; returns their sum."""
+    t0, t1, t2, t3 = samples[:count], samples[1:count + 1], samples[2:count + 2], samples[3:count + 3]
+    t4, t5, t6 = samples[4:count + 4], samples[5:count + 5], samples[6:count + 6]
+    t7, t8, t9 = samples[7:count + 7], samples[8:count + 8], samples[9:count + 9]
+    t10, t11, t12 = samples[10:count + 10], samples[11:count + 11], samples[12:count + 12]
+    total = 0.0
+    # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
+    for diff_idx in range(count):
+        diff_val = (
+            (t0[diff_idx] * scale_factor + t12[diff_idx] * scale_factor)
+            - 12.0 * (t1[diff_idx] * scale_factor + t11[diff_idx] * scale_factor)
+            + 66.0 * (t2[diff_idx] * scale_factor + t10[diff_idx] * scale_factor)
+            - 220.0 * (t3[diff_idx] * scale_factor + t9[diff_idx] * scale_factor)
+            + 495.0 * (t4[diff_idx] * scale_factor + t8[diff_idx] * scale_factor)
+            - 792.0 * (t5[diff_idx] * scale_factor + t7[diff_idx] * scale_factor)
+            + 924.0 * (t6[diff_idx] * scale_factor)
+        )
+        out[diff_idx] = diff_val
+        total += diff_val
+    return total
+
+
+@njit(nogil=True, cache=True, fastmath=True)
 def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_sigma: float = 0.0) -> tuple[float, float]:
     """Estimates white-noise standard deviation and lag-1 autocorrelation.
 
@@ -350,24 +381,17 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_si
             diffs[diff_idx] = diff_val
             sum_diffs += diff_val
     elif NOISE_ORDER == 12:
-        # Offset slices from index 0 vectorize; symmetric taps C(12, j) with alternating signs
-        t0, t1, t2, t3 = samples[:num_diffs], samples[1:num_diffs + 1], samples[2:num_diffs + 2], samples[3:num_diffs + 3]
-        t4, t5, t6 = samples[4:num_diffs + 4], samples[5:num_diffs + 5], samples[6:num_diffs + 6]
-        t7, t8, t9 = samples[7:num_diffs + 7], samples[8:num_diffs + 8], samples[9:num_diffs + 9]
-        t10, t11, t12 = samples[10:num_diffs + 10], samples[11:num_diffs + 11], samples[12:num_diffs + 12]
-        # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
-        for diff_idx in range(num_diffs):
-            diff_val = (
-                (t0[diff_idx] * scale_factor + t12[diff_idx] * scale_factor)
-                - 12.0 * (t1[diff_idx] * scale_factor + t11[diff_idx] * scale_factor)
-                + 66.0 * (t2[diff_idx] * scale_factor + t10[diff_idx] * scale_factor)
-                - 220.0 * (t3[diff_idx] * scale_factor + t9[diff_idx] * scale_factor)
-                + 495.0 * (t4[diff_idx] * scale_factor + t8[diff_idx] * scale_factor)
-                - 792.0 * (t5[diff_idx] * scale_factor + t7[diff_idx] * scale_factor)
-                + 924.0 * (t6[diff_idx] * scale_factor)
-            )
-            diffs[diff_idx] = diff_val
-            sum_diffs += diff_val
+        # A clean block's top band is its rounding, far under any step: judge that on the head first
+        if min_sigma > 0 and num_diffs >= 2 * HEAD_DIFFS:
+            head_mean = _twelfth_differences(samples, scale_factor, diffs, HEAD_DIFFS) / HEAD_DIFFS
+            # A plain mean absolute deviation: outliers only raise it (no early exit), never lower it
+            deviation = 0.0
+            for diff_idx in range(HEAD_DIFFS):
+                deviation += abs(diffs[diff_idx] - head_mean)
+            head_spread = MAD_TO_SD * deviation / HEAD_DIFFS
+            if math.ldexp(head_spread / SIGMA_GAIN, scale_exp) * LOWER_BAND_REACH * HEAD_MARGIN < min_sigma:
+                return 0.0, 0.0
+        sum_diffs = _twelfth_differences(samples, scale_factor, diffs, num_diffs)
     else:
         for diff_idx in range(num_diffs):
             diffs[diff_idx] = 0.0
