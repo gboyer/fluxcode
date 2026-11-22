@@ -197,18 +197,18 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 |0.0000%| 3.06 | 1.20 |
-| square wave | 0.04 |0.0000%| 4.40 | 1.30 |
-| sine, 4.12 Hz | 2.40 |0.0010%| 7.07 | 1.97 |
-| sine, 50.3 Hz | 6.73 |0.0010%| 7.01 | 2.02 |
-| chirp | 7.80 |0.0010%| 8.28 | 1.89 |
-| random walk | 5.63 |0.3303%| 5.73 | 1.68 |
-| random walk rounded to 0.01 | 5.63 |0.3501%| 5.74 | 1.63 |
-| sensor drift rounded to 0.1 | 1.71 |0% (exact)| 7.59 | 2.18 |
-| noisy sine (σ = 5) | 5.22 |0.2334%| 5.58 | 1.57 |
-| Gaussian spikes on uniform noise | 6.04 |1.4661%| 5.97 | 1.91 |
-| **all 15 signals** | **4.01** | | **6.01** | **1.69** |
-| random walk on thirds (not in the 15) | 3.92 |0% (exact)| 12.09 | 2.22 |
+| linear ramp | 0.02 |0.0000%| 2.53 | 1.20 |
+| square wave | 0.04 |0.0000%| 4.43 | 1.52 |
+| sine, 4.12 Hz | 2.40 |0.0010%| 5.75 | 2.01 |
+| sine, 50.3 Hz | 6.73 |0.0010%| 5.96 | 2.10 |
+| chirp | 7.80 |0.0010%| 7.18 | 1.91 |
+| random walk | 5.63 |0.3303%| 5.92 | 1.71 |
+| random walk rounded to 0.01 | 5.63 |0.3501%| 5.92 | 1.72 |
+| sensor drift rounded to 0.1 | 1.71 |0% (exact)| 7.76 | 2.33 |
+| noisy sine (σ = 5) | 5.22 |0.2334%| 5.76 | 1.61 |
+| Gaussian spikes on uniform noise | 6.04 |1.4661%| 6.36 | 2.02 |
+| **all 15 signals** | **4.01** | | **5.71** | **1.75** |
+| random walk on thirds (not in the 15) | 3.92 |0% (exact)| 12.23 | 2.25 |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
