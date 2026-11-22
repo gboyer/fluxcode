@@ -132,6 +132,11 @@ class Params:
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
+        max_error: An absolute error every value may have (in the values' units), 0 (the default)
+            for none: each block's step is at least the largest power of two up to 2 * max_error,
+            so a sample decodes within max_error of itself (or closer, where 2^-max_quantize_bits of
+            the block's range, the noise floor or an exact grid is finer; never coarser than
+            min_quantize_bits allows). For a sensor whose accuracy is known.
         time_error: How far timestamps may move, as a share of an interval (0 to
             MAX_TIME_ERROR); 0 (the default) stores times exactly. Each block's times are
             rounded to one 1-2-5 step: the largest of at most 2 * time_error mean intervals (the
@@ -160,6 +165,7 @@ class Params:
     grids: str = "rational"
     effort: int = 4
     time_error: float = 0.0
+    max_error: float = 0.0
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -192,6 +198,9 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
+        max_error = self.max_error
+        if not (is_real(max_error) and max_error >= 0 and np.isfinite(max_error)):
+            raise ValueError(f"max_error must be a finite number >= 0, got {max_error!r}")
         if self.grids not in GRIDS:
             raise ValueError(f"grids must be one of {', '.join(map(repr, GRIDS))}, got {self.grids!r}")
         if not (is_int(self.effort) and MIN_EFFORT <= self.effort <= MAX_EFFORT):

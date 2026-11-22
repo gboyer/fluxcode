@@ -387,6 +387,14 @@ def range_scale(lower_bound: float, upper_bound: float) -> int:
     return math.frexp(xm.half_range(lower_bound, upper_bound))[1] + 1
 
 
+def max_error_exponent(max_error: float) -> int:
+    """The exponent of the largest power-of-two step whose half is at most max_error (Params.max_error);
+    a very negative one (no effect) for 0."""
+    if not max_error > 0:
+        return E_MIN - 64
+    return math.floor(math.log2(2.0 * max_error))
+
+
 @njit(nogil=True, cache=True)
 def plan_step(
     lower_bound: float,
@@ -1601,6 +1609,7 @@ def encode_group(
     noise_factor: float,
     target_bits: float,
     grids: int,
+    max_error_exp: int,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
     out_grid_scales: np.ndarray,
@@ -1707,6 +1716,8 @@ def encode_group(
             # Too short to analyze: the finest step, stored without differences. Decimal
             # detection needs no analysis, so decimal data stays exact
             fine_exp = range_exponent(block_min, block_max, max_bits)
+            if block_max > block_min:
+                fine_exp = min(max(fine_exp, max_error_exp), range_exponent(block_min, block_max, min_bits))
             decimal_exp, decimal_base = NO_DECIMAL, np.int64(0)
             if grids >= GRIDS_DECIMAL and block_max > block_min and block_max - block_min < xm.WIDE_RANGE:
                 decimal_exp, decimal_base, fine_exp = decimal_grid(
@@ -1749,7 +1760,8 @@ def encode_group(
             gated = noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0
             escaped, bulk_min, bulk_max = escape_outliers(
                 block_samples, scratch_index[:block_len], block_codes, has_nonfinite, block_mean, block_min, block_max,
-                math.floor(math.log2(noise_factor * noise_sigma)) if gated else E_MIN - 64, max_bits, grids,
+                max(math.floor(math.log2(noise_factor * noise_sigma)) if gated else E_MIN - 64, max_error_exp),
+                max_bits, grids,
                 block_quantized,
             )
             if escaped:
@@ -1767,6 +1779,9 @@ def encode_group(
                     )
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+        if block_max > block_min and max_error_exp > planned_exp:
+            # The caller's absolute error, within min_quantize_bits' coarsest step
+            planned_exp = min(max_error_exp, range_exponent(block_min, block_max, min_bits))
         if noise_rho > NOISE_GATE:
             planned_exp = keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma)
         block_exponents[block_idx] = planned_exp

@@ -30,6 +30,7 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 | `grids` | binary, decimal, rational | rational | which grids a block may take, each level adding to the one before: 2^e; 10^p too (§5.3); scaled grids too (§5.4) |
 | `noise_floor_sigma` | off (0), or f > 0 | 0.25 | the noise floor (§5.2) |
 | `target_bits_per_sample` | off, or ≥ 6 | off | soft per-block-group size cap (§5.8) |
+| `max_error` | 0 (off), or > 0 | 0 | an absolute error every value may have, in its own units (below) |
 | `effort` | 1–9 | 4 | how the body is compressed (below) |
 | `time_error` | 0–0.5 | 0 (exact) | how far a timestamp may move, per interval (§4) |
 
@@ -45,6 +46,22 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
     one with gaps gets it, a sparse swinging-door archive or events get none.
 - **`target_bits_per_sample`:** a guard against unexpectedly high usage, not a way to squeeze
   signals whose shape you don't know.
+- **`max_error`:** for a sensor whose accuracy is known (a transmitter's ±0.1% of span, a
+  thermocouple's ±0.5 °C): each block's step is at least the largest power of two up to
+  2·`max_error`, so every sample decodes within `max_error` of itself, or within what it would
+  have without it where the noise floor is coarser. It never coarsens past `min_quantize_bits`,
+  and decimal data whose step is at least 2·`max_error` stays exact (a coarser step is a
+  power-of-two grid, not a decimal one). Measured on the realistic corpus
+  (`experimental/value/maxerr_span.py`, mean of 46 signals):
+
+  | `max_error` | 0 | 0.01% of span | 0.1% of span | 1% of span |
+  |---|---|---|---|---|
+  | bits/sample | 4.16 | 3.89 (−6%) | 3.01 (−28%) | 2.11 (−49%) |
+
+  Noise-floored signals gain only once `max_error` passes their floor (f·σ/2); smooth or
+  oversampled ones (line voltage 5.4 → 1.6 b/s at 0.1%, a batch profile 5.2 → 1.8) gain most.
+  A coarser step can break an exact grid (a ramp's second differences pick up rounding: up to
+  0.003 b/s more).
 - **`effort`:** changes the size and the encode time, never the decoded values.
 - **`time_error`:** 0 stores timestamps exactly. e > 0 rounds each block's times to a coarse
   1-2-5 step for which 95% of them move by at most e times their own interval (none more than e
@@ -861,7 +878,8 @@ N their total samples.
     range/63.5, 1.6% of the block's range, at the default of 6. The ½ is from the exponent bump
     in §5.1.
   - Blocks at `max_quantize_bits` (neither noise floor nor target applied):
-    ≤ range / (2^max − ½), about 2^−max of the block's range (0.0015% at 16).
+    ≤ range / (2^max − ½), about 2^−max of the block's range (0.0015% at 16), or ≤ `max_error`
+    where that is larger.
   - Noise-floor blocks: ≤ f·σ/2, in the signal's units. This is not bounded relative to the
     range: a block that is all noise has a range of only a few σ.
   - Decimal grid: exact, or within `tol` = 2^e/4 if the samples were within tolerance of the grid.
@@ -875,7 +893,8 @@ N their total samples.
     value (1000.0): an error within `tol`, as for every sample.
   - The `block_min` and `block_max` that encode returns are the samples' own. Callers using them
     as hard bounds on decoded values (for pruning) should allow half a step either way.
-- **Decimal data is bit-exact,** unless the noise floor or a target coarsens it: values that are
+- **Decimal data is bit-exact,** unless the noise floor, a target or a `max_error` over half its
+  step coarsens it: values that are
   decimals of p places (as parsed from text) decode to the identical float64 when
   - the block's range spans fewer than 2^(B−1) decimal steps. Detection needs the power-of-two
     step ps (§5.1, at least range / 2^B, rounded up to a power of two) finer than 10^p, which that

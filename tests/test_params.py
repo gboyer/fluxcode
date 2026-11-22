@@ -16,7 +16,8 @@ from fluxcode import Params, _encoder
                                 {"noise_floor_sigma": -1}, {"noise_floor_sigma": float("nan")}, {"noise_floor_sigma": None},
                                 {"target_bits_per_sample": 0}, {"target_bits_per_sample": 5.99},
                                 {"target_bits_per_sample": True}, {"effort": 0}, {"effort": 10}, {"effort": True},
-                                {"effort": 5.0}, {"effort": None}])
+                                {"effort": 5.0}, {"effort": None}, {"max_error": -0.1},
+                                {"max_error": float("inf")}, {"max_error": None}])
 def test_invalid(kw):
     with pytest.raises(ValueError):
         Params(**kw)
@@ -110,3 +111,30 @@ def test_small_targets_can_grow_repeat_heavy_groups():
     x = minute("quadratic", 9)
     assert len(kernel_groups(x, 2.0)) > len(kernel_groups(x, 0.0))
     assert kernel_groups(x, 6.0) == kernel_groups(x, 0.0)  # under budget at the minimum target
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("max_error", [1e-3, 0.05, 1.0])
+def test_max_error_bounds_every_sample_and_never_refines(kind, max_error):
+    """Every sample decodes within max_error, or within what it would have without it (the noise floor, the
+    coarsest step min_quantize_bits allows), and no output is bigger than without it, in any block."""
+    from fluxcode import encode_group, verify
+    x = minute(kind, 3)
+    base = encode_group(x, Params())
+    loose = encode_group(x, Params(max_error=max_error))
+    assert verify.encode_group(loose, x, Params(max_error=max_error)) == []
+    got, before = decode_series([loose.group]), decode_series([base.group])
+    finite = np.isfinite(x)
+    err, err_before = np.abs(got - x)[finite], np.abs(before - x)[finite]
+    assert (err <= np.maximum(max_error, err_before) * (1 + 1e-12) + 1e-300).all() or np.ptp(x[finite]) / 2 ** 6 > max_error
+    # (A coarser step can break an exact grid: a ramp's second differences pick up rounding, 0.003 b/s)
+    assert len(loose.group) <= len(base.group) + 16 + len(x) // 1000
+
+
+def test_max_error_keeps_decimals_finer_than_it():
+    from fluxcode import encode_group
+    x = np.round(20 + 5 * np.sin(np.arange(6000) / 70) + np.random.default_rng(0).normal(0, 0.01, 6000), 2)
+    for max_error in (0.004, 0.005):
+        assert (decode_series([encode_group(x, Params(max_error=max_error, noise_floor_sigma=0)).group]) == x).all()
+    loose = decode_series([encode_group(x, Params(max_error=0.02, noise_floor_sigma=0)).group])
+    assert 0 < np.abs(loose - x).max() <= 0.02
