@@ -48,8 +48,12 @@ PARAMS = [
     Params(min_quantize_bits=1, max_quantize_bits=4),
     Params(grids="binary"),
     Params(grids="decimal"),
+    Params(tolerance=0.01),
 ]
-"""Params drawn per case; with a target, the cap is soft and not checked for a fixed point (§7.3)."""
+"""Params drawn per case; with a target, the cap is soft and not checked for a fixed point (§7.3).
+The last (tolerance) is drawn by its own coin, so the others keep the cases they had."""
+
+DRAWN_PARAMS = len(PARAMS) - 1
 
 BLOCK_LEN = 1000
 LENGTHS = [1, 2, 7, 9, 64, 300, 1000, 2500]
@@ -81,7 +85,15 @@ def make_case(seed: int, case: int) -> tuple[np.ndarray, int]:
         x = np.asarray(x, np.float64)
     if rng.random() < 0.2:
         x[rng.integers(0, n, max(1, n // 10))] = rng.choice([np.nan, np.inf, -np.inf])
-    return x, int(rng.integers(0, len(PARAMS)))
+    params_idx = int(rng.integers(0, DRAWN_PARAMS))
+    # Drawn after the rest, so earlier cases keep their samples and params
+    if rng.random() < 0.15:
+        # Glitches (error codes, overrange) on either side: escaped samples
+        glitches = rng.integers(0, n, max(1, n // 50))
+        x[glitches] = rng.choice([-9999.0, 1e6, -1e6, 32767.0], glitches.shape[0])
+    if rng.random() < 0.1:
+        params_idx = len(PARAMS) - 1
+    return x, params_idx
 
 
 def failure(violations: list[verify.Violation]) -> str | None:
@@ -382,6 +394,11 @@ REGRESSIONS = [
     (0, 600),  # 2 samples decoded from 2^-e, within a quarter step of a decimal grid: snapped again
     (1, 332),  # 7 samples (a short block), the same
     (8, 1189),  # three blocks at 4 bits: the same with few levels
+    (2, 285),  # glitches after NaNs at 1e-30: the NaNs held a glitch's value, and the real Euclid cycled (hang)
+    (4, 494),  # tolerance, glitches: the same hang on re-encode
+    (1, 821),  # glitches left in a floored block: keep_floor_grid went one finer than 16 bits hold (wrapped)
+    (8, 320),  # tolerance's step found again as a decimal grid on re-encode (not a fixed point)
+    (2, 256),  # the same on a block of 9
 ]
 
 

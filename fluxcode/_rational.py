@@ -247,6 +247,9 @@ def _approx_gcd(larger: float, smaller: float, error: float, floor_step: float) 
         if not smaller > floor_step:
             return 0.0
         remainder = abs(larger - math.floor(larger / smaller + 0.5) * smaller)
+        # At most half of smaller; past 2^53 multiples rounding breaks that and Euclid could cycle
+        if not remainder <= 0.5 * smaller:
+            return 0.0
         larger, smaller = smaller, remainder
     return larger
 

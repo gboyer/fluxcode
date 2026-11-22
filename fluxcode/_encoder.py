@@ -1079,14 +1079,15 @@ def escape_outliers(
         decimal_exp, _, _ = decimal_grid(samples, lower_bound, upper_bound, old_exp, scratch_quantized)
         if decimal_exp != NO_DECIMAL and _on_decimal_grid(samples, codes, coded, decimal_exp):
             return False, lower_bound, upper_bound
-    # Hold the escaped samples (in held, apart from samples)
+    # Hold the escaped samples (in held, apart from samples), and the coded ones again: a non-finite
+    # sample after a glitch held the glitch's value, which must not stay in the bulk
     held[:] = samples
     previous = center_val
     for sample_idx in range(num_samples):
         uncoded = not coded or codes[sample_idx] == CODE_FINITE
         if uncoded and abs(samples[sample_idx] - center_val) <= threshold:
             previous = samples[sample_idx]
-        elif uncoded:
+        else:
             held[sample_idx] = previous
     if not coded:
         codes[:] = CODE_FINITE
@@ -1193,27 +1194,38 @@ def encode_block(
                 found, decimal, param, num, den, rational_index = _rational.detect_rational(
                     samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_rational, scratch_index,
                 )
+                # Params.tolerance set the step: N fine points of 2^(e - 4), all of 2 tolerance's allowance
+                fill_num = np.int64(0)
+                fill_exp = quant_exp - ERROR_STEP_BITS
+                fill_base = 0.0
+                if error_step > 0 and quant_exp == math.floor(math.log2(error_step)):
+                    fill = math.ldexp(1.0, fill_exp)
+                    fill_num = np.int64(error_step / fill)
+                    # On the absolute grid of multiples of the step (from the minimum's, so every index
+                    # is >= 0): decoded data lies on it
+                    fill_base = math.floor(lower_bound / (fill_num * fill)) * fill_num
+                    if not (fill_num > (1 << ERROR_STEP_BITS) and fill_exp >= SCALED_E_MIN and abs(fill_base) < INDEX_LIMIT):
+                        fill_num = np.int64(0)
+                if found and fill_num:
+                    # An exact grid only if it is coarser than tolerance's step; the same step (decoded data
+                    # found again) keeps tolerance's form, so decoded data re-encodes to itself
+                    found_step = float(num) / den * (10.0 ** param if decimal else math.ldexp(1.0, param))
+                    found = found_step > fill_num * math.ldexp(1.0, fill_exp) * (1.0 + 2.0 ** -40)
                 if found:
                     flags |= BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if decimal else 0)
                     param_val = param
                     scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
-                elif error_step > 0 and quant_exp == math.floor(math.log2(error_step)):
-                    # Params.tolerance set the step: N fine points of 2^(e - 4), all of 2 tolerance's allowance
-                    fine_exp = quant_exp - ERROR_STEP_BITS
-                    fine = math.ldexp(1.0, fine_exp)
-                    num = np.int64(error_step / fine)
-                    base_fine = math.floor(lower_bound / fine + 0.5)
-                    if num > (1 << ERROR_STEP_BITS) and fine_exp >= SCALED_E_MIN and abs(base_fine) < INDEX_LIMIT:
-                        inv_step = 1.0 / (num * fine)
-                        origin = base_fine * fine
-                        for sample_idx in range(samples.shape[0]):
-                            scratch_quantized[sample_idx] = np.int32(math.floor((samples[sample_idx] - origin) * inv_step + 0.5))
-                        flags |= BLOCK_FLAG_SCALED
-                        param_val = fine_exp
-                        scale = num | (np.int64(1) << SCALE_SHIFT)
-                        grid_index = np.int64(base_fine)
+                elif fill_num:
+                    inv_step = 1.0 / (fill_num * math.ldexp(1.0, fill_exp))
+                    origin = fill_base * math.ldexp(1.0, fill_exp)
+                    for sample_idx in range(samples.shape[0]):
+                        scratch_quantized[sample_idx] = np.int32(math.floor((samples[sample_idx] - origin) * inv_step + 0.5))
+                    flags |= BLOCK_FLAG_SCALED
+                    param_val = fill_exp
+                    scale = fill_num | (np.int64(1) << SCALE_SHIFT)
+                    grid_index = np.int64(fill_base)
     # Select difference order minimizing residual variance (a shift of q doesn't change it)
     selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
     grid_index, anchor = center(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
@@ -1810,7 +1822,9 @@ def encode_group(
                 # All of it (a scaled step up to 2 tolerance, still under 2^coarsest_exp)
                 block_error_step = error_step
         if noise_rho > NOISE_GATE:
-            planned_exp = keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma)
+            # Never finer than the range fits in max_bits (a block whose floor is its range's own step)
+            planned_exp = max(keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma),
+                              range_exponent(block_min, block_max, max_bits) if block_max > block_min else planned_exp)
         block_exponents[block_idx] = planned_exp
         (
             out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor, out_grid_scales[block_idx],
