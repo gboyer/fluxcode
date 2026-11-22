@@ -17,7 +17,7 @@ import fluxcode
 def run(item):
     set_name, name, x, block_len, bpg = item
     import os
-    params = fluxcode.Params(noise_floor_sigma=float(os.environ.get("FX_F", "0.25")), effort=int(os.environ.get("FX_EFFORT", "4")))
+    params = fluxcode.Params(noise_floor_sigma=float(os.environ.get("FX_F", "0.25")), effort=int(os.environ.get("FX_EFFORT", "4")), max_quantize_bits=int(os.environ.get("FX_BITS", "16")))
     nbytes = 0
     sq = 0.0
     worst = 0.0
