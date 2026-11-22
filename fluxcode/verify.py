@@ -570,10 +570,10 @@ def _check_values(
         ]
         if params.target_bits_per_sample is None:
             fine = (params.noise_floor_sigma == 0) | (sizes < NOISE_FLOOR_MIN_SAMPLES)
-            # max_error lets a step reach 2 * max_error (within min_quantize_bits' range_bound)
-            fine_bound = np.where(fine, np.maximum(half_range / (2.0 ** params.max_quantize_bits - 0.5), params.max_error / 2),
+            # tolerance lets a step reach 2 * tolerance (within min_quantize_bits' range_bound)
+            fine_bound = np.where(fine, np.maximum(half_range / (2.0 ** params.max_quantize_bits - 0.5), params.tolerance / 2),
                                   np.inf)
-            bounds.append(("fine_bound", fine_bound, "range / (2^max_quantize_bits - 1/2), or max_error"))
+            bounds.append(("fine_bound", fine_bound, "range / (2^max_quantize_bits - 1/2), or tolerance"))
         for check, half_bound, what in bounds:
             over = encoded & (count > 0) & ~(half_error <= half_bound + half_ulps)
             for block_idx in np.flatnonzero(over)[:_MAX_REPORTED].tolist():
@@ -598,8 +598,8 @@ def _check_decimals(
         raise ValueError(f"decimals must be from -22 to 22, got {decimals}")
     if params.target_bits_per_sample is not None or params.grids == "binary" or not given.shape[0]:
         return
-    if params.max_error > (10.0 ** -decimals if decimals >= 0 else 10.0 ** -decimals) / 2:
-        return  # max_error's step may be coarser than the decimals'
+    if params.tolerance > (10.0 ** -decimals if decimals >= 0 else 10.0 ** -decimals) / 2:
+        return  # tolerance's step may be coarser than the decimals'
 
     finite = np.isfinite(given)
     with np.errstate(all="ignore"):

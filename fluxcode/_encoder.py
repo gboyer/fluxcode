@@ -388,15 +388,15 @@ def range_scale(lower_bound: float, upper_bound: float) -> int:
 
 
 ERROR_STEP_BITS: int = 4
-"""A max_error step is N points of 2^(e - ERROR_STEP_BITS), N from 17 to 31: within 6% of 2 max_error."""
+"""A tolerance step is N points of 2^(e - ERROR_STEP_BITS), N from 17 to 31: within 6% of 2 tolerance."""
 
 
-def max_error_exponent(max_error: float) -> int:
-    """The exponent of the largest power-of-two step whose half is at most max_error (Params.max_error);
+def tolerance_exponent(tolerance: float) -> int:
+    """The exponent of the largest power-of-two step whose half is at most tolerance (Params.tolerance);
     a very negative one (no effect) for 0."""
-    if not max_error > 0:
+    if not tolerance > 0:
         return E_MIN - 64
-    return math.floor(math.log2(2.0 * max_error))
+    return math.floor(math.log2(2.0 * tolerance))
 
 
 @njit(nogil=True, cache=True)
@@ -1200,7 +1200,7 @@ def encode_block(
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
                 elif error_step > 0 and quant_exp == math.floor(math.log2(error_step)):
-                    # Params.max_error set the step: N fine points of 2^(e - 4), all of 2 max_error's allowance
+                    # Params.tolerance set the step: N fine points of 2^(e - 4), all of 2 tolerance's allowance
                     fine_exp = quant_exp - ERROR_STEP_BITS
                     fine = math.ldexp(1.0, fine_exp)
                     num = np.int64(error_step / fine)
@@ -1629,7 +1629,7 @@ def encode_group(
     noise_factor: float,
     target_bits: float,
     grids: int,
-    max_error_exp: int,
+    tolerance_exp: int,
     error_step: float,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
@@ -1738,7 +1738,7 @@ def encode_group(
             # detection needs no analysis, so decimal data stays exact
             fine_exp = range_exponent(block_min, block_max, max_bits)
             if block_max > block_min:
-                fine_exp = min(max(fine_exp, max_error_exp), range_exponent(block_min, block_max, min_bits))
+                fine_exp = min(max(fine_exp, tolerance_exp), range_exponent(block_min, block_max, min_bits))
             decimal_exp, decimal_base = NO_DECIMAL, np.int64(0)
             if grids >= GRIDS_DECIMAL and block_max > block_min and block_max - block_min < xm.WIDE_RANGE:
                 decimal_exp, decimal_base, fine_exp = decimal_grid(
@@ -1781,7 +1781,7 @@ def encode_group(
             gated = noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0
             escaped, bulk_min, bulk_max = escape_outliers(
                 block_samples, scratch_index[:block_len], block_codes, has_nonfinite, block_mean, block_min, block_max,
-                max(math.floor(math.log2(noise_factor * noise_sigma)) if gated else E_MIN - 64, max_error_exp),
+                max(math.floor(math.log2(noise_factor * noise_sigma)) if gated else E_MIN - 64, tolerance_exp),
                 max_bits, grids,
                 block_quantized,
             )
@@ -1801,12 +1801,12 @@ def encode_group(
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
         block_error_step = 0.0
-        if block_max > block_min and max_error_exp > planned_exp:
+        if block_max > block_min and tolerance_exp > planned_exp:
             # The caller's absolute error, within min_quantize_bits' coarsest step
             coarsest_exp = range_exponent(block_min, block_max, min_bits)
-            planned_exp = min(max_error_exp, coarsest_exp)
-            if max_error_exp < coarsest_exp:
-                # All of it (a scaled step up to 2 max_error, still under 2^coarsest_exp)
+            planned_exp = min(tolerance_exp, coarsest_exp)
+            if tolerance_exp < coarsest_exp:
+                # All of it (a scaled step up to 2 tolerance, still under 2^coarsest_exp)
                 block_error_step = error_step
         if noise_rho > NOISE_GATE:
             planned_exp = keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma)

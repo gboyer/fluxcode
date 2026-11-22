@@ -184,8 +184,9 @@ which set the step to 0.25σ.
   a time error.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
-  (≥ 6 when set), `grids="rational"` (binary, decimal, rational), `effort=4` (1–9), `time_error=0` (0–0.5), `max_error=0` (an absolute error each value
-  may have, in its units: a sensor's accuracy; 0.1% of span saves 30% on the realistic corpus). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `grids="rational"` (binary, decimal, rational), `effort=4` (1–9), `time_error=0` (0–0.5), `tolerance=0` (per tag: an absolute error
+  acceptable for its values, in its units, such as a sensor's accuracy; a permission, not a bound;
+  0.1% of span saves 30% on the realistic corpus). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 

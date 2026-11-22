@@ -1,7 +1,7 @@
-"""Bits/sample of every corpus signal with Params.max_error at a share of the signal's span (sensor
+"""Bits/sample of every corpus signal with Params.tolerance at a share of the signal's span (sensor
 accuracy is usually quoted as % of span): 0, 0.01%, 0.1%, 1%.
 
-    uv run python value/maxerr_span.py
+    uv run python value/tolerance_span.py
 """
 from concurrent.futures import ProcessPoolExecutor
 
@@ -20,7 +20,7 @@ def run(item):
     span = float(np.ptp(finite)) if finite.size else 0.0
     out = []
     for share in SHARES:
-        params = fluxcode.Params(max_error=share * span)
+        params = fluxcode.Params(tolerance=share * span)
         nbytes, worst = 0, 0.0
         for part, _ in H.groups_of(x, block_len, bpg):
             g = fluxcode.encode_group(part, params, block_len=block_len).group
