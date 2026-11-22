@@ -68,7 +68,7 @@ then the same on another checkout and `uv run python compare.py /tmp/main.json /
 | encode, Python path | 5.12 µs/block | 5.71 (+12%) |
 | decode | 1.79 µs/block | 1.75 (−2%) |
 
-Full benchmark tables: `bench/RESULTS.md`. Tests: 1866 pass, Rust extension included.
+Full benchmark tables: `bench/RESULTS.md`. Tests: 1871 pass, Rust extension included.
 
 ## 3. Shipped
 
@@ -285,11 +285,31 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
 - **Fuzzing.** `tests/test_fuzz.py` covers random magnitudes, grids, non-finite values and
   random clocks (whose periods exercise the time quantum). At the end of the work it was extended
   with finite glitches (−9999, ±1e6, 32767: escapes) and a `tolerance` params entry, drawn after
-  the existing draws so recorded regression cases keep their inputs; its result is in the
-  appendix below.
+  the existing draws so recorded regression cases keep their inputs. It found two hangs, an
+  index wrap and fixed-point failures, all fixed and pinned (appendix below).
 - **Performance.** Encode +12% (noise estimate), decode −2%; the period predictor adds encode
   time on oscillating blocks at effort ≥ 6 only.
 
 ## Appendix: final fuzz run
 
-(Filled in when the run completes.)
+`tests/test_fuzz.py` extended (finite glitches −9999, ±1e6, 32767 in 15% of value cases; a
+`tolerance=0.01` params entry in 10%; both drawn after the existing draws, so earlier regression
+cases keep their inputs). First round, 20 seeds × 1500 cases per fuzzer (values, timed, decimal):
+
+| finding | cases | cause | fix |
+|---|---|---|---|
+| **hang** (encode or re-encode never returns) | 9 of 20 value seeds | (1) a NaN after a glitch is held at the glitch's value (`fill_nonfinite`); escape detection skipped coded samples, so 1e6 stayed in a bulk at 1e−30. (2) The rational search's real Euclid (`_rational._approx_gcd`) assumes each remainder is at most half the divisor; past 2^53 multiples rounding breaks that and it cycled between 1e6 and 1e−35 forever | escaped blocks re-hold every coded sample from the bulk; the Euclid stops (no grid) when a remainder exceeds half the divisor |
+| **wrapped indices on re-encode** (decoded data re-encoded off by 2^20) | 3 (binary grids, glitches not escaped) | `keep_floor_grid` (a value-exp addition for fixed points) went one level finer than the block's range fits in 16 bits when the noise floor sat at the range's own step; the indices wrapped. Reachable without glitches: any block whose floor equals its range's step (a large ramp with tiny noise) | never finer than `range_exponent(min, max, max_bits)` |
+| **not a fixed point** (decoded data re-encodes to other bytes, same values) | 12 (tolerance, blocks of 9 to 2500) | tolerance's step N·2^(e−4) was found again on re-encode by the rational search, as an equal decimal-form step (125/64·10^−2 = 20·2^−10), and the grid was anchored at the minimum's fine index | a rational grid is taken over tolerance's only if strictly coarser; tolerance's grid is absolute (multiples of the step) |
+| target moved | 10 | the soft per-group target (ENCODER §5.8), documented | none (counted, not a failure) |
+
+Timed and decimal fuzzers: no failures. The failing cases are pinned in `REGRESSIONS`.
+
+Second round on the fixes, same 90,000 cases: **0 failures, 0 hangs** (10 target moved). Tests:
+1871 pass; golden hashes unchanged; the realistic corpus, the glitch scenarios and the tolerance
+sweep are byte-for-byte or number-for-number unchanged.
+
+**For the production review:** the hang and the wrap were real bugs in value-exp code paths
+(escapes, keep_floor_grid) that the earlier fuzzer couldn't reach. A longer fuzz campaign (more
+seeds, the timed fuzzer with glitches and tolerance too, updates on escaped groups) is
+recommended before merging.
