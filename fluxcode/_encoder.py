@@ -1730,9 +1730,9 @@ def encode_group(
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max
         noise_sigma = noise_rho = 0.0
+        # Only irregular times steer the noise floor: regular ones are as no times
+        irregular = timed and (time_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME) != 0
         if noise_factor > 0 and block_max > block_min and block_len >= NOISE_MIN_LEN:
-            # Only irregular times steer the noise floor: regular ones are as no times
-            irregular = timed and (time_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME) != 0
             noise_sigma, noise_rho = block_noise(
                 block_samples,
                 block_codes if has_nonfinite else no_codes,
@@ -1758,6 +1758,13 @@ def encode_group(
                 block_min, block_max = bulk_min + 0.0, bulk_max + 0.0
                 base_lower_bounds[block_idx], base_upper_bounds[block_idx] = block_min, block_max
                 has_nonfinite = True
+                # A run of escapes (a dropout) can hide the noise from the first estimate: again, without them
+                if not gated and noise_factor > 0 and block_len >= NOISE_MIN_LEN and block_max > block_min:
+                    noise_sigma, noise_rho = block_noise(
+                        block_samples, block_codes, ticks[first_sample:first_sample + block_len] if irregular else no_ticks,
+                        range_scale(block_min, block_max), scratch_pivots, scratch_noise_diffs, scratch_noise_weights,
+                        math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
+                    )
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
         if noise_rho > NOISE_GATE:
