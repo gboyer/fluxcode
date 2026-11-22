@@ -8,6 +8,8 @@ cases = {}
 y = base.copy(); idx = rng.choice(n, 40, replace=False); y[idx] = -9999.0; cases["-9999 codes"] = (y, idx)
 y = base.copy(); idx = rng.choice(n, 40, replace=False); y[idx] = 1e6; cases["1e6 codes"] = (y, idx)
 y = base.copy(); idx = rng.choice(n, 200, replace=False); y[idx[:100]] = -9999.0; y[idx[100:]] = 1e6; cases["both sides"] = (y, idx)
+y = base.copy(); idx = rng.choice(n, 40, replace=False); y[idx[:20]] = -1e6; y[idx[20:]] = 1e6; cases["+-1e6"] = (y, idx)
+y = base.copy(); idx = rng.choice(n, 40, replace=False); y[idx[:20]] = -1e6; y[idx[20:]] = 1e6; y[idx[::7]] = np.inf; cases["+-1e6 and inf"] = (y, idx)
 y = base.copy(); st = rng.choice(n - 20, 6, replace=False); idx = np.concatenate([np.arange(s, s + 20) for s in st]); y[idx] = -9999.0; cases["dropout runs"] = (y, idx)
 dec = np.round(base * 100) / 100; y = dec.copy(); idx = rng.choice(n, 40, replace=False); y[idx] = -99999.0; cases["0.01 decimals + code"] = (y, idx)
 noisy = 5 + rng.normal(0, 2.0, n); y = noisy.copy(); idx = rng.choice(n, 40, replace=False); y[idx] = 500.0; cases["noisy + spikes"] = (y, idx)

@@ -361,7 +361,9 @@ take them if: at most n/16; the bulk's exponent and the floor's at least 2 under
 ```
 
 The block is then quantized on the bulk's range and its escaped samples held (as non-finite ones);
-the reported min, max and mean still count every sample.
+the reported min, max and mean still count every sample. Its noise is estimated again without the
+escaped samples: a dropout run can hide the noise from the first estimate, and glitches on both
+sides inflate it (−9999 and 1e6 in one block left the rest within 0.000977 instead of 0.000244).
 
 - **Payload:** a float64 at the end of the body. A value float32 holds (an error code: −9999,
   32767, 1e6; ±inf) is kept exact; any other is rounded to the step its block would have had

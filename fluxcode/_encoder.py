@@ -1791,8 +1791,9 @@ def encode_group(
                 block_min, block_max = bulk_min + 0.0, bulk_max + 0.0
                 base_lower_bounds[block_idx], base_upper_bounds[block_idx] = block_min, block_max
                 has_nonfinite = True
-                # A run of escapes (a dropout) can hide the noise from the first estimate: again, without them
-                if not gated and noise_factor > 0 and block_len >= NOISE_MIN_LEN and block_max > block_min:
+                # The first estimate saw the escaped samples (a dropout run can hide the noise, glitches on
+                # both sides inflate it): again, without them
+                if noise_factor > 0 and block_len >= NOISE_MIN_LEN and block_max > block_min:
                     noise_sigma, noise_rho = block_noise(
                         block_samples, block_codes, ticks[first_sample:first_sample + block_len] if irregular else no_ticks,
                         range_scale(block_min, block_max), scratch_pivots, scratch_noise_diffs, scratch_noise_weights,
