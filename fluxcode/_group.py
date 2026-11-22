@@ -57,7 +57,7 @@ class BlockStats(NamedTuple):
     block_mean: np.ndarray
 
 
-def kernel_args(params: Params) -> tuple[int, int, int, float, float, int, int]:
+def kernel_args(params: Params) -> tuple[int, int, int, float, float, int, int, float]:
     """Converts encoder parameters into the arguments of the encoding kernel.
 
     Args:
@@ -80,6 +80,7 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, int, int]:
         float(params.target_bits_per_sample or 0.0),
         _encoder.GRIDS_LEVELS[params.grids],
         _encoder.max_error_exponent(params.max_error),
+        2.0 * float(params.max_error),
     )
 
 

@@ -47,19 +47,23 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
 - **`target_bits_per_sample`:** a guard against unexpectedly high usage, not a way to squeeze
   signals whose shape you don't know.
 - **`max_error`:** for a sensor whose accuracy is known (a transmitter's ±0.1% of span, a
-  thermocouple's ±0.5 °C): each block's step is at least the largest power of two up to
+  thermocouple's ±0.5 °C): each block's step is at least the largest power of two 2^e up to
   2·`max_error`, so every sample decodes within `max_error` of itself, or within what it would
-  have without it where the noise floor is coarser. It never coarsens past `min_quantize_bits`,
+  have without it where the noise floor is coarser. Where `max_error` sets the step (finer than
+  `min_quantize_bits`' coarsest) and the block has no exact grid (no index gcd, no rational
+  grid, §5.4), the step is a scaled grid of N points of 2^(e−4), N = ⌊2·`max_error` / 2^(e−4)⌋
+  (17–31): 94–100% of the allowance instead of 50–100%. It never coarsens past `min_quantize_bits`,
   and decimal data whose step is at least 2·`max_error` stays exact (a coarser step is a
   power-of-two grid, not a decimal one). Measured on the realistic corpus
   (`experimental/value/maxerr_span.py`, mean of 46 signals):
 
   | `max_error` | 0 | 0.01% of span | 0.1% of span | 1% of span |
   |---|---|---|---|---|
-  | bits/sample | 4.16 | 3.89 (−6%) | 3.01 (−28%) | 2.11 (−49%) |
+  | bits/sample | 4.16 | 3.86 (−7%) | 2.92 (−30%) | 2.05 (−51%) |
+  | of which the scaled step | | −1% | −3% | −3% |
 
   Noise-floored signals gain only once `max_error` passes their floor (f·σ/2); smooth or
-  oversampled ones (line voltage 5.4 → 1.6 b/s at 0.1%, a batch profile 5.2 → 1.8) gain most.
+  oversampled ones (line voltage 5.4 → 1.4 b/s at 0.1%, a batch profile 5.2 → 1.8) gain most.
   A coarser step can break an exact grid (a ramp's second differences pick up rounding: up to
   0.003 b/s more).
 - **`effort`:** changes the size and the encode time, never the decoded values.

@@ -138,3 +138,15 @@ def test_max_error_keeps_decimals_finer_than_it():
         assert (decode_series([encode_group(x, Params(max_error=max_error, noise_floor_sigma=0)).group]) == x).all()
     loose = decode_series([encode_group(x, Params(max_error=0.02, noise_floor_sigma=0)).group])
     assert 0 < np.abs(loose - x).max() <= 0.02
+
+
+def test_max_error_uses_its_whole_allowance():
+    """Where max_error sets the step, a scaled step of up to 2 max_error: the error comes within 94% of it."""
+    from fluxcode import encode_group, verify
+    x = 20 + 5 * np.sin(np.arange(20000) / 300)
+    for max_error in (0.003, 0.0045, 0.006):
+        params = Params(max_error=max_error)
+        result = encode_group(x, params)
+        assert verify.encode_group(result, x, params) == []
+        err = np.abs(decode_series([result.group]) - x).max()
+        assert 0.9 * max_error < err <= max_error

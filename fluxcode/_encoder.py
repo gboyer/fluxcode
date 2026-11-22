@@ -387,6 +387,10 @@ def range_scale(lower_bound: float, upper_bound: float) -> int:
     return math.frexp(xm.half_range(lower_bound, upper_bound))[1] + 1
 
 
+ERROR_STEP_BITS: int = 4
+"""A max_error step is N points of 2^(e - ERROR_STEP_BITS), N from 17 to 31: within 6% of 2 max_error."""
+
+
 def max_error_exponent(max_error: float) -> int:
     """The exponent of the largest power-of-two step whose half is at most max_error (Params.max_error);
     a very negative one (no effect) for 0."""
@@ -1104,6 +1108,7 @@ def encode_block(
     scratch_rational: np.ndarray,
     scratch_index: np.ndarray,
     out_residuals: np.ndarray,
+    error_step: float = 0.0,
 ) -> tuple[int, int, np.int64, float, np.int64]:
     """Encodes one block: quantizes, scales the grid, picks predictor order, and computes residuals.
 
@@ -1194,6 +1199,21 @@ def encode_block(
                     scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
+                elif error_step > 0 and quant_exp == math.floor(math.log2(error_step)):
+                    # Params.max_error set the step: N fine points of 2^(e - 4), all of 2 max_error's allowance
+                    fine_exp = quant_exp - ERROR_STEP_BITS
+                    fine = math.ldexp(1.0, fine_exp)
+                    num = np.int64(error_step / fine)
+                    base_fine = math.floor(lower_bound / fine + 0.5)
+                    if num > (1 << ERROR_STEP_BITS) and fine_exp >= SCALED_E_MIN and abs(base_fine) < INDEX_LIMIT:
+                        inv_step = 1.0 / (num * fine)
+                        origin = base_fine * fine
+                        for sample_idx in range(samples.shape[0]):
+                            scratch_quantized[sample_idx] = np.int32(math.floor((samples[sample_idx] - origin) * inv_step + 0.5))
+                        flags |= BLOCK_FLAG_SCALED
+                        param_val = fine_exp
+                        scale = num | (np.int64(1) << SCALE_SHIFT)
+                        grid_index = np.int64(base_fine)
     # Select difference order minimizing residual variance (a shift of q doesn't change it)
     selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
     grid_index, anchor = center(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
@@ -1610,6 +1630,7 @@ def encode_group(
     target_bits: float,
     grids: int,
     max_error_exp: int,
+    error_step: float,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
     out_grid_scales: np.ndarray,
@@ -1779,9 +1800,14 @@ def encode_group(
                     )
         # Plan quantization exponent
         planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+        block_error_step = 0.0
         if block_max > block_min and max_error_exp > planned_exp:
             # The caller's absolute error, within min_quantize_bits' coarsest step
-            planned_exp = min(max_error_exp, range_exponent(block_min, block_max, min_bits))
+            coarsest_exp = range_exponent(block_min, block_max, min_bits)
+            planned_exp = min(max_error_exp, coarsest_exp)
+            if max_error_exp < coarsest_exp:
+                # All of it (a scaled step up to 2 max_error, still under 2^coarsest_exp)
+                block_error_step = error_step
         if noise_rho > NOISE_GATE:
             planned_exp = keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma)
         block_exponents[block_idx] = planned_exp
@@ -1798,6 +1824,7 @@ def encode_group(
             scratch_rational[:block_len],
             scratch_index[:block_len],
             block_residuals,
+            block_error_step,
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
         if has_nonfinite:
