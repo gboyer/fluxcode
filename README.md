@@ -7,7 +7,7 @@ to 4 significant figures, or more when the range is narrow.
 
 High level properties:
 
-* **Fast**: A single MacBook Air M3 core decodes at 4 GiB/s, and encodes at 1.5 GiB/s at the
+* **Fast**: A single MacBook Air M3 core decodes at 4.4 GiB/s, and encodes at 1.2 GiB/s at the
   default effort (about a third faster at effort 1).
 * **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
   data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
@@ -35,15 +35,17 @@ High level properties:
 Encoding features to balance size, accuracy, and performance depending on data
 type:
 
-* **Noise floor**: For data with high frequency noise, you can optionally specify the sigma
-  multiplier that you want to preserve, and the quantization grid is reduced accordingly. This helps
-  compression for noisy data, but preserves clean periodic data (unless the frequency approaches the
-  sample rate). By default, 0.25 sigmas. With irregular timestamps, it applies only where nearly
+* **Noise floor**: Detail finer than a block's own finest-scale variation (its spectral density at
+  the top of the band: sensor noise at 1 kHz, the process's move between samples at one a minute)
+  isn't kept: the step is a share f of that level, 0.25 by default, so the error stays about 23 dB
+  under the signal's spectrum at every frequency and the shape survives. It reads that level under
+  a busy signal (a motor's 60 Hz, a gearbox's resonance, turbulence) and on random walks, and
+  leaves clean periodic data alone (below about 0.39 of the sample rate). With irregular timestamps, it applies only where nearly
   every interval is one scan (a jittered clock, or one with gaps), measured on consecutive scans: a
   historian's swinging-door archive looks like white noise without being noise, and gets none.
   Without timestamps the samples are taken as evenly spaced, so store an archive with its times
-  (or with the noise floor off). It only applies to blocks of at least 256 samples, so a fixed
-  `block_len` under 256 never gets one.
+  (or with the noise floor off). It only applies to blocks of at least 128 samples, so a fixed
+  `block_len` under 128 never gets one.
 * **Time error**: Optionally lets timestamps move by up to a share of their interval
   (`time_error`, off by default): each block's times round to a coarse grid of a 1-2-5 step
   (1, 2, 5, 10, ... ticks) for which 95% of them move by at most that share of their own interval
@@ -180,7 +182,9 @@ which set the step to 0.25σ.
   a time error.
 - `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
   `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
-  (≥ 6 when set), `grids="rational"` (binary, decimal, rational), `effort=4` (1–9), `time_error=0` (0–0.5). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+  (≥ 6 when set), `grids="rational"` (binary, decimal, rational), `effort=4` (1–9), `time_error=0` (0–0.5), `absolute_tolerance=0` (per tag: an absolute error
+  acceptable for its values, in its units, such as a sensor's accuracy; a permission, not a bound;
+  0.1% of span saves 30% on the realistic corpus). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
 
 ## Numbers
 
@@ -192,24 +196,27 @@ in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
 |---|---|---|---|---|
-| linear ramp | 0.02 |0.0000%| 2.40 | 1.36 |
-| square wave | 0.04 |0.0000%| 2.96 | 1.57 |
-| sine, 4.12 Hz | 2.40 |0.0010%| 6.10 | 2.12 |
-| sine, 50.3 Hz | 6.74 |0.0010%| 6.06 | 2.16 |
-| chirp | 7.81 |0.0010%| 7.48 | 2.05 |
-| random walk | 12.62 |0.0015%| 5.63 | 1.82 |
-| random walk rounded to 0.01 | 9.28 |0% (exact)| 6.32 | 1.88 |
-| sensor drift rounded to 0.1 | 1.78 |0% (exact)| 6.23 | 2.19 |
-| noisy sine (σ = 5) | 5.24 |0.2334%| 4.26 | 1.58 |
-| Gaussian spikes on uniform noise | 6.60 |1.4661%| 5.06 | 1.86 |
-| **all 15 signals** | **4.76** | | **5.12** | **1.79** |
-| random walk on thirds (not in the 15) | 3.97 |0% (exact)| 10.82 | 2.36 |
+| linear ramp | 0.02 |0.0000%| 2.53 | 1.20 |
+| square wave | 0.04 |0.0000%| 4.43 | 1.52 |
+| sine, 4.12 Hz | 2.40 |0.0010%| 5.75 | 2.01 |
+| sine, 50.3 Hz | 6.73 |0.0010%| 5.96 | 2.10 |
+| chirp | 7.80 |0.0010%| 7.18 | 1.91 |
+| random walk | 5.63 |0.3303%| 5.92 | 1.71 |
+| random walk rounded to 0.01 | 5.63 |0.3501%| 5.92 | 1.72 |
+| sensor drift rounded to 0.1 | 1.71 |0% (exact)| 7.76 | 2.33 |
+| noisy sine (σ = 5) | 5.22 |0.2334%| 5.76 | 1.61 |
+| Gaussian spikes on uniform noise | 6.04 |1.4661%| 6.36 | 2.02 |
+| **all 15 signals** | **4.01** | | **5.71** | **1.75** |
+| random walk on thirds (not in the 15) | 3.92 |0% (exact)| 12.23 | 2.25 |
 
 Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
 relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
-the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The default
-effort compresses each block group with bit and with byte planes and keeps the smaller. The whole
-set at effort 1 is 4.83 bits/sample at 3.53 µs/block to encode, and at effort 5 4.66 at 5.96
+the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The random walks
+are floored too: their finest-scale variation (a step's σ_e) reads as a noise of σ_e/2, so they are
+stored within σ_e/16 (0.35% of the range at most here), and the walk on 0.01 loses its last digit
+(`noise_floor_sigma=0` keeps it). The default effort compresses each block group with bit and with
+byte planes and keeps the smaller. The whole set at effort 1 is 4.11 bits/sample at 4.50 µs/block to
+encode, and at effort 5 3.95 at 6.78
 ([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits` (see
 the [research report](experimental/report/index.html#scatter-kinds)).
 
@@ -238,14 +245,18 @@ From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exac
 - **Decimal data is lossless** unless it is noisier than its decimals. Values that are decimals of
   p places (as parsed from text) decode to the identical float64 when the block spans fewer than
   2^15 decimal steps (2^(B−1); up to 2^B for some p), has no `target_bits_per_sample`, and isn't
-  coarsened by the noise floor. The noise floor stores white noise whose σ is above 1/f to 2/f
-  decimal steps (4–8 at the default f; 6.25 for cents) at its own step, like any noisy block: its
-  last digit is noise. `noise_floor_sigma=0` keeps such data exact. Decimals
+  coarsened by the noise floor. The noise floor stores a block whose top-band level σ is above 1/f
+  to 2/f decimal steps (4–8 at the default f; 6.25 for cents) at its own step, like any noisy block:
+  its last digit is noise. σ is white noise's, or half a random walk's step σ_e: a decimal walk
+  moving 8–16 places a sample or more is floored too. `noise_floor_sigma=0` keeps such data exact. Decimals
   stored as float32 upstream decode as the decimal itself when the block is wide enough for float32's
   rounding to sit within a quarter of its power-of-two step; a narrower block encodes the float32
   values like any other data.
 - **Data on a scaled grid is lossless too** when it is the doubles nearest its rationals (thirds as
   k / 3, ADC counts as 10·c / 4095); computed as a float product it decodes within a few ulps.
+- **Glitches don't cost their neighbours.** An outlier such as an error code (−9999, 1e6) is
+  stored apart, exactly when float32 holds it, so the rest of its block keeps its fine step; never
+  worse than half the step of the block's full range.
 - **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet
   NaN; −0.0 decodes as +0.0), as do subnormal ranges and blocks spanning ±DBL_MAX.
 - **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
@@ -276,11 +287,11 @@ Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCO
   differences, then the simplest fraction within the fitted step's uncertainty), stored with an
   integer anchor on the fine grid and decoded with one rounding.
 - **Noise floor:** a robust (clipped [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation))
-  estimate of the noise in the second differences, plus their lag-1 autocorrelation (−2/3 for
-  white noise). Blocks that look like white noise get a step of at most 0.25σ (a third of the
-  quietest part's σ where the noise varies within the block). Blocks under 256 samples keep their
-  finest step: the autocorrelation estimate is too noisy there to tell white noise from a random
-  walk. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
+  estimate of the level in the 12th differences, which see only the top of the band, plus their
+  lag-1 and lag-2 autocorrelations (−12/13 and 0.725 for white noise), capped by the first
+  differences' level (steps a few samples apart). Blocks flat at the top get a step of at most
+  0.25σ (a third of the quietest part's σ where the noise varies within the block). Blocks under
+  128 samples keep their finest step: a single step or spike is too much of their differences. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
   and only consecutive scans count, so sparse archives and events keep their values.
 - **Fixed polynomial predictors** of order 0–3, picked per block by residual variance, as in
   [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and
@@ -352,7 +363,8 @@ Code layout (`fluxcode/`), from the public API down:
 - `_compress.py`: the compression policy (efforts, layout choice, flush points, framing, candidate
   choice); `rust/src/compress.rs` is its port.
 - `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: the time axis
-  kernels (§4); `_noise.py`, `_nonfinite.py` and `_extreme_magnitudes.py`: the noise estimate,
+  kernels (§4); `_grids.py`, `_noise.py`, `_escapes.py` and `_extreme_magnitudes.py`: quantization
+  grids, noise estimation, coded/escaped values, and extreme-magnitude handling.
   NaN/inf blocks and extreme ranges, each off the common path.
 - `verify.py`: checks a call's result against the guarantees (ENCODER §6), from the decoded
   output; nothing on the encode path uses it.

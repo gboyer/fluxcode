@@ -95,8 +95,10 @@ def test_compress_body_gives_up_over_the_limit():
 
 
 def test_heuristic_choice():
-    for kind, byte in (("sin-4.12hz", True), ("random-walk", False), ("chirp", False), ("noisy-sine", True)):
-        (group,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2))
+    # The random walk at full precision (the floor would coarsen it, ENCODER §5.2): wide residuals, bit planes
+    for kind, byte, floor in (("sin-4.12hz", True, 0.25), ("random-walk", False, 0), ("chirp", False, 0.25),
+                              ("noisy-sine", True, 0.25)):
+        (group,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2, noise_floor_sigma=floor))
         assert _format.unpack_header(group).byte_planes is byte, kind
 
 

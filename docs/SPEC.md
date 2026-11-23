@@ -26,18 +26,23 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
   - This is not a field limit (the header field holds up to 2^32 − 1).
   - It is the bound decoders use to reject implausible headers before decompressing.
 
-## 2. Non-finite values
+## 2. Non-finite and escaped values
 
-- NaN, +inf and −inf are stored exactly, as a 2-bit code per sample:
+- A block may code some samples apart from its grid, with a 2-bit code per sample:
 
   | code | sample |
   |---|---|
-  | 00 | finite |
+  | 00 | on the grid |
   | 01 | NaN |
-  | 10 | +inf |
-  | 11 | −inf |
+  | 10 | escaped: the block's next value in the `escapes` field |
+  | 11 | the block's previous escaped value again |
 
-- Only a block holding a non-finite value stores codes.
+- Escaped values are float64: ±inf, and outliers a writer stores apart (an error code, an
+  overrange reading) so that the rest of the block keeps a fine grid ([ENCODER.md §5.1.1](ENCODER.md)).
+  A run of one value stores it once (11).
+- `escapes` (§6) holds every block's escaped values, in block and sample order: as many as codes 10
+  in blocks' samples (not their padding).
+- Only a block holding a coded sample stores codes.
   - It sets block flag bit 3.
   - Its codes go in the `nonfinite_code_planes` field (§6): n/4 bytes, mostly zero, before
     compression.
@@ -89,18 +94,28 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
     is stored as `time_ref`, over a `time_step` of 1.
 - **Empty blocks** have 0 in all three columns and are skipped in the chain of starts: each
   non-empty block's start is stored relative to the previous non-empty block's.
+- **Group time step** (`group_time_step`, header flags bit 4). The start increases (every non-empty
+  block's but the first's) and per-block `time_step` values may be stored divided by a group-wide
+  GCD q ≥ 2: a uint64 in the body's last 8 bytes, after the escapes. A reader multiplies them back.
+  Whole seconds in ns ticks (pandas' default) otherwise fill every byte plane of those columns: a
+  writer stores them over their GCD, which takes a sparse tag's daily group (hourly blocks of 2
+  points) from 577 to 473 bytes.
 
 ## 4. Anchors and residuals
 
-- **Grid indices.** Each finite sample of a block is a grid index q, with 0 ≤ q < 2^16.
+- **Grid indices.** Each finite sample of a block is a signed grid index q, with
+  −2^15 ≤ q < 2^15, relative to the block's anchor. A block spans at most 2^16 − 1 steps, so an
+  anchor near its middle reaches every sample; the reference encoder puts it at the block's mean
+  index for order 0, so the residuals are centered, and at the first sample's for higher orders,
+  so the first residual is 0, as far as the 16 bits allow ([ENCODER.md §5.7](ENCODER.md#57-residuals)).
 - **The anchor** is what a decoder adds q to. It is one of:
   - on a power-of-two grid: a finite float64, giving the value anchor + q·2^e;
   - on a decimal grid (block flag bit 2): an integer K0 with |K0| < 2^52, giving (K0 + q)·10^p;
   - on a scaled grid (block flag bit 6): an integer K0 with |K0| < 2^52, giving
     (K0 + N·q)·B^p / D, with B = 10 (bit 2 set) or 2, and N and D from `grid_scale` (§6).
-    - K0 is the index of the block's minimum on the **fine grid** B^p / D; the step is N fine
-      points. The minimum needn't be a multiple of the step: 32 + 0.18·k (°F from 0.1 °C) is
-      K0 = 1600, N = 9 on the fine grid 0.1 / 5.
+    - K0 is an index on the **fine grid** B^p / D, of a value on the block's grid (one of its
+      samples' or between them); the step is N fine points. K0 needn't be a multiple of the step:
+      32 + 0.18·k (°F from 0.1 °C) is K0 = 1600 + 9c, N = 9 on the fine grid 0.1 / 5.
     - With D = 1 it is N times a decimal or power-of-two grid (a 0.05 grid is N = 5 on 10^−2).
   - Each defines the block's values exactly (a binary fraction, a decimal, or a rational).
     float64 enters only at the final rounding (§5).
@@ -120,16 +135,16 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
   ```
 
   - Order-k differences of 16-bit values need up to 16 + k + 1 bits. But every q is in
-    [0, 2^16), so integrating mod 2^16 (§5) recovers q exactly: two bytes per sample suffice.
+    [−2^15, 2^15), so integrating mod 2^16 and reading the result as int16 (§5) recovers q
+    exactly: two bytes per sample suffice.
   - The prepended zeros make the first residuals the start values, so there's no separate header.
-
 ## 5. Decoding one block
 
 ```
 v = (u >> 1) XOR −(u & 1)                   # un-zigzag
-repeat `order` times:  prefix-sum v, each partial sum mod 2^16     # q
-order 0: q = v mod 2^16
-power of two: y[i] = a + q[i] · 2^e, rounded once, clamped to the largest finite double   (a: the anchor)
+repeat `order` times:  prefix-sum v, each partial sum mod 2^16
+q = the result read as int16: ((s + 32768) mod 2^16) − 32768          # −32768 ≤ q < 32768
+power of two: y[i] = a + q[i] · 2^e, rounded once, clamped to ±the largest finite double   (a: the anchor)
 decimal:      p < 0:  y[i] = float64(K0 + q[i]) / 10^-p   (K0: the anchor; integer divided by an exact power of ten)
               p >= 0: y[i] = float64(K0 + q[i]) · 10^p
 scaled, decimal:      y[i] = float64(K0 + N · q[i]) / (D · 10^-p)          (p <= 0)
@@ -139,21 +154,21 @@ scaled, power of two: y[i] = (float64(K0 + N · q[i]) · 2^e) / D            (�
 - **Decimal reconstruction** is the same double that parsing the decimal text (e.g. "12.345")
   produces, because IEEE division is correctly rounded.
 - **Scaled reconstruction rounds once,** to the double nearest the rational (K0 + N·q)·B^p / D:
-  - K0 + N·q is an exact integer below 2^53 (|K0| < 2^52, N·q < 2^32);
+  - K0 + N·q is an exact integer below 2^53 (|K0| < 2^52, |N·q| < 2^31);
   - decimal: D · 10^−p is an exact double (validated, §6.4), and the division rounds once;
   - power of two: the product with 2^e is exact (a normal double, as e ≥ −1022) and can't
     overflow (2^53 · 2^970 < 2^1024), and the division by D rounds once.
 - **The clamp** only matters for e ≥ 971.
-  - There, a sample near the largest double can reconstruct up to half a step above it, which
-    would round to inf. Clamping moves it closer to the original.
+  - There, a sample near the largest double (or the most negative) can reconstruct up to half a
+    step beyond it, which would round to ±inf. Clamping moves it closer to the original.
   - Below 971, `a + q·2^e` can't overflow (the excess is under half an ulp of the largest
     double): decoders compute it directly.
   - From 971 up, `q·2^e` itself can overflow while the sum doesn't. Evaluate at half scale:
-    `y = min(2·(a/2 + q·2^(e−1)), DBL_MAX)`, with `y = a` where q = 0 (a/2 rounds if a is
+    `y = max(min(2·(a/2 + q·2^(e−1)), DBL_MAX), −DBL_MAX)`, with `y = a` where q = 0 (a/2 rounds if a is
     subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
-- **Non-finite codes** (block flag bit 3): after dequantizing, overwrite samples with code
-  01, 10 or 11 with NaN (the canonical quiet NaN), +inf or −inf.
-  - Octets whose two code bytes are both 0 can be skipped.
+- **Codes** (block flag bit 3): after dequantizing, overwrite samples with code 01 with NaN (the
+  canonical quiet NaN), 10 with the block's next escaped value, 11 with its previous one again. A
+  block's escaped values start after those of the blocks before it.
 - **Time axis** (header time unit ≠ 0):
   - Block starts are the running sum of the `time_start` field (§6).
   - Each sample i > 0 has `quotient[i] = time_ref + unzigzag(residual[i])` mod 2^64. Residuals
@@ -184,7 +199,8 @@ All fields are little-endian.
 Header flags:
 - bit 0: `residual_planes` are byte planes instead of bit planes;
 - bits 1–3: `time_unit` (§3): 0 for no time axis, 1 s, 2 ms, 3 µs, 4 ns;
-- bits 4–7: 0.
+- bit 4: `group_time_step` trailer present (§3; with a time axis only);
+- bits 5–7: 0.
 
 ### 6.2 Planes and padding
 
@@ -222,10 +238,13 @@ The body is these fields, in this order. The four time fields are present only w
 | `residual_planes` | 16 × `O` | the residuals u (§4) |
 | `nonfinite_code_planes` | 2 × `O_nonfinite` | the non-finite codes (§2) |
 | `time_residual_planes` | 32 × (`O_irregular` + `O_long`) | the time residuals (§3) |
+| `escapes` | 8 × E | the escaped values (§2), float64, byte-planed; E = the number of codes 10 |
+| `group_time_step` | 8 if header flags bit 4 | the group time step q (§3), uint64 |
 
 ```
 body_size = 17 × num_blocks + 16 × O + 2 × O_nonfinite
-          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long))
+          + (time_unit ≠ 0) × (24 × num_blocks + 32 × (O_irregular + O_long)) + 8 × E
+          + 8 × (header flags bit 4)
 ```
 
 Every column is 0 for an empty block. Per field:
@@ -243,8 +262,7 @@ Every column is 0 for an empty block. Per field:
   - decimal grid: the decimal power p, −22 to 22;
   - scaled power-of-two grid: e, −1022 to 970;
   - scaled decimal grid: p, −22 to 0, with D · 5^−p < 2^53 (so D · 10^−p is an exact double).
-- **`grid_scale`**: on a scaled grid, N (bits 0–15) and D (bits 16–31), each 1 to 65,535; 0 on
-  every other block.
+- **`grid_scale`**: on a scaled grid, N (bits 0–15) and D (bits 16–31), each 1 to 65,535, else 0.
   - N and D needn't be coprime: any pair decodes.
   - It is a fixed column rather than one only for scaled blocks: zstd stores the zeros of a block
     group without scaled blocks in a few bytes, and every column's offset stays a function of
@@ -284,11 +302,13 @@ A decoder rejects a block group when any of these fail.
 
 - **Header:**
   - version 1;
-  - header flags bits 4–7 zero, `time_unit` 0 to 4;
+  - header flags bits 5–7 zero, `time_unit` 0 to 4, bit 4 only with a time axis;
+  - with bit 4, a `group_time_step` q ≥ 2 whose products with the stored increases and steps fit 64 bits;
   - `num_samples` ≤ 2^26 and no more than `num_blocks` blocks can hold.
 - **Before decompressing:** the frame's recorded content size lies between the body sizes with
   - the fewest plane bytes: ceil(`num_samples` / 8) per plane, no flags;
   - the most: up to 7 padding samples per block, every block flagged and long.
+- **Escapes:** no code 11 before a code 10 in its block; E counts blocks' samples only.
 - **Sizes:** the block sizes add up to `num_samples`, and the content size is exactly
   `body_size` once `block_flags` and `block_sizes` give the sums.
 - **Per block:**
@@ -358,18 +378,18 @@ the encoder ([ENCODER.md §6](ENCODER.md#6-guarantees) for the reference one).
 - **Power-of-two grids.** A block whose finite values are all a + q·2^e, with
   - a a finite float64,
   - e an integer from −1074 to 1023,
-  - q an integer from 0 to 65,535.
+  - q an integer from −32,768 to 32,767.
   - This covers a constant block of any finite value (q = 0, a the value), and any block of
     values on a grid of 2^e spanning at most 65,535 steps, e.g. integers, or multiples of 2^−4.
 - **Decimal grids.** A block whose finite values are all decimals (K0 + q)·10^p, with
   - p an integer from −22 to 22,
   - K0 an integer with |K0| < 2^52,
-  - q an integer from 0 to 65,535.
+  - q an integer from −32,768 to 32,767.
   - Each decodes to the double nearest the decimal: the same one parsing its text gives.
 - **Scaled grids.** A block whose finite values are all (K0 + N·q)·B^p / D, with
   - B = 2 and e from −1022 to 970, or B = 10 and p from −22 to 0 with D · 5^−p < 2^53,
   - N and D from 1 to 65,535, K0 an integer with |K0| < 2^52,
-  - q an integer from 0 to 65,535.
+  - q an integer from −32,768 to 32,767.
   - Each decodes to the double nearest the rational: thirds, 10 V / 4095 ADC counts, or
     32 + 0.18·k, bit for bit when the input was that double.
 - **Non-finite values.** +inf and −inf decode exactly. NaN decodes as the canonical quiet NaN:

@@ -40,7 +40,7 @@ def fahrenheit_text(seed):
 # name -> (values, exact): exact data is the double nearest each rational, as decoding gives
 GRIDS = {
     "thirds": (lambda: np.round(walk(1) * 3) / 3, True),
-    "0.05": (lambda: np.round(walk(2) * 20) / 20, True),
+    "0.05": (lambda: np.round(walk(2, sigma=0.2) * 20) / 20, True),  # a walk of 1 would be floored at 0.125
     "F from 0.1 C": (lambda: fahrenheit_text(3), True),
     "ADC 10 V / 4096": (lambda: counts(4, 0, 4095) * (10 / 4096), True),
     "ADC 10 V / 4095": (lambda: counts(5, 0, 4095) * 10 / 4095, True),
@@ -142,8 +142,9 @@ def test_an_unrationalizable_step_stays_binary():
 def test_the_target_coarsens_scaled_grids_within_half_a_step(target):
     """A wide thirds walk (about 11 bits a sample) capped: coarser blocks, half a step of error."""
     x = np.round(walk(13, sigma=300) * 3) / 3
-    exact = fluxcode.encode_group(x, block_len=L).group
-    capped = fluxcode.encode_group(x, Params(target_bits_per_sample=target), block_len=L).group
+    off = Params(noise_floor_sigma=0)  # a walk this wide is floored first (ENCODER §5.2): the target alone
+    exact = fluxcode.encode_group(x, off, block_len=L).group
+    capped = fluxcode.encode_group(x, Params(noise_floor_sigma=0, target_bits_per_sample=target), block_len=L).group
     assert len(capped) < len(exact)
     rows = group_rows(capped)
     err = np.abs(decode(capped) - x).reshape(-1, L).max(1)
@@ -161,8 +162,9 @@ def test_the_target_caps_exact_grids_and_keeps_fixed_points(name, make, target):
     counts it at its planned exponent. And decoded data, back on the coarsened grid, re-encodes to
     itself: the cap doesn't coarsen it again."""
     x = make()
-    params = Params(target_bits_per_sample=target)
-    free = len(fluxcode.encode_group(x, block_len=L).group)
+    # Walks this wide are floored first (ENCODER §5.2): the target alone
+    params = Params(noise_floor_sigma=0, target_bits_per_sample=target)
+    free = len(fluxcode.encode_group(x, Params(noise_floor_sigma=0), block_len=L).group)
     capped = fluxcode.encode_group(x, params, block_len=L).group
     assert len(capped) < free
     assert 8 * len(capped) / x.size < target + 1.0  # soft: the estimate is within about a bit
