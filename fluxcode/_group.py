@@ -116,6 +116,7 @@ def encode_rows(
         np.empty(num_blocks, np.int64),
         np.empty(num_blocks, np.int64),
         np.empty(num_blocks, np.int64),
+        np.empty(num_blocks, np.int64),
         np.empty(num_samples, np.int16),
         np.empty(num_samples, np.uint8),
         time_rows,
@@ -132,6 +133,7 @@ def encode_rows(
         rows.grid_params,
         rows.grid_scales,
         rows.value_anchors,
+        rows.periods,
         rows.residuals,
         rows.codes,
         *stats,
@@ -469,6 +471,8 @@ def decompress(group: bytes) -> ParsedGroup:
         raise ValueError(f"block {failing_block_idx}: anchor out of range (corrupt block group)")
     if validation_status == _decoder.BAD_SCALE:
         raise ValueError(f"block {failing_block_idx}: grid scale invalid for its grid (corrupt block group)")
+    if validation_status == _decoder.BAD_PERIOD:
+        raise ValueError(f"block {failing_block_idx}: period field invalid for its block (corrupt block group)")
     return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets, escapes, escape_offsets)
 
 

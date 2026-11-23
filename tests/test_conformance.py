@@ -377,7 +377,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
+    byte_body = _oracle.write_group(*rows[:8], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
     lay = _format.layout(rows.block_flags, sizes)
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):
@@ -464,9 +464,14 @@ def test_bad_block_sizes_are_rejected():
         fluxcode.decode_group(rebuilt(param))
 
     def anchor(b):
-        b[13 * 3 + 1] = 1  # byte 0 of its anchor
+        b[9 * 3 + 1] = 1  # byte 0 of its anchor
     with pytest.raises(ValueError, match="block 1: anchor"):
         fluxcode.decode_group(rebuilt(anchor))
+
+    def period(b):
+        b[17 * 3 + 1] = 1  # byte 0 of its period field
+    with pytest.raises(ValueError, match="block 1: period"):
+        fluxcode.decode_group(rebuilt(period))
 
 
 def _periodic(n=60_000):
@@ -584,11 +589,11 @@ def test_period_predictor_stays_out_of_targets():
     assert not (rows.block_flags & _format.BLOCK_FLAG_PERIOD).any()
 
 
-def _spec_period_indices(residuals, order, period, weight):
+def _spec_period_indices(residuals, order, length, fraction):
     """SPEC §4/§5 period blocks, in plain integers: the head integrated `order` times, then q[n] =
-    r[n] + (((64 - w) q[n - P] + w q[n - P - 1] + 32) >> 6), each read as int16."""
+    r[n] + (((64 - fraction) q[n - length] + fraction q[n - length - 1] + 32) >> 6), each read as int16."""
     wrap = lambda v: ((v + 32768) & 0xFFFF) - 32768
-    head = [int(r) for r in residuals[:min(len(residuals), period + 1)]]
+    head = [int(r) for r in residuals[:min(len(residuals), length + 1)]]
     for _ in range(order):
         total = 0
         for i, r in enumerate(head):
@@ -596,7 +601,7 @@ def _spec_period_indices(residuals, order, period, weight):
             head[i] = total
     q = head
     for n in range(len(q), len(residuals)):
-        q.append(wrap(int(residuals[n]) + (((64 - weight) * q[n - period] + weight * q[n - period - 1] + 32) >> 6)))
+        q.append(wrap(int(residuals[n]) + (((64 - fraction) * q[n - length] + fraction * q[n - length - 1] + 32) >> 6)))
     return np.array(q, np.int64)
 
 
@@ -613,10 +618,9 @@ def test_period_blocks_decode_as_the_spec_says():
     for b, flags in enumerate(rows.block_flags.tolist()):
         if not flags & _format.BLOCK_FLAG_PERIOD:
             continue
-        scale = int(rows.grid_scales[b])
-        period, weight = scale >> 32 & 0xFFFF, np.int8(scale >> 48 & 0xFF).item()
-        assert flags & BLOCK_FLAG_ORDER and 2 <= period and scale & 0xFFFFFFFF == 0
-        q = _spec_period_indices(rows.residuals[offsets[b]:offsets[b + 1]], flags & BLOCK_FLAG_ORDER, period, weight)
+        length, fraction = _format.period_length(rows.periods[b]), _format.period_fraction(rows.periods[b])
+        assert flags & BLOCK_FLAG_ORDER and 2 <= length and rows.grid_scales[b] == 0
+        q = _spec_period_indices(rows.residuals[offsets[b]:offsets[b + 1]], flags & BLOCK_FLAG_ORDER, length, fraction)
         anchor = rows.value_anchors[b:b + 1].view(np.float64)[0]
         np.testing.assert_array_equal(values[offsets[b]:offsets[b + 1]], anchor + q * 2.0 ** rows.grid_params[b])
         checked += 1

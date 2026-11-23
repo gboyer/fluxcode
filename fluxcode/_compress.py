@@ -20,7 +20,7 @@ import zstandard
 
 from . import _bitpacking, _format
 
-RUST_INTERFACE_VERSION: int = 5
+RUST_INTERFACE_VERSION: int = 6
 """Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 
@@ -338,15 +338,15 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     has_escapes = rows.escapes.shape[0] > 0
     if _rust is not None and rows.time_rows is None and not has_escapes:
         return _rust.compress_group(  # type: ignore[no-any-return]
-            rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
-            rows.codes, effort.layout, effort.flush, list(effort.zstd_levels),
+            rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.periods,
+            rows.residuals, rows.codes, effort.layout, effort.flush, list(effort.zstd_levels),
         )
     offsets = _format.layout(rows.block_flags, rows.block_sizes)
 
     # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
     body = _bitpacking.write_group(
-        rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
-        rows.codes, rows.time_rows, offsets,
+        rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.periods,
+        rows.residuals, rows.codes, rows.time_rows, offsets,
     )
     if has_escapes:
         body = np.concatenate([body, _format.escape_bytes(rows.escapes)])

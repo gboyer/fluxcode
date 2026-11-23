@@ -97,15 +97,17 @@ With both the noise floor and the target on, each block takes the coarser step.
   after each dense residual plane (more than 1/16 of its bytes non-zero).
   - Every zstd block has its own literal Huffman table.
   - The frame is an ordinary one either way.
-- the zstd levels.
+- the zstd levels;
+- whether blocks may take the period predictor (§5.7.1; never with a target).
 
-| effort | layout | frame | zstd |
-|---|---|---|---|
-| 1 | heuristic | one run | 1 |
-| 2 | heuristic | one run | 3 |
-| 3–4 | best | one run | 3 |
-| 5–8 | best | flushed | 3 |
-| 9 | best | flushed | 3 and 9 |
+| effort | layout | frame | zstd | period predictor |
+|---|---|---|---|---|
+| 1 | heuristic | one run | 1 | no |
+| 2 | heuristic | one run | 3 | no |
+| 3–4 | best | one run | 3 | no |
+| 5 | best | flushed | 3 | no |
+| 6–8 | best | flushed | 3 | yes |
+| 9 | best | flushed | 3 and 9 | yes |
 
 - **Heuristic layout:** byte planes if fewer than 1% of the block group's zigzagged residuals reach
   128, else bit planes. One compression.
@@ -113,7 +115,9 @@ With both the noise floor and the target on, each block takes the coarser step.
 - **Effort 9** compresses at both zstd levels and keeps the smaller (zstd 9 alone is larger on
   about a fifth of block groups).
 - **Ordering of sizes:**
-  - no block group grows from effort 5 to 9;
+  - the layout and zstd settings never grow a block group from effort 5 to 9;
+  - the period predictor (from 6) can, on a group whose quantized values repeat exactly, by a
+    fraction of a bit per sample on a group that is nearly free (§5.7.1);
   - the other steps are ordered only on average: a flushed frame is larger than one run on tiny
     block groups, and effort 1 uses another zstd level.
 - **Efforts sharing settings** leave room for later strategies; their output may change when
@@ -812,19 +816,32 @@ each index from one a period earlier (SPEC.md §4, block flag bit 7):
 ```
 crossings of the mean, upward: at least 3, their intervals' spread under 10% of their mean
 skip if the fixed order's residual variance < 4 (steps²): nearly free blocks
-P0 = mean crossing interval; P = the lag in P0 ± 3 of least Σ(q[n] − q[n−P])² over the first 512
-interpolate from the lower neighbour: P − 1 if E(P − 1) < E(P + 1)
-w = round(64 · Σ y·z / Σ z²) (int8), y = q[n] − q[n−P], z = q[n−P−1] − q[n−P], over the first 512
-take it if ½ (n − P − 1) log2(variance of the fixed residuals past P / variance of the errors) ≥ 64 bits
+guess = mean crossing interval
+period_length = the lag within guess ± 3 of least Σ(q[n] − q[n − lag])², over the first 512 samples;
+                one lag lower if the lag below fits better than the lag above (the true period lies
+                between period_length and period_length + 1)
+period_fraction = round(64 · Σ y·z / Σ z²) (int8), over the first 512 samples, with
+                y = q[n] − q[n − period_length], z = q[n − period_length − 1] − q[n − period_length]
+take it if ½ (n − period_length − 1) · log2(variance of the fixed residuals past the head
+                                             / variance of the prediction errors) ≥ 64 bits
 ```
 
-The first P + 1 residuals stay the block's fixed order's (no history to predict from), so a period
-costs nothing where it can't help. Measured at effort 6 (`experimental/value/`): motor current on a
-16-bit ADC −15%, line voltage (128 samples a cycle) −18%, no other realistic signal changed; an
-exactly repeating synthetic sine can come out larger (zstd already matches its fixed-order residuals'
-repeats, which a variance can't see). Cost on a periodic block: about 3.5 µs to encode (motor current
-6.4 → 9.7 µs per 1000-sample block) and +0.3–0.5 µs to decode (the prediction is sequential); a
-non-periodic block pays the crossing pass, about 0.3 µs.
+The first period_length + 1 residuals (the head) stay the block's fixed order's, as there is no
+earlier period to predict from, so the predictor costs nothing where it can't help.
+
+- **Size,** measured at effort 6 (`experimental/value/`, 2026-11-22): motor current on a 16-bit ADC
+  −15%, line voltage (128 samples a cycle) −18%, no other realistic signal changed.
+- **It can grow a group whose quantized values repeat exactly** (a clean synthetic or generated
+  waveform, noise under the step): zstd already matches those repeats in the fixed-order
+  residuals, and the predictor's variance test can't see that. The cost is small in bytes, as
+  such groups are nearly free: a clean 12-bit sine of period 100.4 went from 0.12 to 0.19
+  bits/sample, the worst of 45 sines tried. No group of the realistic corpus grew.
+- **Encode:** about +50% on a periodic block (motor current 6.4 → 9.7 µs per 1000-sample block); a
+  non-periodic block pays the crossing pass, about +5%.
+- **Decode:** each run of period_length samples depends only on earlier runs, so the decoder
+  computes a run per loop with no dependency between its iterations. Motor current's blocks decode
+  8% faster with the predictor than without it (2026-11-22, same process; the period loop is
+  36–43% faster than a single loop over the block, which also integrates only the head).
 
 ### 5.8 Per-block-group target
 

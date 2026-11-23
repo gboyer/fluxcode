@@ -25,16 +25,19 @@ from fluxcode._format import (
     allocate_time_rows,
     get_int16,
     get_int64,
+    get_uint24,
+    get_uint32,
     grid_params_start,
     grid_scale_start,
     group_size,
     layout,
+    period_start,
     read_layout,
     value_anchor_start,
 )
 
 
-def write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes=None,
+def write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchors, periods, residuals, codes=None,
                 byte_planes=False, time_rows: TimeRows | None = None, offsets=None, escapes=None):
     """Serializes rows into a body. The residuals are 16 bit planes unless byte_planes, packed here
     with numpy (everything else is the package's writer's)."""
@@ -45,8 +48,8 @@ def write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchor
         if offsets.code_offsets[-1]:
             raise ValueError("flagged blocks need codes")
         codes = np.zeros(0, np.uint8)
-    body = _bitpacking.write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes,
-                                   time_rows, offsets)
+    body = _bitpacking.write_group(block_flags, block_sizes, grid_params, grid_scales, value_anchors, periods, residuals,
+                                   codes, time_rows, offsets)
     if escapes is not None and len(escapes):
         body = np.concatenate([body, _format.escape_bytes(escapes)])
     if byte_planes:
@@ -93,7 +96,7 @@ def get_codes(code_planes, plane_byte_offset, out_codes):
 
 @njit(nogil=True)
 def _read_rows(raw_group, byte_planes, has_time, sample_offsets, octet_offsets, code_offsets, out_grid_params,
-               out_grid_scales, out_value_anchors, out_residuals, out_codes):
+               out_grid_scales, out_value_anchors, out_periods, out_residuals, out_codes):
     num_blocks = out_grid_params.shape[0]
     max_octets = 0
     for block_idx in range(num_blocks):
@@ -106,8 +109,9 @@ def _read_rows(raw_group, byte_planes, has_time, sample_offsets, octet_offsets, 
     cplanes = code_planes_view(raw_group, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
     for block_idx in range(num_blocks):
         out_grid_params[block_idx] = get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx)
-        out_grid_scales[block_idx] = get_int64(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+        out_grid_scales[block_idx] = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
         out_value_anchors[block_idx] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
+        out_periods[block_idx] = get_uint24(raw_group, period_start(num_blocks), num_blocks, block_idx)
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         if byte_planes:
@@ -146,10 +150,11 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Grou
     grid_params = np.empty(num_blocks, np.int64)
     grid_scales = np.empty(num_blocks, np.int64)
     value_anchors = np.empty(num_blocks, np.int64)
+    periods = np.empty(num_blocks, np.int64)
     residuals = np.empty(num_samples, np.int16)
     codes = np.zeros(num_samples, np.uint8)
     _read_rows(raw_arr, byte_planes, has_time, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets,
-               grid_params, grid_scales, value_anchors, residuals, codes)
+               grid_params, grid_scales, value_anchors, periods, residuals, codes)
     time_rows = None
     if has_time:
         # Zeroed: read_time_rows leaves regular blocks' residuals untouched
@@ -157,7 +162,7 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Grou
         time_rows.residuals[:] = 0
         everyone = np.arange(num_blocks, dtype=np.int64)
         _bitpacking.check_time_rows_status(*_bitpacking.read_time_rows(raw_arr, *offsets, *time_rows, everyone))
-    return GroupRows(block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, time_rows,
+    return GroupRows(block_flags, block_sizes, grid_params, grid_scales, value_anchors, periods, residuals, codes, time_rows,
                      escapes)
 
 

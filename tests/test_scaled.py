@@ -110,7 +110,7 @@ def test_each_block_encodes_as_it_would_alone(name):
     together = group_rows(fluxcode.encode_group(x, block_len=L).group)
     for b in range(x.size // L):
         alone = group_rows(fluxcode.encode_group(x[b * L:(b + 1) * L], block_len=L).group)
-        for field in ("block_flags", "grid_params", "grid_scales", "value_anchors"):
+        for field in ("block_flags", "grid_params", "grid_scales", "value_anchors", "periods"):
             assert getattr(alone, field)[0] == getattr(together, field)[b], (b, field)
         np.testing.assert_array_equal(alone.residuals, together.residuals[b * L:(b + 1) * L])
 
@@ -210,10 +210,10 @@ def scaled_group(flags, param, num, den, k0, q):
     n = q.size
     rows = _format.GroupRows(
         np.array([flags], np.uint8), np.array([n], np.int64), np.array([param], np.int64),
-        np.array([num | den << SCALE_SHIFT], np.int64), np.array([k0], np.int64),
+        np.array([num | den << SCALE_SHIFT], np.int64), np.array([k0], np.int64), np.zeros(1, np.int64),
         ((q.astype(np.int64) + 2 ** 15) % 2 ** 16 - 2 ** 15).astype(np.int16), np.zeros(n, np.uint8), None,
     )
-    body = _oracle.write_group(*rows[:7])
+    body = _oracle.write_group(*rows[:8])
     return _format.pack_header(1, n, False, 0) + zstandard.ZstdCompressor().compress(body.tobytes())
 
 

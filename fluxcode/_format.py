@@ -25,7 +25,8 @@ only when the header's time unit is not 0):
        decimal quantization; bit 3 indicates non-finite code planes; bit 4
        indicates irregular times (time residual planes); bit 5 (with bit 4) indicates
        long time residuals (64 planes instead of 32); bit 6 indicates a scaled grid (the
-       grid_scale field); bit 7 is reserved and must be zero. An empty block's flags are 0.
+       grid_scale field); bit 7 indicates the period predictor (the period field). An empty
+       block's flags are 0.
     2. block_sizes (2 * num_blocks bytes):
        Per-block uint16 sample count, byte-planed (all low bytes, then all high bytes).
     3. grid_params (2 * num_blocks bytes):
@@ -34,25 +35,28 @@ only when the header's time unit is not 0):
     4. grid_scale (4 * num_blocks bytes, byte-planed):
        Per-block uint32: N | D << 16 of a scaled block (step N / D times 2^e or 10^p), 0 otherwise.
     5. value_anchor (8 * num_blocks bytes, byte-planed: all byte 0s, all byte 1s, ...):
-       Per-block reconstruction base: the bits of the float64 block minimum on the
-       power-of-two grid, or the int64 grid index K0 of the minimum on a decimal or scaled grid.
-    6. time_start (8 * num_blocks bytes, byte-planed; time only):
+       Per-block reconstruction base at the block's reference index: the bits of a float64 on
+       the power-of-two grid, or the int64 grid index K0 on a decimal or scaled grid.
+    6. period (3 * num_blocks bytes, byte-planed):
+       Per-block period predictor parameters: the period length (uint16, bytes 0-1) and the
+       period fraction (int8, byte 2) of a period block, 0 otherwise.
+    7. time_start (8 * num_blocks bytes, byte-planed; time only):
        The first non-empty block's start time as int64, then each non-empty block's start
        minus the previous non-empty block's start as uint64 (0 for an empty block). Starts
        are non-decreasing by construction.
-    7. time_step (8 * num_blocks bytes, byte-planed; time only):
+    8. time_step (8 * num_blocks bytes, byte-planed; time only):
        Per-block int64 step: the GCD of the block's time deltas (0 if all are 0).
-    8. time_ref (8 * num_blocks bytes, byte-planed; time only):
+    9. time_ref (8 * num_blocks bytes, byte-planed; time only):
        Per-block uint64 reference quotient: sample i > 0's quotient
        (time[i] - time[i-1]) / time_step is time_ref plus its residual (0 in a regular
        block).
-    9. residual_planes (16 bytes per octet of every block):
+    10. residual_planes (16 bytes per octet of every block):
        Zigzag-encoded int16 differences mod 2^16, as 16 bit planes across all
        blocks, or (flags bit 0) as 2 byte planes: every low byte, then every high byte.
-    10. nonfinite_code_planes (2 bytes per octet of the blocks with non-finite values):
+    11. nonfinite_code_planes (2 bytes per octet of the blocks with non-finite values):
        2 code bit planes for the flagged blocks, encoding sample categories
-       (00: finite, 01: NaN, 10: +inf, 11: -inf).
-    11. time_residual_planes (32 bytes per octet of the irregular blocks, then 32 per octet
+       (00: on the grid, 01: NaN, 10: the block's next escaped value, 11: its previous one again).
+    12. time_residual_planes (32 bytes per octet of the irregular blocks, then 32 per octet
        of the long blocks; time only): per sample of an irregular block, its quotient minus
        time_ref, mod 2^64 and zigzagged (0 for sample 0), as bit planes like the residual
        planes: planes 0-31 of every irregular block, then planes 32-63 of the long blocks.
@@ -88,17 +92,32 @@ an int64 index on the fine grid 2^e / D (10^p / D), N and D in the grid_scale fi
 
 BLOCK_FLAG_PERIOD: int = 0x80
 """Block flags: period predictor (bit 7): the block's indices are predicted from those a period earlier
-(SPEC §4), whose parameters are in the high half of the grid_scale field."""
+(SPEC §4), with the parameters in the period field."""
 
-PERIOD_SHIFT: int = 32
-"""grid_scale holds a period block's period P in bits 32-47 (2 to 65,535)."""
+PERIOD_LENGTH_MASK: int = 0xFFFF
+"""The period field holds a period block's period length (2 to 65,535 samples) in its low 16 bits..."""
 
-PERIOD_WEIGHT_SHIFT: int = 48
-"""... and its fractional weight w, int8, in bits 48-55: the prediction is
-((64 - w) q[n - P] + w q[n - P - 1] + 32) >> 6. Bits 56-63 are 0."""
+PERIOD_FRACTION_SHIFT: int = 16
+"""... and its period fraction (int8, in 64ths of a sample) above them: the prediction is
+((64 - fraction) q[n - length] + fraction q[n - length - 1] + 32) >> 6."""
 
-SCALE_FIELD_MASK: int = 0xFFFFFFFF
-"""The low half of grid_scale: N | D << 16 of a scaled block."""
+
+def period_field(period_length: int, period_fraction: int) -> int:
+    """A period block's period field from its period length and fraction."""
+    return period_length | (period_fraction & 0xFF) << PERIOD_FRACTION_SHIFT
+
+
+@njit(inline="always")
+def period_length(period: int | np.integer) -> int:
+    """The period length of a period field."""
+    return int(period & PERIOD_LENGTH_MASK)
+
+
+@njit(inline="always")
+def period_fraction(period: int | np.integer) -> int:
+    """The period fraction (int8) of a period field."""
+    fraction = int(period >> PERIOD_FRACTION_SHIFT & 0xFF)
+    return fraction - 256 if fraction >= 128 else fraction
 
 GROUP_FLAG_BYTE_PLANES: int = 0x01
 """Block group header flag: the residual field holds 2 byte planes instead of 16 bit planes."""
@@ -223,15 +242,19 @@ BYTES_PER_SIZE: int = 2
 BYTES_PER_PARAM: int = 2
 """Bytes of grid_params per block (int16)."""
 
-BYTES_PER_SCALE: int = 8
-"""Bytes of grid_scale per block (int64: N | D << 16 of a scaled block in the low half, a period
-block's P | w << 16 in the high half, 0 otherwise)."""
+BYTES_PER_SCALE: int = 4
+"""Bytes of grid_scale per block (uint32: N | D << 16 of a scaled block, 0 otherwise)."""
 
 BYTES_PER_ANCHOR: int = 8
 """Bytes of value_anchor per block (float64 bits or int64 grid index)."""
 
-METADATA_BYTES_PER_BLOCK: int = BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE + BYTES_PER_ANCHOR
-"""Bytes of the value columns per block (flags, size, grid parameter, scale, anchor: 17)."""
+BYTES_PER_PERIOD: int = 3
+"""Bytes of period per block (the period length, uint16, and fraction, int8, of a period block; 0 otherwise)."""
+
+METADATA_BYTES_PER_BLOCK: int = (
+    BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE + BYTES_PER_ANCHOR + BYTES_PER_PERIOD
+)
+"""Bytes of the value columns per block (flags, size, grid parameter, scale, anchor, period: 20)."""
 
 FORMAT_VERSION: int = 1
 """Block group format version recorded in the first header byte."""
@@ -570,6 +593,19 @@ def value_anchor_start(num_blocks: int) -> int:
 
 
 @njit(inline="always")
+def period_start(num_blocks: int) -> int:
+    """Calculates the byte offset of the period field.
+
+    Args:
+        num_blocks: Total number of blocks in the block group.
+
+    Returns:
+        Offset in bytes where the period field begins.
+    """
+    return (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE + BYTES_PER_ANCHOR) * num_blocks
+
+
+@njit(inline="always")
 def time_start_start(num_blocks: int) -> int:
     """Calculates the byte offset of the time_start field.
 
@@ -684,6 +720,40 @@ def get_uint32(raw_group: np.ndarray, field_start: int, num_blocks: int, block_i
 
 
 @njit(inline="always")
+def put_uint24(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
+    """Writes a block's 3-byte value into a byte-planed field (the period field).
+
+    Args:
+        raw_group: 1D uint8 array of uncompressed body bytes.
+        field_start: Offset of the field (period_start).
+        num_blocks: Total number of blocks.
+        block_idx: Zero-based block index.
+        value: Unsigned 24-bit integer to write.
+    """
+    for byte_idx in range(3):
+        raw_group[field_start + byte_idx * num_blocks + block_idx] = np.uint8((value >> (8 * byte_idx)) & 0xFF)
+
+
+@njit(inline="always")
+def get_uint24(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int) -> np.int64:
+    """Reads a block's 3-byte value from a byte-planed field (the period field).
+
+    Args:
+        raw_group: 1D uint8 array of uncompressed body bytes.
+        field_start: Offset of the field (period_start).
+        num_blocks: Total number of blocks.
+        block_idx: Zero-based block index.
+
+    Returns:
+        The value, as int64.
+    """
+    value = np.int64(0)
+    for byte_idx in range(3):
+        value |= np.int64(raw_group[field_start + byte_idx * num_blocks + block_idx]) << (8 * byte_idx)
+    return value
+
+
+@njit(inline="always")
 def put_int16(raw_group: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
     """Writes a block's int16 value into a byte-planed field.
 
@@ -776,9 +846,10 @@ class GroupRows(NamedTuple):
         block_flags: 1D uint8 array of block flags.
         block_sizes: 1D int64 array of block sizes.
         grid_params: 1D int64 array of block grid parameters.
-        grid_scales: 1D int64 array of block grid scales (N | D << 16; 0 on unscaled blocks), with a period
-            block's P | w << 16 in the high half (PERIOD_SHIFT).
+        grid_scales: 1D int64 array of block grid scales (N | D << 16; 0 on unscaled blocks).
         value_anchors: 1D int64 array of block value anchors.
+        periods: 1D int64 array of block period fields (period_field; 0 on blocks without the period
+            predictor).
         residuals: 1D int16 array of every sample's residual.
         codes: 1D uint8 array of every sample's code (zeros in unflagged blocks).
         time_rows: The time axis rows, or None for a block group without a time axis.
@@ -790,6 +861,7 @@ class GroupRows(NamedTuple):
     grid_params: np.ndarray
     grid_scales: np.ndarray
     value_anchors: np.ndarray
+    periods: np.ndarray
     residuals: np.ndarray
     codes: np.ndarray
     time_rows: TimeRows | None
