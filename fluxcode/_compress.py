@@ -13,8 +13,8 @@ import importlib
 import os
 import threading
 import warnings
-from types import ModuleType
-from typing import NamedTuple
+from collections.abc import Sequence
+from typing import Literal, NamedTuple, Protocol, cast
 
 import numpy as np
 import zstandard
@@ -30,7 +30,48 @@ stale local builds fall back cleanly with a warning.
 """
 
 
-def _load_rust() -> ModuleType | None:
+class _RustAccelerator(Protocol):
+    """Structural typing contract for the optional ``fluxcode_rs`` extension module."""
+
+    INTERFACE_VERSION: int
+    FLUSH_MIN_DENSITY: int
+    BYTE_PLANES_BIT: int
+    BYTE_PLANES_MAX_SHARE: float
+
+    def compress_group(
+        self,
+        block_flags: np.ndarray,
+        block_sizes: np.ndarray,
+        grid_exponents: np.ndarray,
+        grid_scales: np.ndarray,
+        block_anchors: np.ndarray,
+        residuals: np.ndarray,
+        sample_codes: np.ndarray,
+        escaped_values: np.ndarray,
+        layout: str,
+        flush: bool,
+        zstd_levels: Sequence[int],
+    ) -> bytes: ...
+
+    def pack_group(
+        self,
+        body: np.ndarray,
+        num_blocks: int,
+        num_samples: int,
+        num_plane_bytes: int,
+        time_unit: int,
+        layout: str,
+        flush: bool,
+        zstd_levels: Sequence[int],
+        group_time_step: bool = False,
+    ) -> bytes: ...
+
+    def simd_path(self) -> Literal["neon", "sse2", "scalar"]: ...
+
+    def zstd_version(self) -> tuple[int, int, int]: ...
+
+
+def _load_rust() -> _RustAccelerator | None:
     """Loads the optional ``fluxcode_rs`` accelerator if installed and interface-compatible.
 
     Returns:
@@ -52,10 +93,10 @@ def _load_rust() -> ModuleType | None:
             stacklevel=2,
         )
         return None
-    return module
+    return cast(_RustAccelerator, module)
 
 
-_rust: ModuleType | None = _load_rust()
+_rust: _RustAccelerator | None = _load_rust()
 """Optional Rust accelerator module (``fluxcode[rust]``), or None if unavailable."""
 
 
@@ -270,7 +311,7 @@ def pack_body(
             has_group_time_step = True
     num_plane_bytes = int(offsets.plane_byte_offsets[-1])
     if _rust is not None:
-        return _rust.pack_group(  # type: ignore[no-any-return]
+        return _rust.pack_group(
             body,
             num_blocks,
             num_samples,
@@ -314,7 +355,7 @@ def compress_columns(columns: _format.EncodedBlockColumns, num_samples: int, eff
     """
     # Untimed groups can take the zero-copy Rust fast path directly from columnar arrays.
     if _rust is not None and columns.time_columns is None:
-        return _rust.compress_group(  # type: ignore[no-any-return]
+        return _rust.compress_group(
             columns.block_flags,
             columns.block_sizes,
             columns.grid_exponents,

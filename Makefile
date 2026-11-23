@@ -1,4 +1,4 @@
-.PHONY: help init datasets public-bench public-report test test-public check
+.PHONY: help init datasets public-bench public-report test test-public check check-rust
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -31,3 +31,7 @@ check: ## Run CI-equivalent checks (ruff, experimental smoke, mypy, ty, offline 
 	uv run mypy fluxcode fluxprune
 	uv run ty check
 	uv run pytest
+
+check-rust: ## Run Rust formatting, clippy, and SIMD bit-plane tests
+	cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings
+	rustc --edition 2021 --test -O rust/src/planes.rs -o /tmp/fluxcode_planes_test && /tmp/fluxcode_planes_test && rm -f /tmp/fluxcode_planes_test
