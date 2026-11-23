@@ -162,9 +162,10 @@ look at. Docs: ENCODER.md and SPEC.md sections named; TUNING.md has the noise fl
   out larger at effort 6–9 than at effort 5: 4 of 45 sines tried (12 bits) grew, by up to +58%
   (908 → 1432 B). That breaks ENCODER §1's "no block group grows from effort 5 to 9"; the test
   of it uses signals the predictor doesn't touch (§8).
-- **Commits.** 1d24bcf, 133d23f, 4af70cf. SPEC §4 (block flag bit 7, grid_scale widened to
-  int64), ENCODER §5.7.1, Rust interface version 5.
-- **Review.** Decode is sequential for period blocks (+0.3–0.5 µs).
+- **Commits.** 1d24bcf, 133d23f, 4af70cf. SPEC §4 (block flag bit 7), ENCODER §5.7.1. The
+  parameters first lived in `grid_scale`'s high half (widened to 8 bytes for every block); since
+  2026-11-22 they are their own 3-byte `period` column (§8), Rust interface version 6.
+- **Review.** Decode: see §8 (period blocks now decode 8% faster than without the predictor).
 
 ### 3.5 Escaped samples (glitches)
 
@@ -288,7 +289,8 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
   several rates; inspect floored blocks for lost features (TUNING.md "Validating on your data").
 - **Format changes to sign off** (no stored data exists yet, so no compatibility code was kept):
   signed centered indices (SPEC §4); 2-bit codes 10 escape / 11 repeat and the trailing
-  `escapes` field (SPEC §2, §6); block flag bit 7 period and the int64 grid_scale (SPEC §4);
+  `escapes` field (SPEC §2, §6); block flag bit 7 period and its 3-byte `period` column (SPEC §4,
+  §6; `grid_scale` is back to 4 bytes);
   header flag bit 4 and the trailing `time_quantum` (SPEC §3, §6). Golden hashes were
   regenerated for these.
 - **Rust.** Interface version bumped for the period predictor; the Rust compress path (rows to
@@ -336,6 +338,25 @@ factual finding held except the period predictor's numbers, which had a differen
   and ENCODER (the scaled step needs `grids="rational"`), TUNING.md (a tolerance section).
 - This log: the headline split (random walks 94% of the 1 GiB saving), decode figures labelled,
   period numbers re-measured.
+
+**Period predictor follow-up (2026-11-22, with the owner):**
+- Kept at effort ≥ 6. The growth on exactly repeating groups is accepted and documented (ENCODER
+  §1, §5.7.1; `test_period_predictor_growth_is_bounded`: under 0.1 bits/sample). A per-block repeat
+  guard was rejected: one more tuned threshold, and it can't see repeats longer than a block, so
+  the effort promise has to change anyway. "Try both and keep the smaller" was rejected by the
+  owner (such comparisons multiply).
+- Its parameters moved from `grid_scale`'s high half (4 extra bytes on every block) to their own
+  3-byte `period` column after `value_anchor`: period length (uint16) and period fraction (int8).
+  Decoded values identical on 67 cases (corpus at efforts 4 and 6, the test signals); sizes
+  +0.01% in total, each within ±8 bytes per group. The high half had cost 0.2% on sparse daily
+  groups and nothing measurable on dense ones. Docs and code name them period length and period
+  fraction (P and w before).
+- Decode: the loop now runs one period length of samples at a time, with no dependency between
+  iterations: 36–43% faster than the single loop (`period_decode.py`, battery power, both in one
+  process), and motor current's period blocks decode 8% faster than the same blocks without the
+  predictor (they integrate only the head). It is not vectorized: the only form LLVM vectorized
+  (predictions into a scratch array, then added: 4 × i32 lanes) was twice as slow on runs of a
+  period's length (`period_simd.py`). The owner wanted SIMD if it paid; it doesn't here.
 
 **Script index** (timing microbenchmarks not cited above): `kernels.py`, `kernels2.py` (noise
 kernel variants and the fused checks, the per-stage µs of 3.1), `time_noise.py` (noise estimate
