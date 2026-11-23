@@ -388,6 +388,19 @@ def decompress(group: bytes) -> ParsedGroup:
     raw_body = np.frombuffer(_compress.zstd()[1].decompress(frame), np.uint8)
     block_flags = raw_body[:num_blocks]
     block_sizes, offsets = _format.read_layout(raw_body, num_blocks)
+    if header.group_time_step:
+        # Restore time_start increases and time_step values from the group_time_step trailer
+        min_size = _format.group_size(num_blocks, offsets, has_time) + _format.GROUP_TIME_STEP_BYTES
+        step = (
+            raw_body[-_format.GROUP_TIME_STEP_BYTES:].copy().view(np.uint64)[0]
+            if raw_body.shape[0] >= min_size
+            else np.uint64(0)
+        )
+        raw_body = raw_body[:-_format.GROUP_TIME_STEP_BYTES].copy()
+        if step < 2 or not _format.scale_time_columns(raw_body, offsets.sample_offsets, step, False):
+            raise ValueError("block group's group_time_step is under 2 or overflows its time columns (corrupt block group)")
+        block_flags = raw_body[:num_blocks]
+        header = header._replace(group_time_step=False)
     if int(offsets.sample_offsets[-1]) != num_samples:
         raise ValueError(f"block group's block sizes add up to {int(offsets.sample_offsets[-1])}, not its {num_samples} samples")
     # The exact size depends on coded planes, time residual planes, and the escapes trailer

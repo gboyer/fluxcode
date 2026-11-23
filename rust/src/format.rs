@@ -9,6 +9,8 @@ pub const BLOCK_FLAG_CODED: u8 = 0x08;
 const GROUP_FLAG_BYTE_PLANES: u8 = 1;
 /// Position of the 3-bit time unit in the block group header flags (bits 1-3).
 const GROUP_FLAG_TIME_UNIT_SHIFT: u8 = 1;
+/// Block group header flags bit 4: group_time_step uint64 trailer present (time axis only).
+const GROUP_FLAG_GROUP_TIME_STEP: u8 = 0x10;
 /// Largest time unit code the header's 3 bits hold.
 const MAX_TIME_UNIT: u8 = 7;
 const FORMAT_VERSION: u8 = 1;
@@ -67,6 +69,7 @@ pub struct Shape {
     pub num_samples: usize,
     pub num_octets: usize,
     pub time_unit: u8,
+    pub group_time_step: bool,
 }
 
 impl Shape {
@@ -79,6 +82,7 @@ impl Shape {
         self.num_blocks <= u16::MAX as usize
             && self.num_samples <= u32::MAX as usize
             && self.time_unit <= MAX_TIME_UNIT
+            && (!self.group_time_step || self.has_time())
     }
 
     pub fn residual_start(&self) -> usize {
@@ -93,7 +97,12 @@ impl Shape {
             GROUP_FLAG_BYTE_PLANES
         } else {
             0
-        } | (self.time_unit << GROUP_FLAG_TIME_UNIT_SHIFT);
+        } | (self.time_unit << GROUP_FLAG_TIME_UNIT_SHIFT)
+            | if self.group_time_step {
+                GROUP_FLAG_GROUP_TIME_STEP
+            } else {
+                0
+            };
         header[2..4].copy_from_slice(&(self.num_blocks as u16).to_le_bytes());
         header[4..8].copy_from_slice(&(self.num_samples as u32).to_le_bytes());
         header
@@ -168,6 +177,7 @@ impl<'a> Rows<'a> {
             num_samples,
             num_octets: octet_offsets[num_blocks],
             time_unit: 0,
+            group_time_step: false,
         };
         Ok(Rows {
             shape,

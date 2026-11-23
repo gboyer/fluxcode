@@ -13,7 +13,7 @@ import zstandard
 from _signals import KINDS, discrete_minute, minute
 
 import fluxcode
-from fluxcode import Params, _compress
+from fluxcode import Params, _compress, _format
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
 
 fluxcode_rs = pytest.importorskip("fluxcode_rs", reason="the fluxcode[rust] extra isn't installed")
@@ -188,3 +188,28 @@ def test_rust_and_python_match_with_escapes():
 def test_bit_planes_use_the_vector_path_of_the_architecture():
     expected = {"arm64": "neon", "aarch64": "neon", "x86_64": "sse2", "AMD64": "sse2"}
     assert fluxcode_rs.simd_path() == expected.get(platform.machine(), "scalar")
+
+
+def test_rust_and_python_match_with_group_time_step():
+    """Groups with group_time_step trailer set header bit 4 natively in Rust pack_group."""
+    rng = np.random.default_rng(12)
+    seconds = np.sort(rng.choice(3600 * 6, 30, replace=False))
+    times = np.datetime64("2026-01-01", "ns") + seconds.astype("timedelta64[s]")
+    values = rng.normal(size=30)
+    for effort in (1, 4, 5):
+        params = Params(effort=effort)
+        group_rust = fluxcode.encode_group(values, params, block_len=5, times=times).group
+        saved = _compress._rust
+        try:
+            _compress._rust = None
+            group_python = fluxcode.encode_group(values, params, block_len=5, times=times).group
+        finally:
+            _compress._rust = saved
+        assert group_rust[1] & _format.GROUP_FLAG_GROUP_TIME_STEP
+        if SAME_ZSTD:
+            assert group_rust == group_python
+        else:
+            a, b = fluxcode.decode_group(group_rust), fluxcode.decode_group(group_python)
+            np.testing.assert_array_equal(a.values, b.values)
+            assert a.times is not None and b.times is not None
+            np.testing.assert_array_equal(a.times, b.times)

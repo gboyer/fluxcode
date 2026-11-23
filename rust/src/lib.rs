@@ -30,7 +30,7 @@ use format::{Rows, Shape};
 
 /// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the
 /// extension.
-const INTERFACE_VERSION: u32 = 5;
+const INTERFACE_VERSION: u32 = 6;
 
 /// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress`
 /// builds it. `layout` is "heuristic" or "best" (`Effort.layout`).
@@ -77,7 +77,8 @@ fn compress_group<'py>(
 /// is the octets (8 residual bytes each) of all blocks.
 #[pyfunction]
 #[pyo3(signature = (
-    body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels
+    body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels,
+    group_time_step = false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn pack_group<'py>(
@@ -90,12 +91,14 @@ fn pack_group<'py>(
     layout: &str,
     flush: bool,
     zstd_levels: Vec<i32>,
+    group_time_step: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let shape = Shape {
         num_blocks,
         num_samples,
         num_octets,
         time_unit,
+        group_time_step,
     };
     if !shape.fits_header() {
         return Err(PyValueError::new_err(

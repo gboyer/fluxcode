@@ -20,7 +20,7 @@ import zstandard
 
 from . import _bitpacking, _escapes, _format
 
-RUST_INTERFACE_VERSION: int = 5
+RUST_INTERFACE_VERSION: int = 6
 """Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 
@@ -206,22 +206,12 @@ def _smallest_group(
     offsets: _format.Layout,
     time_unit: int,
     effort: Effort,
+    group_time_step: bool = False,
 ) -> bytes:
     """Compresses each candidate body at each zstd level and builds the smallest block group.
 
     Ties favor byte planes (which decode faster without bit transposing), and
     then lower compression levels.
-
-    Args:
-        candidates: List of (byte_planes, body) candidate tuples to evaluate.
-        num_blocks: Total number of blocks in the block group.
-        num_samples: Total number of samples across all blocks.
-        offsets: Layout offsets for the block group.
-        time_unit: Time unit code (0 for no time axis).
-        effort: Effort policy specifying compression levels and flush behavior.
-
-    Returns:
-        Serialized block group bytes containing header and compressed zstd frame.
     """
     has_time = time_unit != 0
     levels = effort.zstd_levels
@@ -248,7 +238,7 @@ def _smallest_group(
                 best = (frame, rank, byte_planes)
     assert best is not None
     # Prepend 8-byte block group header to the winning compressed zstd frame
-    return _format.pack_header(num_blocks, num_samples, best[2], time_unit) + best[0]
+    return _format.pack_header(num_blocks, num_samples, best[2], time_unit, group_time_step) + best[0]
 
 
 def pack(
@@ -261,24 +251,25 @@ def pack(
 ) -> bytes:
     """Compresses an uncompressed byte-plane body into complete block group bytes.
 
-    Args:
-        body: 1D uint8 array containing the uncompressed body, residuals as byte planes.
-        offsets: The block group's Layout.
-        num_blocks: Total number of blocks.
-        num_samples: Total number of samples across all blocks.
-        effort: Effort policy specifying layout strategy, flushes, and levels.
-        time_unit: Time unit code (0 for no time axis).
-
-    Returns:
-        Serialized block group bytes containing header and compressed zstd frame.
+    If the block group has a time axis and its time_start increases and per-block time_step
+    values share a GCD > 1, divides them by that `group_time_step` and appends it as an 8-byte
+    uint64 trailer (header flag bit 4).
     """
     has_time = time_unit != 0
+    has_group_time_step = False
+    if has_time:
+        step = _format.group_time_step(body, offsets.sample_offsets)
+        if step > 1:
+            body = body.copy()
+            _format.scale_time_columns(body, offsets.sample_offsets, step, True)
+            body = np.concatenate([body, np.array([step], np.uint64).view(np.uint8)])
+            has_group_time_step = True
     num_octets = int(offsets.octet_offsets[-1])
     # Fast path: delegate to Rust extension if available
     if _rust is not None:
         return _rust.pack_group(  # type: ignore[no-any-return]
             body, num_blocks, num_samples, num_octets, time_unit, effort.layout, effort.flush,
-            list(effort.zstd_levels),
+            list(effort.zstd_levels), has_group_time_step,
         )
 
     def byte_planes_predicted() -> bool:
@@ -297,7 +288,7 @@ def pack(
         # Order candidates so the predicted winner runs first when flushes allow early cutoff
         bit_first = effort.flush and not byte_planes_predicted()
         candidates = [(False, bit_planes()), (True, body)] if bit_first else [(True, body), (False, bit_planes())]
-    return _smallest_group(candidates, num_blocks, num_samples, offsets, time_unit, effort)
+    return _smallest_group(candidates, num_blocks, num_samples, offsets, time_unit, effort, has_group_time_step)
 
 
 def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_unit: int) -> bytes:

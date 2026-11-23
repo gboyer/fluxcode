@@ -98,8 +98,16 @@ GROUP_FLAG_TIME_UNIT_SHIFT: int = 1
 GROUP_FLAG_TIME_UNIT_MASK: int = 0x0E
 """Block group header flag bits holding the time unit."""
 
-GROUP_FLAG_RESERVED: int = 0xF0
-"""Reserved block group header flag bits (4-7); decoders must reject these."""
+GROUP_FLAG_GROUP_TIME_STEP: int = 0x10
+"""Block group header flag bit 4: time_start increases and per-block time_step values are
+stored divided by a group-wide GCD `group_time_step >= 2`, appended as a uint64 trailer
+in the body's last 8 bytes (time axis only)."""
+
+GROUP_FLAG_RESERVED: int = 0xE0
+"""Reserved block group header flag bits (5-7); decoders must reject these."""
+
+GROUP_TIME_STEP_BYTES: int = 8
+"""Bytes of the group_time_step uint64 trailer at the end of a body (GROUP_FLAG_GROUP_TIME_STEP)."""
 
 MAX_BLOCK_LEN: int = 0xFFFF
 """Largest block size: the block_sizes field is uint16."""
@@ -411,8 +419,12 @@ def group_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tupl
     if has_time:
         plane_bytes_per_octet += 2 * TIME_SHORT_PLANES
     smallest = columns + fewest_octets * 8 * BYTES_PER_RESIDUAL_SAMPLE
-    # At most every sample escaped (8 bytes per escaped float64 in the trailer)
-    return smallest, columns + most_octets * plane_bytes_per_octet + BYTES_PER_ESCAPE * num_samples
+    # At most every sample escaped (8 bytes each), plus an optional 8-byte group_time_step trailer
+    return (
+        smallest,
+        columns + most_octets * plane_bytes_per_octet + BYTES_PER_ESCAPE * num_samples
+        + GROUP_TIME_STEP_BYTES * has_time,
+    )
 
 
 class GroupHeader(NamedTuple):
@@ -423,15 +435,20 @@ class GroupHeader(NamedTuple):
         num_samples: Sample count of the block group (the sum of its block sizes).
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
         time_unit: Time unit code (TimeUnitCode; 0 for a block group without a time axis).
+        group_time_step: Whether time_start increases and time_step are stored divided by a
+            group_time_step trailer (flags bit 4).
     """
 
     num_blocks: int
     num_samples: int
     byte_planes: bool
     time_unit: int
+    group_time_step: bool = False
 
 
-def pack_header(num_blocks: int, num_samples: int, byte_planes: bool, time_unit: int) -> bytes:
+def pack_header(
+    num_blocks: int, num_samples: int, byte_planes: bool, time_unit: int, group_time_step: bool = False
+) -> bytes:
     """Builds the 8-byte block group header.
 
     Args:
@@ -439,11 +456,16 @@ def pack_header(num_blocks: int, num_samples: int, byte_planes: bool, time_unit:
         num_samples: Sample count of the block group.
         byte_planes: Whether the residual planes are byte planes (flags bit 0).
         time_unit: Time unit code (TimeUnitCode; 0 for no time axis).
+        group_time_step: Whether a group_time_step trailer is present (flags bit 4).
 
     Returns:
         The header bytes.
     """
-    flags = (GROUP_FLAG_BYTE_PLANES if byte_planes else 0) | (time_unit << GROUP_FLAG_TIME_UNIT_SHIFT)
+    flags = (
+        (GROUP_FLAG_BYTE_PLANES if byte_planes else 0)
+        | (time_unit << GROUP_FLAG_TIME_UNIT_SHIFT)
+        | (GROUP_FLAG_GROUP_TIME_STEP if group_time_step else 0)
+    )
     return GROUP_HEADER.pack(FORMAT_VERSION, flags, num_blocks, num_samples)
 
 
@@ -458,8 +480,8 @@ def unpack_header(group: bytes) -> GroupHeader:
 
     Raises:
         ValueError: If the header is truncated, has an unsupported version or
-            reserved bits set, an unknown time unit, or describes an implausible sample
-            count.
+            reserved bits set, an unknown time unit, a group_time_step flag without a time
+            axis, or describes an implausible sample count.
     """
     if len(group) < HEADER_BYTES:
         raise ValueError(f"block group of {len(group)} bytes is shorter than its {HEADER_BYTES}-byte header")
@@ -475,7 +497,10 @@ def unpack_header(group: bytes) -> GroupHeader:
         raise ValueError(
             f"block group sample count {num_samples} is over {MAX_GROUP_SAMPLES} or what {num_blocks} blocks can hold"
         )
-    return GroupHeader(num_blocks, num_samples, bool(flags & GROUP_FLAG_BYTE_PLANES), time_unit)
+    has_group_time_step = bool(flags & GROUP_FLAG_GROUP_TIME_STEP)
+    if has_group_time_step and not time_unit:
+        raise ValueError("block group header sets group_time_step without a time axis")
+    return GroupHeader(num_blocks, num_samples, bool(flags & GROUP_FLAG_BYTE_PLANES), time_unit, has_group_time_step)
 
 
 @njit(inline="always")
@@ -771,3 +796,54 @@ class GroupRows(NamedTuple):
     codes: np.ndarray
     time_rows: TimeRows | None
     escapes: np.ndarray = np.zeros(0)
+
+
+@njit(inline="always")
+def _gcd64(a: np.uint64, b: np.uint64) -> np.uint64:
+    while b:
+        a, b = b, a % b
+    return a
+
+
+@njit(nogil=True, cache=True)
+def group_time_step(raw_group: np.ndarray, sample_offsets: np.ndarray) -> np.uint64:
+    """GCD of a body's stored time_start increases (after the first non-empty block) and
+    per-block time_step values (0 if all are 0)."""
+    num_blocks = sample_offsets.shape[0] - 1
+    step = np.uint64(0)
+    seen = False
+    for block_idx in range(num_blocks):
+        if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
+            continue
+        if seen:
+            step = _gcd64(step, np.uint64(get_int64(raw_group, time_start_start(num_blocks), num_blocks, block_idx)))
+        seen = True
+        step = _gcd64(step, np.uint64(get_int64(raw_group, time_step_start(num_blocks), num_blocks, block_idx)))
+        if step == 1:
+            break
+    return step
+
+
+@njit(nogil=True, cache=True)
+def scale_time_columns(raw_group: np.ndarray, sample_offsets: np.ndarray, step: np.uint64, divide: bool) -> bool:
+    """Divides (or multiplies back) a body's stored time_start increases and time_step values by
+    `step` in place; returns False if multiplication overflows uint64 (corrupt block group)."""
+    num_blocks = sample_offsets.shape[0] - 1
+    limit = np.uint64(0xFFFFFFFFFFFFFFFF) // step
+    seen = False
+    for block_idx in range(num_blocks):
+        if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
+            continue
+        for field_start, scaled in ((time_start_start(num_blocks), seen), (time_step_start(num_blocks), True)):
+            if not scaled:
+                continue
+            value = np.uint64(get_int64(raw_group, field_start, num_blocks, block_idx))
+            if divide:
+                value = value // step
+            else:
+                if value > limit:
+                    return False
+                value = value * step
+            put_int64(raw_group, field_start, num_blocks, block_idx, np.int64(value))
+        seen = True
+    return True
