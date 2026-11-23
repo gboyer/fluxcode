@@ -26,7 +26,7 @@ def rebuilt(group, edit):
     header."""
     rows = group_rows(group)
     edit(*rows)
-    body = _oracle.write_group(*rows[:8], time_rows=rows.time_rows)
+    body = _oracle.write_group(*rows[:7], time_rows=rows.time_rows)
     return group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -164,12 +164,12 @@ def test_update_with_non_finite_blocks():
     np.testing.assert_array_equal(y3[[10, 20]], np.ones((2, L)))
 
 
-@pytest.mark.parametrize("head_bits", [0x10, 0x20])
+@pytest.mark.parametrize("head_bits", [0x10, 0x20, 0x80])
 def test_update_refuses_groups_it_cannot_read(head_bits):
     """A block group with reserved flags bits (a future feature), or the irregular time bit (0x10) without a
     time axis, isn't rewritten: that could drop what they mean."""
     _, group, _, _, _ = encoded()
-    raw_body = _oracle.write_group(*group_rows(group)[:8])
+    raw_body = _oracle.write_group(*group_rows(group)[:7])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
     bad = group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: block flags"):

@@ -19,7 +19,6 @@ from ._format import (
     BLOCK_FLAG_NONFINITE,
     BYTES_PER_ANCHOR,
     BYTES_PER_PARAM,
-    BYTES_PER_PERIOD,
     BYTES_PER_RESIDUAL_SAMPLE,
     BYTES_PER_SCALE,
     BYTES_PER_SIZE,
@@ -37,11 +36,9 @@ from ._format import (
     grid_scale_start,
     group_size,
     layout,
-    period_start,
     plane_octets,
     put_int16,
     put_int64,
-    put_uint24,
     put_uint32,
     residual_start,
     time_ref_start,
@@ -997,7 +994,6 @@ def write_rows(
     grid_params: np.ndarray,
     grid_scales: np.ndarray,
     value_anchors: np.ndarray,
-    periods: np.ndarray,
     residuals: np.ndarray,
     codes: np.ndarray,
     sample_offsets: np.ndarray,
@@ -1016,7 +1012,6 @@ def write_rows(
         grid_params: 1D int64 array of block grid parameters.
         grid_scales: 1D int64 array of block grid scales (N | D << 16, 0 on unscaled blocks).
         value_anchors: 1D int64 array of block value anchors (float64 bits or grid index).
-        periods: 1D int64 array of block period fields (0 on blocks without the period predictor).
         residuals: 1D int16 array of every sample's difference residual.
         codes: 1D uint8 array of every sample's code (only flagged blocks' are read; may be
             empty if no block is flagged).
@@ -1034,11 +1029,10 @@ def write_rows(
         block_len = block_sizes[block_idx]
         out_raw_group[block_sizes_start(num_blocks) + block_idx] = np.uint8(block_len & 0xFF)
         out_raw_group[block_sizes_start(num_blocks) + num_blocks + block_idx] = np.uint8(block_len >> 8)
-        # Store the grid parameter (int16), grid scale (uint32), value anchor (int64) and period (3 bytes) byte-planed
+        # Store the grid parameter (int16), grid scale (uint32) and value anchor (int64) byte-planed
         put_int16(out_raw_group, grid_params_start(num_blocks), num_blocks, block_idx, grid_params[block_idx])
         put_uint32(out_raw_group, grid_scale_start(num_blocks), num_blocks, block_idx, grid_scales[block_idx])
         put_int64(out_raw_group, value_anchor_start(num_blocks), num_blocks, block_idx, value_anchors[block_idx])
-        put_uint24(out_raw_group, period_start(num_blocks), num_blocks, block_idx, periods[block_idx])
         block_residuals = residuals[sample_offsets[block_idx]:sample_offsets[block_idx + 1]]
         # Zigzag and store the low and high bytes in place, then zero the padding
         sample_start = 8 * octet_offsets[block_idx]
@@ -1059,7 +1053,6 @@ def write_group(
     grid_params: np.ndarray,
     grid_scales: np.ndarray,
     value_anchors: np.ndarray,
-    periods: np.ndarray,
     residuals: np.ndarray,
     codes: np.ndarray,
     time_rows: TimeRows | None,
@@ -1073,7 +1066,6 @@ def write_group(
         grid_params: 1D int64 array of block grid parameters.
         grid_scales: 1D int64 array of block grid scales (N | D << 16, 0 on unscaled blocks).
         value_anchors: 1D int64 array of block value anchors.
-        periods: 1D int64 array of block period fields (0 on blocks without the period predictor).
         residuals: 1D int16 array of every sample's difference residual.
         codes: 1D uint8 array of every sample's code (only flagged blocks' are read; may be
             empty if no block is flagged).
@@ -1093,8 +1085,8 @@ def write_group(
         raise ValueError("irregular time blocks need time rows")
     raw_group = np.empty(group_size(num_blocks, offsets, has_time), np.uint8)
     write_rows(
-        block_flags, block_sizes, grid_params, grid_scales, value_anchors, periods, residuals, codes,
-        offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets, has_time, raw_group,
+        block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, offsets.sample_offsets,
+        offsets.octet_offsets, offsets.code_offsets, has_time, raw_group,
     )
     if time_rows is not None:
         write_time_rows(block_flags, *offsets, *time_rows, raw_group)
@@ -1153,7 +1145,6 @@ def _splice_body(
     new_params: np.ndarray,
     new_scales: np.ndarray,
     new_anchors: np.ndarray,
-    new_periods: np.ndarray,
     new_residuals: np.ndarray,
     new_codes: np.ndarray,
     new_sample_offsets: np.ndarray,
@@ -1205,7 +1196,6 @@ def _splice_body(
         (grid_params_start(num_blocks), grid_params_start(old_num_blocks), BYTES_PER_PARAM),
         (grid_scale_start(num_blocks), grid_scale_start(old_num_blocks), BYTES_PER_SCALE),
         (value_anchor_start(num_blocks), value_anchor_start(old_num_blocks), BYTES_PER_ANCHOR),
-        (period_start(num_blocks), period_start(old_num_blocks), BYTES_PER_PERIOD),
     ]
     if has_time:
         column_fields.append((time_start_start(num_blocks), time_start_start(old_num_blocks), TIME_BYTES_PER_BLOCK))
@@ -1258,7 +1248,6 @@ def _splice_body(
         put_int16(out_body, grid_params_start(num_blocks), num_blocks, block_idx, new_params[rank])
         put_uint32(out_body, grid_scale_start(num_blocks), num_blocks, block_idx, new_scales[rank])
         put_int64(out_body, value_anchor_start(num_blocks), num_blocks, block_idx, new_anchors[rank])
-        put_uint24(out_body, period_start(num_blocks), num_blocks, block_idx, new_periods[rank])
         if has_time:
             start_increase, time_step, time_ref = np.int64(0), np.int64(0), np.int64(0)
             if block_len:
@@ -1384,7 +1373,7 @@ def splice_body(
     _splice_body(
         old_body, *old_layout, has_time,
         old_time_starts if old_time_starts is not None else np.zeros(0, np.int64),
-        new_ranks, new_rows.grid_params, new_rows.grid_scales, new_rows.value_anchors, new_rows.periods, new_rows.residuals, new_rows.codes,
+        new_ranks, new_rows.grid_params, new_rows.grid_scales, new_rows.value_anchors, new_rows.residuals, new_rows.codes,
         new_sample_offsets, *new_time, block_flags, block_sizes, *offsets, out_body,
     )
     return out_body, offsets

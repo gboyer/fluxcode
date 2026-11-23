@@ -130,9 +130,8 @@ class Params:
             up to 65,535: 0.05, thirds, ADC counts of 10 V / 4095, a calibration's gain and
             offset, stored exactly).
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
-            the block group is compressed (the residual layout, zstd block boundaries and level)
-            and, from 6, lets blocks take the period predictor (not with a target, whose steps
-            it would move), never the decoded values; ENCODER.md lists what each effort does.
+            the block group is compressed (the residual layout, zstd block boundaries and level),
+            never the decoded values; ENCODER.md lists what each effort does.
         tolerance: An absolute error that is acceptable for every value (in the values' units), 0 (the
             default) for none. A permission, not a bound: each block's step may coarsen to at most
             2 * tolerance, so samples decode within tolerance, or within what they would without

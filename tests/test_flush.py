@@ -104,22 +104,12 @@ def test_heuristic_choice():
 
 @pytest.mark.parametrize("kind", ["sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes", "quadratic"])
 def test_higher_efforts_are_never_larger(kind):
-    """Effort 9 tries every layout and zstd candidate of effort 5 (and zstd 9), so those never grow a
-    block group from 5 to 9 (noisy-sine seed 1 was larger at zstd 9 alone). These signals don't take
-    the period predictor; test_period_predictor_growth_is_bounded covers the case it grows."""
+    """Effort 9 tries every candidate of effort 5 (and zstd 9), so no block group grows from 5 to 9
+    (noisy-sine seed 1 was larger at zstd 9 alone)."""
     for seed in (1, 6):
         x = minute(kind, seed)
         sizes = [len(fluxcode.encode(x, Params(effort=effort))[0][0]) for effort in (9, 5)]
         assert sizes == sorted(sizes), seed
-
-
-def test_period_predictor_growth_is_bounded():
-    """ENCODER §1, §5.7.1: from effort 6 the period predictor can grow a group whose quantized values
-    repeat exactly (zstd already matched the repeats), by a fraction of a bit per sample."""
-    x = 100 * np.sin(2 * np.pi * np.arange(60_000) / 100.4)
-    sizes = {effort: len(fluxcode.encode_group(x, Params(max_quantize_bits=12, effort=effort)).group) for effort in (5, 6)}
-    assert sizes[6] > sizes[5]  # the known case: if it stops growing, the docs can say so
-    assert 8 * (sizes[6] - sizes[5]) / x.size < 0.1
 
 
 def test_efforts_trade_size():

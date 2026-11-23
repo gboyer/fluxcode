@@ -143,7 +143,13 @@ look at. Docs: ENCODER.md and SPEC.md sections named; TUNING.md has the noise fl
 - **Review.** A format change (int16 signed indices, anchor at the center). Exactness argument in
   ENCODER §5.7; blocks wider than 2^15 steps shift the center (quadratic 0.24 → 0.32 b/s).
 
-### 3.4 Period predictor (effort ≥ 6)
+### 3.4 Period predictor (effort ≥ 6): moved to branch `period-predictor`
+
+- **Status (2026-11-22).** Put on ice by the owner and removed from value-exp: the code, its
+  `period` column, its tests, docs and scripts (`period.py`, `ptime.py`, `period_decode.py`,
+  `period_simd.py`, `period_speed.py`, `sinusoid.py`) live on the pushed branch
+  `period-predictor`. Block flag bit 7 is reserved again, the columns are main's 17 bytes per
+  block, Rust interface 7. The entry below and §8 are the record of what was measured.
 
 - **Hypothesis.** Mains-frequency signals (motor current, line voltage) repeat every cycle; a
   prediction from one period earlier beats fixed differences.
@@ -264,7 +270,8 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
 
 - Random walks are floored (the spectral definition's consequence): accepted.
 - Signed centered anchors (format change): accepted.
-- Period predictor as an effort ≥ 6 option: accepted.
+- Period predictor as an effort ≥ 6 option: accepted, then put on ice (2026-11-22): moved to the
+  branch `period-predictor` (3.4).
 - Escaped samples: wanted; design discussed (detection cost, ±inf symmetry, payload size), and
   glitches on both sides confirmed handled.
 - `max_error` → `tolerance`, documented as a per-tag permission.
@@ -289,11 +296,10 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
   several rates; inspect floored blocks for lost features (TUNING.md "Validating on your data").
 - **Format changes to sign off** (no stored data exists yet, so no compatibility code was kept):
   signed centered indices (SPEC §4); 2-bit codes 10 escape / 11 repeat and the trailing
-  `escapes` field (SPEC §2, §6); block flag bit 7 period and its 3-byte `period` column (SPEC §4,
-  §6; `grid_scale` is back to 4 bytes);
-  header flag bit 4 and the trailing `time_quantum` (SPEC §3, §6). Golden hashes were
+  `escapes` field (SPEC §2, §6); header flag bit 4 and the trailing `time_quantum` (SPEC §3, §6). Golden hashes were
   regenerated for these.
-- **Rust.** Interface version bumped for the period predictor; the Rust compress path (rows to
+- **Rust.** Interface version 7 (5 and 6 were the period predictor's, now on its branch); the
+  Rust sources match main's apart from that number. The Rust compress path (rows to
   body) declines groups with a time axis or escapes, which are written in Python and then packed
   by the Rust packer (it copies the bytes after the residual planes: escapes, time quantum).
 - **verify.** Step bounds account for escapes per sample (an escaped sample to the full range's
@@ -304,8 +310,7 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
   with finite glitches (−9999, ±1e6, 32767: escapes) and a `tolerance` params entry, drawn after
   the existing draws so recorded regression cases keep their inputs. It found two hangs, an
   index wrap and fixed-point failures, all fixed and pinned (appendix below).
-- **Performance.** Encode +12% (noise estimate), decode −2%; the period predictor adds encode
-  time on oscillating blocks at effort ≥ 6 only.
+- **Performance.** Encode +12% (noise estimate), decode −2%.
 
 ## 8. Review response (2026-11-22)
 
@@ -360,10 +365,11 @@ factual finding held except the period predictor's numbers, which had a differen
 
 **Script index** (timing microbenchmarks not cited above): `kernels.py`, `kernels2.py` (noise
 kernel variants and the fused checks, the per-stage µs of 3.1), `time_noise.py` (noise estimate
-cost per block), `ptime.py` (the period search, 3.4).
+cost per block); `ptime.py` (the period search) is on the `period-predictor` branch.
 
 **Open, for the owner:**
-- The period predictor at its re-measured value (motor current −15%, line voltage −18%, fast set
+- (Decided 2026-11-22: the period predictor is on ice, on its branch; see below.) The period
+  predictor at its re-measured value (motor current −15%, line voltage −18%, fast set
   −3.7%, nothing else) against its costs (the last block flag bit, grid_scale widened to 8 bytes,
   sequential decode of period blocks, a Rust interface bump), and, if kept, effort 5 → 9 growth
   on clean repeating signals (try both residual versions, or drop the guarantee).
@@ -395,6 +401,17 @@ from n alone), but needs a deterministic integer evaluation of up to 30 terms pe
 variable-size per-block parameter field. Dropped by the owner (2026-11-22): SIMD is the
 parallelism wanted, which the period predictor allows (lag of a period), and its +20–30% decode
 time on period blocks is acceptable.
+
+**Period predictor put on ice (2026-11-22).** Measured with it on (effort 6 against effort 5, the
+only difference; `period_speed.py`, now on the branch): encode +14% over the corpus (+35% on the 6
+signals that use it, +10% on the 41 that never take it: oscillating blocks run the whole search
+before failing the gain test), decode unchanged. Against −15% on motor current, −18% on line
+voltage and nothing elsewhere, the owner put it on ice: the pushed branch `period-predictor` keeps
+it whole (b9188c3: the separate `period` column, the run-at-a-time decode, the growth test, the
+sinusoid comparison). Removing it here left decoded values identical on 67 cases (corpus at
+efforts 4 and 6, test signals); effort-4 sizes −0.01% (17 bytes of columns per block again).
+Ideas recorded for later: a cheaper early reject for oscillating blocks, and the free-gain 2-tap
+lead on the accelerometers (3.4).
 
 ## Appendix: final fuzz run
 

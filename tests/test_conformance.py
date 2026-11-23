@@ -377,7 +377,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _oracle.write_group(*rows[:8], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
+    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
     lay = _format.layout(rows.block_flags, sizes)
     byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
     for block_idx in range(num_blocks):
@@ -468,11 +468,6 @@ def test_bad_block_sizes_are_rejected():
     with pytest.raises(ValueError, match="block 1: anchor"):
         fluxcode.decode_group(rebuilt(anchor))
 
-    def period(b):
-        b[17 * 3 + 1] = 1  # byte 0 of its period field
-    with pytest.raises(ValueError, match="block 1: period"):
-        fluxcode.decode_group(rebuilt(period))
-
 
 def _periodic(n=60_000):
     """A clean sine with an exact 125-sample period: its residuals repeat across the block group."""
@@ -502,8 +497,7 @@ def test_byte_planes_on_repeating_cycles(effort):
     group = fluxcode.encode_group(_periodic(), Params(max_quantize_bits=10, effort=effort)).group
     assert _format.unpack_header(group).byte_planes
     with planes("bit"):
-        # The period predictor takes out most of the cycles' repetition that byte planes let zstd match
-        assert len(group) < 0.85 * len(fluxcode.encode_group(_periodic(), Params(max_quantize_bits=10)).group)
+        assert len(group) < 0.8 * len(fluxcode.encode_group(_periodic(), Params(max_quantize_bits=10)).group)
 
 
 def test_update_byte_plane_group():
@@ -553,75 +547,3 @@ def test_encode_group_limit():
     with pytest.raises(ValueError, match="2\\^26|67108864"):
         fluxcode.encode_group(np.zeros(_format.MAX_GROUP_SAMPLES + 1), block_len=65_535)
 
-
-def _mains(n=60_000, fs=5000.0, seed=3):
-    """A 60 Hz motor current on a 16-bit ADC: harmonics, a slow load change, noise (a fractional period)."""
-    rng = np.random.default_rng(seed)
-    t = np.arange(n) / fs
-    ph = 2 * np.pi * 60.01 * t
-    load = 14 + 2 * np.sin(2 * np.pi * t / 7)
-    x = load * (np.sin(ph) + 0.03 * np.sin(5 * ph) + 0.02 * np.sin(7 * ph)) + rng.normal(0, 0.05, n)
-    return np.round(x / (50 / 32768)) * (50 / 32768)
-
-
-def test_period_predictor_from_effort_6():
-    """From effort 6 a periodic block may predict from a period earlier (SPEC §4): smaller, the same
-    values as at the default effort (effort never changes them), and a fixed point. (An exactly
-    repeating synthetic sine can come out larger: zstd matches its fixed-order residuals' repeats,
-    which the bit estimate doesn't see; measured data doesn't repeat exactly.)"""
-    x = _mains()
-    plain = fluxcode.encode_group(x).group
-    periodic = fluxcode.encode_group(x, Params(effort=6)).group
-    flags = group_rows(periodic).block_flags
-    assert (flags & _format.BLOCK_FLAG_PERIOD).mean() > 0.9
-    assert not group_rows(plain).block_flags.astype(int).__and__(_format.BLOCK_FLAG_PERIOD).any()
-    assert len(periodic) < 0.95 * len(plain)
-    y = fluxcode.decode_group(periodic).values
-    np.testing.assert_array_equal(y, fluxcode.decode_group(plain).values)
-    assert fluxcode.encode_group(y, Params(effort=6)).group == fluxcode.encode_group(
-        fluxcode.decode_group(fluxcode.encode_group(y, Params(effort=6)).group).values, Params(effort=6)).group
-
-
-def test_period_predictor_stays_out_of_targets():
-    """With a size target the period predictor isn't used: its estimates would steer the target."""
-    x = _mains()
-    rows = group_rows(fluxcode.encode_group(x, Params(effort=9, target_bits_per_sample=6.0)).group)
-    assert not (rows.block_flags & _format.BLOCK_FLAG_PERIOD).any()
-
-
-def _spec_period_indices(residuals, order, length, fraction):
-    """SPEC §4/§5 period blocks, in plain integers: the head integrated `order` times, then q[n] =
-    r[n] + (((64 - fraction) q[n - length] + fraction q[n - length - 1] + 32) >> 6), each read as int16."""
-    wrap = lambda v: ((v + 32768) & 0xFFFF) - 32768
-    head = [int(r) for r in residuals[:min(len(residuals), length + 1)]]
-    for _ in range(order):
-        total = 0
-        for i, r in enumerate(head):
-            total = wrap(total + r)
-            head[i] = total
-    q = head
-    for n in range(len(q), len(residuals)):
-        q.append(wrap(int(residuals[n]) + (((64 - fraction) * q[n - length] + fraction * q[n - length - 1] + 32) >> 6)))
-    return np.array(q, np.int64)
-
-
-def test_period_blocks_decode_as_the_spec_says():
-    """Period blocks (block flag bit 7) rebuilt from their rows by SPEC §4's rule alone match decoding."""
-    rng = np.random.default_rng(3)
-    t = np.arange(20_000)
-    x = (30 + 2 * np.sin(2 * np.pi * t / 7000)) * np.sin(2 * np.pi * t / 100.4) + rng.normal(0, 0.1, t.size)
-    group = fluxcode.encode_group(x, Params(effort=6, grids="binary")).group
-    rows = group_rows(group)
-    values = fluxcode.decode_group(group).values
-    offsets = np.concatenate([[0], np.cumsum(rows.block_sizes)])
-    checked = 0
-    for b, flags in enumerate(rows.block_flags.tolist()):
-        if not flags & _format.BLOCK_FLAG_PERIOD:
-            continue
-        length, fraction = _format.period_length(rows.periods[b]), _format.period_fraction(rows.periods[b])
-        assert flags & BLOCK_FLAG_ORDER and 2 <= length and rows.grid_scales[b] == 0
-        q = _spec_period_indices(rows.residuals[offsets[b]:offsets[b + 1]], flags & BLOCK_FLAG_ORDER, length, fraction)
-        anchor = rows.value_anchors[b:b + 1].view(np.float64)[0]
-        np.testing.assert_array_equal(values[offsets[b]:offsets[b + 1]], anchor + q * 2.0 ** rows.grid_params[b])
-        checked += 1
-    assert checked >= 10

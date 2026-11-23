@@ -23,7 +23,6 @@ from ._format import (
     BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
-    BLOCK_FLAG_PERIOD,
     BLOCK_FLAG_SCALED,
     CODE_ESCAPE,
     CODE_FINITE,
@@ -32,7 +31,6 @@ from ._format import (
     INDEX_LIMIT,
     P_MAX,
     P_MIN,
-    PERIOD_FRACTION_SHIFT,
     SCALE_MASK,
     SCALE_SHIFT,
     SCALED_E_MAX,
@@ -99,33 +97,6 @@ NUM_BIT_LENGTH_BINS: int = 17
 
 UINT16_MASK: int = 0xFFFF
 """Bitmask for 16-bit unsigned integers (65535)."""
-
-PERIOD_ENABLED: int = 1 << 4
-"""Bit of orders_mask (above the orders' bits 0-3) that lets the encoder try the period predictor:
-set from Params.effort PERIOD_EFFORT (_group.kernel_args), as it costs encode time on oscillating blocks."""
-
-PERIOD_EFFORT: int = 6
-"""The lowest effort that tries the period predictor."""
-
-PERIOD_MIN_LEN: int = 64
-"""Smallest block the period predictor is tried on."""
-
-PERIOD_MIN_CROSSINGS: int = 3
-"""Fewest upward crossings of its mean a block needs for the period predictor to be tried."""
-
-PERIOD_MAX_JITTER: float = 0.1
-"""Largest spread of a block's mean-crossing intervals, as a share of their mean, for the period
-predictor to be tried."""
-
-PERIOD_SEARCH_LEN: int = 512
-"""Samples the period's integer lag is refined on."""
-
-PERIOD_MIN_VARIANCE: float = 4.0
-"""The fixed order's residual variance (steps^2, about 2 bits a sample) under which a block isn't tried."""
-
-PERIOD_SIDE_BITS: float = 64.0
-"""Bits the period predictor must save over the block (a Gaussian estimate from the residual
-variances, try_period) to be taken: its parameters, compressed, and the estimate's slack."""
 
 ESCAPE_MIN_LEN: int = 16
 """Smallest block whose outliers may be escaped."""
@@ -1187,7 +1158,7 @@ def encode_block(
     scratch_index: np.ndarray,
     out_residuals: np.ndarray,
     tolerance_step: float = 0.0,
-) -> tuple[int, int, np.int64, float, np.int64, np.int64]:
+) -> tuple[int, int, np.int64, float, np.int64]:
     """Encodes one block: quantizes, scales the grid, picks predictor order, and computes residuals.
 
     The grid (§5.3, §5.4), by grids level: GRIDS_DECIMAL and up, a decimal grid if one is detected
@@ -1197,8 +1168,7 @@ def encode_block(
     the anchor's index coarsens the exponent instead), and a power-of-two block with no common
     factor tries the rational search, or tolerance's scaled grid where tolerance_step is given and
     the search finds no coarser one (tolerance_grid). Then the order (pick_order), the anchor moved
-    to the center (center), the residuals, and from orders_mask's PERIOD_ENABLED the period
-    predictor (try_period).
+    to the center (center), and the residuals.
 
     Args:
         samples: 1D float64 array of samples.
@@ -1214,10 +1184,10 @@ def encode_block(
         tolerance_step: The scaled step tolerance sets (plan_block_step), or 0.0.
 
     Returns:
-        A tuple of (flags, param, grid_index, anchor, scale, period): grid_index is the integer
-        anchor of a decimal or scaled grid, anchor the power-of-two grid's float anchor (unused on
-        the others), both at the block's reference index (center); scale is grid_scale, N | D << 16
-        (0 when unscaled); period the period field (_format.period_field; 0 without the predictor).
+        A tuple of (flags, param, grid_index, anchor, scale): grid_index is the integer anchor of
+        a decimal or scaled grid, anchor the power-of-two grid's float anchor (unused on the
+        others), both at the block's reference index (center); scale is grid_scale, N | D << 16
+        (0 when unscaled).
     """
     flags = 0
     anchor = lower_bound
@@ -1303,145 +1273,7 @@ def encode_block(
     grid_index, anchor = center(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
-    if orders_mask & PERIOD_ENABLED and selected_order > 0 and samples.shape[0] >= PERIOD_MIN_LEN:
-        use, period_order, period = try_period(
-            scratch_quantized[:samples.shape[0]], out_residuals, scratch_rational[:samples.shape[0]], selected_order
-        )
-        if use:
-            return flags | BLOCK_FLAG_PERIOD | period_order, param_val, grid_index, anchor, scale, period
-    return flags | selected_order, param_val, grid_index, anchor, scale, np.int64(0)
-
-
-@njit(nogil=True, cache=True)
-def period_errors(quantized: np.ndarray, period_len: int, fraction: int, out_errors: np.ndarray) -> None:
-    """The period predictor's errors of signed indices past the first period_len + 1 (SPEC §4), wrapped
-    to signed 16 bits (the first period_len + 1 are left as they are)."""
-    num_samples = quantized.shape[0]
-    head = min(num_samples, period_len + 1)
-    near_weight = np.int32(64 - fraction)
-    far_weight = np.int32(fraction)
-    current = quantized[head:]
-    near = quantized[head - period_len:num_samples - period_len]
-    far = quantized[head - period_len - 1:num_samples - period_len - 1]
-    out = out_errors[head:]
-    for sample_idx in range(num_samples - head):
-        prediction = (near_weight * near[sample_idx] + far_weight * far[sample_idx] + 32) >> 6
-        out[sample_idx] = _wrap16(current[sample_idx] - prediction)
-
-
-@njit(nogil=True, cache=True)
-def try_period(
-    quantized: np.ndarray, fixed_residuals: np.ndarray, scratch: np.ndarray, fixed_order: int,
-) -> tuple[bool, int, np.int64]:
-    """Whether a period predictor beats the block's fixed order, and its order and parameters.
-
-    The period is the mean spacing of the block's upward crossings of its mean (at least
-    PERIOD_MIN_CROSSINGS), refined to the integer lag of least squared difference within 3 (the
-    period length); the period fraction (in 64ths of a sample, toward the next lag, from either
-    the best lag or the one before) by least squares. Taken when
-    the prediction errors past the head save PERIOD_SIDE_BITS over the fixed order's residuals there,
-    by a Gaussian estimate (half the log2 ratio of their variances per sample). The head (the first
-    period length + 1 residuals) stays the fixed order's; past it the residuals are the errors themselves (SPEC §4).
-
-    Args:
-        quantized: 1D int32 array of the block's signed indices.
-        fixed_residuals: 1D int16 array of the fixed order's residuals.
-        scratch: 1D int32 scratch array of the block's length.
-        fixed_order: The block's order: its first period length + 1 residuals stay that order's.
-
-    Returns:
-        A tuple of (use, order, period): period is the period field (period length | fraction << 16).
-    """
-    num_samples = quantized.shape[0]
-    total = np.int64(0)
-    for sample_idx in range(num_samples):
-        total += quantized[sample_idx]
-    # Crossings of the mean, upward, in units of num_samples (exact integers)
-    first_cross = last_cross = -1
-    num_cross = 0
-    interval_sq = 0.0
-    previous_below = quantized[0] * np.int64(num_samples) < total
-    for sample_idx in range(1, num_samples):
-        below = quantized[sample_idx] * np.int64(num_samples) < total
-        if previous_below and not below:
-            if first_cross < 0:
-                first_cross = sample_idx
-            else:
-                interval = float(sample_idx - last_cross)
-                interval_sq += interval * interval
-            last_cross = sample_idx
-            num_cross += 1
-        previous_below = below
-    if num_cross < PERIOD_MIN_CROSSINGS:
-        return False, 0, np.int64(0)
-    # A period crosses at even intervals; a random walk or noise chattering at the mean doesn't
-    mean_interval = (last_cross - first_cross) / (num_cross - 1)
-    spread = math.sqrt(max(interval_sq / (num_cross - 1) - mean_interval * mean_interval, 0.0))
-    if spread > PERIOD_MAX_JITTER * mean_interval:
-        return False, 0, np.int64(0)
-    guess = (2 * (last_cross - first_cross) + num_cross - 1) // (2 * (num_cross - 1))
-    # The fixed order's residual variance (exact int64 sums): blocks under PERIOD_MIN_VARIANCE are
-    # nearly free already, where zstd's runs and matches decide and a variance can't tell
-    fixed_total = fixed_sq = np.int64(0)
-    for sample_idx in range(num_samples):
-        value = np.int64(fixed_residuals[sample_idx])
-        fixed_total += value
-        fixed_sq += value * value
-    fixed_variance = fixed_sq / num_samples - (fixed_total / num_samples) ** 2
-    if fixed_variance < PERIOD_MIN_VARIANCE:
-        return False, 0, np.int64(0)
-    # The integer lag of least squared difference within 3 of the guess, on the block's head
-    span = min(num_samples, PERIOD_SEARCH_LEN)
-    first_lag = max(2, guess - 3)
-    last_lag = min(span // 3, guess + 3)
-    if last_lag < first_lag:
-        return False, 0, np.int64(0)
-    energies = np.empty(last_lag - first_lag + 1, np.int64)
-    for period in range(first_lag, last_lag + 1):
-        energy = np.int64(0)
-        later, earlier = quantized[period:span], quantized[:span - period]
-        for sample_idx in range(span - period):
-            diff = np.int64(later[sample_idx] - earlier[sample_idx])
-            energy += diff * diff
-        energies[period - first_lag] = energy * span // (span - period)
-    best = int(np.argmin(energies))
-    period_len = first_lag + best
-    # The true period lies toward the lower of the two neighbouring lags: interpolate from there
-    if 0 < best and (best == energies.shape[0] - 1 or energies[best - 1] < energies[best + 1]):
-        period_len -= 1
-    if period_len < 2 or period_len + 1 >= num_samples:
-        return False, 0, np.int64(0)
-    # Least squares for w on the head: y = q[n] - q[n - P], z = q[n - P - 1] - q[n - P]
-    cross = squares = np.int64(0)
-    stop = max(span, period_len + 2)
-    current, near, far = (
-        quantized[period_len + 1:stop], quantized[1:stop - period_len], quantized[:stop - period_len - 1]
-    )
-    for sample_idx in range(stop - period_len - 1):
-        y = np.int64(current[sample_idx] - near[sample_idx])
-        z = np.int64(far[sample_idx] - near[sample_idx])
-        cross += y * z
-        squares += z * z
-    fraction = 0 if squares == 0 else int(min(max(round(64.0 * cross / squares), -128), 127))
-    period_errors(quantized, period_len, fraction, scratch)
-    # Past the head, the errors' variance against the fixed order's residuals': the head is the same
-    total = total_sq = fixed_tail = fixed_tail_sq = np.int64(0)
-    errors, fixed_part = scratch[period_len + 1:], fixed_residuals[period_len + 1:]
-    tail_len = num_samples - period_len - 1
-    for sample_idx in range(tail_len):
-        value = np.int64(errors[sample_idx])
-        total += value
-        total_sq += value * value
-        reference = np.int64(fixed_part[sample_idx])
-        fixed_tail += reference
-        fixed_tail_sq += reference * reference
-    variance = total_sq / tail_len - (total / tail_len) ** 2
-    fixed_tail_variance = fixed_tail_sq / tail_len - (fixed_tail / tail_len) ** 2
-    if not variance > 0 or 0.5 * tail_len * math.log2(max(fixed_tail_variance, 1e-9) / variance) < PERIOD_SIDE_BITS:
-        return False, 0, np.int64(0)
-    for sample_idx in range(period_len + 1, num_samples):
-        fixed_residuals[sample_idx] = scratch[sample_idx]
-    return True, fixed_order, np.int64(period_len) | (np.int64(fraction & 0xFF) << PERIOD_FRACTION_SHIFT)
+    return flags | selected_order, param_val, grid_index, anchor, scale
 
 
 @njit(nogil=True, cache=True)
@@ -1624,7 +1456,6 @@ def _apply_target_reallocation(
     out_grid_params: np.ndarray,
     out_grid_scales: np.ndarray,
     out_value_anchors: np.ndarray,
-    out_periods: np.ndarray,
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
 ) -> None:
@@ -1649,7 +1480,6 @@ def _apply_target_reallocation(
         out_grid_params: In-out 1D int64 array of grid parameters.
         out_grid_scales: In-out 1D int64 array of grid scales.
         out_value_anchors: In-out 1D int64 array of value anchors.
-        out_periods: In-out 1D int64 array of period fields.
         out_residuals: In-out 1D int16 array of residuals.
         out_codes: In-out 1D uint8 array of non-finite sample codes.
     """
@@ -1664,7 +1494,6 @@ def _apply_target_reallocation(
             prev_param = out_grid_params[block_idx]
             prev_scale = out_grid_scales[block_idx]
             prev_anchor = out_value_anchors[block_idx]
-            prev_period = out_periods[block_idx]
             backup_residuals = scratch_residuals[:block_len]
             backup_residuals[:] = block_residuals
             block_samples = samples[first_sample:first_sample + block_len]
@@ -1676,7 +1505,7 @@ def _apply_target_reallocation(
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
             (
                 out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor,
-                out_grid_scales[block_idx], out_periods[block_idx],
+                out_grid_scales[block_idx],
             ) = encode_block(
                 block_samples,
                 base_lower_bounds[block_idx],
@@ -1705,7 +1534,6 @@ def _apply_target_reallocation(
                 out_grid_params[block_idx] = prev_param
                 out_grid_scales[block_idx] = prev_scale
                 out_value_anchors[block_idx] = prev_anchor
-                out_periods[block_idx] = prev_period
                 block_residuals[:] = backup_residuals
 
 
@@ -1727,7 +1555,6 @@ def encode_group(
     out_grid_params: np.ndarray,
     out_grid_scales: np.ndarray,
     out_value_anchors: np.ndarray,
-    out_periods: np.ndarray,
     out_residuals: np.ndarray,
     out_codes: np.ndarray,
     out_block_minima: np.ndarray,
@@ -1763,8 +1590,6 @@ def encode_group(
         out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors (float64 bits of
             the power-of-two anchor, or the decimal or scaled grid's integer index), at each
             block's reference index (center).
-        out_periods: Output 1D int64 array of length num_blocks receiving period fields
-            (_format.period_field; 0 on blocks without the period predictor).
         out_residuals: Output 1D int16 array of every sample receiving residuals.
         out_codes: Output 1D uint8 array of every sample receiving sample codes (only
             flagged blocks' codes are written).
@@ -1801,7 +1626,6 @@ def encode_group(
         block_len = sample_offsets[block_idx + 1] - first_sample
         block_exponents[block_idx] = coarsest_exponents[block_idx] = 0
         out_grid_scales[block_idx] = 0
-        out_periods[block_idx] = 0
         if block_len == 0:
             out_block_flags[block_idx] = 0
             out_grid_params[block_idx] = 0
@@ -1903,7 +1727,6 @@ def encode_group(
         block_exponents[block_idx] = planned_exp
         (
             out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor, out_grid_scales[block_idx],
-            out_periods[block_idx],
         ) = encode_block(
             block_samples,
             block_min,
@@ -1937,7 +1760,7 @@ def encode_group(
             multiple = planned_multiple(step, planned_exp)
             if multiple == 1:
                 budget_bits[block_idx] = estimated_bits_per_block[block_idx]
-            elif multiple > 1 and not out_block_flags[block_idx] & BLOCK_FLAG_PERIOD:
+            elif multiple > 1:
                 planned_quantized = scratch_rational[:block_len]
                 for sample_idx in range(block_len):
                     planned_quantized[sample_idx] = block_quantized[sample_idx] * multiple
@@ -1979,7 +1802,6 @@ def encode_group(
                 out_grid_params,
                 out_grid_scales,
                 out_value_anchors,
-                out_periods,
                 out_residuals,
                 out_codes,
             )

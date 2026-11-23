@@ -30,14 +30,14 @@ use format::{Rows, Shape};
 
 /// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the
 /// extension.
-const INTERFACE_VERSION: u32 = 6;
+const INTERFACE_VERSION: u32 = 7;
 
 /// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress`
 /// builds it. `layout` is "heuristic" or "best" (`Effort.layout`).
 #[pyfunction]
 #[pyo3(signature = (
-    block_flags, block_sizes, grid_params, grid_scales, value_anchors, periods, residuals, codes,
-    layout, flush, zstd_levels
+    block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, layout,
+    flush, zstd_levels
 ))]
 #[allow(clippy::too_many_arguments)]
 fn compress_group<'py>(
@@ -47,7 +47,6 @@ fn compress_group<'py>(
     grid_params: PyReadonlyArray1<i64>,
     grid_scales: PyReadonlyArray1<i64>,
     value_anchors: PyReadonlyArray1<i64>,
-    periods: PyReadonlyArray1<i64>,
     residuals: PyReadonlyArray1<i16>,
     codes: PyReadonlyArray1<u8>,
     layout: &str,
@@ -60,7 +59,6 @@ fn compress_group<'py>(
         grid_params.as_slice()?,
         grid_scales.as_slice()?,
         value_anchors.as_slice()?,
-        periods.as_slice()?,
         residuals.as_slice()?,
         codes.as_slice()?,
     )

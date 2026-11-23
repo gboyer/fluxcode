@@ -61,9 +61,7 @@ type:
 * **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
   without changing the decoded values. It picks bit or byte planes for the residuals (by a
   one-pass heuristic at efforts 1–2, or by compressing both from 3), from effort 5 gives each dense
-  plane its own zstd block, from effort 6 predicts periodic blocks (AC currents and voltages, rotating
-  machinery) from a period earlier (motor current −15%, line voltage −18%; about 3.5 µs more per
-  periodic block to encode, none for others), and at effort 9 also tries zstd 9. Against the default, effort 1 encodes
+  plane its own zstd block, and at effort 9 also tries zstd 9. Against the default, effort 1 encodes
   about a third faster for 1.5–2.5% more bytes; effort 5 is about 2% smaller for about 18% more
   time; effort 9 is about 3% smaller for about 5× the time ([docs/TUNING.md](docs/TUNING.md#effort)).
   Efforts 5 and up scale poorly across threads with python-zstandard (it holds the GIL while ending

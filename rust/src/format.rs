@@ -19,15 +19,9 @@ pub const BYTES_PER_SIZE: usize = 2;
 pub const BYTES_PER_PARAM: usize = 2;
 pub const BYTES_PER_SCALE: usize = 4;
 pub const BYTES_PER_ANCHOR: usize = 8;
-/// Bytes of the period field per block: the period length (uint16) and fraction (int8).
-pub const BYTES_PER_PERIOD: usize = 3;
-/// Bytes of the value columns (flags, size, grid parameter, grid scale, anchor, period) per block.
-pub const METADATA_BYTES_PER_BLOCK: usize = BYTES_PER_FLAGS
-    + BYTES_PER_SIZE
-    + BYTES_PER_PARAM
-    + BYTES_PER_SCALE
-    + BYTES_PER_ANCHOR
-    + BYTES_PER_PERIOD;
+/// Bytes of the value columns (flags, size, grid parameter, grid scale, anchor) per block.
+pub const METADATA_BYTES_PER_BLOCK: usize =
+    BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE + BYTES_PER_ANCHOR;
 /// Bytes of the three 8-byte time columns of a block group with a time axis, per block.
 pub const TIME_BYTES_PER_BLOCK: usize = 3 * 8;
 
@@ -58,12 +52,6 @@ pub fn grid_scale_start(num_blocks: usize) -> usize {
 /// Offset of the value_anchor field in the body.
 pub fn value_anchor_start(num_blocks: usize) -> usize {
     (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE) * num_blocks
-}
-
-/// Offset of the period field in the body.
-pub fn period_start(num_blocks: usize) -> usize {
-    (BYTES_PER_FLAGS + BYTES_PER_SIZE + BYTES_PER_PARAM + BYTES_PER_SCALE + BYTES_PER_ANCHOR)
-        * num_blocks
 }
 
 /// Offset of the residual planes: after the per-block columns (and the time columns).
@@ -122,7 +110,6 @@ pub struct Rows<'a> {
     pub grid_params: &'a [i64],
     pub grid_scales: &'a [i64],
     pub value_anchors: &'a [i64],
-    pub periods: &'a [i64],
     pub residuals: &'a [i16],
     pub codes: &'a [u8],
     pub sample_offsets: Vec<usize>,
@@ -139,7 +126,6 @@ impl<'a> Rows<'a> {
         grid_params: &'a [i64],
         grid_scales: &'a [i64],
         value_anchors: &'a [i64],
-        periods: &'a [i64],
         residuals: &'a [i16],
         codes: &'a [u8],
     ) -> Result<Self, String> {
@@ -150,7 +136,6 @@ impl<'a> Rows<'a> {
             || grid_params.len() != num_blocks
             || grid_scales.len() != num_blocks
             || value_anchors.len() != num_blocks
-            || periods.len() != num_blocks
         {
             return Err(mismatch());
         }
@@ -186,7 +171,6 @@ impl<'a> Rows<'a> {
             grid_params,
             grid_scales,
             value_anchors,
-            periods,
             residuals,
             codes,
             sample_offsets,

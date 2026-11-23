@@ -27,7 +27,7 @@ from ._format import (
     BLOCK_FLAG_LONG_TIME,
     BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
-    BLOCK_FLAG_PERIOD,
+    BLOCK_FLAG_RESERVED,
     BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
@@ -38,13 +38,9 @@ from ._format import (
     SCALE_SHIFT,
     get_int16,
     get_int64,
-    get_uint24,
     get_uint32,
     grid_params_start,
     grid_scale_start,
-    period_fraction,
-    period_length,
-    period_start,
     scale_valid,
     value_anchor_start,
 )
@@ -66,10 +62,6 @@ BAD_ANCHOR: int = 3
 BAD_SCALE: int = 4
 """Validation status indicating a grid scale on an unscaled block, or a scaled grid's N or D of 0 or
 a D * 10^-p that isn't an exact double."""
-
-BAD_PERIOD: int = 5
-"""Validation status indicating a period field on a block without the period predictor, or a period
-length under 2 on one with it."""
 
 
 
@@ -127,40 +119,6 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
             sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
             sum_order3 = (sum_order3 + sum_order2) & 0xFFFF
             residuals_in_out[sample_idx] = ((sum_order3 + 32768) & 0xFFFF) - 32768
-
-
-@njit(nogil=True, cache=True)
-def unpredict_period(errors_in_out: np.ndarray, period_len: int | np.integer, fraction: int | np.integer) -> None:
-    """Reconstructs a period block's indices past its first period_len + 1 in place (SPEC §4).
-
-    q[n] = e[n] + ((64 - fraction) q[n - period_len] + fraction q[n - period_len - 1] + 32) >> 6 for
-    n > period_len, read as signed 16-bit (mod 2^16); the first period_len + 1 are already q
-    (integrated as the block's order).
-
-    Each run of period_len samples depends only on the runs before it, so its loop has no dependency
-    between iterations: 36-43% faster than one loop over the block, which waited on each sample
-    (2026-11-22, experimental/value/LOG.md §8). It doesn't compile to vector instructions: the
-    form that does (the predictions into a scratch array, then added) was twice as slow on runs of
-    a period's length.
-
-    Args:
-        errors_in_out: 1D int32 array: q up to period_len, the prediction errors after; overwritten with q.
-        period_len: The period length (>= 2).
-        fraction: The period fraction (int8, in 64ths of a sample).
-    """
-    num_samples = errors_in_out.shape[0]
-    near_weight = np.int32(64 - fraction)
-    far_weight = np.int32(fraction)
-    run_start = min(num_samples, period_len + 1)
-    while run_start < num_samples:
-        run_end = min(run_start + period_len, num_samples)
-        current = errors_in_out[run_start:run_end]
-        near = errors_in_out[run_start - period_len:run_end - period_len]
-        far = errors_in_out[run_start - period_len - 1:run_end - period_len - 1]
-        for sample_idx in range(run_end - run_start):
-            prediction = (near_weight * near[sample_idx] + far_weight * far[sample_idx] + 32) >> 6
-            current[sample_idx] = ((current[sample_idx] + prediction + 32768) & 0xFFFF) - 32768
-        run_start = run_end
 
 
 @njit(nogil=True, cache=True)
@@ -270,7 +228,7 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
 
     Returns:
         A tuple of (status, failing_block_idx):
-            status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, BAD_ANCHOR, BAD_SCALE or BAD_PERIOD).
+            status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, BAD_ANCHOR or BAD_SCALE).
             failing_block_idx: Zero-based index of the first failing block (0 if OK).
     """
     num_blocks = sample_offsets.shape[0] - 1
@@ -281,7 +239,6 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
         param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
         anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
         scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
-        period = get_uint24(raw_group, period_start(num_blocks), num_blocks, block_idx)
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
             # An empty block stores nothing: its columns are 0
             if flags:
@@ -292,18 +249,10 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
                 return BAD_SCALE, block_idx
             if anchor_bits[0]:
                 return BAD_ANCHOR, block_idx
-            if period:
-                return BAD_PERIOD, block_idx
             continue
-        # A period block's period length is at least 2; any other block's period field is 0
-        if flags & BLOCK_FLAG_PERIOD:
-            if period_length(period) < 2:
-                return BAD_PERIOD, block_idx
-        elif period:
-            return BAD_PERIOD, block_idx
-        # Every bit has a meaning (none is reserved): bit 4 needs a time axis and bit 5 needs bit 4
+        # Reserved bit 7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
         irregular_time = flags & BLOCK_FLAG_IRREGULAR_TIME
-        if irregular_time and not has_time:
+        if flags & BLOCK_FLAG_RESERVED or (irregular_time and not has_time):
             return BAD_FLAGS, block_idx
         if flags & BLOCK_FLAG_LONG_TIME and not irregular_time:
             return BAD_FLAGS, block_idx
@@ -401,14 +350,8 @@ def decode_group(
             )
             # Unzigzag into signed differences
             unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
-        # Integrate mod 2^16 by predictor order (bits 0-1); a period block only its first period length + 1
-        if flags & BLOCK_FLAG_PERIOD:
-            period = get_uint24(raw_group, period_start(num_blocks), num_blocks, block_idx)
-            period_len = period_length(period)
-            integrate(block_residuals[:min(block_len, period_len + 1)], flags & BLOCK_FLAG_ORDER)
-            unpredict_period(block_residuals, period_len, period_fraction(period))
-        else:
-            integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
+        # Integrate mod 2^16 by predictor order (bits 0-1)
+        integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
         # Dequantize according to grid type (scaled, decimal or power-of-two)
         if flags & BLOCK_FLAG_SCALED:
             scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
