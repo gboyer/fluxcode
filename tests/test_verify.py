@@ -55,8 +55,10 @@ def test_every_call_passes(series):
     upserted = fluxcode.update_time_blocks(timed.group, x[:10] + 1, t[:10] + 1, delete_ranges=ranges, **HOUR)
     assert verify.update_time_blocks(upserted, timed.group, x[:10] + 1, t[:10] + 1, delete_ranges=ranges, **HOUR) == []
     replaced = fluxcode.replace_time_blocks(upserted.group, [2, 3, 12], x[1000:1400], t[1000:1400], params, **HOUR)
-    assert verify.replace_time_blocks(replaced, upserted.group, [2, 3, 12], x[1000:1400], t[1000:1400], params,
-                                      **HOUR) == []
+    assert (
+        verify.replace_time_blocks(replaced, upserted.group, [2, 3, 12], x[1000:1400], t[1000:1400], params, **HOUR)
+        == []
+    )
     group = fluxcode.encode_group(x).group
     blocks = {1: x[:300], 7: x[:5]}
     assert verify.update(fluxcode.update(group, blocks), group, blocks) == []
@@ -73,9 +75,14 @@ def test_wrong_statistics(series):
 def test_values_off_their_grid(series):
     x, _ = series
     moved = fluxcode.encode_group(x + 0.01)
-    found = checks(verify.encode_group(moved._replace(block_min=moved.block_min - 0.01,
-                                                      block_max=moved.block_max - 0.01,
-                                                      block_mean=moved.block_mean - 0.01), x))
+    found = checks(
+        verify.encode_group(
+            moved._replace(
+                block_min=moved.block_min - 0.01, block_max=moved.block_max - 0.01, block_mean=moved.block_mean - 0.01
+            ),
+            x,
+        )
+    )
     assert found == {"step_bound"}  # 0.01 is within range / 63.5 (and the noise floor may coarsen these blocks)
 
 
@@ -128,8 +135,9 @@ def test_times(series):
     timed = fluxcode.encode_time_blocks(x, t, params, start_time=0, block_duration=125_000_000, time_unit="ns")
     found = verify.encode_time_blocks(timed, x, t, params, **HOUR)
     assert checks(found) == {"layout"}
-    assert verify.encode_time_blocks(timed, x, t, params, start_time=0, block_duration=125_000_000,
-                                     time_unit="ns") == []
+    assert (
+        verify.encode_time_blocks(timed, x, t, params, start_time=0, block_duration=125_000_000, time_unit="ns") == []
+    )
 
 
 def test_update_touching_other_blocks(series):

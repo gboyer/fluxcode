@@ -33,7 +33,7 @@ def decode(group):
 def test_minimum_halfway_between_grid_points(e, base):
     """A minimum exactly halfway between two grid points gets q = 0, not -1 (which would wrap to
     65,535 and decode as the block's maximum): K and q round alike."""
-    step = 2.0 ** e
+    step = 2.0**e
     lo = (base + 0.5) * step
     x = lo + np.random.default_rng(e + 100).uniform(0, 40_000, 1000) * step
     x[[0, -1]] = lo, lo + 40_000 * step
@@ -66,21 +66,21 @@ def test_fencepost_power_of_two_range():
 def test_storage_edge_at_16_bits():
     """A range within half a step of 65,535 steps, placed so the snapped grid would need
     q = 65,536: one level coarser. q never reaches 2^16 anywhere near the edge."""
-    step = 2.0 ** -10
+    step = 2.0**-10
     lo, hi = 0.4 * step, 65_535.6 * step  # rint: 0 and 65,536
     assert _grids.min_exponent_for_span(hi - lo, 16) == -10  # the unsnapped rule fits
     assert _grids.snapped_exponent_for_range(lo, hi, 16) == -9
     x = np.linspace(lo, hi, 1000)
     group, e, _ = encode_block(x, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=16))
     assert e == -9
-    assert np.abs(decode(group) - x).max() <= 2.0 ** -10
+    assert np.abs(decode(group) - x).max() <= 2.0**-10
     rng = np.random.default_rng(1)
     q = np.empty(2, np.int32)
     for _ in range(20_000):
         lo = rng.uniform(-3, 3) * step
         hi = lo + (65_535 + rng.uniform(-1, 1)) * step
         e = _grids.snapped_exponent_for_range(lo, hi, 16)
-        assert _grids.quantize_power_of_two(np.array([lo, hi]), lo, hi, e, q) == np.rint(lo / 2.0 ** e) * 2.0 ** e
+        assert _grids.quantize_power_of_two(np.array([lo, hi]), lo, hi, e, q) == np.rint(lo / 2.0**e) * 2.0**e
         assert q[0] == 0 and q[1] <= 65_535
 
 
@@ -94,8 +94,8 @@ def test_range_exponent_is_never_coarser_than_unsnapped(bits):
         hi = lo + rng.uniform(0, 1) * 10.0 ** rng.integers(-5, 5)
         old, new = _grids._unsnapped_exponent_for_range(lo, hi, bits), _grids.snapped_exponent_for_range(lo, hi, bits)
         assert old - (bits < 16) <= new <= old + (bits == 16)
-        limit = 2 ** bits if bits < 16 else 2 ** 16 - 1
-        assert np.rint(hi / 2.0 ** new) - np.rint(lo / 2.0 ** new) <= limit
+        limit = 2**bits if bits < 16 else 2**16 - 1
+        assert np.rint(hi / 2.0**new) - np.rint(lo / 2.0**new) <= limit
         assert np.rint(hi / 2.0 ** (new - 1)) - np.rint(lo / 2.0 ** (new - 1)) > limit
 
 
@@ -122,8 +122,9 @@ def _blocks(rng):
         yield np.cumsum(rng.normal(size=1000)) / 40 * scale
 
 
-@pytest.mark.parametrize("params", [RAW, Params(), Params(max_quantize_bits=9, grids="binary")],
-                         ids=["raw", "default", "9 bits"])
+@pytest.mark.parametrize(
+    "params", [RAW, Params(), Params(max_quantize_bits=9, grids="binary")], ids=["raw", "default", "9 bits"]
+)
 def test_decoded_values_are_fixed_points(params):
     """decode(encode(y)) == y bit for bit for y = decode(encode(x)), wherever the re-encode
     picks the same step: decoded values sit on the absolute grid."""
@@ -149,13 +150,13 @@ def test_no_tie_bias_when_coarsening():
     y = decode(group)
     coarse = e + 1
     q = np.empty(1000, np.int32)
-    base = np.rint(y.min() / 2.0 ** coarse)
+    base = np.rint(y.min() / 2.0**coarse)
     _grids.quantize_snapped(y, coarse, base, q)
-    shift = (base + q) * 2.0 ** coarse - y
-    assert np.mean(np.abs(shift) == 2.0 ** e) > 0.3  # many ties
-    assert abs(shift.mean()) < 0.05 * 2.0 ** e
-    ties_up = np.floor(y / 2.0 ** coarse + 0.5) * 2.0 ** coarse - y
-    assert ties_up.mean() > 0.15 * 2.0 ** e  # what the test would catch
+    shift = (base + q) * 2.0**coarse - y
+    assert np.mean(np.abs(shift) == 2.0**e) > 0.3  # many ties
+    assert abs(shift.mean()) < 0.05 * 2.0**e
+    ties_up = np.floor(y / 2.0**coarse + 0.5) * 2.0**coarse - y
+    assert ties_up.mean() > 0.15 * 2.0**e  # what the test would catch
 
 
 def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
@@ -174,11 +175,12 @@ def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
         halvings_only = True
         for bits in range(15, 4, -1):
             previous_e = e
-            group, e, _ = encode_block(y, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=1,
-                                               max_quantize_bits=bits))
+            group, e, _ = encode_block(
+                y, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=1, max_quantize_bits=bits)
+            )
             halvings_only &= e - previous_e <= 1
             y = decode(group)
-            step = 2.0 ** e
+            step = 2.0**e
             moved = np.abs(y - first).max() / step
             assert moved <= (2 / 3 if halvings_only else 1), (bits, moved)
             if e - first_e <= 2:
@@ -208,11 +210,12 @@ def test_straddling_updates_keep_a_bounded_error():
     for _ in range(200):
         center, spread = x[kept].mean(), np.ptp(x[kept])
         new = center + rng.uniform(-2, 2) * spread * rng.uniform(0.5, 2, replaced.sum())
-        group = fluxcode.update_time_blocks(group, new, t[replaced], RAW, delete_ranges=[(lo, hi)],
-                                           start_time=START, block_duration=SECOND).group
+        group = fluxcode.update_time_blocks(
+            group, new, t[replaced], RAW, delete_ranges=[(lo, hi)], start_time=START, block_duration=SECOND
+        ).group
         e = int(group_rows(group).grid_exponents[5])
         y = decode(group)[kept]
-        steps.append(2.0 ** e)
+        steps.append(2.0**e)
         assert np.abs(y - original).max() < max(steps)
         if previous is not None and previous[0] == e:
             np.testing.assert_array_equal(y, previous[1])

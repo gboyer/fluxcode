@@ -7,8 +7,19 @@ import numpy as np
 
 MINUTE = 60_000
 
-KINDS = ["linear", "quadratic", "sin-4.12hz", "sin-9.87hz", "sin-50.3hz", "gauss-spikes", "impulses",
-         "square-2.24hz", "random-walk", "chirp", "noisy-sine"]
+KINDS = [
+    "linear",
+    "quadratic",
+    "sin-4.12hz",
+    "sin-9.87hz",
+    "sin-50.3hz",
+    "gauss-spikes",
+    "impulses",
+    "square-2.24hz",
+    "random-walk",
+    "chirp",
+    "noisy-sine",
+]
 NOISY = ["gauss-spikes", "impulses", "noisy-sine"]
 CLEAN = [k for k in KINDS if k not in NOISY]
 
@@ -23,7 +34,7 @@ def minute(kind, seed):
     if kind == "quadratic":
         return (t - t[0]) ** 2 / 1000
     if kind.startswith("sin-"):
-        f = {"sin-4.12hz": np.sqrt(17), "sin-9.87hz": np.pi ** 2, "sin-50.3hz": 16 * np.pi}[kind]
+        f = {"sin-4.12hz": np.sqrt(17), "sin-9.87hz": np.pi**2, "sin-50.3hz": 16 * np.pi}[kind]
         return 100 * np.sin(2 * np.pi * f * t / 1000 + ph)
     if kind == "gauss-spikes":
         x = rng.uniform(-10, 10, MINUTE)
@@ -43,10 +54,11 @@ def minute(kind, seed):
         f = np.sqrt(2) + (32 * np.pi - np.sqrt(2)) * frac
         return 100 * np.sin(np.cumsum(2 * np.pi * f / 1000) + ph)
     if kind == "noisy-sine":
-        return 100 * np.sin(2 * np.pi * np.pi ** 2 * t / 1000 + ph) + rng.normal(0, 5, MINUTE)
+        return 100 * np.sin(2 * np.pi * np.pi**2 * t / 1000 + ph) + rng.normal(0, 5, MINUTE)
     if kind == "sensor-0.1":  # slow drift rounded to 0.1
-        return np.round(50 + 5 * np.sin(2 * np.pi * np.sqrt(2) * t / 1000 + ph)
-                        + np.cumsum(rng.normal(0, 0.05, MINUTE)), 1)
+        return np.round(
+            50 + 5 * np.sin(2 * np.pi * np.sqrt(2) * t / 1000 + ph) + np.cumsum(rng.normal(0, 0.05, MINUTE)), 1
+        )
     raise ValueError(kind)
 
 
@@ -55,7 +67,7 @@ DISCRETE = [
     ("random-walk q0.001", "random-walk", 0.001),
     ("random-walk q0.01", "random-walk", 0.01),
     ("random-walk q0.1", "random-walk", 0.1),
-    ("random-walk q2^-4", "random-walk", 2.0 ** -4),
+    ("random-walk q2^-4", "random-walk", 2.0**-4),
     ("noisy-sine q0.1", "noisy-sine", 0.1),
     ("noisy-sine adc12", "noisy-sine", 400 / 4096),  # 12-bit ADC over +-200 engineering units
     ("sin-4.12hz q0.01", "sin-4.12hz", 0.01),

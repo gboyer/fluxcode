@@ -35,8 +35,19 @@ from fluxcode._format import (
 )
 
 
-def write_group(block_flags, block_sizes, grid_exponents, grid_scales, block_anchors, residuals, sample_codes=None,
-                byte_planes=False, time_columns: EncodedTimeColumns | None = None, offsets=None, escaped_values=None):
+def write_group(
+    block_flags,
+    block_sizes,
+    grid_exponents,
+    grid_scales,
+    block_anchors,
+    residuals,
+    sample_codes=None,
+    byte_planes=False,
+    time_columns: EncodedTimeColumns | None = None,
+    offsets=None,
+    escaped_values=None,
+):
     """Serializes columns into a body. The residuals are 16 bit planes unless byte_planes, packed here
     with numpy (everything else is the package's writer's)."""
     block_sizes = np.asarray(block_sizes, np.int64)
@@ -46,8 +57,17 @@ def write_group(block_flags, block_sizes, grid_exponents, grid_scales, block_anc
         if offsets.code_plane_offsets[-1]:
             raise ValueError("flagged blocks need codes")
         sample_codes = np.zeros(0, np.uint8)
-    body = _body.write_body(block_flags, block_sizes, grid_exponents, grid_scales, block_anchors, residuals,
-                            sample_codes, time_columns, offsets)
+    body = _body.write_body(
+        block_flags,
+        block_sizes,
+        grid_exponents,
+        grid_scales,
+        block_anchors,
+        residuals,
+        sample_codes,
+        time_columns,
+        offsets,
+    )
     if escaped_values is not None and len(escaped_values):
         body = np.concatenate([body, _escapes.pack_escaped_values(escaped_values)])
     if byte_planes:
@@ -63,10 +83,10 @@ def write_group(block_flags, block_sizes, grid_exponents, grid_scales, block_anc
         first, last = offsets.sample_offsets[block_idx], offsets.sample_offsets[block_idx + 1]
         plane_bytes = offsets.plane_byte_offsets[block_idx + 1] - offsets.plane_byte_offsets[block_idx]
         padded = np.zeros(8 * plane_bytes, np.uint16)
-        padded[:last - first] = zigzag[first:last]
+        padded[: last - first] = zigzag[first:last]
         for plane_idx in range(16):
             bits = ((padded >> plane_idx) & 1).astype(np.uint8)
-            planes[plane_idx, offsets.plane_byte_offsets[block_idx]:offsets.plane_byte_offsets[block_idx + 1]] = (
+            planes[plane_idx, offsets.plane_byte_offsets[block_idx] : offsets.plane_byte_offsets[block_idx + 1]] = (
                 np.packbits(bits, bitorder="little")
             )
     return body
@@ -93,8 +113,19 @@ def get_codes(code_planes, plane_byte_offset, out_codes):
 
 
 @njit(nogil=True)
-def _read_rows(raw_group, byte_planes, has_time, sample_offsets, plane_byte_offsets, code_plane_offsets,
-               out_grid_exponents, out_grid_scales, out_block_anchors, out_residuals, out_codes):
+def _read_rows(
+    raw_group,
+    byte_planes,
+    has_time,
+    sample_offsets,
+    plane_byte_offsets,
+    code_plane_offsets,
+    out_grid_exponents,
+    out_grid_scales,
+    out_block_anchors,
+    out_residuals,
+    out_codes,
+):
     num_blocks = out_grid_exponents.shape[0]
     max_plane_bytes = 0
     for block_idx in range(num_blocks):
@@ -104,8 +135,9 @@ def _read_rows(raw_group, byte_planes, has_time, sample_offsets, plane_byte_offs
     num_plane_bytes = int(plane_byte_offsets[num_blocks])
     planes = residual_bit_planes_view(raw_group, num_blocks, num_plane_bytes, has_time)
     bplanes = residual_byte_planes_view(raw_group, num_blocks, num_plane_bytes, has_time)
-    cplanes = sample_code_planes_view(raw_group, num_blocks, num_plane_bytes, int(code_plane_offsets[num_blocks]),
-                                      has_time)
+    cplanes = sample_code_planes_view(
+        raw_group, num_blocks, num_plane_bytes, int(code_plane_offsets[num_blocks]), has_time
+    )
     for block_idx in range(num_blocks):
         out_grid_exponents[block_idx] = get_int16(raw_group, grid_exponents_start(num_blocks), num_blocks, block_idx)
         out_grid_scales[block_idx] = get_uint32(raw_group, grid_scales_start(num_blocks), num_blocks, block_idx)
@@ -114,20 +146,22 @@ def _read_rows(raw_group, byte_planes, has_time, sample_offsets, plane_byte_offs
         block_len = sample_offsets[block_idx + 1] - first_sample
         if byte_planes:
             sample_start = 8 * plane_byte_offsets[block_idx]
-            scratch_low_bytes[:block_len] = bplanes[0, sample_start:sample_start + block_len]
-            scratch_high_bytes[:block_len] = bplanes[1, sample_start:sample_start + block_len]
+            scratch_low_bytes[:block_len] = bplanes[0, sample_start : sample_start + block_len]
+            scratch_high_bytes[:block_len] = bplanes[1, sample_start : sample_start + block_len]
         else:
             unshuffle_residual_block(
-                planes, plane_byte_offsets[block_idx],
+                planes,
+                plane_byte_offsets[block_idx],
                 plane_byte_offsets[block_idx + 1] - plane_byte_offsets[block_idx],
-                scratch_low_bytes, scratch_high_bytes,
+                scratch_low_bytes,
+                scratch_high_bytes,
             )
         for sample_idx in range(block_len):
             out_residuals[first_sample + sample_idx] = unzigzag_sample(
                 scratch_low_bytes, scratch_high_bytes, sample_idx
             )
         if raw_group[block_idx] & BLOCK_FLAG_SAMPLE_CODES:
-            get_codes(cplanes, code_plane_offsets[block_idx], out_codes[first_sample:first_sample + block_len])
+            get_codes(cplanes, code_plane_offsets[block_idx], out_codes[first_sample : first_sample + block_len])
 
 
 def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> EncodedBlockColumns:
@@ -152,8 +186,19 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Enco
     block_anchors = np.empty(num_blocks, np.int64)
     residuals = np.empty(num_samples, np.int16)
     sample_codes = np.zeros(num_samples, np.uint8)
-    _read_rows(raw_arr, byte_planes, has_time, offsets.sample_offsets, offsets.plane_byte_offsets,
-               offsets.code_plane_offsets, grid_exponents, grid_scales, block_anchors, residuals, sample_codes)
+    _read_rows(
+        raw_arr,
+        byte_planes,
+        has_time,
+        offsets.sample_offsets,
+        offsets.plane_byte_offsets,
+        offsets.code_plane_offsets,
+        grid_exponents,
+        grid_scales,
+        block_anchors,
+        residuals,
+        sample_codes,
+    )
     time_columns = None
     if has_time:
         # Zeroed: read_time_fields leaves regular blocks' residuals untouched
@@ -161,8 +206,17 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Enco
         time_columns.residuals[:] = 0
         everyone = np.arange(num_blocks, dtype=np.int64)
         _body.check_time_fields_status(*_body.read_time_fields(raw_arr, *offsets, *time_columns, everyone))
-    return EncodedBlockColumns(block_flags, block_sizes, grid_exponents, grid_scales, block_anchors, residuals,
-                               sample_codes, time_columns, escaped_values)
+    return EncodedBlockColumns(
+        block_flags,
+        block_sizes,
+        grid_exponents,
+        grid_scales,
+        block_anchors,
+        residuals,
+        sample_codes,
+        time_columns,
+        escaped_values,
+    )
 
 
 def read_rows(parsed: _group.ParsedGroup) -> EncodedBlockColumns:

@@ -418,7 +418,12 @@ def decompress(group: bytes) -> ParsedGroup:
     escapes_ok = False
     if body.shape[0] >= fields_size:
         escapes_ok = _escapes.count_block_escapes(
-            body, offsets.sample_offsets, offsets.plane_byte_offsets, offsets.code_plane_offsets, has_time, escape_offsets
+            body,
+            offsets.sample_offsets,
+            offsets.plane_byte_offsets,
+            offsets.code_plane_offsets,
+            has_time,
+            escape_offsets,
         )
     if (
         body.shape[0] < fields_size
@@ -463,9 +468,7 @@ def read_time_columns(parsed: ParsedGroup, block_ids: np.ndarray) -> _format.Enc
     return time_columns
 
 
-def read_time_residuals(
-    parsed: ParsedGroup, time_columns: _format.EncodedTimeColumns, block_ids: np.ndarray
-) -> None:
+def read_time_residuals(parsed: ParsedGroup, time_columns: _format.EncodedTimeColumns, block_ids: np.ndarray) -> None:
     """Unpacks irregular time residuals for ``block_ids`` into an existing ``EncodedTimeColumns``.
 
     Args:
@@ -569,9 +572,7 @@ def decode(group: bytes) -> DecodedGroup:
     return DecodedGroup(values, times, parsed.block_sizes)
 
 
-def _block_ticks(
-    parsed: ParsedGroup, time_columns: _format.EncodedTimeColumns, block_ids: np.ndarray
-) -> np.ndarray:
+def _block_ticks(parsed: ParsedGroup, time_columns: _format.EncodedTimeColumns, block_ids: np.ndarray) -> np.ndarray:
     """Unpacks time residuals and expands timestamps for ``block_ids`` into a group-sized array."""
     read_time_residuals(parsed, time_columns, block_ids)
     out_ticks = np.empty(parsed.header.num_samples, np.int64)
@@ -579,9 +580,7 @@ def _block_ticks(
     return out_ticks
 
 
-def _last_ticks(
-    parsed: ParsedGroup, time_columns: _format.EncodedTimeColumns, block_ids: np.ndarray
-) -> np.ndarray:
+def _last_ticks(parsed: ParsedGroup, time_columns: _format.EncodedTimeColumns, block_ids: np.ndarray) -> np.ndarray:
     """Returns the last timestamp of each non-empty block in ``block_ids``."""
     if not block_ids.shape[0]:
         return np.zeros(0, np.int64)

@@ -15,8 +15,14 @@ RNG = np.random.default_rng(0)
 
 def some_blocks():
     t = np.arange(1000.0)
-    return [RNG.normal(size=1000), np.cumsum(RNG.normal(size=1000)), 100 * np.sin(t / 7), t ** 2 / 1000,
-            np.round(RNG.normal(size=1000), 2), np.full(1000, 3.5)]
+    return [
+        RNG.normal(size=1000),
+        np.cumsum(RNG.normal(size=1000)),
+        100 * np.sin(t / 7),
+        t**2 / 1000,
+        np.round(RNG.normal(size=1000), 2),
+        np.full(1000, 3.5),
+    ]
 
 
 @pytest.mark.parametrize("i", range(6))
@@ -32,7 +38,7 @@ def test_block_stats(i):
 def test_block_stats_non_finite(value, where):
     x = RNG.normal(size=1000)
     x[where] = value
-    x[where + 1:] = value if where < 999 else x[where + 1:]
+    x[where + 1 :] = value if where < 999 else x[where + 1 :]
     assert _encoder.block_stats(x)[3] == where
 
 
@@ -44,10 +50,10 @@ def test_block_stats_sum_overflow_is_not_non_finite():
 
 @pytest.mark.parametrize("bits", range(1, 17))
 def test_exponent(bits):
-    for rng in [1e-9, 0.3, 1.0, 1.0 - 2 ** -20, 1000.0, 65535.0, 65535.6, 7.0e12]:
+    for rng in [1e-9, 0.3, 1.0, 1.0 - 2**-20, 1000.0, 65535.0, 65535.6, 7.0e12]:
         e = _grids.min_exponent_for_span(rng, bits)
-        assert round(rng / 2.0 ** e) < 2 ** bits  # fits
-        assert round(rng / 2.0 ** (e - 1)) >= 2 ** bits  # and is the finest that does
+        assert round(rng / 2.0**e) < 2**bits  # fits
+        assert round(rng / 2.0 ** (e - 1)) >= 2**bits  # and is the finest that does
 
 
 def test_plan_step_precedence():
@@ -65,13 +71,13 @@ def test_quantize():
     x = some_blocks()[1]
     q = np.empty(1000, np.int32)
     _grids.quantize_relative(x, x.min(), -10, q)
-    np.testing.assert_array_equal(q, np.floor((x - x.min()) * 2.0 ** 10 + 0.5))
+    np.testing.assert_array_equal(q, np.floor((x - x.min()) * 2.0**10 + 0.5))
 
 
 @pytest.mark.parametrize("p", [-3, -1, 0, 2])
 def test_detect_decimal(p):
     K = np.cumsum(RNG.integers(-5, 6, 1000)) + 5000
-    x = K * 10.0 ** p if p >= 0 else K / 10.0 ** -p
+    x = K * 10.0**p if p >= 0 else K / 10.0**-p
     q = np.empty(1000, np.int32)
     rng = x.max() - x.min()
     got, base = _grids.find_decimal_grid(x, x.min(), x.max(), 2.0 ** _grids.min_exponent_for_span(rng, 16), q)
@@ -93,7 +99,7 @@ def ref_order(q, orders):
         windows = [q.astype(np.int64)]
     else:
         nw, wl = _encoder.PICK_WINDOWS, _encoder.PICK_WINDOW_LEN
-        windows = [q[i * (n - wl) // (nw - 1):i * (n - wl) // (nw - 1) + wl].astype(np.int64) for i in range(nw)]
+        windows = [q[i * (n - wl) // (nw - 1) : i * (n - wl) // (nw - 1) + wl].astype(np.int64) for i in range(nw)]
     var = {k: np.var(np.concatenate([np.diff(w, k) for w in windows])) for k in sorted(orders)}
     best = min(var.values())
     return min(k for k in var if var[k] <= best * (1 + 1e-12))
@@ -177,7 +183,7 @@ TINY = 5e-324
 def ref_exponent(lo, hi, bits):
     """Smallest e with rint(hi / 2^e) - rint(lo / 2^e) <= L(bits), clamped to [-1074, 1023],
     exactly (round() of a Fraction rounds half to even, like rint)."""
-    limit = 2 ** bits if bits < 16 else 2 ** 16 - 1
+    limit = 2**bits if bits < 16 else 2**16 - 1
     e = -1074
     while e < 1023 and round(Fraction(hi) / Fraction(2) ** e) - round(Fraction(lo) / Fraction(2) ** e) > limit:
         e += 1
@@ -193,9 +199,20 @@ def ref_quantize(x, lo, e):
     return lo, [math.floor((Fraction(v) - Fraction(lo)) / step + Fraction(1, 2)) for v in x]
 
 
-EXTREME = [(0.0, TINY), (0.0, 7 * TINY), (-3 * TINY, 1000 * TINY), (0.0, 2.0 ** -1010), (1e-300, 1e-300 + 2e-310),
-           (-DBL_MAX, DBL_MAX), (-DBL_MAX, 0.0), (0.0, DBL_MAX), (-1e308, 1e308), (-2.0 ** 1022, 2.0 ** 1022),
-           (1e300, DBL_MAX), (-5.0, DBL_MAX)]
+EXTREME = [
+    (0.0, TINY),
+    (0.0, 7 * TINY),
+    (-3 * TINY, 1000 * TINY),
+    (0.0, 2.0**-1010),
+    (1e-300, 1e-300 + 2e-310),
+    (-DBL_MAX, DBL_MAX),
+    (-DBL_MAX, 0.0),
+    (0.0, DBL_MAX),
+    (-1e308, 1e308),
+    (-(2.0**1022), 2.0**1022),
+    (1e300, DBL_MAX),
+    (-5.0, DBL_MAX),
+]
 
 
 @pytest.mark.parametrize("bits", [1, 6, 16])
@@ -217,7 +234,7 @@ def test_quantize_and_dequantize_extremes(lo, hi, bits):
     q = np.empty(200, np.int32)
     anchor = _grids.quantize_power_of_two(x, lo, hi, e, q)
     assert (anchor, q.tolist()) == ref_quantize(x, lo, e)
-    assert ((q >= 0) & (q < 2 ** 16)).all() and q[0] == 0
+    assert ((q >= 0) & (q < 2**16)).all() and q[0] == 0
     y = np.empty(200)
     _decoder.dequantize_pow2(q, anchor, e, y)
     assert np.isfinite(y).all()
@@ -231,12 +248,12 @@ def test_wide_dequantize_matches_plain_where_finite(e):
     """The half-scale decoder path is bit-identical to lo + q * 2^e wherever that doesn't overflow."""
     rng = np.random.default_rng(e)
     for lo in [-DBL_MAX, -1e300, -TINY, 0.0, 3 * TINY, 1e200]:
-        q = rng.integers(0, 2 ** 16, 5000).astype(np.int32)
+        q = rng.integers(0, 2**16, 5000).astype(np.int32)
         q[0] = 0
         y = np.empty(5000)
         _decoder.dequantize_pow2(q, lo, e, y)
         with np.errstate(over="ignore"):
-            plain = lo + q * 2.0 ** e
+            plain = lo + q * 2.0**e
         ok = np.isfinite(plain)
         np.testing.assert_array_equal(y[ok], plain[ok])
         assert (y[~ok] == DBL_MAX).all()
@@ -266,8 +283,9 @@ def ref_robust_noise(d, ok):
     num_valid = int(ok.sum())
     num_windows = max(1, num_valid // 256)
     counts = np.cumsum(ok)
-    ends = [int(np.searchsorted(counts, math.floor(num_valid * (w + 1) / num_windows))) + 1
-            for w in range(num_windows - 1)] + [len(d)]
+    ends = [
+        int(np.searchsorted(counts, math.floor(num_valid * (w + 1) / num_windows))) + 1 for w in range(num_windows - 1)
+    ] + [len(d)]
     k = math.sqrt(math.pi / 2)
     spreads, start = [], 0
     for end in ends:
@@ -280,7 +298,7 @@ def ref_robust_noise(d, ok):
         start = end
     pairs = (ok[1:] & ok[:-1]).sum()
     spread = min(np.mean(spreads), min(spreads) / 0.75)
-    return spread, (np.sum(dv[1:] * dv[:-1]) / pairs) / (np.sum(dv ** 2) / num_valid)
+    return spread, (np.sum(dv[1:] * dv[:-1]) / pairs) / (np.sum(dv**2) / num_valid)
 
 
 NO_CODES = np.zeros(0, np.uint8)
@@ -292,6 +310,7 @@ NO_TICKS = np.zeros(0, np.int64)
 @pytest.mark.parametrize("scale_k", [0, -1060, 1000])
 def test_noise_masked_matches_reference(kind, frac, scale_k):
     from tests._signals import minute
+
     rng = np.random.default_rng(int(frac * 1000) + abs(scale_k))
     X = np.ldexp(minute(kind, 4).reshape(60, 1000)[:10] / 128, scale_k)  # ranges up to ~2^1000 / ~2^-1060
     d, w = np.empty(1000), np.empty(1000)
@@ -441,9 +460,11 @@ def test_cadence_window():
 def test_cadence_jittered_clocks():
     """Jittered times, receive delays and gaps keep the floor."""
     rng = np.random.default_rng(8)
-    for jitter in (rng.integers(-200, 201, SCANS.size),  # uniform +-20%
-                   rng.normal(0, 150, SCANS.size).astype(np.int64),  # sd 15%
-                   rng.exponential(100, SCANS.size).astype(np.int64)):  # receive delay, mean 10%
+    for jitter in (
+        rng.integers(-200, 201, SCANS.size),  # uniform +-20%
+        rng.normal(0, 150, SCANS.size).astype(np.int64),  # sd 15%
+        rng.exponential(100, SCANS.size).astype(np.int64),
+    ):  # receive delay, mean 10%
         assert cadence_of(np.sort(SCANS + jitter))[2] > 0.95
     # 5% of scans dropped, and 5% near-duplicate times: the floor stays
     assert gets_floor(SCANS[rng.random(SCANS.size) >= 0.05])

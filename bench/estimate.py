@@ -30,8 +30,11 @@ def main(minutes=5):
     sets = {k: [minute(k, 100 + j) for j in range(minutes)] for k in KINDS}
     sets.update({n: [discrete_minute(n, 200 + j) for j in range(minutes)] for n, _, _ in DISCRETE})
     targets = (6.0, 8.0, 10.0)
-    print("| signal | estimate | actual | " + " | ".join(f"target {t:g}: bits/sample, worst max err % range"
-                                                     for t in targets) + " |")
+    print(
+        "| signal | estimate | actual | "
+        + " | ".join(f"target {t:g}: bits/sample, worst max err % range" for t in targets)
+        + " |"
+    )
     print("|---|---|---|" + "---|" * len(targets))
     for name, xs in sets.items():
         ea = np.array([estimate_and_actual(x, B16) for x in xs]).mean(0)

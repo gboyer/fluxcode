@@ -117,9 +117,7 @@ def integrate_residuals(residuals_in_out: np.ndarray, order: int) -> None:
 
 
 @njit(nogil=True, cache=True)
-def dequantize_pow2(
-    quantized_samples: np.ndarray, anchor: float, quant_exp: int, out_samples: np.ndarray
-) -> None:
+def dequantize_pow2(quantized_samples: np.ndarray, anchor: float, quant_exp: int, out_samples: np.ndarray) -> None:
     """Reconstructs float64 samples on a power-of-two grid: ``anchor + q * 2^quant_exp``.
 
     Delegates to ``dequantize_pow2_wide_exponent`` when ``quant_exp >= E_WIDE`` to avoid
@@ -156,7 +154,7 @@ def dequantize_decimal(
         out_samples: Preallocated 1D float64 array receiving reconstructed samples.
     """
     if decimal_exp < 0:
-        divisor = 10.0 ** -decimal_exp
+        divisor = 10.0**-decimal_exp
         for sample_idx in range(quantized_samples.shape[0]):
             out_samples[sample_idx] = float(anchor_index + quantized_samples[sample_idx]) / divisor
     else:
@@ -192,7 +190,7 @@ def dequantize_scaled(
         out_samples: Preallocated 1D float64 array receiving reconstructed samples.
     """
     if decimal:
-        divisor = scale_den * 10.0 ** -exponent
+        divisor = scale_den * 10.0**-exponent
         for sample_idx in range(quantized_samples.shape[0]):
             out_samples[sample_idx] = (
                 float(anchor_index + scale_num * np.int64(quantized_samples[sample_idx])) / divisor

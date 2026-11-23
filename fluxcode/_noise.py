@@ -454,7 +454,9 @@ def _passes_masked_whiteness(clipped: np.ndarray, weights: np.ndarray, num_valid
 
 
 @njit(nogil=True, cache=True, fastmath=True)
-def _subband_level(samples: np.ndarray, scale_factor: float, band: int, scratch_diffs: np.ndarray) -> tuple[float, bool]:
+def _subband_level(
+    samples: np.ndarray, scale_factor: float, band: int, scratch_diffs: np.ndarray
+) -> tuple[float, bool]:
     """Computes a lower subband's noise level and long-lag decay status on clean samples.
 
     Args:

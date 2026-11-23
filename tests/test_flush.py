@@ -37,7 +37,7 @@ def test_efforts_decode_the_same(kind):
     reference = None
     for effort in EFFORTS:
         (group,), *_ = fluxcode.encode(x, Params(effort=effort))
-        frame = group[_format.HEADER_BYTES:]
+        frame = group[_format.HEADER_BYTES :]
         assert zstandard.frame_content_size(frame) == len(body_of(group))
         assert zstandard.ZstdDecompressor().decompress(frame) == bytes(body_of(group))  # one shot, no section lengths
         values = fluxcode.decode_group(group).values
@@ -66,7 +66,7 @@ def test_flush_points(byte_planes):
     plane_bytes = 8 * octets if byte_planes else octets
     for cut in cuts[1:]:  # every cut after the columns ends a plane that holds data
         assert cut % plane_bytes == start % plane_bytes
-        assert np.count_nonzero(parsed.body[cut - plane_bytes:cut]) * _compress.FLUSH_MIN_DENSITY > plane_bytes
+        assert np.count_nonzero(parsed.body[cut - plane_bytes : cut]) * _compress.FLUSH_MIN_DENSITY > plane_bytes
 
 
 def test_flush_points_skip_empty_planes():
@@ -96,8 +96,12 @@ def test_compress_body_gives_up_over_the_limit():
 
 def test_heuristic_choice():
     # The random walk at full precision (the floor would coarsen it, ENCODER §5.2): wide residuals, bit planes
-    for kind, byte, floor in (("sin-4.12hz", True, 0.25), ("random-walk", False, 0), ("chirp", False, 0.25),
-                              ("noisy-sine", True, 0.25)):
+    for kind, byte, floor in (
+        ("sin-4.12hz", True, 0.25),
+        ("random-walk", False, 0),
+        ("chirp", False, 0.25),
+        ("noisy-sine", True, 0.25),
+    ):
         (group,), *_ = fluxcode.encode(minute(kind, 5), Params(effort=2, noise_floor_sigma=floor))
         assert _format.unpack_header(group).byte_planes is byte, kind
 
@@ -133,7 +137,16 @@ def test_wide_share_is_the_same_in_both_layouts(kind):
     rows = group_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
     zigzag = ((rows << 1) ^ (rows >> 15)) & 0xFFFF
     for bit_idx in (0, 3, 7, 8, 12, 15):
-        shares = [_oracle.wide_share(p.body, p.header.num_blocks, int(p.layout.plane_byte_offsets[-1]), p.has_time,
-                                         p.header.byte_planes, bit_idx) for p in bodies]
+        shares = [
+            _oracle.wide_share(
+                p.body,
+                p.header.num_blocks,
+                int(p.layout.plane_byte_offsets[-1]),
+                p.has_time,
+                p.header.byte_planes,
+                bit_idx,
+            )
+            for p in bodies
+        ]
         slots = 8 * int(bodies[0].layout.plane_byte_offsets[-1])
         assert shares[0] == shares[1] == np.count_nonzero(zigzag >> bit_idx) / slots, bit_idx

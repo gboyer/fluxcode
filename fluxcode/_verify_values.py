@@ -248,7 +248,9 @@ def _check_stats(
     blocks = np.flatnonzero(encoded)
     stats = [np.asarray(result.block_min), np.asarray(result.block_max), np.asarray(result.block_mean)]
     if any(stat.shape != blocks.shape for stat in stats):
-        found.append(Violation("stats", -1, f"{[stat.shape for stat in stats]} statistics for {blocks.shape[0]} blocks"))
+        found.append(
+            Violation("stats", -1, f"{[stat.shape for stat in stats]} statistics for {blocks.shape[0]} blocks")
+        )
         return
     some = count[blocks] > 0
     expected = [np.where(some, lo[blocks], np.nan), np.where(some, hi[blocks], np.nan)]

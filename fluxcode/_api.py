@@ -44,6 +44,7 @@ DEFAULT_BLOCKS_PER_GROUP: int = 60
 
 # Encoding
 
+
 def encode_group(
     samples: npt.ArrayLike,
     params: Params = DEFAULT_PARAMS,
@@ -222,6 +223,7 @@ def encode(
 
 # Decoding
 
+
 def decode_group(group: bytes) -> DecodedGroup:
     """Decodes a single self-describing block group into its samples, timestamps and block sizes.
 
@@ -259,6 +261,7 @@ def decode(groups: Sequence[bytes]) -> list[DecodedGroup]:
 
 
 # Updating
+
 
 def update(
     group: bytes,

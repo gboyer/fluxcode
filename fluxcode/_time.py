@@ -114,9 +114,7 @@ def _deltas_gcd(times: np.ndarray, num_deltas: int) -> np.uint64:
 
 
 @njit(inline="always")
-def _divide_deltas(
-    times: np.ndarray, step: np.uint64, out_quotients: np.ndarray
-) -> tuple[bool, np.uint64, np.uint64]:
+def _divide_deltas(times: np.ndarray, step: np.uint64, out_quotients: np.ndarray) -> tuple[bool, np.uint64, np.uint64]:
     """Divides every consecutive timestamp delta by ``step`` and checks exact divisibility.
 
     The returned ``minimum`` and ``total`` are meaningful only when ``divisible`` is True.

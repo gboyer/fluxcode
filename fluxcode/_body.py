@@ -338,7 +338,9 @@ def read_time_columns(
     for block_idx in range(num_blocks):
         stored_start = get_int64(body, time_starts_start(num_blocks), num_blocks, block_idx)
         out_time_steps[block_idx] = get_int64(body, time_steps_start(num_blocks), num_blocks, block_idx)
-        out_time_refs[block_idx] = np.uint64(get_int64(body, time_ref_quotients_start(num_blocks), num_blocks, block_idx))
+        out_time_refs[block_idx] = np.uint64(
+            get_int64(body, time_ref_quotients_start(num_blocks), num_blocks, block_idx)
+        )
         block_len = sample_offsets[block_idx + 1] - sample_offsets[block_idx]
         if block_len == 0:
             if stored_start != 0 or out_time_steps[block_idx] != 0 or out_time_refs[block_idx] != 0:

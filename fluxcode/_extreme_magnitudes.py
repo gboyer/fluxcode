@@ -106,9 +106,7 @@ def prescale(samples: np.ndarray, scale_exp: int) -> tuple[np.ndarray, float]:
 
 
 @njit(nogil=True, cache=True)
-def quantize_huge_exponent(
-    samples: np.ndarray, anchor: float, quant_exp: int, out_quantized: np.ndarray
-) -> None:
+def quantize_huge_exponent(samples: np.ndarray, anchor: float, quant_exp: int, out_quantized: np.ndarray) -> None:
     """Quantizes samples for large exponents where ``sample - anchor`` may overflow float64.
 
     Evaluates ``floor((sample / 2 - anchor / 2) * 2^(1 - quant_exp) + 0.5)``, which produces

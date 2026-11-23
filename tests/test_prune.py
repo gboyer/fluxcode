@@ -64,6 +64,7 @@ def index(t, p):
 
 # the rmse pass, step by step (fluxprune._api.rank)
 
+
 @pytest.mark.parametrize("seed", range(5))
 def test_rmse_matches_brute_force(seed):
     t, x = series(seed)
@@ -112,7 +113,13 @@ def test_repeated_times_and_degenerate_inputs():
     r = rank(t, x)
     for k in range(r.min_points, 8):
         assert r.relative_rmse(k) == pytest.approx(np.sqrt(exact_mse(t, x, r.top(k))) / 5, abs=1e-12)
-    for t, x in [([], []), ([0], [1.0]), ([0, 1], [1.0, 2.0]), ([0, 1, 2], [3.0, 3, 3]), ([5, 5, 5, 5], [1.0, 2, 3, 4])]:
+    for t, x in [
+        ([], []),
+        ([0], [1.0]),
+        ([0, 1], [1.0, 2.0]),
+        ([0, 1, 2], [3.0, 3, 3]),
+        ([5, 5, 5, 5], [1.0, 2, 3, 4]),
+    ]:
         p = fluxprune.prune(np.array(t, np.int64), np.array(x))
         assert len(p) == min(len(x), 2) or (len(x) == 4 and len(p) >= 2)
         assert p.rmse == 0 and p.max_error == 0 and p.rmse_met and p.max_error_met and p.max_points_met
@@ -161,6 +168,7 @@ def test_error_per_point():
 
 
 # prune()
+
 
 @pytest.mark.parametrize("seed", range(3))
 def test_prune_reports_its_errors(seed):
@@ -260,6 +268,7 @@ def test_noise_warning():
 
 # the noise floor
 
+
 def noise_estimate(t, x):
     """σ from each point's distance to its neighbours' chord, by brute force, over the triplets whose two
     intervals are one scan (strictly between half and 1.5 times the median interval)."""
@@ -268,7 +277,7 @@ def noise_estimate(t, x):
     r = []
     for i in range(1, len(x) - 1):
         d0, d1 = t[i] - t[i - 1], t[i + 1] - t[i]
-        if not (c / 2 < d0 < 1.5 * c and c / 2 < d1 < 1.5 * c) or not np.isfinite(x[i - 1:i + 2]).all():
+        if not (c / 2 < d0 < 1.5 * c and c / 2 < d1 < 1.5 * c) or not np.isfinite(x[i - 1 : i + 2]).all():
             continue
         w = d0 / (d0 + d1)
         r.append(abs(x[i] - x[i - 1] - w * (x[i + 1] - x[i - 1])) / np.sqrt(1 + w * w + (1 - w) ** 2))
@@ -278,8 +287,11 @@ def noise_estimate(t, x):
 @pytest.mark.parametrize("times", ["regular", "jittered", "skipped scans"])
 def test_noise_estimate(times):
     rng = np.random.default_rng(7)
-    steps = {"regular": np.ones(3600), "jittered": rng.uniform(0.6, 1.4, 3600),  # every interval one scan
-             "skipped scans": np.where(rng.random(3600) < 0.05, 2.0, 1.0)}[times]  # 95% one scan
+    steps = {
+        "regular": np.ones(3600),
+        "jittered": rng.uniform(0.6, 1.4, 3600),  # every interval one scan
+        "skipped scans": np.where(rng.random(3600) < 0.05, 2.0, 1.0),
+    }[times]  # 95% one scan
     t = np.cumsum(steps)
     x = 50 + 0.01 * t + rng.normal(0, 2, 3600)
     r = rank(t, x)
@@ -343,6 +355,7 @@ def test_noise_floor():
 
 # gaps: runs of non-finite values
 
+
 def test_gaps_hold_forward():
     t = np.arange(30.0)
     x = np.sin(t / 3)
@@ -379,8 +392,10 @@ def test_gaps_beat_the_cap():
 
 # include_regular_intervals
 
+
 def keepable(x):
     """Finite, or the first of a run of non-finite values of one kind (nan, inf, -inf)."""
+
     def kind(v):
         return "finite" if np.isfinite(v) else "nan" if np.isnan(v) else str(v)
 
@@ -515,6 +530,7 @@ def test_regular_intervals_arguments():
 
 # refit
 
+
 def refit_oracle(t, x, keep, pinned):
     """Values at the kept points minimising the time-weighted squared error, pinned ones at their samples: least
     squares at two Gauss-Legendre nodes per input segment (dense; exact, since the residual is linear there)."""
@@ -565,6 +581,7 @@ def test_refit_with_gaps():
 
 
 # the max_error pass: farthest reach
+
 
 def chords(t, x, tol, a):
     """(j, whether the chord a -> j stays within tol of every point between) for j after a, until no line from a

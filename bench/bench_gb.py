@@ -35,9 +35,14 @@ from tests._signals import HIDDEN_GRIDS, KINDS, MINUTE, discrete_minute, minute
 SIGNALS = KINDS + ["sensor-0.1", "random-walk q0.01", "noisy-sine q0.1", "noisy-sine q0.01 via float32"]
 EXTRA_SIGNALS = HIDDEN_GRIDS
 """Reported after each table's total, outside it (it stays comparable with earlier runs)."""
-CONFIGS = {"default": Params(), "noise floor off": Params(noise_floor_sigma=0),
-           "target 6": Params(target_bits_per_sample=6.0), "effort 1": Params(effort=1), "effort 5": Params(effort=5),
-           "effort 9": Params(effort=9)}
+CONFIGS = {
+    "default": Params(),
+    "noise floor off": Params(noise_floor_sigma=0),
+    "target 6": Params(target_bits_per_sample=6.0),
+    "effort 1": Params(effort=1),
+    "effort 5": Params(effort=5),
+    "effort 9": Params(effort=9),
+}
 
 
 def series(sig, minutes):
@@ -61,10 +66,14 @@ def best(f, reps):
 
 def machine():
     try:
-        cpu = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=False).stdout.strip()
+        cpu = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=False
+        ).stdout.strip()
     except OSError:
         cpu = platform.processor()
-    return f"{cpu}, {platform.system()} {platform.release()}, Python {platform.python_version()}, numpy {np.__version__}"
+    return (
+        f"{cpu}, {platform.system()} {platform.release()}, Python {platform.python_version()}, numpy {np.__version__}"
+    )
 
 
 def main():
@@ -73,11 +82,13 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--threads", default="1,4,8")
     a = ap.parse_args()
-    minutes = max(1, round(a.gib * 2 ** 30 / 8 / MINUTE / len(SIGNALS)))
+    minutes = max(1, round(a.gib * 2**30 / 8 / MINUTE / len(SIGNALS)))
     n_sig = minutes * MINUTE
     total_bytes = 8 * n_sig * len(SIGNALS)
-    print(f"# fluxcode gigabyte benchmark\n\n{machine()}\n\n{len(SIGNALS)} signal types x {minutes} minutes "
-          f"= {total_bytes / 2 ** 30:.2f} GiB of float64 ({total_bytes // 8000:,} blocks); best of {a.reps}.\n")
+    print(
+        f"# fluxcode gigabyte benchmark\n\n{machine()}\n\n{len(SIGNALS)} signal types x {minutes} minutes "
+        f"= {total_bytes / 2**30:.2f} GiB of float64 ({total_bytes // 8000:,} blocks); best of {a.reps}.\n"
+    )
 
     t0 = time.perf_counter()
     data = {s: series(s, minutes) for s in SIGNALS}
@@ -89,18 +100,24 @@ def main():
 
     for name, p in CONFIGS.items():
         print(f"## {name}\n")
-        print("| signal | bits/sample | ratio | worst max err (% range) | encode MB/s | decode MB/s | "
-              "encode µs/block | decode µs/block |")
+        print(
+            "| signal | bits/sample | ratio | worst max err (% range) | encode MB/s | decode MB/s | "
+            "encode µs/block | decode µs/block |"
+        )
         print("|---|---|---|---|---|---|---|---|")
         te_sum = td_sum = bits = 0.0
         for s, x in [*data.items(), *extra.items()]:
             if s == EXTRA_SIGNALS[0]:
                 nb = total_bytes // 8000
-                print(f"| **all ({total_bytes / 2 ** 30:.2f} GiB)** | {bits / (total_bytes / 8):.2f} | "
-                      f"{64 * total_bytes / 8 / bits:.1f} | | {total_bytes / 1e6 / te_sum:.0f} | "
-                      f"{total_bytes / 1e6 / td_sum:.0f} | {1e6 * te_sum / nb:.2f} | {1e6 * td_sum / nb:.2f} |")
+                print(
+                    f"| **all ({total_bytes / 2**30:.2f} GiB)** | {bits / (total_bytes / 8):.2f} | "
+                    f"{64 * total_bytes / 8 / bits:.1f} | | {total_bytes / 1e6 / te_sum:.0f} | "
+                    f"{total_bytes / 1e6 / td_sum:.0f} | {1e6 * te_sum / nb:.2f} | {1e6 * td_sum / nb:.2f} |"
+                )
             te, (groups, lo, hi, _) = best(lambda x=x, p=p: encode_series(x, p), a.reps)
-            td, ys = best(lambda groups=groups: fluxcode.decode(groups), a.reps)  # one DecodedGroup per block group, as rows are read
+            td, ys = best(
+                lambda groups=groups: fluxcode.decode(groups), a.reps
+            )  # one DecodedGroup per block group, as rows are read
             err = np.abs(np.concatenate([decoded.values for decoded in ys]) - x).reshape(-1, 1000).max(1)
             worst = 100 * (err / np.where(hi > lo, hi - lo, 1.0)).max()
             nb = len(lo)
@@ -108,8 +125,10 @@ def main():
             if s in data:
                 te_sum, td_sum, bits = te_sum + te, td_sum + td, bits + b
             mb = 8 * len(x) / 1e6
-            print(f"| {s} | {b / len(x):.2f} | {64 * len(x) / b:.1f} | {worst:.4f} | {mb / te:.0f} | {mb / td:.0f} | "
-                  f"{1e6 * te / nb:.2f} | {1e6 * td / nb:.2f} |")
+            print(
+                f"| {s} | {b / len(x):.2f} | {64 * len(x) / b:.1f} | {worst:.4f} | {mb / te:.0f} | {mb / td:.0f} | "
+                f"{1e6 * te / nb:.2f} | {1e6 * td / nb:.2f} |"
+            )
             del groups, lo, ys
         print()
 

@@ -178,9 +178,7 @@ class Params:
         min_bits = self.min_quantize_bits
         max_bits = self.max_quantize_bits
         if not (is_int(min_bits) and is_int(max_bits) and 1 <= min_bits <= max_bits <= 16):
-            raise ValueError(
-                f"need 1 <= min_quantize_bits <= max_quantize_bits <= 16, got {min_bits!r}, {max_bits!r}"
-            )
+            raise ValueError(f"need 1 <= min_quantize_bits <= max_quantize_bits <= 16, got {min_bits!r}, {max_bits!r}")
         orders = self.diff_orders
         if not isinstance(orders, Iterable) or isinstance(orders, (str, bytes)):
             raise ValueError(f"diff_orders must be a set of orders, got {orders!r}")

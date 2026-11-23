@@ -88,15 +88,19 @@ def main():
     lines = [
         f"# fluxprune speed (bench/prune.py, {time.strftime('%Y-%m-%d')}, {source})",
         "",
-        (f"{platform.machine()}, {platform.system()} {platform.release()}, Python {platform.python_version()}, "
-         f"numpy {np.__version__}; one thread, best of {args.reps}, 1 s scans (datetime64[ns] times)."),
+        (
+            f"{platform.machine()}, {platform.system()} {platform.release()}, Python {platform.python_version()}, "
+            f"numpy {np.__version__}; one thread, best of {args.reps}, 1 s scans (datetime64[ns] times)."
+        ),
         "",
-        ("rank: the O(n log n) ranking pass. prune: the rmse pass (rank, the count, 2 refinement passes). max_error: "
-         "prune with max_error = 1% of the range (the max_error pass, farthest reach). + cap: the same with "
-         "max_points = n / 100, which binds on the noisy signals (then max_error is relaxed to the tightest bound that "
-         "fits: a bisection over the max_error pass). refit: prune with refit=True (the rmse pass, then least-squares "
-         "values at the kept times). Times are added to rank's. Each call is timed on its own, so a difference below "
-         "~0.05 ms at 3,600 points is run-to-run noise."),
+        (
+            "rank: the O(n log n) ranking pass. prune: the rmse pass (rank, the count, 2 refinement passes). max_error: "
+            "prune with max_error = 1% of the range (the max_error pass, farthest reach). + cap: the same with "
+            "max_points = n / 100, which binds on the noisy signals (then max_error is relaxed to the tightest bound that "
+            "fits: a bisection over the max_error pass). refit: prune with refit=True (the rmse pass, then least-squares "
+            "values at the kept times). Times are added to rank's. Each call is timed on its own, so a difference below "
+            "~0.05 ms at 3,600 points is run-to-run noise."
+        ),
         "",
         f"(generated in {time.time() - start:.0f} s)",
         "",
@@ -109,9 +113,11 @@ def main():
         def added(key, r=r, tm=tm):
             return f"{1e3 * (tm[key] - r):+.2f} ms ({100 * (tm[key] - r) / r:+.0f}%)"
 
-        lines.append(f"| {n:,} | {name} | {1e3 * r:.2f} ms | {1e9 * r / n:.0f} | {added('prune')} | {added('max_error')} | "
-                     f"{added('max_error + cap')} | {added('refit')} | "
-                     f"{kept['prune']:,} / {kept['max_error']:,} / {kept['max_error + cap']:,} |")
+        lines.append(
+            f"| {n:,} | {name} | {1e3 * r:.2f} ms | {1e9 * r / n:.0f} | {added('prune')} | {added('max_error')} | "
+            f"{added('max_error + cap')} | {added('refit')} | "
+            f"{kept['prune']:,} / {kept['max_error']:,} / {kept['max_error + cap']:,} |"
+        )
     (Path(__file__).parent / "PRUNE_RESULTS.md").write_text("\n".join(lines) + "\n")
 
 

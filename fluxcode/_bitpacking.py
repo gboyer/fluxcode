@@ -405,7 +405,9 @@ def time_residual_planes_views(
         Tuple ``(time_low_planes, time_high_planes)`` of shapes
         ``(32, num_time_low_bytes)`` and ``(32, num_time_high_bytes)``.
     """
-    low_start = sample_code_planes_start(num_blocks, num_plane_bytes, True) + num_code_plane_bytes * BITS_PER_SAMPLE_CODE
+    low_start = (
+        sample_code_planes_start(num_blocks, num_plane_bytes, True) + num_code_plane_bytes * BITS_PER_SAMPLE_CODE
+    )
     low_bytes = TIME_LOW_PLANES * num_time_low_bytes
     high_bytes = TIME_LOW_PLANES * num_time_high_bytes
     time_low_planes = body[low_start : low_start + low_bytes].reshape(TIME_LOW_PLANES, num_time_low_bytes)
