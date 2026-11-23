@@ -44,26 +44,26 @@ def test_block_stats_sum_overflow_is_not_non_finite():
 @pytest.mark.parametrize("bits", range(1, 17))
 def test_exponent(bits):
     for rng in [1e-9, 0.3, 1.0, 1.0 - 2 ** -20, 1000.0, 65535.0, 65535.6, 7.0e12]:
-        e = _grids.exponent(rng, bits)
+        e = _grids.min_exponent_for_span(rng, bits)
         assert round(rng / 2.0 ** e) < 2 ** bits  # fits
         assert round(rng / 2.0 ** (e - 1)) >= 2 ** bits  # and is the finest that does
 
 
 def test_plan_step_precedence():
     rng = 100.0
-    fine, coarse = _grids.exponent(rng, 16), _grids.exponent(rng, 6)
+    fine, coarse = _grids.min_exponent_for_span(rng, 16), _grids.min_exponent_for_span(rng, 6)
     lo, hi = -40.0, 60.0
-    assert _grids.plan_step(lo, hi, 0.0, 0.0, 0.0, 6, 16) == fine
-    assert _grids.plan_step(lo, hi, 1.0, 0.95, 0.25, 6, 16) == -2  # floor(log2(0.25))
-    assert _grids.plan_step(lo, hi, 1.0, 0.5, 0.25, 6, 16) == fine  # not gated
-    assert _grids.plan_step(lo, hi, 1e6, 0.95, 0.25, 6, 16) == coarse  # min bits caps the noise floor
-    assert _grids.plan_step(5.0, 5.0, 1.0, 0.95, 0.25, 6, 16) == 0
+    assert _grids.plan_base_exponent(lo, hi, 0.0, 0.0, 0.0, 6, 16) == fine
+    assert _grids.plan_base_exponent(lo, hi, 1.0, 0.95, 0.25, 6, 16) == -2  # floor(log2(0.25))
+    assert _grids.plan_base_exponent(lo, hi, 1.0, 0.5, 0.25, 6, 16) == fine  # not gated
+    assert _grids.plan_base_exponent(lo, hi, 1e6, 0.95, 0.25, 6, 16) == coarse  # min bits caps the noise floor
+    assert _grids.plan_base_exponent(5.0, 5.0, 1.0, 0.95, 0.25, 6, 16) == 0
 
 
 def test_quantize():
     x = some_blocks()[1]
     q = np.empty(1000, np.int32)
-    _grids.quantize(x, x.min(), -10, q)
+    _grids.quantize_relative(x, x.min(), -10, q)
     np.testing.assert_array_equal(q, np.floor((x - x.min()) * 2.0 ** 10 + 0.5))
 
 
@@ -73,7 +73,7 @@ def test_detect_decimal(p):
     x = K * 10.0 ** p if p >= 0 else K / 10.0 ** -p
     q = np.empty(1000, np.int32)
     rng = x.max() - x.min()
-    got, base = _grids.detect_decimal(x, x.min(), x.max(), 2.0 ** _grids.exponent(rng, 16), q)
+    got, base = _grids.find_decimal_grid(x, x.min(), x.max(), 2.0 ** _grids.min_exponent_for_span(rng, 16), q)
     assert got == p
     assert base == K.min()  # the grid index of the minimum: the block's anchor
     np.testing.assert_array_equal(q, K - K.min())
@@ -82,8 +82,8 @@ def test_detect_decimal(p):
 def test_detect_decimal_rejects_continuous():
     x = some_blocks()[0]
     q = np.empty(1000, np.int32)
-    ps = 2.0 ** _grids.exponent(x.max() - x.min(), 16)
-    assert _grids.detect_decimal(x, x.min(), x.max(), ps, q)[0] == _grids.NO_DECIMAL
+    ps = 2.0 ** _grids.min_exponent_for_span(x.max() - x.min(), 16)
+    assert _grids.find_decimal_grid(x, x.min(), x.max(), ps, q)[0] == _grids.NO_DECIMAL
 
 
 def ref_order(q, orders):
@@ -104,19 +104,19 @@ def ref_order(q, orders):
 def test_pick_order(i, orders, m):
     x = some_blocks()[i]
     q = np.empty(1000, np.int32)
-    _grids.quantize(x, x.min(), _grids.exponent(x.max() - x.min(), 16), q)
-    assert _encoder.pick_order(q[:m], sum(1 << k for k in orders)) == ref_order(q[:m], orders)
+    _grids.quantize_relative(x, x.min(), _grids.min_exponent_for_span(x.max() - x.min(), 16), q)
+    assert _encoder.select_predictor_order(q[:m], sum(1 << k for k in orders)) == ref_order(q[:m], orders)
 
 
 @pytest.mark.parametrize("order", range(4))
 def test_residual_and_integrate(order):
     q = RNG.integers(-32768, 32768, 1000).astype(np.int32)
     v = np.empty(1000, np.int16)
-    _encoder.residual(q, order, v)
+    _encoder.compute_residuals(q, order, v)
     ref = np.diff(np.concatenate([np.zeros(order, np.int64), q]), order)
     np.testing.assert_array_equal(v, ((ref + 32768) % 65536 - 32768).astype(np.int16))
     w = v.astype(np.int32)
-    _decoder.integrate(w, order)
+    _decoder.integrate_residuals(w, order)
     np.testing.assert_array_equal(w, q)
 
 
@@ -141,7 +141,7 @@ def ref_class_entropy(v):
 @pytest.mark.parametrize("scale", [0, 1, 30, 3000])
 def test_estimate_bits(scale):
     v = np.round(RNG.normal(0, scale, 1000)).astype(np.int16) if scale else np.zeros(1000, np.int16)
-    assert math.isclose(_encoder.estimate_bits(v), ref_class_entropy(v), abs_tol=1e-9)
+    assert math.isclose(_encoder.estimate_residual_bits(v), ref_class_entropy(v), abs_tol=1e-9)
 
 
 def test_allocate_target():
@@ -151,19 +151,19 @@ def test_allocate_target():
     w = np.ones(5, np.int64)
     k = np.zeros(5, np.int64)
     # budget 5 * 5 = 25 of 27.7; blocks can give 8 (clamped from 9), 8, 0, 5, 0 bits
-    assert _encoder.allocate_target(h, e, ec, w, 5.0, k)
+    assert _encoder.allocate_bit_reductions(h, e, ec, w, 5.0, k)
     np.testing.assert_array_equal(k, [1, 1, 0, 1, 0])  # k = 1 saves 3 >= 2.7
-    assert _encoder.allocate_target(h, e, ec, w, 3.0, k)  # excess 12.7: k = 5 saves 13, k = 4 saves 12
+    assert _encoder.allocate_bit_reductions(h, e, ec, w, 3.0, k)  # excess 12.7: k = 5 saves 13, k = 4 saves 12
     np.testing.assert_array_equal(k, [5, 5, 0, 5, 0])
-    assert not _encoder.allocate_target(h, e, ec, w, 6.0, k)  # under budget
+    assert not _encoder.allocate_bit_reductions(h, e, ec, w, 6.0, k)  # under budget
     ec = np.array([1, 8, 8, 8, 8])
-    _encoder.allocate_target(h, e, ec, w, 3.0, k)  # block 0 gives only 1 bit: k = 6 saves 12, k = 7 saves 13
+    _encoder.allocate_bit_reductions(h, e, ec, w, 3.0, k)  # block 0 gives only 1 bit: k = 6 saves 12, k = 7 saves 13
     np.testing.assert_array_equal(k, [1, 7, 0, 5, 0])
     # Weighted by block size: block 1 is 3 blocks' worth, block 3 outside the budget (weight 0)
     w = np.array([1, 3, 1, 0, 1])
     ec = np.full(5, 8, np.int64)
     # bits 10 + 30 + 0.5 + 1.2 = 41.7 over 6 samples, budget 30: k = 3 saves 3 + 9 = 12 >= 11.7
-    assert _encoder.allocate_target(h, e, ec, w, 5.0, k)
+    assert _encoder.allocate_bit_reductions(h, e, ec, w, 5.0, k)
     np.testing.assert_array_equal(k, [3, 3, 0, 0, 0])
 
 
@@ -202,7 +202,7 @@ EXTREME = [(0.0, TINY), (0.0, 7 * TINY), (-3 * TINY, 1000 * TINY), (0.0, 2.0 ** 
 @pytest.mark.parametrize("bits", [1, 6, 16])
 @pytest.mark.parametrize("lo,hi", EXTREME)
 def test_range_exponent_extremes(lo, hi, bits):
-    assert _grids.range_exponent(lo, hi, bits) == ref_exponent(lo, hi, bits)
+    assert _grids.snapped_exponent_for_range(lo, hi, bits) == ref_exponent(lo, hi, bits)
 
 
 @pytest.mark.parametrize("bits", [1, 6, 16])
@@ -214,9 +214,9 @@ def test_quantize_and_dequantize_extremes(lo, hi, bits):
     t = rng.uniform(0, 1, 200)
     x = np.clip(lo + t * hi - t * lo, lo, hi)  # lo + t (hi - lo) without overflowing hi - lo
     x[:2] = lo, hi
-    e = _grids.range_exponent(lo, hi, bits)
+    e = _grids.snapped_exponent_for_range(lo, hi, bits)
     q = np.empty(200, np.int32)
-    anchor = _grids.quantize_block(x, lo, hi, e, q)
+    anchor = _grids.quantize_power_of_two(x, lo, hi, e, q)
     assert (anchor, q.tolist()) == ref_quantize(x, lo, e)
     assert ((0 <= q) & (q < 2 ** 16)).all() and q[0] == 0
     y = np.empty(200)
@@ -248,10 +248,10 @@ def test_noise_scale_extremes():
     x = np.random.default_rng(0).normal(size=1000)
     x = x / np.abs(x).max()
     d = np.empty(1000)
-    ref = _noise.noise(x, _grids.range_scale(x.min(), x.max()), d)
+    ref = _noise.estimate_clean_noise(x, _grids.span_binary_exponent(x.min(), x.max()), d)
     for k in (-1060, -1000, 1000, 1023):
         y = np.ldexp(x, k)
-        sigma, rho = _noise.noise(y, _grids.range_scale(y.min(), y.max()), d)
+        sigma, rho = _noise.estimate_clean_noise(y, _grids.span_binary_exponent(y.min(), y.max()), d)
         if k > -1050:  # at -1060 the samples themselves are rounded to the subnormal grid
             assert rho == ref[1] and sigma == math.ldexp(ref[0], k)
         else:
@@ -302,16 +302,16 @@ def test_noise_masked_matches_reference(kind, frac, scale_k):
         y = x.copy()
         y[rng.random(1000) < frac] = np.nan
         xf, codes = np.empty(1000), np.empty(1000, np.uint8)
-        lo, hi, _, _ = _escapes.fill_nonfinite(y, xf, codes)
-        k = _grids.range_scale(lo, hi)
-        sigma, rho = _noise.noise_masked(xf, codes, k, 500, d, w)
+        lo, hi, _, _ = _escapes.impute_nonfinite(y, xf, codes)
+        k = _grids.span_binary_exponent(lo, hi)
+        sigma, rho = _noise.estimate_masked_noise(xf, codes, k, 500, d, w)
         yr = np.ldexp(np.where(codes == 0, y, 0.0), -k)
         # 12th differences if >= 500 valid windows, else 2nd differences
         ok12 = np.convolve(codes != 0, np.ones(order + 1, int), "valid") == 0
         if ok12.sum() >= 500:
             diffs = np.convolve(yr, coefs[::-1], "valid")
             spread, rr = ref_robust_noise(diffs, ok12)
-            rr_share = rr / _noise.WHITE_RHO
+            rr_share = rr / _noise.EXPECTED_WHITE_LAG1_AUTOCORR
             ref_sigma = math.ldexp(spread, k) / _noise.SIGMA_GAIN
             if scale_k == -1060:
                 continue
@@ -332,16 +332,16 @@ def test_noise_masked_matches_reference(kind, frac, scale_k):
 
 
 def test_noise_matches_reference():
-    """noise is the reference on 12th differences of white noise, over one window and over many."""
+    """estimate_clean_noise is the reference on 12th differences of white noise, over one window and over many."""
     rng = np.random.default_rng(4)
     coefs = np.array(_noise.NOISE_COEFS, np.float64)
     for x in (rng.normal(size=1000), np.r_[rng.normal(0, 0.01, 3000), rng.normal(0, 1, 3000)]):
-        k = _grids.range_scale(x.min(), x.max())
-        sigma, rho = _noise.noise(x, k, np.empty(x.size))
+        k = _grids.span_binary_exponent(x.min(), x.max())
+        sigma, rho = _noise.estimate_clean_noise(x, k, np.empty(x.size))
         xr = np.ldexp(x, -k)
         diffs = np.convolve(xr, coefs[::-1], "valid")
         spread, rr = ref_robust_noise(diffs, np.ones(diffs.size, bool))
-        assert rho == pytest.approx(rr / _noise.WHITE_RHO, abs=1e-9)
+        assert rho == pytest.approx(rr / _noise.EXPECTED_WHITE_LAG1_AUTOCORR, abs=1e-9)
         assert sigma == pytest.approx(math.ldexp(spread, k) / _noise.SIGMA_GAIN, rel=1e-9)
 
 
@@ -354,8 +354,8 @@ def test_noise_masked_rejects_tones_and_detects_bandlimited_noise():
     tone = np.sin(2 * np.pi * 0.44 * t)
     codes = np.zeros(1000, np.uint8)
     codes[[100, 450, 800]] = 1
-    k = _grids.range_scale(tone.min(), tone.max())
-    sigma_tone, rho_tone = _noise.noise_masked(tone, codes, k, 500, np.empty(1000), np.empty(1000))
+    k = _grids.span_binary_exponent(tone.min(), tone.max())
+    sigma_tone, rho_tone = _noise.estimate_masked_noise(tone, codes, k, 500, np.empty(1000), np.empty(1000))
     assert rho_tone <= _noise.NOISE_GATE and sigma_tone == 0.0
 
     # Band-limited white noise (low-pass filtered at ~0.35 Fs, like a sigma-delta DAQ) with dropouts
@@ -366,9 +366,9 @@ def test_noise_masked_rejects_tones_and_detects_bandlimited_noise():
     h /= h.sum()
     bandlimited = np.convolve(white, h, "valid")
     assert bandlimited.shape[0] == 1000
-    k_bl = _grids.range_scale(bandlimited.min(), bandlimited.max())
-    sig_clean, rho_clean = _noise.noise(bandlimited, k_bl, np.empty(1000))
-    sig_masked, rho_masked = _noise.noise_masked(bandlimited, codes, k_bl, 500, np.empty(1000), np.empty(1000))
+    k_bl = _grids.span_binary_exponent(bandlimited.min(), bandlimited.max())
+    sig_clean, rho_clean = _noise.estimate_clean_noise(bandlimited, k_bl, np.empty(1000))
+    sig_masked, rho_masked = _noise.estimate_masked_noise(bandlimited, codes, k_bl, 500, np.empty(1000), np.empty(1000))
     assert rho_clean > _noise.NOISE_GATE and sig_clean > 0.002
     assert rho_masked > _noise.NOISE_GATE and sig_masked == pytest.approx(sig_clean, rel=0.15)
 
@@ -380,11 +380,11 @@ def test_noise_irregular_cancels_slopes_across_unequal_intervals():
     ticks = np.arange(1000, dtype=np.int64) * 1000 + rng.integers(-200, 201, 1000)
     noisy = 0.001 * ticks.astype(float) + rng.normal(0, 0.01, 1000)
     d, w = np.empty(1000), np.empty(1000)
-    k = _grids.range_scale(noisy.min(), noisy.max())
+    k = _grids.span_binary_exponent(noisy.min(), noisy.max())
     lower, upper, _ = _noise.cadence(ticks, np.empty(_time.CADENCE_SAMPLES, np.int64))
-    sigma, rho = _noise.noise_irregular(noisy, NO_CODES, ticks, lower, upper, k, 0, d, w)
+    sigma, rho = _noise.estimate_irregular_noise(noisy, NO_CODES, ticks, lower, upper, k, 0, d, w)
     assert sigma == pytest.approx(0.01, rel=0.1) and rho > _noise.NOISE_GATE
-    assert _noise.noise(noisy, k, d)[0] > 5 * sigma
+    assert _noise.estimate_clean_noise(noisy, k, d)[0] > 5 * sigma
 
 
 def test_divided_difference_is_unbiased_for_any_intervals():
@@ -394,8 +394,8 @@ def test_divided_difference_is_unbiased_for_any_intervals():
     n = 50_000
     ticks = np.cumsum(rng.integers(510, 1490, n)).astype(np.int64)
     x = rng.normal(0, 1, n)
-    k = _grids.range_scale(x.min(), x.max())
-    sigma, rho = _noise.noise_irregular(x, NO_CODES, ticks, 500, 1500, k, 0, np.empty(n), np.empty(n))
+    k = _grids.span_binary_exponent(x.min(), x.max())
+    sigma, rho = _noise.estimate_irregular_noise(x, NO_CODES, ticks, 500, 1500, k, 0, np.empty(n), np.empty(n))
     assert sigma == pytest.approx(1.0, rel=0.02) and rho > _noise.NOISE_GATE
 
 
@@ -403,7 +403,7 @@ def test_robust_noise_floors_by_the_quietest_window():
     """Noise that varies within a block is floored by at most 4/3 of its quietest part's."""
     rng = np.random.default_rng(7)
     x = np.r_[rng.normal(0, 0.01, 600), rng.normal(0, 1, 600)]
-    sigma, rho = _noise.noise(x, _grids.range_scale(x.min(), x.max()), np.empty(1200))
+    sigma, rho = _noise.estimate_clean_noise(x, _grids.span_binary_exponent(x.min(), x.max()), np.empty(1200))
     assert sigma == pytest.approx(0.01 / 0.75, rel=0.15) and rho > _noise.NOISE_GATE
 
 
@@ -412,7 +412,7 @@ def test_robust_noise_is_unbiased_on_steady_noise(n):
     """Steady white noise reads its sigma however many windows the block has (the quietest of
     255 windows alone reads about 18% low)."""
     x = np.random.default_rng(n).normal(size=n)
-    sigma, _ = _noise.noise(x, _grids.range_scale(x.min(), x.max()), np.empty(n))
+    sigma, _ = _noise.estimate_clean_noise(x, _grids.span_binary_exponent(x.min(), x.max()), np.empty(n))
     assert sigma == pytest.approx(1.0, rel=0.04)
 
 

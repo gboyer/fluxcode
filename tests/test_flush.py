@@ -20,7 +20,7 @@ EFFORTS = range(MIN_EFFORT, MAX_EFFORT + 1)
 
 
 def body_of(group):
-    return _group.decompress(group).raw_body
+    return _group.decompress(group).body
 
 
 def test_every_effort_has_settings():
@@ -58,29 +58,29 @@ def test_flush_points(byte_planes):
         (group,), *_ = fluxcode.encode(minute("sin-9.87hz", 4))
     parsed = _group.decompress(group)
     nb = parsed.header.num_blocks
-    cuts = _compress.flush_points(parsed.raw_body, nb, parsed.layout, parsed.has_time, byte_planes)
-    start = _format.residual_start(nb, parsed.has_time)
-    assert cuts == sorted(set(cuts)) and cuts[0] == start and cuts[-1] <= len(parsed.raw_body)
+    cuts = _compress.find_flush_points(parsed.body, nb, parsed.layout, parsed.has_time, byte_planes)
+    start = _format.residual_planes_start(nb, parsed.has_time)
+    assert cuts == sorted(set(cuts)) and cuts[0] == start and cuts[-1] <= len(parsed.body)
     assert len(cuts) <= (3 if byte_planes else 17)
-    octets = int(parsed.layout.octet_offsets[-1])
+    octets = int(parsed.layout.plane_byte_offsets[-1])
     plane_bytes = 8 * octets if byte_planes else octets
     for cut in cuts[1:]:  # every cut after the columns ends a plane that holds data
         assert cut % plane_bytes == start % plane_bytes
-        assert np.count_nonzero(parsed.raw_body[cut - plane_bytes:cut]) * _compress.FLUSH_MIN_DENSITY > plane_bytes
+        assert np.count_nonzero(parsed.body[cut - plane_bytes:cut]) * _compress.FLUSH_MIN_DENSITY > plane_bytes
 
 
 def test_flush_points_skip_empty_planes():
     with planes("bit"):
         (group,), *_ = fluxcode.encode(minute("linear", 4))  # near-constant residuals
     parsed = _group.decompress(group)
-    cuts = _compress.flush_points(parsed.raw_body, parsed.header.num_blocks, parsed.layout, parsed.has_time, False)
+    cuts = _compress.find_flush_points(parsed.body, parsed.header.num_blocks, parsed.layout, parsed.has_time, False)
     assert len(cuts) < 17
 
 
 def test_compress_body_cuts():
     body = np.random.default_rng(0).integers(0, 4, 5000, dtype=np.uint8)
     for cuts in ([], [0], [5000], [10, 4000], [1, 2, 3, 4999]):
-        frame = _compress.compress_body(body, cuts, 3)
+        frame = _compress.compress_body_with_flushes(body, cuts, 3)
         assert zstandard.ZstdDecompressor().decompress(frame) == body.tobytes()
         assert zstandard.frame_content_size(frame) == 5000
 
@@ -88,10 +88,10 @@ def test_compress_body_cuts():
 def test_compress_body_gives_up_over_the_limit():
     body = np.random.default_rng(0).integers(0, 256, 20_000, dtype=np.uint8)  # incompressible: a block ~ its size
     cuts = [5000, 10_000, 15_000]
-    frame = _compress.compress_body(body, cuts, 3)
+    frame = _compress.compress_body_with_flushes(body, cuts, 3)
     assert frame is not None
-    assert _compress.compress_body(body, cuts, 3, limit=len(frame)) == frame
-    assert _compress.compress_body(body, cuts, 3, limit=4000) is None  # dropped after the first block
+    assert _compress.compress_body_with_flushes(body, cuts, 3, limit=len(frame)) == frame
+    assert _compress.compress_body_with_flushes(body, cuts, 3, limit=4000) is None  # dropped after the first block
 
 
 def test_heuristic_choice():
@@ -130,7 +130,7 @@ def test_wide_share_is_the_same_in_both_layouts(kind):
     rows = group_rows(fluxcode.encode(x, Params(max_quantize_bits=12))[0][0]).residuals.astype(np.int32)
     zigzag = ((rows << 1) ^ (rows >> 15)) & 0xFFFF
     for bit_idx in (0, 3, 7, 8, 12, 15):
-        shares = [_oracle.wide_share(p.raw_body, p.header.num_blocks, int(p.layout.octet_offsets[-1]), p.has_time,
+        shares = [_oracle.wide_share(p.body, p.header.num_blocks, int(p.layout.plane_byte_offsets[-1]), p.has_time,
                                          p.header.byte_planes, bit_idx) for p in bodies]
-        slots = 8 * int(bodies[0].layout.octet_offsets[-1])
+        slots = 8 * int(bodies[0].layout.plane_byte_offsets[-1])
         assert shares[0] == shares[1] == np.count_nonzero(zigzag >> bit_idx) / slots, bit_idx

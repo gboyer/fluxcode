@@ -29,31 +29,31 @@ def planes(layout, flush=True, zstd_levels=(3,)):
     """Every block group compresses with the residual layout "bit" or "byte" while inside, whatever
     the effort picks: some tests need a particular one. The Python path is forced, since the Rust
     extension has no such option."""
-    saved = _compress._rust, _compress.pack
+    saved = _compress._rust, _compress.pack_body
 
     def pack(body, offsets, num_blocks, num_samples, effort, time_unit):
         if layout == "byte":
             candidates = [(True, body)]
         else:
-            candidates = [(False, _bitpacking.to_bit_planes(body, num_blocks, int(offsets.octet_offsets[-1]),
+            candidates = [(False, _bitpacking.to_bit_planes(body, num_blocks, int(offsets.plane_byte_offsets[-1]),
                                                             time_unit != 0))]
-        return _compress._smallest_group(candidates, num_blocks, num_samples, offsets, time_unit,
-                                         effort._replace(flush=flush, zstd_levels=zstd_levels))
+        return _compress.select_smallest_group(candidates, num_blocks, num_samples, offsets, time_unit,
+                                               effort._replace(flush=flush, zstd_levels=zstd_levels))
 
-    _compress._rust, _compress.pack = None, pack
+    _compress._rust, _compress.pack_body = None, pack
     try:
         yield
     finally:
-        _compress._rust, _compress.pack = saved
+        _compress._rust, _compress.pack_body = saved
 
 
 def group_rows(group):
-    """GroupRows (block_flags, block_sizes, grid_params, value_anchors, residuals, codes, time_rows) of a block group."""
+    """EncodedBlockColumns of a block group."""
     return _oracle.read_rows(_group.decompress(group))
 
 
 def flags_params(groups):
-    hp = [(group_rows(u).block_flags, group_rows(u).grid_params) for u in groups]
+    hp = [(group_rows(u).block_flags, group_rows(u).grid_exponents) for u in groups]
     return np.concatenate([h for h, _ in hp]), np.concatenate([p for _, p in hp])
 
 

@@ -26,7 +26,7 @@ def rebuilt(group, edit):
     header."""
     rows = group_rows(group)
     edit(*rows)
-    body = _oracle.write_group(*rows[:7], time_rows=rows.time_rows)
+    body = _oracle.write_group(*rows[:7], time_columns=rows.time_columns)
     return group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
@@ -72,7 +72,7 @@ def test_update_copies_carried_blocks_without_unpacking(monkeypatch):
     def unpack_everything(*args, **kwargs):
         raise AssertionError("unpacked every block")
 
-    monkeypatch.setattr(_bitpacking, "unshuffle_block", unpack_everything)
+    monkeypatch.setattr(_bitpacking, "unshuffle_residual_block", unpack_everything)
     assert fluxcode.update(group, {1: x[L:2 * L] + 1}, times={1: t[L:2 * L]}).group == expected
 
 

@@ -55,7 +55,7 @@ from _signals import (
 )
 
 import fluxcode
-from fluxcode import Params, _bitpacking, _compress, _decoder, _format, _group
+from fluxcode import Params, _bitpacking, _body, _compress, _decoder, _format, _group
 
 BLOCK, BLOCKS = 1000, 60
 DAY_GROUPS = 1440
@@ -363,17 +363,18 @@ def breakdown(wl, reps=200):
     for k, xs in zip(wl.kinds, wl.pool):
         x = xs[1]
         sizes = np.full(BLOCKS, BLOCK)
-        cz, dz = _compress.zstd()
-        group_rows, _ = _group.encode_rows(x, sizes, p)
-        offsets = _format.layout(group_rows.block_flags, sizes)
-        num_octets = int(offsets.octet_offsets[-1])
-        # As _compress.pack builds them: the byte-plane body, the bit-plane body derived from it
-        byte_body = _bitpacking.write_group(*group_rows[:7], group_rows.time_rows, offsets)
-        bit_body = _bitpacking.to_bit_planes(byte_body, BLOCKS, num_octets, False)
+        cz, dz = _compress.get_zstd_codecs()
+        group_rows, _ = _group.encode_columns(x, sizes, p)
+        offsets = _format.compute_body_layout(group_rows.block_flags, sizes)
+        num_plane_bytes = int(offsets.plane_byte_offsets[-1])
+        # As _compress.pack_body builds them: the byte-plane body, the bit-plane body derived from it
+        byte_body = _body.write_body(*group_rows[:7], group_rows.time_columns, offsets)
+        bit_body = _bitpacking.to_bit_planes(byte_body, BLOCKS, num_plane_bytes, False)
         frame = cz.compress(bit_body.data)
         group = _format.pack_header(BLOCKS, x.size, False, 0) + frame
         out = np.empty(x.size)
         block_ids = np.arange(BLOCKS)
+        escape_offsets = np.zeros(BLOCKS + 1, np.int64)
 
         def t(f, *args):
             best = np.inf
@@ -385,13 +386,14 @@ def breakdown(wl, reps=200):
             return 1e6 * best
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
         rows.append((k, len(group) * 8 / x.size,
-                     t(_group.encode_rows, x, sizes, p),
-                     t(_bitpacking.write_group, *group_rows[:7], group_rows.time_rows, offsets),
-                     t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_octets, False),
+                     t(_group.encode_columns, x, sizes, p),
+                     t(_body.write_body, *group_rows[:7], group_rows.time_columns, offsets),
+                     t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_plane_bytes, False),
                      t(compress_both, cz, byte_body, bit_body), t(fluxcode.encode_group, x, p),
                      t(dz.decompress, frame),
-                     t(_decoder.decode_group, rawd, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets,
-                       block_ids, out, False, False),
+                     t(_decoder.decode_blocks, rawd, offsets.sample_offsets, offsets.plane_byte_offsets,
+                       offsets.code_plane_offsets, block_ids, out, False, False, group_rows.escaped_values,
+                       escape_offsets),
                      t(fluxcode.decode_group, group)))
     return rows
 

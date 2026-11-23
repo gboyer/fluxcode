@@ -12,7 +12,7 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format, _grids, _group
-from fluxcode._format import BLOCK_FLAG_CODED, BLOCK_FLAG_ORDER, SHORT_BLOCK_LEN
+from fluxcode._format import BLOCK_FLAG_ORDER, BLOCK_FLAG_SAMPLE_CODES, SHORT_BLOCK_LEN
 
 SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
 
@@ -46,14 +46,14 @@ def test_encode_blocks_round_trip():
     rows = group_rows(group)
     alone = group_rows(fluxcode.encode_blocks(x[off[9]:off[10]], [4096]).group)
     np.testing.assert_array_equal(rows.residuals[off[9]:off[10]], alone.residuals)
-    assert rows.grid_params[9] == alone.grid_params[0]
+    assert rows.grid_exponents[9] == alone.grid_exponents[0]
 
 
 def test_empty_blocks_store_nothing():
     group = fluxcode.encode_blocks(np.arange(5.0), [0, 5, 0])
     rows = group_rows(group.group)
-    assert rows.block_flags.tolist()[::2] == [0, 0] and rows.grid_params.tolist()[::2] == [0, 0]
-    assert rows.value_anchors.tolist()[::2] == [0, 0]
+    assert rows.block_flags.tolist()[::2] == [0, 0] and rows.grid_exponents.tolist()[::2] == [0, 0]
+    assert rows.block_anchors.tolist()[::2] == [0, 0]
 
 
 @pytest.mark.parametrize("sizes", [[], [0], [0, 0, 0]])
@@ -82,22 +82,22 @@ def test_short_blocks_skip_the_analysis(size, decimal):
     group, _, _, _ = fluxcode.encode_blocks(x, [size], params)
     rows = group_rows(group)
     flags = int(rows.block_flags[0])
-    assert flags & BLOCK_FLAG_ORDER == 0 and flags & BLOCK_FLAG_CODED
+    assert flags & BLOCK_FLAG_ORDER == 0 and flags & BLOCK_FLAG_SAMPLE_CODES
     finite = x[np.isfinite(x)]
     y = fluxcode.decode_group(group).values
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))
     on_grid = decimal and finite.size > 1 and finite.max() > finite.min()
     assert bool(flags & _format.BLOCK_FLAG_DECIMAL) == on_grid
     if on_grid:
-        assert rows.grid_params[0] == -2
+        assert rows.grid_exponents[0] == -2
         np.testing.assert_array_equal(y[np.isfinite(x)], finite)  # bit-exact
-        q = np.round(finite * 100).astype(np.int64) - rows.value_anchors[0]
+        q = np.round(finite * 100).astype(np.int64) - rows.block_anchors[0]
     else:
         rng_x = finite.max() - finite.min() if finite.size else 0.0
-        fine = _grids.range_exponent(finite.min(), finite.max(), 16) if finite.size else 0
-        assert rows.grid_params[0] == fine
+        fine = _grids.snapped_exponent_for_range(finite.min(), finite.max(), 16) if finite.size else 0
+        assert rows.grid_exponents[0] == fine
         assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2 ** 16 - 0.5)
-        anchor = rows.value_anchors.view(np.float64)[0]
+        anchor = rows.block_anchors.view(np.float64)[0]
         q = (np.rint(finite / 2.0 ** fine) - np.rint(anchor / 2.0 ** fine)).astype(np.int64)
     # Order 0: the residuals are the quantized values themselves (signed 16-bit)
     np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64), q)
@@ -108,13 +108,13 @@ def test_short_blocks_honour_decimal_detection_off():
     rows = group_rows(fluxcode.encode_blocks(x, [3], Params(grids="binary")).group)
     assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL
     rows = group_rows(fluxcode.encode_blocks(x, [3]).group)
-    assert rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_params[0] == -2
+    assert rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_exponents[0] == -2
 
 
 def test_short_blocks_take_a_coarser_exact_binary_grid():
     """Short blocks choose their grid as longer ones do (§5.3): 0.25 steps on 2^-2, not 0.01."""
     rows = group_rows(fluxcode.encode_blocks(np.array([1.25, 3.5, 2.75]), [3]).group)
-    assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_params[0] == -2
+    assert not rows.block_flags[0] & _format.BLOCK_FLAG_DECIMAL and rows.grid_exponents[0] == -2
 
 
 def test_target_weights_blocks_by_size():
@@ -147,12 +147,12 @@ def test_times_in_tiny_and_empty_blocks():
     ticks = np.array([-50, -40, -40, -10, 0, 7, 9, 10**18, 2**62 + 10**18], np.int64)
     group = fluxcode.encode_blocks(np.arange(9.0), sizes, times=ticks, time_unit="s").group
     np.testing.assert_array_equal(times_of(group), ticks)
-    rows = group_rows(group).time_rows
+    rows = group_rows(group).time_columns
     assert rows.steps.tolist() == [0, 0, 0, 0, 0, 1, 0, 2**62]
     huge = np.array([np.iinfo(np.int64).min + 1, np.iinfo(np.int64).max])
     group = fluxcode.encode_blocks(np.zeros(2), [2], times=huge, time_unit="ns").group
     np.testing.assert_array_equal(times_of(group), huge)
-    assert group_rows(group).time_rows.steps[0] == 1 and group_rows(group).time_rows.refs[0] == 2**64 - 2
+    assert group_rows(group).time_columns.steps[0] == 1 and group_rows(group).time_columns.refs[0] == 2**64 - 2
 
 
 def test_single_sample_blocks_must_be_canonical():
@@ -179,28 +179,28 @@ def test_noise_floor_needs_128_samples():
     noise = rng.normal(size=2 * 127 + 256)
     group = fluxcode.encode_blocks(noise, [127, 127, 256], Params(grids="binary"))
     rows = group_rows(group.group)
-    fine = [_grids.range_exponent(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
-    assert (rows.grid_params[:2] == fine[:2]).all() and rows.grid_params[2] > fine[2]
+    fine = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
+    assert (rows.grid_exponents[:2] == fine[:2]).all() and rows.grid_exponents[2] > fine[2]
     assert fluxcode._encoder.NOISE_MIN_LEN == 128
     # And 128-sample white-noise blocks gate on almost every block
     blocks = rng.normal(size=20 * 128)
     group128 = fluxcode.encode_blocks(blocks, [128] * 20, Params(grids="binary"))
     rows128 = group_rows(group128.group)
-    fine128 = [_grids.range_exponent(lo, hi, 16) for lo, hi in zip(group128.block_min, group128.block_max)]
-    assert sum(rows128.grid_params[i] > fine128[i] for i in range(20)) >= 16
+    fine128 = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group128.block_min, group128.block_max)]
+    assert sum(rows128.grid_exponents[i] > fine128[i] for i in range(20)) >= 16
 
 
 def test_empty_block_time_columns_must_be_zero():
     """Writers store 0 in an empty block's time_start, time_step and time_ref; decoders check."""
     group = fluxcode.encode_blocks(np.zeros(16), [8, 0, 8], times=np.r_[np.arange(8), 100 + np.arange(8)],
                                   time_unit="ns").group
-    body = _group.decompress(group).raw_body
+    body = _group.decompress(group).body
     num_blocks = 3
-    for field_start in (_format.time_start_start(num_blocks), _format.time_step_start(num_blocks),
-                        _format.time_ref_start(num_blocks)):
+    for field_start in (_format.time_starts_start(num_blocks), _format.time_steps_start(num_blocks),
+                        _format.time_ref_quotients_start(num_blocks)):
         bad = body.copy()
         bad[field_start + 1] = 1  # byte 0 of block 1's value
-        bad_group = group[:_format.HEADER_BYTES] + _compress.zstd()[0].compress(bad.tobytes())
+        bad_group = group[:_format.HEADER_BYTES] + _compress.get_zstd_codecs()[0].compress(bad.tobytes())
         with pytest.raises(ValueError, match="block 1: empty block with nonzero time columns"):
             fluxcode.decode_group(bad_group)
 
@@ -362,10 +362,10 @@ def test_update_time_blocks_carries_other_blocks_untouched(monkeypatch):
     off_before, off_after = offsets(before.block_sizes), offsets(after.block_sizes)
     for b in set(range(len(before.block_sizes))) - {30, 31, 32}:
         assert before.block_flags[b] == after.block_flags[b]
-        assert before.grid_params[b] == after.grid_params[b] and before.value_anchors[b] == after.value_anchors[b]
+        assert before.grid_exponents[b] == after.grid_exponents[b] and before.block_anchors[b] == after.block_anchors[b]
         np.testing.assert_array_equal(before.residuals[off_before[b]:off_before[b + 1]],
                                       after.residuals[off_after[b]:off_after[b + 1]])
-        assert before.time_rows.starts[b] == after.time_rows.starts[b]
+        assert before.time_columns.starts[b] == after.time_columns.starts[b]
     # The straddling block keeps its samples before the range, re-encoded on its own grid
     old_times, new_times = fluxcode.decode_group(group).times, fluxcode.decode_group(group2).times
     assert old_times is not None and new_times is not None

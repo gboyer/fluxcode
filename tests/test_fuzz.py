@@ -127,7 +127,7 @@ def encodes_alone(x: np.ndarray, group: bytes, params: Params) -> bool:
     together = group_rows(group)
     for block, start in enumerate(range(0, x.size, BLOCK_LEN)):
         alone = group_rows(fluxcode.encode_group(x[start:start + BLOCK_LEN], params, block_len=BLOCK_LEN).group)
-        for field in ("block_flags", "grid_params", "grid_scales", "value_anchors"):
+        for field in ("block_flags", "grid_exponents", "grid_scales", "block_anchors"):
             if getattr(alone, field)[0].tobytes() != getattr(together, field)[block].tobytes():
                 return False
         if not np.array_equal(alone.residuals, together.residuals[start:start + alone.residuals.size]):

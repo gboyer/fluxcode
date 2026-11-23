@@ -12,7 +12,7 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format, _group
-from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_LONG_TIME
+from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_WIDE_TIME
 
 INT64_MAX = np.iinfo(np.int64).max
 INT64_MIN = np.iinfo(np.int64).min
@@ -77,7 +77,7 @@ def test_regular_times_store_no_planes():
     np.testing.assert_array_equal(decoded.times, regular_times(values.size))
     assert not irregular_flags(group).any()
     rows = group_rows(group)
-    np.testing.assert_array_equal(rows.time_rows.steps, 1_000_000)
+    np.testing.assert_array_equal(rows.time_columns.steps, 1_000_000)
     # 60 regular blocks cost only their start and step columns
     assert len(group) - len(fluxcode.encode_group(values).group) < 100
 
@@ -90,7 +90,7 @@ def test_gap_makes_only_its_block_irregular():
     group, decoded = round_trip(values, times)
     np.testing.assert_array_equal(decoded.times, times)
     np.testing.assert_array_equal(np.flatnonzero(irregular_flags(group)), [5])
-    assert group_rows(group).time_rows.steps[5] == 1_000_000  # the GCD of 1 ms and 3.001 s
+    assert group_rows(group).time_columns.steps[5] == 1_000_000  # the GCD of 1 ms and 3.001 s
 
 
 def test_irregular_block_step_is_gcd():
@@ -99,7 +99,7 @@ def test_irregular_block_step_is_gcd():
     group, decoded = round_trip(np.zeros(2000), ticks, time_unit="us")
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     assert irregular_flags(group).all()
-    assert (group_rows(group).time_rows.steps % 250 == 0).all()
+    assert (group_rows(group).time_columns.steps % 250 == 0).all()
 
 
 @pytest.mark.parametrize("late_delta,step", [(1000, 1000), (1500, 500), (7, 1)])
@@ -111,7 +111,7 @@ def test_gcd_of_the_whole_block_when_the_first_deltas_share_a_larger_one(late_de
     ticks = np.r_[0, np.cumsum(deltas)]
     group, decoded = round_trip(np.zeros(1000), ticks, Params(), time_unit="ns")
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
-    assert group_rows(group).time_rows.steps[0] == step
+    assert group_rows(group).time_columns.steps[0] == step
 
 
 def test_reference_is_rounded_mean_for_jitter_and_minimum_for_skewed_deltas():
@@ -127,14 +127,14 @@ def test_reference_is_rounded_mean_for_jitter_and_minimum_for_skewed_deltas():
         ("gap", gap, lambda quotients: quotients.min()),
     ]:
         group = fluxcode.encode_group(np.zeros(ticks.size), times=ticks, time_unit="us").group
-        time_rows = group_rows(group).time_rows
+        time_columns = group_rows(group).time_columns
         for block_idx in range(3):
             block = ticks[1000 * block_idx:1000 * (block_idx + 1)]
-            quotients = np.diff(block) // time_rows.steps[block_idx]
+            quotients = np.diff(block) // time_columns.steps[block_idx]
             if (quotients == quotients[0]).all():
-                assert time_rows.refs[block_idx] == 1, name
+                assert time_columns.refs[block_idx] == 1, name
             else:
-                assert time_rows.refs[block_idx] == expected(quotients), name
+                assert time_columns.refs[block_idx] == expected(quotients), name
         np.testing.assert_array_equal(decoded_times(group).view(np.int64), ticks)
 
 
@@ -144,7 +144,7 @@ def test_equal_timestamps_are_allowed():
     group, decoded = round_trip(np.zeros(3000), ticks, time_unit="ms")
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     rows = group_rows(group)
-    assert not irregular_flags(group)[0] and rows.time_rows.steps[0] == 0
+    assert not irregular_flags(group)[0] and rows.time_columns.steps[0] == 0
     assert irregular_flags(group)[1:].all()
 
 
@@ -173,7 +173,7 @@ def test_extreme_ticks():
     huge_span[0] = INT64_MIN + 1
     group, decoded = round_trip(np.zeros(16), huge_span, block_len=8, time_unit="s")
     np.testing.assert_array_equal(decoded.times.view(np.int64), huge_span)
-    assert group_rows(group).time_rows.steps[0] == 1
+    assert group_rows(group).time_columns.steps[0] == 1
 
 
 def test_bulk_encode_splits_times():
@@ -220,7 +220,7 @@ def test_worked_example_layout():
     body = np.frombuffer(zstandard.ZstdDecompressor().decompress(group[_format.HEADER_BYTES:]), np.uint8)
     num_blocks = 3
     flags, sizes = body[:3], np.array([8, 8, 4])
-    assert body.shape[0] == 203 == _format.group_size(num_blocks, _format.layout(flags, sizes), True)
+    assert body.shape[0] == 203 == _format.body_byte_size(num_blocks, _format.compute_body_layout(flags, sizes), True)
     np.testing.assert_array_equal(flags & 0x10, [0, 0x10, 0])
     np.testing.assert_array_equal(body[3:9], [8, 8, 4, 0, 0, 0])
     assert not body[9:15].any()  # grid_params: exponent 0 for constant blocks
@@ -288,14 +288,14 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
     sizes = np.full(num_blocks, block_len) if sizes is None else np.asarray(sizes)
     block_flags = np.where(block_flags_irregular, BLOCK_FLAG_IRREGULAR_TIME, 0).astype(np.uint8)
     if long is not None:
-        block_flags |= np.where(long, BLOCK_FLAG_LONG_TIME, 0).astype(np.uint8)
-    time_rows = _format.TimeRows(
+        block_flags |= np.where(long, BLOCK_FLAG_WIDE_TIME, 0).astype(np.uint8)
+    time_columns = _format.EncodedTimeColumns(
         np.asarray(starts, np.int64), np.asarray(steps, np.int64), np.asarray(refs, np.uint64),
         zigzag(residuals),
     )
     body = _oracle.write_group(
         block_flags, sizes, np.zeros(num_blocks, np.int64), np.zeros(num_blocks, np.int64),
-        np.zeros(num_blocks, np.int64), np.zeros(sizes.sum(), np.int16), time_rows=time_rows,
+        np.zeros(num_blocks, np.int64), np.zeros(sizes.sum(), np.int16), time_columns=time_columns,
     )
     header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnitCode.NANOSECONDS))
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
@@ -321,7 +321,7 @@ def test_long_flag_without_irregular_or_needed_is_rejected():
     residuals = np.r_[np.zeros(8), 0, np.ones(7)]
     with pytest.raises(ValueError, match="block 0: block flags 0x20 sets reserved bits"):
         fluxcode.decode_group(corrupt_group([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[True, False]))
-    with pytest.raises(ValueError, match="block 1: long time residuals fit in 32 bits"):
+    with pytest.raises(ValueError, match="block 1: wide time residuals fit in 32 bits"):
         fluxcode.decode_group(corrupt_group([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[False, True]))
 
 
@@ -333,7 +333,7 @@ def test_long_blocks_only_where_residuals_need_64_bits():
     group, decoded = round_trip(np.zeros(4000), ticks, time_unit="ns")
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     flags = group_rows(group).block_flags
-    np.testing.assert_array_equal((flags & BLOCK_FLAG_LONG_TIME) != 0, [False, False, True, False])
+    np.testing.assert_array_equal((flags & BLOCK_FLAG_WIDE_TIME) != 0, [False, False, True, False])
     assert irregular_flags(group).all()
 
 
@@ -452,7 +452,7 @@ def scans_kept(keep, sigma=1.5, decimals=None, seed=10):
 def block_steps(values, times, params=Params()):
     """The power-of-two step exponent of every block, and the max decode error."""
     group = fluxcode.encode_group(values, params, times=times).group
-    return group_rows(group).grid_params, np.abs(fluxcode.decode_group(group).values - values).max()
+    return group_rows(group).grid_exponents, np.abs(fluxcode.decode_group(group).values - values).max()
 
 
 def test_sparse_archive_gets_no_noise_floor():
@@ -543,8 +543,8 @@ def test_group_time_step_follows_updates():
 def test_bad_group_time_step_is_rejected(step, msg):
     times, values = _seconds_in_ns()
     group = fluxcode.encode_group(values, times=times, block_len=5).group
-    raw = bytearray(_compress.zstd()[1].decompress(group[_format.HEADER_BYTES:]))
+    raw = bytearray(_compress.get_zstd_codecs()[1].decompress(group[_format.HEADER_BYTES:]))
     raw[-8:] = np.array([step], np.uint64).tobytes()
-    frame = _compress.zstd(3)[0].compress(bytes(raw))
+    frame = _compress.get_zstd_codecs(3)[0].compress(bytes(raw))
     with pytest.raises(ValueError, match=msg):
         fluxcode.decode_group(group[:_format.HEADER_BYTES] + frame)

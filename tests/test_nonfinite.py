@@ -10,7 +10,7 @@ from _signals import KINDS, minute
 
 import fluxcode
 from fluxcode import Params, _format, verify
-from fluxcode._format import BLOCK_FLAG_CODED
+from fluxcode._format import BLOCK_FLAG_SAMPLE_CODES
 
 L = 1000
 OFF = Params(noise_floor_sigma=0)
@@ -97,7 +97,7 @@ def test_finite_blocks_unchanged():
     np.testing.assert_array_equal(ha[keep], hb[keep])
     np.testing.assert_array_equal(pa[keep], pb[keep])
     np.testing.assert_array_equal(ra[keep], rb[keep])
-    assert hb[30] & BLOCK_FLAG_CODED and not (hb[keep] & BLOCK_FLAG_CODED).any()
+    assert hb[30] & BLOCK_FLAG_SAMPLE_CODES and not (hb[keep] & BLOCK_FLAG_SAMPLE_CODES).any()
     assert codes[30].tolist() == [1 if i == 500 else 0 for i in range(L)]
     assert len(group) - len(ref) < 200  # 250 bytes of mostly-zero planes, compressed
 
@@ -234,11 +234,11 @@ def test_whole_blocks_between_finite_ones(pname):
     group, _, _, _ = fluxcode.encode_group(x, PARAMS[pname])
     flags, _, _, _, _, _, codes, _ = group_rows(group)[:8]
     codes = codes.reshape(-1, L)
-    assert [bool(h & BLOCK_FLAG_CODED) for h in flags] == [False, True, False, True, False, True, True, False, True]
+    assert [bool(h & BLOCK_FLAG_SAMPLE_CODES) for h in flags] == [False, True, False, True, False, True, True, False, True]
     # NaN is 01b; +-inf are escaped values (10b), stored once: a run repeats the previous (11b)
     assert (codes[1] == 1).all()
     assert codes[3][0] == 2 and (codes[3][1:] == 3).all() and codes[5][0] == 2 and (codes[5][1:] == 3).all()
-    assert group_rows(group).escapes[:2].tolist() == [np.inf, -np.inf]
+    assert group_rows(group).escaped_values[:2].tolist() == [np.inf, -np.inf]
 
 
 def test_update_whole_non_finite_blocks():
@@ -304,7 +304,7 @@ def test_glitches_are_escaped_and_keep_their_blocks_precision():
     others[idx] = False
     assert np.abs(y - x)[others].max() < 3e-4  # the clean blocks' error (step 2^-12 of a 0.3-wide bulk)
     rows = group_rows(group)
-    assert (rows.codes == _format.CODE_REPEAT).sum() >= 19 and len(rows.escapes) <= 40
+    assert (rows.sample_codes == _format.CODE_REPEAT_ESCAPE).sum() >= 19 and len(rows.escaped_values) <= 40
     assert verify.encode_group(fluxcode.encode_group(x), x) == []
 
 
@@ -313,7 +313,7 @@ def test_noisy_spikes_are_not_escaped():
     rng = np.random.default_rng(4)
     x = 5 + rng.normal(0, 2.0, 60_000)
     x[rng.choice(60_000, 40, replace=False)] = 500.0
-    assert not len(group_rows(fluxcode.encode_group(x).group).escapes)
+    assert not len(group_rows(fluxcode.encode_group(x).group).escaped_values)
 
 
 def test_update_keeps_other_blocks_escapes():

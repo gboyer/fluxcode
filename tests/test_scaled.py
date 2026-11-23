@@ -59,7 +59,7 @@ def decode(group):
 
 def step_of(rows, b):
     """Block b's grid step."""
-    flags, param, scale = int(rows.block_flags[b]), int(rows.grid_params[b]), int(rows.grid_scales[b])
+    flags, param, scale = int(rows.block_flags[b]), int(rows.grid_exponents[b]), int(rows.grid_scales[b])
     step = 10.0 ** param if flags & BLOCK_FLAG_DECIMAL else 2.0 ** param
     if flags & BLOCK_FLAG_SCALED:
         step *= (scale & 0xFFFF) / (scale >> SCALE_SHIFT)
@@ -83,7 +83,7 @@ def test_grids_are_found_and_decode(name):
         np.testing.assert_array_equal(y, x)
     else:
         err = np.abs(y - x).reshape(-1, L).max(1)
-        fine = [2.0 ** fluxcode._grids.range_exponent(b.min(), b.max(), 16) for b in x.reshape(-1, L)]
+        fine = [2.0 ** fluxcode._grids.snapped_exponent_for_range(b.min(), b.max(), 16) for b in x.reshape(-1, L)]
         assert (err <= np.array(fine) / 4).all()
     dens = group_rows(plain).grid_scales >> SCALE_SHIFT
     assert (dens <= 1).all()  # no rational search: D = 1 (or unscaled)
@@ -110,7 +110,7 @@ def test_each_block_encodes_as_it_would_alone(name):
     together = group_rows(fluxcode.encode_group(x, block_len=L).group)
     for b in range(x.size // L):
         alone = group_rows(fluxcode.encode_group(x[b * L:(b + 1) * L], block_len=L).group)
-        for field in ("block_flags", "grid_params", "grid_scales", "value_anchors"):
+        for field in ("block_flags", "grid_exponents", "grid_scales", "block_anchors"):
             assert getattr(alone, field)[0] == getattr(together, field)[b], (b, field)
         np.testing.assert_array_equal(alone.residuals, together.residuals[b * L:(b + 1) * L])
 
@@ -124,7 +124,7 @@ def test_the_step_fit_reads_no_stale_scratch():
         step = rng.uniform(0.5, 2)
         pow2_step = step / rng.uniform(2, 40)
         x = np.cumsum(rng.integers(-40, 41, n)) * step + rng.uniform(-1, 1, n) * pow2_step * rng.uniform(0, 0.3)
-        fits = {_rational.fit_step(x, pow2_step, np.full(n, fill)) for fill in (0.0, np.nan, 1e6)}
+        fits = {_rational.fit_rational_step(x, pow2_step, np.full(n, fill)) for fill in (0.0, np.nan, 1e6)}
         assert len(fits) == 1, (trial, fits)
 
 
@@ -135,7 +135,7 @@ def test_an_unrationalizable_step_stays_binary():
     assert not (together.block_flags & BLOCK_FLAG_SCALED).any()
     for b in range(x.size // L):
         alone = group_rows(fluxcode.encode_group(x[b * L:(b + 1) * L], block_len=L).group)
-        assert alone.grid_params[0] == together.grid_params[b]
+        assert alone.grid_exponents[0] == together.grid_exponents[b]
 
 
 @pytest.mark.parametrize("target", [6.0, 8.0])
@@ -208,7 +208,7 @@ def test_large_decimal_steps_fold_or_stay_decimal(step):
 def scaled_group(flags, param, num, den, k0, q):
     """A one-block group of the given scaled grid and indices (order 0)."""
     n = q.size
-    rows = _format.GroupRows(
+    rows = _format.EncodedBlockColumns(
         np.array([flags], np.uint8), np.array([n], np.int64), np.array([param], np.int64),
         np.array([num | den << SCALE_SHIFT], np.int64), np.array([k0], np.int64),
         ((q.astype(np.int64) + 2 ** 15) % 2 ** 16 - 2 ** 15).astype(np.int16), np.zeros(n, np.uint8), None,
@@ -271,7 +271,7 @@ def test_simplest_between_matches_brute_force():
         center = rng.uniform(1, 10)
         width = 10.0 ** rng.uniform(-9, -1)
         lo, hi = center - width, center + width
-        num, den = _rational.simplest_between(lo, hi, 5000)
+        num, den = _rational.simplest_fraction_between(lo, hi, 5000)
         best = next(((math.ceil(lo * d), d) for d in range(1, 5001) if math.ceil(lo * d) <= hi * d), (0, 0))
         assert (num, den) == best
         if den:
@@ -283,7 +283,7 @@ def test_the_step_uncertainty_picks_the_true_fraction():
     x = -3.21 + counts(16, 100, 600, L) * 0.0137
     rows = group_rows(fluxcode.encode_group(x, block_len=L).group)
     assert rows.block_flags[0] & BLOCK_FLAG_SCALED and rows.block_flags[0] & BLOCK_FLAG_DECIMAL
-    assert (int(rows.grid_params[0]), int(rows.grid_scales[0]) & 0xFFFF, int(rows.grid_scales[0]) >> 16) == (-2, 137, 100)
+    assert (int(rows.grid_exponents[0]), int(rows.grid_scales[0]) & 0xFFFF, int(rows.grid_scales[0]) >> 16) == (-2, 137, 100)
 
 
 # --- Updates (ENCODER §6) -----------------------------------------------------------------------

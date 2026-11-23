@@ -26,7 +26,7 @@ OFF = Params(noise_floor_sigma=0)
 def rows(group):
     """(flags, param, residual) of a one-group encoding."""
     rows = group_rows(group)
-    return rows.block_flags, rows.grid_params, rows.residuals
+    return rows.block_flags, rows.grid_exponents, rows.residuals
 
 
 def blockwise(x, L=1000):
@@ -52,12 +52,12 @@ def test_round_trip_error_bound(name, x, params):
     np.testing.assert_allclose(mean, X.mean(1), rtol=1e-12, atol=1e-12 * np.abs(X).max())
     flags, param = flags_params(groups)
     # Escaped samples (outliers stored apart) keep the full-range max_quantize_bits bound
-    codes = np.concatenate([group_rows(g).codes for g in groups])
-    flagged = np.repeat((flags & _format.BLOCK_FLAG_CODED) != 0, [len(r) for r in X])
+    codes = np.concatenate([group_rows(g).sample_codes for g in groups])
+    flagged = np.repeat((flags & _format.BLOCK_FLAG_SAMPLE_CODES) != 0, [len(r) for r in X])
     escaped = blockwise(flagged & (codes >= _format.CODE_ESCAPE) & np.isfinite(x))
     for b in range(len(lo)):
         if escaped[b].any():
-            full_exp = _grids.range_exponent(lo[b], hi[b], params.max_quantize_bits)
+            full_exp = _grids.snapped_exponent_for_range(lo[b], hi[b], params.max_quantize_bits)
             assert np.abs(Y[b] - X[b])[escaped[b]].max() <= 2.0 ** (full_exp - 1) + 4 * np.spacing(np.abs(X[b]).max())
     err = np.where(escaped, 0.0, np.abs(Y - X)).max(1)
     rng = hi - lo
@@ -67,7 +67,7 @@ def test_round_trip_error_bound(name, x, params):
         ulps = 4 * np.spacing(np.abs(X[b]).max())  # x - lo and lo + q * step each round once
         if scaled[b]:
             # every sample was within a quarter of the planned step, at most the min_bits one
-            coarse = _grids.range_exponent(lo[b], hi[b], params.min_quantize_bits)
+            coarse = _grids.snapped_exponent_for_range(lo[b], hi[b], params.min_quantize_bits)
             assert err[b] <= 2.0 ** coarse / 4 + ulps
         elif dec[b]:
             assert err[b] <= 10.0 ** param[b] / 4 + ulps  # every sample was within 2^e / 4 < 10^p / 4
@@ -138,7 +138,7 @@ def test_range_just_below_power_of_two():
     rng = 1.0 - 2.0 ** -18  # rng * 2^16 rounds to 2^16
     x = np.linspace(0.0, rng, 1000)
     x[-1] = rng
-    assert _grids.exponent(rng, 16) == -15
+    assert _grids.min_exponent_for_span(rng, 16) == -15
     groups, _, _, _ = encode_series(x, Params(grids="binary", noise_floor_sigma=0))
     _, param, _ = rows(groups[0])
     assert param[0] == -15
@@ -327,13 +327,14 @@ def test_groups_are_self_describing(block_len, n_blocks, flagged):
 
 def _plane_fields(body, num_blocks):
     """The plane fields of a parsed block group body with a time axis, as (planes, layout) pairs."""
-    _, lay = _format.read_layout(body, num_blocks)
-    octets, code_octets = int(lay.octet_offsets[-1]), int(lay.code_offsets[-1])
-    short, long = _bitpacking.time_planes_views(body, num_blocks, octets, code_octets, int(lay.short_offsets[-1]),
-                                            int(lay.long_offsets[-1]))
-    return [(_bitpacking.planes_view(body, num_blocks, octets, True), lay.octet_offsets),
-            (_bitpacking.code_planes_view(body, num_blocks, octets, code_octets, True), lay.code_offsets),
-            (short, lay.short_offsets), (long, lay.long_offsets)]
+    _, lay = _format.read_body_layout(body, num_blocks)
+    octets, code_octets = int(lay.plane_byte_offsets[-1]), int(lay.code_plane_offsets[-1])
+    short, long = _bitpacking.time_residual_planes_views(body, num_blocks, octets, code_octets,
+                                                         int(lay.time_low_offsets[-1]),
+                                                         int(lay.time_high_offsets[-1]))
+    return [(_bitpacking.residual_bit_planes_view(body, num_blocks, octets, True), lay.plane_byte_offsets),
+            (_bitpacking.sample_code_planes_view(body, num_blocks, octets, code_octets, True), lay.code_plane_offsets),
+            (short, lay.time_low_offsets), (long, lay.time_high_offsets)]
 
 
 @pytest.mark.parametrize("sizes", [[4] * 7, [5] * 7, [13] * 7, [1001] * 7, [13, 1, 7, 0, 21, 16, 3, 9, 1001, 2]])
@@ -351,9 +352,9 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     params = Params(noise_floor_sigma=0)
     group = fluxcode.encode_blocks(x, sizes, params, times=ticks, time_unit="ns").group
     rows = group_rows(group)
-    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_CODED) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))
-    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_LONG_TIME) == 1
-    body = _group.decompress(group).raw_body
+    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_SAMPLE_CODES) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))
+    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_WIDE_TIME) == 1
+    body = _group.decompress(group).body
     for field, field_offsets in _plane_fields(body, num_blocks):
         assert field.shape[1]
         for block_idx in range(num_blocks):
@@ -376,11 +377,13 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     assert decoded.times is not None
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     # The same rows as byte planes: each block's bytes padded with zero bytes
-    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_rows=rows.time_rows, escapes=rows.escapes)
-    lay = _format.layout(rows.block_flags, sizes)
-    byte_planes = _bitpacking.byte_planes_view(byte_body, num_blocks, int(lay.octet_offsets[-1]), True)
+    byte_body = _oracle.write_group(*rows[:7], byte_planes=True, time_columns=rows.time_columns,
+                                    escaped_values=rows.escaped_values)
+    lay = _format.compute_body_layout(rows.block_flags, sizes)
+    byte_planes = _bitpacking.residual_byte_planes_view(byte_body, num_blocks, int(lay.plane_byte_offsets[-1]), True)
     for block_idx in range(num_blocks):
-        assert not byte_planes[:, 8 * lay.octet_offsets[block_idx] + sizes[block_idx]:8 * lay.octet_offsets[block_idx + 1]].any()
+        assert not byte_planes[:, 8 * lay.plane_byte_offsets[block_idx] + sizes[block_idx]:
+                               8 * lay.plane_byte_offsets[block_idx + 1]].any()
     byte_group = (_format.pack_header(num_blocks, n, True, int(_format.TimeUnitCode.NANOSECONDS))
                  + zstandard.ZstdCompressor().compress(byte_body.tobytes()))
     for encoded in (group, byte_group):
@@ -436,7 +439,7 @@ def test_bad_block_sizes_are_rejected():
     """Block sizes that don't add up to the header's sample count, or an empty block with
     nonzero columns, are rejected."""
     group = fluxcode.encode_blocks(np.arange(30.0), [10, 0, 20]).group
-    body = _group.decompress(group).raw_body.copy()
+    body = _group.decompress(group).body.copy()
 
     def rebuilt(edit):
         b = body.copy()

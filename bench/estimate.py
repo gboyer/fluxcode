@@ -25,9 +25,9 @@ B16 = Params(min_quantize_bits=16, noise_floor_sigma=0)
 
 def estimate_and_actual(x, params):
     sizes = np.full(x.size // 1000, 1000)
-    rows, _ = _group.encode_rows(x, sizes, params)
-    est = np.mean([_encoder.estimate_bits(r) for r in rows.residuals.reshape(-1, 1000)])
-    return est, 8 * len(_compress.compress(rows, x.size, _compress.EFFORTS[2], 0)) / x.size
+    rows, _ = _group.encode_columns(x, sizes, params)
+    est = np.mean([_encoder.estimate_residual_bits(r) for r in rows.residuals.reshape(-1, 1000)])
+    return est, 8 * len(_compress.compress_columns(rows, x.size, _compress.EFFORTS[2], 0)) / x.size
 
 
 def main(minutes=5):

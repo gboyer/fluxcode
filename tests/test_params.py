@@ -47,7 +47,7 @@ def test_accepts_lists_and_float32():
 def exponents(x, params):
     groups, lo, hi, _ = encode_series(x, params)
     rows = group_rows(groups[0])
-    flags, param = rows.block_flags, rows.grid_params
+    flags, param = rows.block_flags, rows.grid_exponents
     return flags, param, hi - lo
 
 
@@ -61,9 +61,9 @@ def test_min_max_bits_never_violated(kind, target):
     exact = (decode_series(encode_series(x, p)[0]) == x).reshape(len(e), -1).all(1)
     for b in range(len(e)):
         if rng[b] > 0:
-            assert _grids.exponent(rng[b], 12) <= e[b]
+            assert _grids.min_exponent_for_span(rng[b], 12) <= e[b]
             # Only an exact coarse grid (the index gcd: a +-100 square on 2^3) is coarser
-            assert e[b] <= _grids.exponent(rng[b], 8) or exact[b]
+            assert e[b] <= _grids.min_exponent_for_span(rng[b], 8) or exact[b]
 
 
 def size(x, p):
@@ -190,9 +190,9 @@ def test_constant_bulk_with_glitches_escapes_and_fixed_point():
 
 
 def test_decayed_masked_rejects_zero_energy():
-    """Regression: _decayed_masked must return False when no valid lag pairs have energy."""
-    from fluxcode._noise import _decayed_masked
+    """Regression: _masked_autocorr_decays_at_long_lags must return False when no valid lag pairs have energy."""
+    from fluxcode._noise import _masked_autocorr_decays_at_long_lags
 
     clipped = np.zeros(200, np.float64)
     weights = np.ones(200, np.float64)
-    assert not _decayed_masked(clipped, weights, 200.0)
+    assert not _masked_autocorr_decays_at_long_lags(clipped, weights, 200.0)

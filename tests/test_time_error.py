@@ -12,7 +12,7 @@ import pytest
 from _series import group_rows
 
 import fluxcode
-from fluxcode import Params, _time, verify
+from fluxcode import Params, _time, _time_rounding, verify
 from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME
 
 MS = 1_000_000  # ns
@@ -49,7 +49,7 @@ def assert_keeps_to_the_time_error(given, decoded, block_sizes, time_error):
             continue
         moves = np.abs(got - raw)
         mean = (raw[-1] - raw[0]) / (raw.size - 1)
-        assert moves.max() <= time_error * _time.TIME_ERROR_SLACK * mean + 1e-6, (first, moves.max(), mean)
+        assert moves.max() <= time_error * _time_rounding.TIME_ERROR_SLACK * mean + 1e-6, (first, moves.max(), mean)
         gaps = np.diff(raw).astype(np.float64)
         own = np.minimum(np.append(np.inf, gaps), np.append(gaps, np.inf))
         assert np.count_nonzero(moves > time_error * own) <= raw.size // 20, first
@@ -71,7 +71,7 @@ def test_invalid_time_error_is_rejected(time_error):
     (1e18, 0.5, 1_000_000_000_000_000_000),
 ])
 def test_time_quantum(interval, time_error, quantum):
-    assert _time.time_quantum(float(interval), time_error) == quantum
+    assert _time_rounding.choose_125_step(float(interval), time_error) == quantum
 
 
 @pytest.mark.parametrize("jitter", [0.005, 0.02, 0.1])
@@ -305,15 +305,15 @@ def test_fit_lattice_puts_a_clock_on_its_own_period():
     ticks = non_decimal_clock(1000, 1024, 0)
     max_move = 0.05 * 1e9 / 1024
     out = np.empty_like(ticks)
-    origin, period = _time.fit_lattice(ticks, 1e9 / 1024, np.int64(50_000), max_move)
-    assert _time.snap_lattice(ticks, origin, period, np.int64(_time.INT64_MIN), out)
-    assert (np.diff(out) == np.diff(out)[0]).all() and _time.within_error(ticks, out, 0.05, max_move) >= 0
+    origin, period = _time_rounding.fit_clock_lattice(ticks, 1e9 / 1024, np.int64(50_000), max_move)
+    assert _time_rounding.snap_to_lattice_exact(ticks, origin, period, np.int64(_time.INT64_MIN), out)
+    assert (np.diff(out) == np.diff(out)[0]).all() and _time_rounding.check_within_time_error(ticks, out, 0.05, max_move) >= 0
     # A tick further than the largest move fails the check
     late = ticks.copy()
     late[500] += int(2 * max_move)
-    origin, period = _time.fit_lattice(late, 1e9 / 1024, np.int64(50_000), max_move)
-    assert _time.snap_lattice(late, origin, period, np.int64(_time.INT64_MIN), out)
-    assert _time.within_error(late, out, 0.05, max_move) == -1
+    origin, period = _time_rounding.fit_clock_lattice(late, 1e9 / 1024, np.int64(50_000), max_move)
+    assert _time_rounding.snap_to_lattice_exact(late, origin, period, np.int64(_time.INT64_MIN), out)
+    assert _time_rounding.check_within_time_error(late, out, 0.05, max_move) == -1
 
 
 def test_a_regular_block_keeps_its_times():
@@ -594,7 +594,7 @@ def test_clamp_boundaries_never_moves_a_tick_further():
         moves = np.array([np.abs(rounded[f:e] - ticks[f:e]).max() for f, e in pairwise(offsets)])
         before = np.abs(rounded - ticks)
         out = rounded.copy()
-        _time.clamp_boundaries(ticks, offsets, moves, out)
+        _time_rounding.clamp_block_boundaries(ticks, offsets, moves, out)
         assert (np.diff(out) >= 0).all() and (np.abs(out - ticks) <= before).all()
 
 
@@ -618,17 +618,17 @@ def test_grid_fails_only_on_grids_no_phase_keeps_to_the_error():
             continue
         time_error = float(rng.choice([0.01, 0.05, 0.2, 0.45]))
         mean = (ticks[-1] - ticks[0]) / (block_len - 1)
-        max_move = time_error * _time.TIME_ERROR_SLACK * mean
-        quantum = np.int64(_time.time_quantum(mean, time_error))
+        max_move = time_error * _time_rounding.TIME_ERROR_SLACK * mean
+        quantum = np.int64(_time_rounding.choose_125_step(mean, time_error))
         out = np.empty_like(ticks)
         while quantum > 1:
-            if _time.grid_fails(ticks, block_len, quantum, time_error):
+            if _time_rounding.grid_cannot_meet_error(ticks, block_len, quantum, time_error):
                 ruled_out += 1
-                step = max(quantum // _time.PHASE_STEPS, 1)
+                step = max(quantum // _time_rounding.PHASE_STEPS, 1)
                 for phase in range(0, quantum, step):
-                    _time.snap_block(ticks, quantum, np.int64(phase), out)
-                    assert _time.within_error(ticks, out, time_error, max_move) == -1
-            quantum = _time._finer_step(quantum)
+                    _time_rounding.snap_to_grid_exact(ticks, quantum, np.int64(phase), out)
+                    assert _time_rounding.check_within_time_error(ticks, out, time_error, max_move) == -1
+            quantum = _time_rounding._finer_step(quantum)
     assert ruled_out > 100
 
 
@@ -638,14 +638,14 @@ def test_clamp_raises_and_lowers_only_the_ends():
         ticks = np.sort(rng.integers(0, 100, int(rng.integers(1, 20)))).astype(np.int64)
         low, high = np.int64(rng.integers(0, 50)), np.int64(rng.integers(50, 100))
         out = ticks.copy()
-        _time._clamp(out, low, high)
+        _time_rounding._clamp(out, low, high)
         np.testing.assert_array_equal(out, np.clip(ticks, low, high))
 
 
 def test_lattice_error_matches_rounding_then_checking():
-    """lattice_error rounds and checks in one pass, chunk by chunk, in float64: the same move and
-    ticks as rounding in integers (snap_block for a grid, snap_lattice), _clamp and within_error,
-    across bounds, ties, a smallest multiple, failing chunks and ticks near the int64 limits."""
+    """snap_and_check_lattice rounds and checks in one pass, chunk by chunk, in float64: the same move and
+    ticks as rounding in integers (snap_to_grid_exact for a grid, snap_to_lattice_exact), _clamp and
+    check_within_time_error, across bounds, ties, a smallest multiple, failing chunks and ticks near the int64 limits."""
     rng = np.random.default_rng(6)
     big = np.iinfo(np.int64).max
     checked = 0
@@ -663,17 +663,17 @@ def test_lattice_error_matches_rounding_then_checking():
         expected = np.empty_like(ticks)
         if rng.random() < 0.5:  # a grid: the lattice through the rounded first tick
             phase = np.int64(rng.integers(0, step))
-            origin, min_multiple = _time._round_tick(ticks[0], step, phase), np.int64(_time.INT64_MIN)
-            _time.snap_block(ticks, step, phase, expected)
+            origin, min_multiple = _time_rounding._round_tick(ticks[0], step, phase), np.int64(_time.INT64_MIN)
+            _time_rounding.snap_to_grid_exact(ticks, step, phase, expected)
         else:  # a lattice continuing a block that ended before these ticks
             origin, min_multiple = ticks[0] - np.int64(rng.integers(0, 3 * step)), np.int64(1)
-            assert _time.snap_lattice(ticks, origin, step, min_multiple, expected)
-        _time._clamp(expected, low, high)
-        expected_move = _time.within_error(ticks, expected, time_error, max_move)
+            assert _time_rounding.snap_to_lattice_exact(ticks, origin, step, min_multiple, expected)
+        _time_rounding._clamp(expected, low, high)
+        expected_move = _time_rounding.check_within_time_error(ticks, expected, time_error, max_move)
         allowed = np.empty(block_len)
-        _time.tick_allowances(ticks, time_error, allowed)
+        _time_rounding.compute_tick_allowances(ticks, time_error, allowed)
         out = np.empty_like(ticks)
-        move = _time.lattice_error(ticks, origin, step, min_multiple, low, high, allowed, max_move, out)
+        move = _time_rounding.snap_and_check_lattice(ticks, origin, step, min_multiple, low, high, allowed, max_move, out)
         if move == -2:  # outside the float64 range: the caller rounds in integers and checks
             continue
         checked += 1
@@ -684,28 +684,28 @@ def test_lattice_error_matches_rounding_then_checking():
 
 
 def test_block_phase_scores_residues_exactly():
-    """block_phase takes the sampled ticks' residues in float64 from the first one's: the same
+    """choose_grid_phase takes the sampled ticks' residues in float64 from the first one's: the same
     phase as scoring every candidate on integer residues, ticks near the int64 limits included."""
     rng = np.random.default_rng(7)
     big = np.iinfo(np.int64).max
-    scratch, sampled = np.empty(_time.PHASE_SAMPLES, np.int64), np.empty(_time.PHASE_SAMPLES, np.int64)
+    scratch, sampled = np.empty(_time_rounding.PHASE_SAMPLES, np.int64), np.empty(_time_rounding.PHASE_SAMPLES, np.int64)
     for _ in range(500):
         block_len = int(rng.integers(1, 2000))
         start = int(rng.choice([START, 0, -big + 10**16, big - 10**16]))
         ticks = start + np.sort(rng.integers(0, int(rng.choice([10, 10**6, 10**12])) * block_len, block_len)).astype(np.int64)
         quantum = np.int64(rng.choice([2, 5, 10, 20, 100, 5000, 10**5, 2 * 10**6, 10**9]))
         previous = np.int64(_time.INT64_MIN) if rng.random() < 0.3 else np.int64(ticks[0] - rng.integers(0, 10 * quantum))
-        samples = _time.phase_samples(ticks, sampled)
+        samples = _time_rounding.sample_phase_ticks(ticks, sampled)
         # The oracle: integer residues, every candidate scored, ties to the first
         residues = [int(t) % int(quantum) for t in samples]
-        step = max(int(quantum) // _time.PHASE_STEPS, 1)
+        step = max(int(quantum) // _time_rounding.PHASE_STEPS, 1)
         costs = {phase: sum(min(abs(r - phase), int(quantum) - abs(r - phase)) for r in residues)
                  for phase in range(0, int(quantum) // step * step, step)}
         best = min(costs, key=lambda phase: (costs[phase], phase))
         kept = 0 if previous == _time.INT64_MIN else int(previous) % int(quantum)
         if kept in costs and costs[kept] <= costs[best] + len(residues) * step // 2:
             best = kept
-        assert _time.block_phase(samples, quantum, previous, scratch) == best
+        assert _time_rounding.choose_grid_phase(samples, quantum, previous, scratch) == best
 
 
 def multi_rate_blocks(rng, block_len):
