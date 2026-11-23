@@ -124,8 +124,8 @@ PERIOD_MIN_VARIANCE: float = 4.0
 """The fixed order's residual variance (steps^2, about 2 bits a sample) under which a block isn't tried."""
 
 PERIOD_SIDE_BITS: float = 64.0
-"""Bits the period predictor must save over the block (class-entropy estimate) to be taken: its
-parameters, compressed, and the estimate's slack."""
+"""Bits the period predictor must save over the block (a Gaussian estimate from the residual
+variances, try_period) to be taken: its parameters, compressed, and the estimate's slack."""
 
 ESCAPE_MIN_LEN: int = 16
 """Smallest block whose outliers may be escaped."""
@@ -387,8 +387,11 @@ def range_scale(lower_bound: float, upper_bound: float) -> int:
     return math.frexp(xm.half_range(lower_bound, upper_bound))[1] + 1
 
 
-ERROR_STEP_BITS: int = 4
-"""A tolerance step is N points of 2^(e - ERROR_STEP_BITS), N from 17 to 31: within 6% of 2 tolerance."""
+NO_FLOOR_EXP: int = E_MIN - 64
+"""floor_exponent without a noise floor: finer than any step."""
+
+TOLERANCE_STEP_BITS: int = 4
+"""A tolerance step is N points of 2^(e - TOLERANCE_STEP_BITS), N from 17 to 31: within 6% of 2 tolerance."""
 
 
 def tolerance_exponent(tolerance: float) -> int:
@@ -418,7 +421,7 @@ def plan_step(
         lower_bound: Minimum sample value in the block.
         upper_bound: Maximum sample value in the block.
         noise_sigma: Estimated white-noise standard deviation.
-        noise_rho: Lag-1 autocorrelation of second differences.
+        noise_rho: The noise gate's statistic (_noise.block_noise): over NOISE_GATE passes.
         noise_factor: Noise floor multiplier (0.0 to disable).
         min_bits: Hard minimum precision bits.
         max_bits: Hard maximum precision bits.
@@ -430,10 +433,8 @@ def plan_step(
         return 0
     # Start with finest allowed step at max_bits
     planned_exp = range_exponent(lower_bound, upper_bound, max_bits)
-    # Check noise gate: the autocorrelation as a share of white noise's
-    if noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0:
-        # Coarsen the step up to noise_factor * noise_sigma
-        planned_exp = max(planned_exp, math.floor(math.log2(noise_factor * noise_sigma)))
+    # Coarsen the step up to noise_factor * noise_sigma where the noise gate passes
+    planned_exp = max(planned_exp, floor_exponent(noise_factor, noise_sigma, noise_rho))
     # Clamp to coarsest allowed step at min_bits
     return min(planned_exp, range_exponent(lower_bound, upper_bound, min_bits))
 
@@ -458,6 +459,81 @@ def keep_floor_grid(samples: np.ndarray, planned_exp: int, floor_step: float) ->
         if scaled != math.floor(scaled) or not math.isfinite(scaled):
             return planned_exp
     return planned_exp - 1
+
+
+@njit(nogil=True, cache=True)
+def floor_exponent(noise_factor: float, noise_sigma: float, noise_rho: float) -> int:
+    """The noise floor's exponent floor(log2(f·sigma)) if the noise gate passes, else NO_FLOOR_EXP."""
+    if noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0:
+        return math.floor(math.log2(noise_factor * noise_sigma))
+    return NO_FLOOR_EXP
+
+
+@njit(nogil=True, cache=True)
+def plan_block_step(
+    samples: np.ndarray, lower_bound: float, upper_bound: float, noise_sigma: float, noise_rho: float,
+    noise_factor: float, min_bits: int, max_bits: int, tolerance_exp: int, tolerance_step: float,
+) -> tuple[int, float]:
+    """A block's planned step (ENCODER §5.1), before grid detection and the target: its exponent,
+    and the scaled step tolerance sets (0.0 if it doesn't).
+
+    The coarsest of the finest step its range fits in max_bits, the noise floor's (plan_step) and
+    tolerance's (2^tolerance_exp), capped at min_bits' coarsest. Where tolerance sets it under that
+    cap, encode_block may take all of its allowance: a scaled step tolerance_step (tolerance_grid).
+    A floored block keeps a finer grid it is already on (keep_floor_grid), never finer than its
+    range fits in max_bits.
+
+    Args:
+        samples: 1D float64 array of the block's samples (held where coded).
+        lower_bound, upper_bound: Their minimum and maximum.
+        noise_sigma, noise_rho: The block's noise estimate (_noise.block_noise).
+        noise_factor: Params.noise_floor_sigma (0.0 if off).
+        min_bits, max_bits: Params.min_quantize_bits, Params.max_quantize_bits.
+        tolerance_exp: tolerance_exponent(Params.tolerance) (very negative without one).
+        tolerance_step: 2 Params.tolerance (0.0 without one).
+
+    Returns:
+        A tuple of (exponent, tolerance_step or 0.0); (0, 0.0) for a constant block.
+    """
+    planned_exp = plan_step(lower_bound, upper_bound, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+    block_tolerance_step = 0.0
+    if upper_bound > lower_bound and tolerance_exp > planned_exp:
+        # The caller's absolute error, within min_quantize_bits' coarsest step
+        coarsest_exp = range_exponent(lower_bound, upper_bound, min_bits)
+        planned_exp = min(tolerance_exp, coarsest_exp)
+        if tolerance_exp < coarsest_exp:
+            # All of it (a scaled step up to 2 tolerance, still under 2^coarsest_exp)
+            block_tolerance_step = tolerance_step
+    if noise_rho > NOISE_GATE:
+        # Never finer than the range fits in max_bits (a block whose floor is its range's own step)
+        planned_exp = max(keep_floor_grid(samples, planned_exp, noise_factor * noise_sigma),
+                          range_exponent(lower_bound, upper_bound, max_bits) if upper_bound > lower_bound else planned_exp)
+    return planned_exp, block_tolerance_step
+
+
+@njit(nogil=True, cache=True)
+def tolerance_grid(lower_bound: float, quant_exp: int, tolerance_step: float) -> tuple[np.int64, int, float]:
+    """Tolerance's scaled grid for a block whose step it sets: N points of the fine grid
+    2^(quant_exp - TOLERANCE_STEP_BITS), N from 17 to 31 the most that fit in tolerance_step, on the
+    absolute grid of multiples of the step (so decoded data lies on it and re-encodes to itself).
+
+    Only encode_block's rational search takes it (Params.grids "rational"): "binary" and "decimal"
+    allow only power-of-two and decimal steps, and a block whose indices share a factor already has
+    an exact grid at least as coarse (an odd factor of 3 or more times 2^quant_exp).
+
+    Returns:
+        A tuple of (N, fine exponent, the minimum's fine index rounded down to a multiple of N), or
+        N = 0 where it doesn't apply (tolerance didn't set the step, or the scaled grid's limits).
+    """
+    fine_exp = quant_exp - TOLERANCE_STEP_BITS
+    if not (tolerance_step > 0 and quant_exp == math.floor(math.log2(tolerance_step))):
+        return np.int64(0), fine_exp, 0.0
+    fine_step = math.ldexp(1.0, fine_exp)
+    num = np.int64(tolerance_step / fine_step)
+    base = math.floor(lower_bound / (num * fine_step)) * num
+    if not (num > (1 << TOLERANCE_STEP_BITS) and fine_exp >= SCALED_E_MIN and abs(base) < INDEX_LIMIT):
+        return np.int64(0), fine_exp, 0.0
+    return num, fine_exp, float(base)
 
 
 @njit(nogil=True, cache=True)
@@ -980,11 +1056,12 @@ def escape_outliers(
 
     A glitch (an error code, an overrange reading) stretches the block's range, and with it the
     step of every other sample. Escaped samples get code 10b (their values go to the escapes field)
-    and are held; the block is then quantized on the bulk's range. Taken only if it pays: the mean
-    within ESCAPE_TRIGGER of the range from one end (a few points far from the rest), at most
-    1/ESCAPE_MAX_SHARE of the block beyond ESCAPE_DEVIATIONS mean deviations of a trimmed center,
-    the bulk's step at least 4 times finer than the block's and than its noise floor's, and the
-    block not already exact at its full range (a decimal grid).
+    and are held; the block is then quantized on the bulk's range. Tried when the mean is within
+    ESCAPE_TRIGGER of the range from one end (a few points far from the rest), or the range is over
+    ESCAPE_RANGE_SPREAD standard deviations (outliers on both sides). Taken only if it pays: at
+    most 1/ESCAPE_MAX_SHARE of the block beyond ESCAPE_DEVIATIONS robust standard deviations of a
+    trimmed center, the bulk's step at least 4 times finer than the block's and than its noise
+    floor's (or tolerance's), and the block not already exact at its full range (a decimal grid).
 
     Args:
         samples: 1D float64 array of the block's samples (held where already coded).
@@ -992,8 +1069,8 @@ def escape_outliers(
         codes: 1D uint8 array of the block's codes (written in full if escapes are taken).
         coded: Whether codes already holds the block's non-finite codes.
         mean, lower_bound, upper_bound: The block's finite mean, minimum and maximum.
-        floor_exp: The noise floor's exponent for the block (its estimate shrugs off outliers), or a
-            very negative one without a floor.
+        floor_exp: The coarsest exponent the noise floor or tolerance allow the block (its noise
+            estimate shrugs off outliers), or NO_FLOOR_EXP without either.
         max_bits, grids: Params.
         scratch_quantized: 1D int32 scratch of the block's length.
 
@@ -1109,7 +1186,7 @@ def encode_block(
     scratch_rational: np.ndarray,
     scratch_index: np.ndarray,
     out_residuals: np.ndarray,
-    error_step: float = 0.0,
+    tolerance_step: float = 0.0,
 ) -> tuple[int, int, np.int64, float, np.int64]:
     """Encodes one block: quantizes, scales the grid, picks predictor order, and computes residuals.
 
@@ -1118,7 +1195,10 @@ def encode_block(
     would move it off), else the power-of-two grid; GRIDS_RATIONAL, the
     index gcd N of its indices scales it (on a power-of-two grid, the power of two N shares with
     the anchor's index coarsens the exponent instead), and a power-of-two block with no common
-    factor tries the rational search.
+    factor tries the rational search, or tolerance's scaled grid where tolerance_step is given and
+    the search finds no coarser one (tolerance_grid). Then the order (pick_order), the anchor moved
+    to the center (center), the residuals, and from orders_mask's PERIOD_ENABLED the period
+    predictor (try_period).
 
     Args:
         samples: 1D float64 array of samples.
@@ -1131,11 +1211,13 @@ def encode_block(
         scratch_rational: Preallocated 1D int32 scratch buffer for the rational search's indices.
         scratch_index: Preallocated 1D float64 scratch buffer for the rational search's step counts.
         out_residuals: Output 1D int16 array receiving residuals.
+        tolerance_step: The scaled step tolerance sets (plan_block_step), or 0.0.
 
     Returns:
         A tuple of (flags, param, grid_index, anchor, scale): grid_index is the integer anchor of
-        a decimal or scaled grid (the minimum's index), anchor the power-of-two grid's float
-        anchor (unused on the others), scale N | D << 16 (0 when unscaled).
+        a decimal or scaled grid, anchor the power-of-two grid's float anchor (unused on the
+        others), both at the block's reference index (center); scale is grid_scale: N | D << 16
+        (0 when unscaled), with a period block's P | w << 16 in the high half (PERIOD_SHIFT).
     """
     flags = 0
     anchor = lower_bound
@@ -1194,38 +1276,28 @@ def encode_block(
                 found, decimal, param, num, den, rational_index = _rational.detect_rational(
                     samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_rational, scratch_index,
                 )
-                # Params.tolerance set the step: N fine points of 2^(e - 4), all of 2 tolerance's allowance
-                fill_num = np.int64(0)
-                fill_exp = quant_exp - ERROR_STEP_BITS
-                fill_base = 0.0
-                if error_step > 0 and quant_exp == math.floor(math.log2(error_step)):
-                    fill = math.ldexp(1.0, fill_exp)
-                    fill_num = np.int64(error_step / fill)
-                    # On the absolute grid of multiples of the step (from the minimum's, so every index
-                    # is >= 0): decoded data lies on it
-                    fill_base = math.floor(lower_bound / (fill_num * fill)) * fill_num
-                    if not (fill_num > (1 << ERROR_STEP_BITS) and fill_exp >= SCALED_E_MIN and abs(fill_base) < INDEX_LIMIT):
-                        fill_num = np.int64(0)
-                if found and fill_num:
+                # Params.tolerance set the step: all of its allowance, N fine points of 2^(e - 4)
+                tolerance_num, tolerance_fine_exp, tolerance_base = tolerance_grid(lower_bound, quant_exp, tolerance_step)
+                if found and tolerance_num:
                     # An exact grid only if it is coarser than tolerance's step; the same step (decoded data
                     # found again) keeps tolerance's form, so decoded data re-encodes to itself
                     found_step = float(num) / den * (10.0 ** param if decimal else math.ldexp(1.0, param))
-                    found = found_step > fill_num * math.ldexp(1.0, fill_exp) * (1.0 + 2.0 ** -40)
+                    found = bool(found_step > tolerance_num * math.ldexp(1.0, tolerance_fine_exp) * (1.0 + 2.0 ** -40))
                 if found:
                     flags |= BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if decimal else 0)
                     param_val = param
                     scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
-                elif fill_num:
-                    inv_step = 1.0 / (fill_num * math.ldexp(1.0, fill_exp))
-                    origin = fill_base * math.ldexp(1.0, fill_exp)
+                elif tolerance_num:
+                    inv_step = 1.0 / (tolerance_num * math.ldexp(1.0, tolerance_fine_exp))
+                    origin = tolerance_base * math.ldexp(1.0, tolerance_fine_exp)
                     for sample_idx in range(samples.shape[0]):
                         scratch_quantized[sample_idx] = np.int32(math.floor((samples[sample_idx] - origin) * inv_step + 0.5))
                     flags |= BLOCK_FLAG_SCALED
-                    param_val = fill_exp
-                    scale = fill_num | (np.int64(1) << SCALE_SHIFT)
-                    grid_index = np.int64(fill_base)
+                    param_val = tolerance_fine_exp
+                    scale = tolerance_num | (np.int64(1) << SCALE_SHIFT)
+                    grid_index = np.int64(tolerance_base)
     # Select difference order minimizing residual variance (a shift of q doesn't change it)
     selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
     grid_index, anchor = center(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
@@ -1264,8 +1336,9 @@ def try_period(
     The period is the mean spacing of the block's upward crossings of its mean (at least
     PERIOD_MIN_CROSSINGS), refined to the integer lag of least squared difference within 3; the
     fraction w (in 64ths, for lags P and P + 1 from either P - 1 or P) by least squares. Taken when
-    the class-entropy estimate (estimate_bits) beats the fixed order's by PERIOD_SIDE_BITS over the
-    block, with no difference or a first difference on top.
+    the prediction errors past the head save PERIOD_SIDE_BITS over the fixed order's residuals there,
+    by a Gaussian estimate (half the log2 ratio of their variances per sample). The head (the first
+    P + 1 residuals) stays the fixed order's; past it the residuals are the errors themselves (SPEC §4).
 
     Args:
         quantized: 1D int32 array of the block's signed indices.
@@ -1642,7 +1715,7 @@ def encode_group(
     target_bits: float,
     grids: int,
     tolerance_exp: int,
-    error_step: float,
+    tolerance_step: float,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
     out_grid_scales: np.ndarray,
@@ -1673,13 +1746,15 @@ def encode_group(
         noise_factor: Noise floor multiplier (0.0 if disabled).
         target_bits: Target bits per sample (0.0 if disabled).
         grids: The grids level (GRIDS_BINARY, GRIDS_DECIMAL or GRIDS_RATIONAL; Params.grids).
+        tolerance_exp: tolerance_exponent(Params.tolerance): the exponent tolerance allows.
+        tolerance_step: 2 Params.tolerance, the scaled step it allows (0.0 without one).
         out_block_flags: Output 1D uint8 array of length num_blocks receiving header bytes.
         out_grid_params: Output 1D int64 array of length num_blocks receiving parameters.
         out_grid_scales: Output 1D int64 array of length num_blocks receiving grid scales (N | D << 16,
-            0 on unscaled blocks).
+            0 on unscaled blocks; a period block's parameters in the high half).
         out_value_anchors: Output 1D int64 array of length num_blocks receiving anchors (float64 bits of
-            the power-of-two anchor, the grid point nearest the block minimum, or the decimal
-            grid index of the minimum).
+            the power-of-two anchor, or the decimal or scaled grid's integer index), at each
+            block's reference index (center).
         out_residuals: Output 1D int16 array of every sample receiving residuals.
         out_codes: Output 1D uint8 array of every sample receiving sample codes (only
             flagged blocks' codes are written).
@@ -1790,10 +1865,9 @@ def encode_group(
             )
         # Outliers stored apart (escapes), when that refines the rest of the block (§5.1.1)
         if finite_count > 0 and block_len >= ESCAPE_MIN_LEN:
-            gated = noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0
             escaped, bulk_min, bulk_max = escape_outliers(
                 block_samples, scratch_index[:block_len], block_codes, has_nonfinite, block_mean, block_min, block_max,
-                max(math.floor(math.log2(noise_factor * noise_sigma)) if gated else E_MIN - 64, tolerance_exp),
+                max(floor_exponent(noise_factor, noise_sigma, noise_rho), tolerance_exp),
                 max_bits, grids,
                 block_quantized,
             )
@@ -1811,20 +1885,10 @@ def encode_group(
                         range_scale(block_min, block_max), scratch_pivots, scratch_noise_diffs, scratch_noise_weights,
                         math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
                     )
-        # Plan quantization exponent
-        planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
-        block_error_step = 0.0
-        if block_max > block_min and tolerance_exp > planned_exp:
-            # The caller's absolute error, within min_quantize_bits' coarsest step
-            coarsest_exp = range_exponent(block_min, block_max, min_bits)
-            planned_exp = min(tolerance_exp, coarsest_exp)
-            if tolerance_exp < coarsest_exp:
-                # All of it (a scaled step up to 2 tolerance, still under 2^coarsest_exp)
-                block_error_step = error_step
-        if noise_rho > NOISE_GATE:
-            # Never finer than the range fits in max_bits (a block whose floor is its range's own step)
-            planned_exp = max(keep_floor_grid(block_samples, planned_exp, noise_factor * noise_sigma),
-                              range_exponent(block_min, block_max, max_bits) if block_max > block_min else planned_exp)
+        planned_exp, block_tolerance_step = plan_block_step(
+            block_samples, block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits, tolerance_exp,
+            tolerance_step,
+        )
         block_exponents[block_idx] = planned_exp
         (
             out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor, out_grid_scales[block_idx],
@@ -1839,7 +1903,7 @@ def encode_group(
             scratch_rational[:block_len],
             scratch_index[:block_len],
             block_residuals,
-            block_error_step,
+            block_tolerance_step,
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
         if has_nonfinite:
