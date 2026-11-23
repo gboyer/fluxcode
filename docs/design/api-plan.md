@@ -8,26 +8,31 @@
 
 **What changed during implementation:**
 
-- **Readers and writers.** `write_group` lives in `_bitpacking` and writes byte planes only;
-  `read_group` and the bit-plane writer are test oracles in `tests/_oracle.py`, not package code.
+- **Readers and writers.** `write_body` lives in `_body.py` and writes byte planes only (with
+  `_bitpacking.to_bit_planes` converting when needed); `read_group` and `write_group` are test
+  oracles in `tests/_oracle.py`, not package code.
 - **Names.** The per-block "head byte" below is the `block_flags` field, and the SPEC sections
   it cites have been renumbered (the format is now SPEC §6, the algorithm ENCODER.md).
-- **Self-describing block groups.** A block group starts with a 16-byte header (version, block length, sample
-  count), and each block stores its own anchor (SPEC §5). `decode(groups)` takes only the block groups and
-  returns one array per block group; `decode_group(group)` returns the block group's samples as a 1-D array. No
-  `block_min`, `n_samples` or `block_len` is passed to `decode` or `update`, and min/max/mean are
-  summary statistics only.
+- **Self-describing block groups.** A block group starts with an 8-byte header (version, flags,
+  block count, sample count), and each block stores its own size and anchor (SPEC §4, §6).
+  `decode(groups)` takes only the block groups and returns one `DecodedGroup` per block group;
+  `decode_group(group)` returns `DecodedGroup(values, times, block_sizes)`. No `block_min`,
+  `n_samples` or `block_len` is passed to `decode` or `update`, and min/max/mean are summary
+  statistics only.
 - **`encode_group(x, params)`** encodes one block group. `encode` returns `(groups, block_mins,
-  block_maxs, block_means)` with one array per group, and `update(group, indices, blocks, params)`
-  returns min/max/mean for the updated blocks only, in `indices` order.
+  block_maxs, block_means)` with one array per group, and `update(group, blocks, params, *,
+  times=None)` takes a `{index: samples}` dict and returns `UpdatedGroup(group, indices, block_min,
+  block_max, block_mean)` for the updated blocks only.
 - **Non-finite values are encoded exactly** (head bit 3 with two code planes, SPEC §2) instead of
   raising (§6 below).
 - **No float32 flag.** Decimals stored as float32 upstream decode as the decimal itself.
 - **Validation:** `noise_floor_sigma` is a finite number ≥ 0; `target_bits_per_sample` is
-  None or ≥ 6; `block_len` is a multiple of 8 up to 65,536; `blocks_per_group × block_len` is at
-  most 2^26; `diff_orders` may be any set or sequence of orders.
-- **More modules:** `_noise`, `_nonfinite` and `_extreme_magnitudes` joined the layout of §3. The
-  conformance tests are SPEC §7.
+  None or ≥ 6; `block_len` (a function parameter, not on `Params`) is 1 to 65,535; a block group
+  holds at most 65,535 blocks and 2^26 samples; `diff_orders` may be any set or sequence of orders.
+- **More modules:** `_args`, `_bitpacking`, `_body`, `_compress`, `_escapes` (formerly
+  `_nonfinite`), `_extreme_magnitudes`, `_grids`, `_group`, `_noise`, `_rational`, `_time`,
+  `_time_blocks`, `_time_rounding`, `_types`, and `verify` joined the layout of §3. The
+  conformance tests are SPEC §8 (and ENCODER §7).
 - The prototype the implementation was checked against is now fluxproto,
   [`experimental/tslab/flux/proto.py`](../../experimental/tslab/flux/proto.py). The body keeps the
   old names: `pow2codec.py` is that prototype, and `bench_pow2.py` / `bench_noise.py` are now

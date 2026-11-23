@@ -5,8 +5,10 @@ for float64 time series in 1000-sample blocks, the benchmarks that compared them
 that explains the design. **The findings are in [REPORT.md](REPORT.md).** The original request and
 the design prompts are in [notes/](notes/).
 
-- **Synthetic data only.** Every signal is generated (`tslab/common/datasets.py`); nothing here has
-  been validated on real data yet.
+- **Synthetic comparison + real-world public datasets.** The original codec comparison in
+  [REPORT.md](REPORT.md) uses synthetic signals (`tslab/common/datasets.py`). Since then,
+  [public_datasets/](public_datasets/README.md) validates `fluxcode` across 14 real-world public
+  dataset families (94 series, ~29.2M float64 samples), rendered in `report/public.html`.
 - **Not maintained and not a library.** The code is kept so the report can be reproduced. It isn't
   covered by CI, and its APIs may change or break without notice. Use the `fluxcode` package for
   anything real.
@@ -59,6 +61,7 @@ uv run python make_rate_report.py   # report/rate.html                   (~3 min
 uv run python make_time_report.py   # report/time.html                   (~5 s)
 uv run python make_sdt_report.py    # report/sdt.html and its SVGs       (~4 min)
 uv run python make_prune_report.py  # report/prune.html and its SVGs     (~1.5 min)
+uv run python make_public_report.py # report/public.html and its SVGs    (<1 s, from public_datasets/results.json)
 ```
 
 `make_report.py` runs every codec on the report's block groups (`tslab.common.datasets.groups()`: 12 kinds ×
@@ -89,7 +92,7 @@ in 1 h blocks (`tslab/prune/`): its ranking against the optimum, Visvalingam-Why
 eight rules for how many points to keep, their stability under sampling rate and block length, what errors should be
 relative to (range, largest |value|, a known span; six more signals with small variations on a large offset), the
 max_error and max_points guards against swinging door, the max_error pass against its alternatives, refit,
-swinging-door archives as input, and timings (they need a quiet machine). `report/` is generated, and committed so it can be read without rerunning.
+swinging-door archives as input, and timings (they need a quiet machine). `make_public_report.py` renders `report/public.html` and `public-*.svg` from `public_datasets/results.json` (compression ratio, scaled-grid gains, throughput, and timestamp costs across the 14 real-world dataset families). `report/` is generated, and committed so it can be read without rerunning.
 
 ## Benchmarks
 
@@ -117,3 +120,10 @@ residual bit planes (it is faster, and larger; not adopted)?
 what it found became `Params.effort`.
 [rust_port/](rust_port/README.md) ports the encoder and decoder to Rust: only the zstd frame build is worth it (python-zstandard
 holds the GIL in a block flush); it became the optional `fluxcode[rust]` extension.
+[grids/](grids/README.md) explores richer value grids (index gcd and rational `N / D` scaled grids) for sensors whose step the
+writer doesn't know; what it found became `Params.grids` and scaled grids (`docs/ENCODER.md §5.4`).
+[value/](value/LOG.md) holds the `value-exp` experiment log and scripts (`corpus.py`, `harness.py`, `sizes.py`, etc.) investigating
+value-side compression, accuracy, the 12th-difference noise floor, escaped outliers, and `absolute_tolerance`.
+[public_datasets/](public_datasets/README.md) benchmarks and verifies `fluxcode` across 14 real-world public dataset families
+(94 series, ~29.2M samples), with SHA-256-verified downloads (`download.py`), analysis (`analyze.py`), and results (`RESULTS.md`,
+`results.json`).
