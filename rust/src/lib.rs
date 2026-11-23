@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Garry Boyer
-//! Optional accelerator for fluxcode's encoder, without the GIL. The modules are named after the
-//! Python ones they port, and this file holds only the bindings:
+//! PyO3 extension module accelerating fluxcode's block-group encoder without holding the GIL.
 //!
-//! - `format` (`_format.py`): constants, offsets and the header;
-//! - `bitpacking` (`_bitpacking.py`): packing rows into the body, and the byte- and bit-plane
-//!   layouts, on top of `planes` (the SIMD transposition, standard library only);
-//! - `compress` (`_compress.py`): the compression policy: layout choice, flush points, framing and
-//!   candidate choice.
+//! `python-zstandard` holds the GIL during `flush(FLUSH_BLOCK)`, which prevents multi-threaded
+//! scaling when zstd block flushing is enabled. This crate ports the hot packing and compression
+//! pipeline to Rust and releases the GIL across all packing, transposition, and zstd calls:
 //!
-//! python-zstandard holds the GIL inside `flush(FLUSH_BLOCK)`, which is where the compression of
-//! the buffered data happens, so flushed frames don't scale with threads there. `compress_group`
-//! builds a block group without a time axis from its rows, and `pack_group` the block group of a
-//! body that Python built (a block group with a time axis, or a splice); the block group bytes are
-//! the same as the Python path's while both link the same libzstd (see `zstd_version`).
+//! - `format`: wire-format constants, section offsets, and 8-byte header encoding;
+//! - `bitpacking`: columnar body serialization and byte-plane/bit-plane conversion;
+//! - `planes`: SIMD-accelerated (NEON / SSE2) and scalar bit-plane transposition;
+//! - `compress`: layout selection policy, density-based zstd block flushing, and framing.
+//!
+//! Output bytes are bit-for-bit identical to the Python encoder when both link the same libzstd
+//! version (see `zstd_version`).
 
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyValueError;
@@ -25,15 +24,18 @@ mod compress;
 mod format;
 mod planes;
 
-use compress::Layout;
-use format::{Rows, Shape};
+use compress::ResidualLayout;
+use format::{BlockColumns, GroupShape};
 
-/// The interface fluxcode/_compress.py checks (`RUST_INTERFACE_VERSION`) before using the
+/// ABI version checked by `fluxcode/_compress.py` (`RUST_INTERFACE_VERSION`) before enabling the
 /// extension.
 const INTERFACE_VERSION: u32 = 6;
 
-/// A block group without a time axis from its rows: header plus zstd frame, as `_compress.compress`
-/// builds it. `layout` is "heuristic" or "best" (`Effort.layout`).
+/// Encodes and compresses a block group without a time axis directly from columnar NumPy arrays.
+///
+/// `layout` must be `"heuristic"` or `"best"`. Releases the GIL during body packing and zstd
+/// compression. Raises `ValueError` on mismatched array lengths, invalid layout names, empty
+/// `zstd_levels`, or libzstd errors.
 #[pyfunction]
 #[pyo3(signature = (
     block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, escapes,
@@ -54,7 +56,9 @@ fn compress_group<'py>(
     flush: bool,
     zstd_levels: Vec<i32>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let rows = Rows::new(
+    // Validate NumPy slices and layout policy under the GIL, then release the GIL for packing
+    // and zstd compression.
+    let columns = BlockColumns::new(
         block_flags.as_slice()?,
         block_sizes.as_slice()?,
         grid_params.as_slice()?,
@@ -65,16 +69,20 @@ fn compress_group<'py>(
         escapes.as_slice()?,
     )
     .map_err(PyValueError::new_err)?;
-    let layout = Layout::parse(layout).map_err(PyValueError::new_err)?;
+    let layout = ResidualLayout::parse(layout).map_err(PyValueError::new_err)?;
     let group = py
-        .detach(|| compress::compress_group(&rows, layout, flush, &zstd_levels))
+        .detach(|| compress::compress_group(&columns, layout, flush, &zstd_levels))
         .map_err(PyValueError::new_err)?;
     Ok(PyBytes::new(py, &group))
 }
 
-/// The block group of an uncompressed body whose residuals are byte planes, with or without a time
-/// axis (time_unit 0 for none): header plus zstd frame, as `_compress.pack` builds it. `num_octets`
-/// is the octets (8 residual bytes each) of all blocks.
+/// Packs and compresses a pre-built uncompressed byte-plane body (with or without a time axis)
+/// into a block group (8-byte header + zstd frame).
+///
+/// `num_octets` is the total number of 8-sample groups (plane bytes per bit plane) across all
+/// blocks; `time_unit` is `0` when no time axis is present. Releases the GIL during transposition
+/// and compression. Raises `ValueError` if the shape overflows the header, `layout` is invalid,
+/// `body` is too short, or libzstd fails.
 #[pyfunction]
 #[pyo3(signature = (
     body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels,
@@ -93,10 +101,11 @@ fn pack_group<'py>(
     zstd_levels: Vec<i32>,
     group_time_step: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let shape = Shape {
+    // Validate header bounds and layout policy under the GIL, then detach to transpose/compress.
+    let shape = GroupShape {
         num_blocks,
         num_samples,
-        num_octets,
+        num_plane_bytes: num_octets,
         time_unit,
         group_time_step,
     };
@@ -105,7 +114,7 @@ fn pack_group<'py>(
             "block group shape doesn't fit the header",
         ));
     }
-    let layout = Layout::parse(layout).map_err(PyValueError::new_err)?;
+    let layout = ResidualLayout::parse(layout).map_err(PyValueError::new_err)?;
     let body = body.as_slice()?;
     let group = py
         .detach(|| compress::pack(&shape, body, layout, flush, &zstd_levels))
@@ -113,29 +122,32 @@ fn pack_group<'py>(
     Ok(PyBytes::new(py, &group))
 }
 
-/// Which bit-plane transposition runs: "neon", "sse2" or "scalar".
+/// Returns the active bit-plane transposition backend: `"neon"`, `"sse2"`, or `"scalar"`.
 #[pyfunction]
 fn simd_path() -> &'static str {
-    planes::PATH
+    planes::SIMD_BACKEND
 }
 
-/// The version of the libzstd this extension links, as (major, minor, release): the block group
-/// bytes match python-zstandard's only if its `ZSTD_VERSION` is the same.
+/// Returns the linked libzstd version as `(major, minor, release)`.
+///
+/// Encoded block groups are bit-for-bit identical to `python-zstandard`'s output only when both
+/// link the same libzstd version.
 #[pyfunction]
 fn zstd_version() -> (u32, u32, u32) {
     let version = zstd_safe::version_number();
     (version / 10000, version / 100 % 100, version % 100)
 }
 
+/// Registers the `fluxcode_rs` Python extension functions and policy constants.
 #[pymodule]
 fn fluxcode_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compress_group, m)?)?;
     m.add_function(wrap_pyfunction!(pack_group, m)?)?;
     m.add_function(wrap_pyfunction!(zstd_version, m)?)?;
     m.add_function(wrap_pyfunction!(simd_path, m)?)?;
-    // fluxcode/_compress.py loads the extension only if its RUST_INTERFACE_VERSION is this
+    // Version gate checked by `fluxcode/_compress.py` before loading this extension.
     m.add("INTERFACE_VERSION", INTERFACE_VERSION)?;
-    // the policy constants, which fluxcode/_compress.py has too: tests/test_rust.py compares them
+    // Compression-policy constants mirrored in `fluxcode/_compress.py` and verified by tests.
     m.add("FLUSH_MIN_DENSITY", compress::FLUSH_MIN_DENSITY)?;
     m.add("BYTE_PLANES_BIT", compress::BYTE_PLANES_BIT)?;
     m.add("BYTE_PLANES_MAX_SHARE", compress::BYTE_PLANES_MAX_SHARE)?;
