@@ -17,6 +17,7 @@ from ._format import (
     BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
+    INDEX_LIMIT,
     P_MAX,
     P_MIN,
     SCALE_MASK,
@@ -44,6 +45,19 @@ NOISE_RHO: float = -0.6
 FLOAT64_EXACT_INT_LIMIT: float = 2.0 ** 52
 """Scaled-magnitude limit for decimal candidates: below 2^52 a double's spacing is at most
 0.5, so floor(v + 0.5) and the tolerance check are meaningful."""
+
+TRIM_STRIDE: int = 4
+"""The trimmed mean of an order-0 block reads every TRIM_STRIDE-th index."""
+
+TRIM_DEVIATIONS: float = 3.0
+"""An order-0 block centers on the mean of its indices within this many mean absolute deviations
+of their mean (center_anchor)."""
+
+INT16_MAX: int = 32767
+"""Largest signed 16-bit index (SPEC §4: q is read as int16)."""
+
+INT16_MIN: int = -32768
+"""Smallest signed 16-bit index."""
 
 
 @njit(nogil=True, cache=True)
@@ -498,3 +512,89 @@ def planned_multiple(step: float, planned_exp: int) -> int:
     """
     ratio = math.ldexp(step, -planned_exp)
     return int(ratio) if ratio == math.floor(ratio) and 1 <= ratio <= SCALE_MASK + 1 else 0
+
+
+@njit(nogil=True, cache=True)
+def center_anchor(
+    quantized: np.ndarray,
+    order: int,
+    flags: int,
+    param: int,
+    grid_index: np.int64,
+    anchor: float,
+    scale: np.int64,
+) -> tuple[np.int64, float]:
+    """Moves a block's anchor to its reference index c and its indices to q - c, signed 16-bit (SPEC §4).
+
+    c is the trimmed mean index for order 0 (the residuals are then the indices themselves,
+    centered on the block), else the first index (the first residual is then 0), clamped so that
+    every q - c fits in [-32768, 32767] and the anchor stays exact: an integer anchor (decimal or
+    scaled grid) moves by c grid steps (N c fine points), a power-of-two one to the grid point
+    (k + c) 2^e when its index k = anchor / 2^e is an integer under 2^52; an unsnapped anchor (near
+    +-DBL_MAX) moves only as far as the 16 bits require, by an exact sum there (e >= 971).
+
+    Args:
+        quantized: 1D int32 array of the block's indices from its minimum (0 to 65,535), shifted in place.
+        order: The block's predictor order.
+        flags, param, grid_index, anchor, scale: The block's grid, as encode_block returns them.
+
+    Returns:
+        A tuple of (grid_index, anchor), moved to index c.
+    """
+    num_samples = quantized.shape[0]
+    if num_samples == 0:
+        return grid_index, anchor
+    # int32 max and sum (|sum| < 2^16 * 2^16 fits int64 only: widen per 2^15 samples) vectorize
+    max_q = np.int32(0)
+    total = np.int64(0)
+    for chunk_start in range(0, num_samples, 1 << 15):
+        chunk = quantized[chunk_start:min(chunk_start + (1 << 15), num_samples)]
+        chunk_total = np.int32(0)
+        chunk_max = np.int32(0)
+        for sample_idx in range(chunk.shape[0]):
+            chunk_max = max(chunk_max, chunk[sample_idx])
+            chunk_total += chunk[sample_idx] >> 1
+        max_q = max(max_q, chunk_max)
+        total += np.int64(chunk_total)
+    max_index = np.int64(max_q)
+    low, high = max(max_index - INT16_MAX, np.int64(0)), min(max_index, np.int64(-INT16_MIN))
+    # The mean from halved indices (an int32 sum of 2^15 of them can't overflow): within one of it
+    wanted = (2 * total + num_samples // 2) // num_samples if order == 0 else np.int64(quantized[0])
+    if order == 0:
+        # Trimmed: spikes would pull the plain mean off the bulk of the block (integer loops vectorize)
+        mean = np.int32(wanted)
+        # On every 4th index: a center needn't be exact, and this keeps the pass cheap
+        sub = quantized[::TRIM_STRIDE]
+        abs_dev = np.int64(0)
+        for sample_idx in range(sub.shape[0]):
+            abs_dev += abs(sub[sample_idx] - mean)
+        limit = TRIM_DEVIATIONS * abs_dev / sub.shape[0]
+        kept_sum = np.int64(0)
+        kept = np.int64(0)
+        for sample_idx in range(sub.shape[0]):
+            if abs(sub[sample_idx] - mean) <= limit:
+                kept_sum += sub[sample_idx]
+                kept += 1
+        if kept > 0:
+            wanted = (2 * kept_sum + kept) // (2 * kept)
+    shift = min(max(wanted, low), high)
+    if flags & (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED):
+        num = scale & SCALE_MASK if flags & BLOCK_FLAG_SCALED else np.int64(1)
+        # The anchor stays an index under 2^52, as the samples' own indices are (§5.3, §5.4)
+        if abs(grid_index + num * shift) >= INDEX_LIMIT:
+            shift = low
+        grid_index = grid_index + num * shift
+    else:
+        anchor_index = math.ldexp(anchor, -param)
+        if anchor_index == math.floor(anchor_index) and abs(anchor_index) < FLOAT64_EXACT_INT_LIMIT:
+            anchor = math.ldexp(anchor_index + float(shift), param) + 0.0
+        else:
+            # Unsnapped (or beyond exact indices): only the shift the 16 bits need, at half scale
+            shift = low
+            if shift:
+                anchor = 2.0 * (0.5 * anchor + float(shift) * math.ldexp(1.0, param - 1))
+    if shift:
+        shift32 = np.int32(shift)
+        for sample_idx in range(num_samples):
+            quantized[sample_idx] -= shift32
+    return grid_index, anchor

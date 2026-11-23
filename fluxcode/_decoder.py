@@ -84,25 +84,23 @@ def unzigzag(low_bytes: np.ndarray, high_bytes: np.ndarray, out_residuals: np.nd
 def integrate(residuals_in_out: np.ndarray, order: int) -> None:
     """Reconstructs quantized indices by integrating residuals mod 2^16 in-place.
 
-    Computes `order` successive prefix sums modulo 65536. For order 0, masks the
-    elements to the uint16 range.
+    Computes `order` successive prefix sums modulo 65536, read as signed 16-bit (SPEC §4).
 
     Args:
         residuals_in_out: In-out 1D int32 array containing residuals, modified in-place to hold
-            quantized grid offsets q in [0, 65535].
+            quantized grid offsets q in [-32768, 32767].
         order: Difference order (0, 1, 2, or 3).
     """
     num_samples = residuals_in_out.shape[0]
     if order == 0:
-        for sample_idx in range(num_samples):
-            # Mask to 16-bit unsigned range
-            residuals_in_out[sample_idx] &= 0xFFFF
+        # Unzigzagged residuals are already signed 16-bit: q = v
+        return
     elif order == 1:
         sum_order1 = np.int32(0)
         for sample_idx in range(num_samples):
             # First-order prefix sum, mod 2^16
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
-            residuals_in_out[sample_idx] = sum_order1
+            residuals_in_out[sample_idx] = ((sum_order1 + 32768) & 0xFFFF) - 32768
     elif order == 2:
         sum_order1 = np.int32(0)
         sum_order2 = np.int32(0)
@@ -110,7 +108,7 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
             # Second-order double prefix sum mod 2^16
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
             sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
-            residuals_in_out[sample_idx] = sum_order2
+            residuals_in_out[sample_idx] = ((sum_order2 + 32768) & 0xFFFF) - 32768
     else:
         sum_order1 = np.int32(0)
         sum_order2 = np.int32(0)
@@ -120,7 +118,7 @@ def integrate(residuals_in_out: np.ndarray, order: int) -> None:
             sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
             sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
             sum_order3 = (sum_order3 + sum_order2) & 0xFFFF
-            residuals_in_out[sample_idx] = sum_order3
+            residuals_in_out[sample_idx] = ((sum_order3 + 32768) & 0xFFFF) - 32768
 
 
 @njit(nogil=True, cache=True)

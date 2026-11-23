@@ -110,7 +110,7 @@ def test_pick_order(i, orders, m):
 
 @pytest.mark.parametrize("order", range(4))
 def test_residual_and_integrate(order):
-    q = RNG.integers(0, 2 ** 16, 1000).astype(np.int32)
+    q = RNG.integers(-32768, 32768, 1000).astype(np.int32)
     v = np.empty(1000, np.int16)
     _encoder.residual(q, order, v)
     ref = np.diff(np.concatenate([np.zeros(order, np.int64), q]), order)

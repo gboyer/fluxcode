@@ -39,13 +39,14 @@ def test_minimum_halfway_between_grid_points(e, base):
     x[[0, -1]] = lo, lo + 40_000 * step
     group, got_e, anchor = encode_block(x)
     assert got_e == e
-    assert anchor == np.rint(lo / step) * step  # ties to even
+    assert anchor == np.rint(anchor / step) * step  # a grid point (centered on the block, SPEC §4)
+    assert decode(group).min() == np.rint(lo / step) * step  # ties to even
     q = np.empty(1000, np.int32)
     _grids.quantize_grid(x, e, np.rint(lo / step), q)
     assert q[0] == 0 and q.min() == 0
     y = decode(group)
     assert np.abs(y - x).max() <= step / 2
-    assert y[0] == anchor
+    assert y[0] == np.rint(lo / step) * step
 
 
 def test_fencepost_power_of_two_range():
@@ -230,7 +231,7 @@ def test_a_coarse_binary_grid_beats_a_finer_decimal_one(step, target):
     x[0] = 3 * step  # an odd multiple: the coarsest grid is the step itself
     group, e, anchor = encode_block(x, Params(target_bits_per_sample=target))
     assert not group_rows(group).block_flags[0] & BLOCK_FLAG_DECIMAL
-    assert (e, anchor) == (int(np.log2(step)), x.min())
+    assert e == int(np.log2(step)) and anchor == np.rint(anchor / step) * step  # a grid point
     np.testing.assert_array_equal(decode(group), x)
 
 

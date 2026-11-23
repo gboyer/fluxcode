@@ -37,6 +37,7 @@ from ._grids import (
     GRIDS_RATIONAL,
     NO_DECIMAL,
     _common_twos,
+    center_anchor,
     decimal_grid,
     plan_step,
     planned_multiple,
@@ -466,8 +467,9 @@ def encode_block(
                     scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
-    # Select difference order minimizing residual variance
+    # Select difference order minimizing residual variance (a shift of q doesn't change it)
     selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
+    grid_index, anchor = center_anchor(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
     return flags | selected_order, param_val, grid_index, anchor, scale
@@ -779,11 +781,16 @@ def encode_group(
             if decimal_exp != NO_DECIMAL:
                 out_block_flags[block_idx] = BLOCK_FLAG_DECIMAL
                 out_grid_params[block_idx] = decimal_exp
-                out_value_anchors[block_idx] = decimal_base
+                out_value_anchors[block_idx], _ = center_anchor(
+                    block_quantized, 0, BLOCK_FLAG_DECIMAL, decimal_exp, decimal_base, 0.0, np.int64(0)
+                )
             else:
                 out_block_flags[block_idx] = 0
                 out_grid_params[block_idx] = fine_exp
-                anchor_floats[block_idx] = quantize_block(block_samples, block_min, block_max, fine_exp, block_quantized)
+                anchor = quantize_block(block_samples, block_min, block_max, fine_exp, block_quantized)
+                _, anchor_floats[block_idx] = center_anchor(
+                    block_quantized, 0, 0, fine_exp, np.int64(0), anchor, np.int64(0)
+                )
             residual(block_quantized, 0, block_residuals)
             if has_nonfinite:
                 out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE

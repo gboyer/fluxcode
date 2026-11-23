@@ -161,6 +161,6 @@ def dequantize_pow2_wide(
     for sample_idx in range(quantized_samples.shape[0]):
         grid_offset = quantized_samples[sample_idx]
         # Reconstruct at half-scale and clamp to maximum finite double
-        reconstructed_val = min(2.0 * (half_lower_bound + grid_offset * half_step_size), DBL_MAX)
+        reconstructed_val = max(min(2.0 * (half_lower_bound + grid_offset * half_step_size), DBL_MAX), -DBL_MAX)
         # Keep the lower bound exact when q == 0 (halving may round a subnormal)
         out_samples[sample_idx] = lower_bound if grid_offset == 0 else reconstructed_val
