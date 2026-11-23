@@ -89,12 +89,12 @@ import numpy as np
 import fluxcode
 
 rng = np.random.default_rng(0)
-t = np.arange(30_000) / 1000                                # 30 s at 1 kHz: 30 blocks of 1000
+t = np.arange(30_000) / 1000  # 30 s at 1 kHz: 30 blocks of 1000
 x = 100 * np.sin(2 * np.pi * 3.3 * t) + rng.normal(0, 1, t.size)
 
 # One block group = one storage row, here 30 blocks of 1000 samples. Block groups are self-describing.
 group, block_min, block_max, block_mean = fluxcode.encode_group(x)
-y, _, sizes = fluxcode.decode_group(group)                    # (values, times, block_sizes); no times here
+y, _, sizes = fluxcode.decode_group(group)  # (values, times, block_sizes); no times here
 print(f"{8 * len(group) / x.size:.2f} bits/sample, max error {np.abs(y - x).max():.3f}")
 
 # Decimal data (here a price rounded to cents) decodes to the identical float64.
@@ -104,7 +104,7 @@ assert np.array_equal(fluxcode.decode_group(fluxcode.encode_group(price).group).
 # Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly
 # (or, with Params(time_error=...), rounded within that share of their interval).
 stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(1, "ms")
-stamps[12_345:] += np.timedelta64(2, "s")                  # a gap: only its block pays for it
+stamps[12_345:] += np.timedelta64(2, "s")  # a gap: only its block pays for it
 values, times, _ = fluxcode.decode_group(fluxcode.encode_group(x, times=stamps).group)
 assert np.array_equal(times, stamps)
 
@@ -117,9 +117,9 @@ assert fluxcode.decode_group(group).values.size == 30_700
 # grows as data arrives. update_time_blocks upserts samples and deletes time ranges.
 ms = np.datetime64("2026-09-27T00:00", "ms") + np.arange(x.size)
 hour = {"start_time": ms[0], "block_duration": np.timedelta64(1, "s")}
-first, late = slice(0, 10_000), slice(10_000, 20_000)      # 20 s of 30; seconds 10-19 come later
+first, late = slice(0, 10_000), slice(10_000, 20_000)  # 20 s of 30; seconds 10-19 come later
 group, *_ = fluxcode.encode_time_blocks(x[first], ms[first], **hour)
-gap = (ms[10_000], ms[20_000])                              # [start, end)
+gap = (ms[10_000], ms[20_000])  # [start, end)
 group, *_ = fluxcode.update_time_blocks(group, x[late], ms[late], delete_ranges=gap, **hour)
 assert fluxcode.decode_group(group).block_sizes.tolist() == [1000] * 20
 

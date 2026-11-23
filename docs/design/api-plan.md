@@ -51,10 +51,9 @@ Performance and code clarity come first.
 ```python
 import fluxcode
 
-groups, block_min, block_max, block_mean = fluxcode.encode(x, params)     # x: float64[n]
-x2 = fluxcode.decode(groups, block_min, n_samples=len(x))                 # float64[n]
-group2, new_min, new_max, new_mean = fluxcode.update(groups[3], block_min[180:240],
-                                                     indices, new_blocks, params)
+groups, block_min, block_max, block_mean = fluxcode.encode(x, params)  # x: float64[n]
+x2 = fluxcode.decode(groups, block_min, n_samples=len(x))  # float64[n]
+group2, new_min, new_max, new_mean = fluxcode.update(groups[3], block_min[180:240], indices, new_blocks, params)
 ```
 
 ### 1.1 `encode`
@@ -125,13 +124,13 @@ byte, 8 byte-planed parameter bytes and 16 plane slices). Parse and write are th
 ```python
 @dataclass(frozen=True)
 class Params:
-    min_quantize_bits: int = 6                  # hard: steps are never coarser than this (1..16)
-    max_quantize_bits: int = 16                 # hard: steps are never finer than this (min..16)
-    diff_orders: frozenset[int] = frozenset({0, 1, 2, 3})   # one element: no order selection
-    noise_floor_sigma: float = 0.25             # f: step ≤ f·σ on blocks that look like white noise; 0 is off
-    target_bits_per_sample: float | None = None # soft per-block-group cap
+    min_quantize_bits: int = 6  # hard: steps are never coarser than this (1..16)
+    max_quantize_bits: int = 16  # hard: steps are never finer than this (min..16)
+    diff_orders: frozenset[int] = frozenset({0, 1, 2, 3})  # one element: no order selection
+    noise_floor_sigma: float = 0.25  # f: step ≤ f·σ on blocks that look like white noise; 0 is off
+    target_bits_per_sample: float | None = None  # soft per-block-group cap
     decimal_detection: bool = True
-    block_len: int = 1000                       # multiple of 8
+    block_len: int = 1000  # multiple of 8
     blocks_per_group: int = 60
 ```
 

@@ -214,9 +214,9 @@ def _order_sums(
     last = num_samples - 1
     sum_diff1 = np.int64(segment[last]) - segment[0]
     sum_diff2 = (np.int64(segment[last]) - segment[last - 1]) - (np.int64(segment[1]) - segment[0])
-    sum_diff3 = (
-        np.int64(segment[last]) - 2 * np.int64(segment[last - 1]) + segment[last - 2]
-    ) - (np.int64(segment[2]) - 2 * np.int64(segment[1]) + segment[0])
+    sum_diff3 = (np.int64(segment[last]) - 2 * np.int64(segment[last - 1]) + segment[last - 2]) - (
+        np.int64(segment[2]) - 2 * np.int64(segment[1]) + segment[0]
+    )
     return sum_q, sum_sq_q, sum_diff1, sum_sq_diff1, sum_diff2, sum_sq_diff2, sum_diff3, sum_sq_diff3
 
 
@@ -312,7 +312,10 @@ def compute_residuals(quantized_samples: np.ndarray, order: int, out_residuals: 
         out_slice = out_residuals[3:]
         for sample_idx in range(num_samples - 3):
             out_slice[sample_idx] = _wrap16(
-                slice_curr[sample_idx] - 3 * slice_prev1[sample_idx] + 3 * slice_prev2[sample_idx] - slice_prev3[sample_idx]
+                slice_curr[sample_idx]
+                - 3 * slice_prev1[sample_idx]
+                + 3 * slice_prev2[sample_idx]
+                - slice_prev3[sample_idx]
             )
 
 
@@ -1071,9 +1074,7 @@ def encode_group(
             block_residuals,
             block_tol_step,
         )
-        _store_anchor(
-            out_block_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, anchor_index
-        )
+        _store_anchor(out_block_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, anchor_index)
         if has_sample_codes:
             out_block_flags[block_idx] |= BLOCK_FLAG_SAMPLE_CODES
         if use_target:

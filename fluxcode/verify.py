@@ -157,9 +157,7 @@ def encode_time_blocks(
     duration = _args.to_ticks(block_duration, unit, "block_duration", duration=True)
     ids = _verify_times.time_block_ids(ticks, start, duration)
     sizes = np.bincount(ids, minlength=0).astype(np.int64) if ids.shape[0] else np.zeros(0, np.int64)
-    return _check_encode(
-        result, series, sizes, ticks, unit, params, time_blocks=(start, duration), decimals=decimals
-    )
+    return _check_encode(result, series, sizes, ticks, unit, params, time_blocks=(start, duration), decimals=decimals)
 
 
 def encode(
@@ -552,10 +550,14 @@ def _check_result(
         ]
     if not encoded.all():
         changed = ~np.repeat(encoded, sizes) & ~_verify_common.same_doubles_mask(new.values, values)
-        _verify_common.report_samples(found, "untouched", changed, new.offsets, "samples of a block not re-encoded changed")
+        _verify_common.report_samples(
+            found, "untouched", changed, new.offsets, "samples of a block not re-encoded changed"
+        )
     _verify_values.check_values(found, values, new, sizes, encoded, params, result)
     if decimals is not None:
         _verify_values.check_decimals(found, values, new, sizes, encoded, params, decimals)
     if ticks is not None and new.ticks is not None:
-        _verify_times.check_times(found, ticks, new.ticks, sizes, new.offsets, encoded, time_error, allowance, time_blocks)
+        _verify_times.check_times(
+            found, ticks, new.ticks, sizes, new.offsets, encoded, time_error, allowance, time_blocks
+        )
     return found

@@ -43,7 +43,7 @@ def encode(x, sizes, params, rust):
     try:
         if sizes is None:
             return fluxcode.encode(x, params).groups
-        return [fluxcode.encode_blocks(x[:sum(sizes)], sizes, params).group]
+        return [fluxcode.encode_blocks(x[: sum(sizes)], sizes, params).group]
     finally:
         _compress._rust = saved
 
@@ -58,7 +58,7 @@ def test_rust_groups_match_python_groups(effort):
             assert rust == python, name
         else:
             # another libzstd may code the same body differently: the block groups still decode alike
-            for group_rust, group_python in zip(rust, python):
+            for group_rust, group_python in zip(rust, python, strict=True):
                 a, b = fluxcode.decode_group(group_rust), fluxcode.decode_group(group_python)
                 assert np.array_equal(a.values, b.values, equal_nan=True), name
                 assert abs(len(group_rust) - len(group_python)) <= 0.02 * len(group_python) + 16, name
@@ -116,10 +116,18 @@ def test_time_axis_groups_and_updates_match_python(effort):
                 group = fluxcode.encode_time_blocks(x, times, params, start_time=start, block_duration=second).group
                 out.append(group)
                 lo = int(np.searchsorted(times, times[2500]))
-                new = x[lo:lo + 300][::-1] + 1
-                out.append(fluxcode.update_time_blocks(
-                    group, new, times[lo:lo + 300], params, start_time=start, block_duration=second,
-                    delete_ranges=(times[2800], times[3300])).group)
+                new = x[lo : lo + 300][::-1] + 1
+                out.append(
+                    fluxcode.update_time_blocks(
+                        group,
+                        new,
+                        times[lo : lo + 300],
+                        params,
+                        start_time=start,
+                        block_duration=second,
+                        delete_ranges=(times[2800], times[3300]),
+                    ).group
+                )
                 out.append(fluxcode.update(group, {0: x[:10]}, params, times={0: times[:10]}).group)
             return out
         finally:
@@ -148,8 +156,17 @@ def test_mismatched_rows_are_rejected():
     sizes = np.array([3, 3], np.int64)
     with pytest.raises(ValueError, match="rows"):
         fluxcode_rs.compress_group(
-            flags, sizes, np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(5, np.int16),
-            np.zeros(6, np.uint8), np.zeros(0, np.float64), "heuristic", True, [3],
+            flags,
+            sizes,
+            np.zeros(2, np.int64),
+            np.zeros(2, np.int64),
+            np.zeros(2, np.int64),
+            np.zeros(5, np.int16),
+            np.zeros(6, np.uint8),
+            np.zeros(0, np.float64),
+            "heuristic",
+            True,
+            [3],
         )
 
 
@@ -157,8 +174,17 @@ def test_unknown_layout_is_rejected():
     flags = np.zeros(1, np.uint8)
     with pytest.raises(ValueError, match="layout"):
         fluxcode_rs.compress_group(
-            flags, np.array([3], np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64),
-            np.zeros(3, np.int16), np.zeros(3, np.uint8), np.zeros(0, np.float64), "size", True, [3],
+            flags,
+            np.array([3], np.int64),
+            np.zeros(1, np.int64),
+            np.zeros(1, np.int64),
+            np.zeros(1, np.int64),
+            np.zeros(3, np.int16),
+            np.zeros(3, np.uint8),
+            np.zeros(0, np.float64),
+            "size",
+            True,
+            [3],
         )
 
 

@@ -52,7 +52,7 @@ def _encode_fixed(block_len=1000):
 
 def _encode_variable(x, params):
     """Blocks of every kind of size: empty, short (no analysis), odd, and over 1000."""
-    return fluxcode.encode_blocks(x[:sum(VARIABLE_SIZES)], VARIABLE_SIZES, params)
+    return fluxcode.encode_blocks(x[: sum(VARIABLE_SIZES)], VARIABLE_SIZES, params)
 
 
 def _encode_time_blocks(x, params):
@@ -61,9 +61,13 @@ def _encode_time_blocks(x, params):
     ticks = 1_790_000_000_000_000 + np.arange(x.size) * 1000 + rng.integers(-20, 21, x.size)
     keep = (np.arange(x.size) < 12_000) | (np.arange(x.size) >= 19_500)
     keep &= (np.arange(x.size) < 40_200) | (np.arange(x.size) >= 40_350)
-    return fluxcode.encode_time_blocks(x[keep], ticks[keep].view("datetime64[us]"), params,
-                                       start_time=np.datetime64(1_789_999_999_999_000, "us"),
-                                       block_duration=np.timedelta64(1, "s"))
+    return fluxcode.encode_time_blocks(
+        x[keep],
+        ticks[keep].view("datetime64[us]"),
+        params,
+        start_time=np.datetime64(1_789_999_999_999_000, "us"),
+        block_duration=np.timedelta64(1, "s"),
+    )
 
 
 CASES = {
@@ -78,24 +82,42 @@ CASES = {
     "chirp target 6": (lambda: minute("chirp", 2), Params(target_bits_per_sample=6.0), _encode_fixed()),
     "random-walk target 8": (lambda: minute("random-walk", 2), Params(target_bits_per_sample=8.0), _encode_fixed()),
     "square orders {2}": (lambda: minute("square-2.24hz", 1), Params(diff_orders={2}), _encode_fixed()),
-    "sin-9.87hz 9 bits": (lambda: minute("sin-9.87hz", 1), Params(min_quantize_bits=4, max_quantize_bits=9), _encode_fixed()),
+    "sin-9.87hz 9 bits": (
+        lambda: minute("sin-9.87hz", 1),
+        Params(min_quantize_bits=4, max_quantize_bits=9),
+        _encode_fixed(),
+    ),
     "random-walk q0.01": (lambda: discrete_minute("random-walk q0.01", 1), Params(), _encode_fixed()),
     "sensor-0.1": (lambda: discrete_minute("sensor-0.1", 1), Params(), _encode_fixed()),
     "0.01-grid walk via float32": (lambda: _decimal_walk_f32(), Params(), _encode_fixed()),
-    "noisy-sine adc12 decimal off": (lambda: discrete_minute("noisy-sine adc12", 1), Params(grids="binary"), _encode_fixed()),
+    "noisy-sine adc12 decimal off": (
+        lambda: discrete_minute("noisy-sine adc12", 1),
+        Params(grids="binary"),
+        _encode_fixed(),
+    ),
     "noisy-sine with gaps": (lambda: _gaps(minute("noisy-sine", 3)), Params(), _encode_fixed()),
-    "random-walk with gaps target 6": (lambda: _gaps(minute("random-walk", 3)), Params(target_bits_per_sample=6.0), _encode_fixed()),
-    "white noise at 1e-310": (lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1e-310), Params(), _encode_fixed()),
-    "white noise across +-DBL_MAX": (lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1.7e308),
-                                     Params(), _encode_fixed()),
+    "random-walk with gaps target 6": (
+        lambda: _gaps(minute("random-walk", 3)),
+        Params(target_bits_per_sample=6.0),
+        _encode_fixed(),
+    ),
+    "white noise at 1e-310": (
+        lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1e-310),
+        Params(),
+        _encode_fixed(),
+    ),
+    "white noise across +-DBL_MAX": (
+        lambda: _scaled(np.random.default_rng(1).normal(size=60_000), 1.7e308),
+        Params(),
+        _encode_fixed(),
+    ),
     "short last block": (lambda: minute("sin-4.12hz", 4)[:59_321], Params(), _encode_fixed()),
-    "block_len 64, 7 blocks": (lambda: minute("random-walk", 5)[:7 * 64], Params(), _encode_fixed(64)),
+    "block_len 64, 7 blocks": (lambda: minute("random-walk", 5)[: 7 * 64], Params(), _encode_fixed(64)),
     "block_len 1001": (lambda: minute("noisy-sine", 5), Params(), _encode_fixed(1001)),
     "variable blocks": (lambda: minute("random-walk", 6), Params(), _encode_variable),
     "variable blocks q0.01": (lambda: discrete_minute("random-walk q0.01", 6), Params(), _encode_variable),
     "variable blocks target 6": (lambda: minute("chirp", 6), Params(target_bits_per_sample=6.0), _encode_variable),
-    "time blocks": (lambda: discrete_minute("sensor-0.1", 7), Params(),
-                    _encode_time_blocks),
+    "time blocks": (lambda: discrete_minute("sensor-0.1", 7), Params(), _encode_time_blocks),
 }
 
 
@@ -110,8 +132,9 @@ def digest(name):
 
 @pytest.mark.parametrize("name", CASES)
 def test_golden(name):
-    assert digest(name) == json.loads(GOLDEN.read_text())[name], \
+    assert digest(name) == json.loads(GOLDEN.read_text())[name], (
         "encoder output changed; if intended, run: uv run python tests/test_golden.py --update"
+    )
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--update"]:

@@ -63,7 +63,9 @@ def as_series(series_input: npt.ArrayLike, allow_empty: bool = False) -> np.ndar
     series_array = np.ascontiguousarray(series_input, dtype=np.float64)
     # A scalar becomes a 1-element array here, so ndim catches only higher dimensions
     if series_array.ndim != 1 or (series_array.shape[0] == 0 and not allow_empty):
-        raise ValueError(f"samples must be a {'' if allow_empty else 'non-empty '}1-D array, got shape {series_array.shape}")
+        raise ValueError(
+            f"samples must be a {'' if allow_empty else 'non-empty '}1-D array, got shape {series_array.shape}"
+        )
     return series_array
 
 
@@ -142,9 +144,7 @@ def time_unit_code(time_unit: str | None, stored_unit: int = 0) -> int:
     return _format.TIME_UNIT_CODES[time_unit]
 
 
-def series_ticks(
-    times: npt.ArrayLike | None, time_unit: str | None, num_samples: int
-) -> tuple[np.ndarray | None, int]:
+def series_ticks(times: npt.ArrayLike | None, time_unit: str | None, num_samples: int) -> tuple[np.ndarray | None, int]:
     """Converts timestamp input into a 1D int64 array of ticks and a time unit code.
 
     Args:
@@ -187,7 +187,7 @@ def as_block_sizes(block_sizes: npt.ArrayLike) -> np.ndarray:
     if sizes.ndim != 1 or not (np.issubdtype(sizes.dtype, np.integer) or sizes.shape[0] == 0):
         raise ValueError(f"block_sizes must be a 1-D integer array, got {sizes.dtype} of shape {sizes.shape}")
     sizes = np.ascontiguousarray(sizes, np.int64)
-    if sizes.shape[0] and not (0 <= sizes.min() and sizes.max() <= _format.MAX_BLOCK_LEN):
+    if sizes.shape[0] and not (sizes.min() >= 0 and sizes.max() <= _format.MAX_BLOCK_LEN):
         raise ValueError(f"block sizes must be from 0 to {_format.MAX_BLOCK_LEN}")
     return sizes
 
@@ -290,8 +290,7 @@ def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -
             value = np.timedelta64(value, "us")
         if not isinstance(value, np.timedelta64 if duration else np.datetime64):
             raise ValueError(
-                f"{name} must be a {kind}, a {'timedelta' if duration else 'datetime'} or integer ticks, "
-                f"got {value!r}"
+                f"{name} must be a {kind}, a {'timedelta' if duration else 'datetime'} or integer ticks, got {value!r}"
             )
         if np.isnat(value):
             raise ValueError(f"{name} is NaT")
@@ -343,7 +342,7 @@ def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
         if len(items) == 2 and not any(isinstance(item, (tuple, list, np.ndarray)) for item in items):
             items = [items]
     else:
-        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")  # noqa: TRY004
+        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")
     pairs = []
     for item in items:
         pair = list(item) if isinstance(item, (tuple, list)) or (isinstance(item, np.ndarray) and item.ndim) else None
@@ -433,7 +432,7 @@ def update_blocks(
             the times don't match the block group's time axis or the blocks.
     """
     if not isinstance(blocks, Mapping):
-        raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")  # noqa: TRY004
+        raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")
     if not all(is_int(idx) and idx >= 0 for idx in blocks):
         raise ValueError(f"block indices must be integers >= 0, got {sorted(map(repr, blocks))}")
     indices = sorted(int(idx) for idx in blocks)
@@ -457,9 +456,11 @@ def update_blocks(
     if times is not None:
         times_by_index = {int(idx): block_times for idx, block_times in times.items()}
         block_ticks = [as_ticks(times_by_index[idx], None, stored_unit)[0] for idx in indices]
-        for idx, block, tick_block in zip(indices, samples, block_ticks):
+        for idx, block, tick_block in zip(indices, samples, block_ticks, strict=True):
             if tick_block.shape != block.shape:
-                raise ValueError(f"block {idx}: times must have the shape of its samples {block.shape}, got {tick_block.shape}")
+                raise ValueError(
+                    f"block {idx}: times must have the shape of its samples {block.shape}, got {tick_block.shape}"
+                )
         ticks = np.concatenate(block_ticks) if block_ticks else np.zeros(0, np.int64)
     return np.array(indices, np.int64), np.concatenate(samples) if samples else np.zeros(0), sizes, ticks
 
@@ -477,7 +478,7 @@ def block_list(blocks: Iterable[int]) -> np.ndarray:
         ValueError: If blocks isn't an iterable of distinct integers from 0 to MAX_BLOCKS - 1.
     """
     if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Iterable):
-        raise ValueError(f"blocks must be block indices, got {type(blocks).__name__}")  # noqa: TRY004
+        raise ValueError(f"blocks must be block indices, got {type(blocks).__name__}")
     indices = list(np.asarray(blocks).ravel().tolist()) if isinstance(blocks, np.ndarray) else list(blocks)
     if not all(is_int(idx) and 0 <= idx < _format.MAX_BLOCKS for idx in indices):
         raise ValueError(f"blocks must be integers from 0 to {_format.MAX_BLOCKS - 1}, got {indices!r}")
@@ -521,7 +522,9 @@ def time_blocks_update(
     samples_arr = as_series(samples, allow_empty=True)
     ticks, _ = as_ticks(times, None, stored_unit)
     if ticks.shape != samples_arr.shape:
-        raise ValueError(f"times must be 1-D with one entry per sample ({samples_arr.shape[0]}), got shape {ticks.shape}")
+        raise ValueError(
+            f"times must be 1-D with one entry per sample ({samples_arr.shape[0]}), got shape {ticks.shape}"
+        )
     start = to_ticks(start_time, stored_unit, "start_time")
     duration = to_ticks(block_duration, stored_unit, "block_duration", duration=True)
     ranges = to_ranges([] if delete_ranges is None else delete_ranges, stored_unit)

@@ -353,9 +353,7 @@ def plan_block_step(
     """
     # Compute the base exponent from bit bounds and noise floor. If absolute_tolerance is coarser,
     # override even min_bits; otherwise apply floor hysteresis when the noise floor set the step.
-    planned_exp = plan_base_exponent(
-        lower_bound, upper_bound, noise_sigma, noise_rho, noise_factor, min_bits, max_bits
-    )
+    planned_exp = plan_base_exponent(lower_bound, upper_bound, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
     block_tol_step = 0.0
     if upper_bound > lower_bound and tolerance_exp > planned_exp:
         planned_exp = min(tolerance_exp, E_MAX)
@@ -642,9 +640,7 @@ def choose_decimal_or_binary_grid(
 
 
 @njit(nogil=True, cache=True)
-def quantize_relative(
-    samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
-) -> None:
+def quantize_relative(samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray) -> None:
     """Quantizes samples onto a power-of-two grid anchored directly at ``lower_bound``.
 
     Used for blocks where ``snap_anchor`` returns a NaN anchor index (constant blocks and
@@ -667,9 +663,7 @@ def quantize_relative(
 
 
 @njit(nogil=True, cache=True)
-def quantize_snapped(
-    samples: np.ndarray, quant_exp: int, anchor_index: float, out_quantized: np.ndarray
-) -> None:
+def quantize_snapped(samples: np.ndarray, quant_exp: int, anchor_index: float, out_quantized: np.ndarray) -> None:
     """Quantizes samples onto the absolute power-of-two grid offset from ``anchor_index``.
 
     Each sample becomes ``grid_index(sample, quant_exp) - anchor_index``, mapping the block

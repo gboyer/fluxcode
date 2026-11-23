@@ -60,6 +60,7 @@ DAY_GROUPS = 1440
 
 # --- Sensor-fleet signals (one minute each; the rest come from tests/_signals.py) ---
 
+
 def _fleet(kind, rng):
     n = MINUTE
     if kind == "analog":  # process variable: first-order lag after setpoint moves, sensor noise, 16-bit ADC
@@ -68,9 +69,9 @@ def _fleet(kind, rng):
         pv = np.empty(n)
         v = sp[0]
         for i in range(0, n, 1000):  # the lag per 1000 samples, exact enough and fast
-            seg = sp[i:i + 1000]
+            seg = sp[i : i + 1000]
             k = np.arange(1, seg.shape[0] + 1)
-            pv[i:i + seg.shape[0]] = seg + (v - seg) * a ** k
+            pv[i : i + seg.shape[0]] = seg + (v - seg) * a**k
             v = pv[i + seg.shape[0] - 1]
         adc = 100 / 65536
         return np.round((pv + rng.normal(0, 0.05, n)) / adc) * adc
@@ -95,9 +96,17 @@ DISCRETE_NAMES = [d[0] for d in DISCRETE]
 ALL_KINDS = FLEET + KINDS + DISCRETE_NAMES
 # A guess at a sensor fleet's tag mix: mostly slow analog and held values, a few fast/noisy channels.
 PRESETS = {
-    "sensor-mix": {"analog": 35, "held": 25, "digital": 10, "vibration": 10, "counter": 5,
-                "sensor-0.1": 5, "noisy-sine": 5, "random-walk": 5},
-    "all": {k: 1 for k in ALL_KINDS},
+    "sensor-mix": {
+        "analog": 35,
+        "held": 25,
+        "digital": 10,
+        "vibration": 10,
+        "counter": 5,
+        "sensor-0.1": 5,
+        "noisy-sine": 5,
+        "random-walk": 5,
+    },
+    "all": dict.fromkeys(ALL_KINDS, 1),
 }
 # A guess at a fleet's clocks: mostly on a perfect grid, many with a few gaps, some noisy.
 TIME_PRESETS = {"none": {}, "clock-mix": {"grid": 60, "grid+gaps": 30, "noisy": 10}} | {c: {c: 1} for c in CLOCKS}
@@ -115,7 +124,7 @@ def _assign(mix, count, rng):
     """Deterministic proportional assignment (largest remainder) of count items to mix's keys, shuffled."""
     w = np.array(list(mix.values()), float)
     counts = np.floor(w / w.sum() * count).astype(int)
-    for i in np.argsort(-(w / w.sum() * count - counts))[:count - counts.sum()]:
+    for i in np.argsort(-(w / w.sum() * count - counts))[: count - counts.sum()]:
         counts[i] += 1
     return rng.permutation(np.repeat(np.arange(len(mix)), counts))
 
@@ -133,6 +142,7 @@ def parse_data(spec):
 
 
 # --- the workload: which pool block group and which NaN spans each (tag, block group) gets ---
+
 
 class Workload:
     def __init__(self, a):
@@ -182,15 +192,24 @@ class Workload:
             if a.sprinkle > 0:
                 xs[rng.random(xs.shape) < a.sprinkle] = np.nan
             self.pool.append(xs)
-        self.time_pool = [np.stack([clock_minute(c, 2_000_000 * ci + j) for j in range(a.pool)]).view("datetime64[ns]")
-                          for ci, c in enumerate(self.clocks)]
+        self.time_pool = [
+            np.stack([clock_minute(c, 2_000_000 * ci + j) for j in range(a.pool)]).view("datetime64[ns]")
+            for ci, c in enumerate(self.clocks)
+        ]
         if self.tag_clock is None:
             self.enc = [[fluxcode.encode_group(x, self.params).group for x in xs] for xs in self.pool]
         else:
-            self.enc = [[[fluxcode.encode_group(x, self.params, times=ts).group for x, ts in zip(xs, tp)]
-                         for tp in self.time_pool] for xs in self.pool]
-        self.nan_enc = {tu: fluxcode.encode_group(self.group(*tu)[0], self.params, times=self.times(*tu)).group
-                        for tu in self.nan_spans}
+            self.enc = [
+                [
+                    [fluxcode.encode_group(x, self.params, times=ts).group for x, ts in zip(xs, tp, strict=True)]
+                    for tp in self.time_pool
+                ]
+                for xs in self.pool
+            ]
+        self.nan_enc = {
+            tu: fluxcode.encode_group(self.group(*tu)[0], self.params, times=self.times(*tu)).group
+            for tu in self.nan_spans
+        }
 
     def slot(self, t, u):
         return self.tag_kind[t], (t * self.groups + u) % self.a.pool
@@ -231,7 +250,9 @@ def check_pool(wl):
         decoded = fluxcode.decode_group(wl.enc[k][j] if c is None else wl.enc[k][c][j])
         y = decoded.values
         if c is not None:
-            assert decoded.times is not None and np.array_equal(decoded.times, wl.time_pool[c][j]), f"{wl.clocks[c]}: times differ"
+            assert decoded.times is not None and np.array_equal(decoded.times, wl.time_pool[c][j]), (
+                f"{wl.clocks[c]}: times differ"
+            )
         nx = ~np.isfinite(x)
         assert np.array_equal(nx, ~np.isfinite(y)), f"{wl.kinds[k]}: non-finite positions differ"
         X, Y, F = x.reshape(BLOCKS, BLOCK), y.reshape(BLOCKS, BLOCK), ~nx.reshape(BLOCKS, BLOCK)
@@ -241,12 +262,13 @@ def check_pool(wl):
                 r = X[b][f].max() - X[b][f].min()
                 err = np.abs(X[b][f] - Y[b][f]).max()
                 if err > 0:
-                    assert err <= r / 2 ** 6, f"{wl.kinds[k]}: error {err} over range {r}"
+                    assert err <= r / 2**6, f"{wl.kinds[k]}: error {err} over range {r}"
                     worst = max(worst, err / r)
     return worst
 
 
 # --- workers ---
+
 
 def _claim(counter):
     with counter.get_lock():
@@ -320,14 +342,14 @@ def run(a, wl):
         counters = [mp.Value("q", 0) for _ in range(4)]  # claimed / done, per phase
         go, switch = threading.Barrier(W + 1), threading.Barrier(W + 1)
         import queue
+
         out = queue.Queue()
         procs = [threading.Thread(target=_work, args=(wl, go, switch, counters, out)) for _ in range(W)]
     else:
         ctx = mp.get_context("spawn")
         counters = [ctx.Value("q", 0) for _ in range(4)]
         go, switch, out, ready = ctx.Barrier(W + 1), ctx.Barrier(W + 1), ctx.Queue(), ctx.Queue()
-        procs = [ctx.Process(target=_process_main, args=(a, ready, go, switch, counters, out))
-                 for _ in range(W)]
+        procs = [ctx.Process(target=_process_main, args=(a, ready, go, switch, counters, out)) for _ in range(W)]
     for p in procs:
         p.start()
     if a.mode == "processes":
@@ -348,6 +370,7 @@ def run(a, wl):
 
 # --- single-thread stage breakdown of one block group (where the time goes) ---
 
+
 def compress_both(compressor, byte_body, bit_body):
     """The two candidate frames of a default-effort block group."""
     compressor.compress(byte_body.data)
@@ -357,7 +380,7 @@ def compress_both(compressor, byte_body, bit_body):
 def breakdown(wl, reps=200):
     p = wl.params
     rows = []
-    for k, xs in zip(wl.kinds, wl.pool):
+    for k, xs in zip(wl.kinds, wl.pool, strict=True):
         x = xs[1]
         sizes = np.full(BLOCKS, BLOCK)
         cz, dz = _compress.get_zstd_codecs()
@@ -381,32 +404,54 @@ def breakdown(wl, reps=200):
                     f(*args)
                 best = min(best, (time.perf_counter() - t0) / reps)
             return 1e6 * best
+
         rawd = np.frombuffer(dz.decompress(frame), np.uint8)
-        rows.append((k, len(group) * 8 / x.size,
-                     t(_group.encode_columns, x, sizes, p),
-                     t(_body.write_body, *group_rows[:7], group_rows.time_columns, offsets),
-                     t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_plane_bytes, False),
-                     t(compress_both, cz, byte_body, bit_body), t(fluxcode.encode_group, x, p),
-                     t(dz.decompress, frame),
-                     t(_decoder.decode_blocks, rawd, offsets.sample_offsets, offsets.plane_byte_offsets,
-                       offsets.code_plane_offsets, block_ids, out, False, False, group_rows.escaped_values,
-                       escape_offsets),
-                     t(fluxcode.decode_group, group)))
+        rows.append(
+            (
+                k,
+                len(group) * 8 / x.size,
+                t(_group.encode_columns, x, sizes, p),
+                t(_body.write_body, *group_rows[:7], group_rows.time_columns, offsets),
+                t(_bitpacking.to_bit_planes, byte_body, BLOCKS, num_plane_bytes, False),
+                t(compress_both, cz, byte_body, bit_body),
+                t(fluxcode.encode_group, x, p),
+                t(dz.decompress, frame),
+                t(
+                    _decoder.decode_blocks,
+                    rawd,
+                    offsets.sample_offsets,
+                    offsets.plane_byte_offsets,
+                    offsets.code_plane_offsets,
+                    block_ids,
+                    out,
+                    False,
+                    False,
+                    group_rows.escaped_values,
+                    escape_offsets,
+                ),
+                t(fluxcode.decode_group, group),
+            )
+        )
     return rows
 
 
 def machine():
     try:
-        cpu = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string", "hw.model"], capture_output=True,
-                             text=True, check=False).stdout.split()
+        cpu = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string", "hw.model"], capture_output=True, text=True, check=False
+        ).stdout.split()
         cpu = " ".join(cpu)
     except OSError:
         cpu = platform.processor()
-    return f"{cpu}, {platform.system()} {platform.release()}, Python {platform.python_version()}, numpy {np.__version__}"
+    return (
+        f"{cpu}, {platform.system()} {platform.release()}, Python {platform.python_version()}, numpy {np.__version__}"
+    )
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--data", default="sensor-mix", help="preset (sensor-mix, all) or kind[:weight],... (see --list)")
     ap.add_argument("--tags", type=int, default=1000)
     ap.add_argument("--groups", type=int, default=DAY_GROUPS, help="1-minute block groups per tag (1440 = a day)")
@@ -416,9 +461,15 @@ def main():
     ap.add_argument("--pool", type=int, default=32, help="distinct block groups per signal kind")
     ap.add_argument("--nan-minutes", type=float, default=3.0, help="NaN minutes per tag per day")
     ap.add_argument("--nan-runs", type=int, default=2, help="runs those minutes are split into")
-    ap.add_argument("--sprinkle", type=float, default=0.0, help="fraction of samples set to isolated NaN, every block group")
-    ap.add_argument("--times", choices=list(TIME_PRESETS), default="none",
-                    help="timestamps: none, a clock kind, or clock-mix (60%% grid, 30%% grid+gaps, 10%% noisy)")
+    ap.add_argument(
+        "--sprinkle", type=float, default=0.0, help="fraction of samples set to isolated NaN, every block group"
+    )
+    ap.add_argument(
+        "--times",
+        choices=list(TIME_PRESETS),
+        default="none",
+        help="timestamps: none, a clock kind, or clock-mix (60%% grid, 30%% grid+gaps, 10%% noisy)",
+    )
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--effort", type=int, default=None, help="Params.effort (default: the library default)")
     ap.add_argument("--breakdown", action="store_true", help="also print a single-thread per-stage breakdown")
@@ -443,21 +494,29 @@ def main():
     n_nan = len(wl.nan_spans)
     nan_samples = sum(e - s for sp in wl.nan_spans.values() for s, e in sp)
     print(f"# fluxcode day-scale stress test\n\n{machine()}\n")
-    print(f"data `{a.data}`: {wl.tags} tags x {wl.groups} block groups x {BLOCKS} x {BLOCK} = {samples / 1e9:.2f}e9 samples "
-          f"({gb:.1f} GB float64); {a.workers} {a.mode}; pool {a.pool} block groups/kind")
-    print(f"NaN: {a.nan_minutes:g} min/tag/day in {a.nan_runs} runs -> {n_nan:,} block groups touched "
-          f"({100 * n_nan / n_groups:.2f}%), {100 * nan_samples / samples:.3f}% of samples"
-          + (f"; sprinkle {a.sprinkle:g} in every block group" if a.sprinkle else ""))
+    print(
+        f"data `{a.data}`: {wl.tags} tags x {wl.groups} block groups x {BLOCKS} x {BLOCK} = {samples / 1e9:.2f}e9 samples "
+        f"({gb:.1f} GB float64); {a.workers} {a.mode}; pool {a.pool} block groups/kind"
+    )
+    print(
+        f"NaN: {a.nan_minutes:g} min/tag/day in {a.nan_runs} runs -> {n_nan:,} block groups touched "
+        f"({100 * n_nan / n_groups:.2f}%), {100 * nan_samples / samples:.3f}% of samples"
+        + (f"; sprinkle {a.sprinkle:g} in every block group" if a.sprinkle else "")
+    )
     print("tags per kind: " + ", ".join(f"{k} {int((wl.tag_kind == i).sum())}" for i, k in enumerate(wl.kinds)))
     if wl.tag_clock is not None:
-        print("timestamps (datetime64[ns], exact), tags per clock: "
-              + ", ".join(f"{c} {int((wl.tag_clock == i).sum())}" for i, c in enumerate(wl.clocks)))
+        print(
+            "timestamps (datetime64[ns], exact), tags per clock: "
+            + ", ".join(f"{c} {int((wl.tag_clock == i).sum())}" for i, c in enumerate(wl.clocks))
+        )
     print(f"(pool generated, roundtrip-checked (worst error {worst:.2e} of block range) and warmed in {gen_s:.0f} s)\n")
 
     if a.breakdown:
         print("## Single thread, one block group, µs (best of 5 x 200)\n")
-        print("| kind | bits/sample | kernels | write_group | to_bit_planes | zstd (both layouts) | encode_group | unzstd "
-              "| decode kernel | decode_group |")
+        print(
+            "| kind | bits/sample | kernels | write_group | to_bit_planes | zstd (both layouts) | encode_group | unzstd "
+            "| decode kernel | decode_group |"
+        )
         print("|---|---|---|---|---|---|---|---|---|---|")
         for r in breakdown(wl):
             print(f"| {r[0]} | {r[1]:.2f} | " + " | ".join(f"{v:.0f}" for v in r[2:]) + " |")
@@ -471,16 +530,21 @@ def main():
     nbytes = sum(r[2] for r in res)
 
     def line(name, wall, cpu):
-        return (f"| {name} | {wall:.1f} s | {gb / wall:.2f} GB/s | {samples / wall / 1e6:.0f} M | "
-                f"{1e6 * wall * a.workers / (n_groups * BLOCKS):.2f} | {100 * cpu / (wall * a.workers):.0f}% |")
+        return (
+            f"| {name} | {wall:.1f} s | {gb / wall:.2f} GB/s | {samples / wall / 1e6:.0f} M | "
+            f"{1e6 * wall * a.workers / (n_groups * BLOCKS):.2f} | {100 * cpu / (wall * a.workers):.0f}% |"
+        )
+
     print("## Result\n")
     print("| phase | wall | float64 GB/s | samples/s | µs/block/worker | in-call % |")
     print("|---|---|---|---|---|---|")
     print(line("encode", te, enc_cpu))
     print(line("decode", td, dec_cpu))
-    print(f"\ncompressed {nbytes / 1e9:.2f} GB ({8 * nbytes / samples:.2f} bits/sample, ratio {gb * 1e9 / nbytes:.1f}); "
-          f"real time is {wl.groups * 60:,} s per day, so encode runs at {wl.groups * 60 / te:.0f}x real time "
-          f"for {wl.tags} tags.\n")
+    print(
+        f"\ncompressed {nbytes / 1e9:.2f} GB ({8 * nbytes / samples:.2f} bits/sample, ratio {gb * 1e9 / nbytes:.1f}); "
+        f"real time is {wl.groups * 60:,} s per day, so encode runs at {wl.groups * 60 / te:.0f}x real time "
+        f"for {wl.tags} tags.\n"
+    )
 
     def timeline(bins, name):
         """throughput per ~10% of the phase, to show thermal throttling on a sustained run."""
@@ -494,6 +558,7 @@ def main():
         v = np.interp(edges, ts, vs)
         rates = np.diff(v) * per_tag / np.diff(edges)
         print(f"{name} GB/s per tenth of the phase: " + " ".join(f"{r:.1f}" for r in rates))
+
     timeline(eb, "encode")
     timeline(db, "decode")
 

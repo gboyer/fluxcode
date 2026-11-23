@@ -72,8 +72,7 @@ def rows(name, x, reps):
     lo, hi = START + np.timedelta64(30_500, "ms"), START + np.timedelta64(32_500, "ms")
     inside = (t >= lo) & (t < hi)
     encode_tb = median_us(lambda: encode_seconds(x, t), reps)
-    straddle = median_us(
-        lambda: update_seconds(tb, x[inside][::-1], t[inside], (lo, hi)), reps)
+    straddle = median_us(lambda: update_seconds(tb, x[inside][::-1], t[inside], (lo, hi)), reps)
     # An hour at 10 Hz in one-second blocks: 3,600 blocks of 10 samples
     th = START + np.arange(36_000) * np.timedelta64(100, "ms")
     xh = np.resize(x, 36_000)
@@ -82,7 +81,8 @@ def rows(name, x, reps):
     inside_h = (th >= lo_h) & (th < hi_h)
     encode_h = median_us(lambda: encode_seconds(xh, th), max(reps // 3, 10))
     straddle_h = median_us(
-        lambda: update_seconds(hour, xh[inside_h][::-1], th[inside_h], (lo_h, hi_h)), max(reps // 3, 10))
+        lambda: update_seconds(hour, xh[inside_h][::-1], th[inside_h], (lo_h, hi_h)), max(reps // 3, 10)
+    )
     # Upserts: existing times replaced, so the block group's shape stays the same
     one_t_h = median_us(lambda: update_seconds(hour, xh[5_000:5_001] + 1, th[5_000:5_001]), max(reps // 3, 10))
     every = np.arange(0, 36_000, 10)  # one sample from each block
@@ -91,14 +91,22 @@ def rows(name, x, reps):
         f"| {name} | `update`, 1 of 60 blocks | {encode:.0f} µs | {relative(one, encode)} |",
         f"| {name} | `update` with times, 1 of 60 | {encode_t:.0f} µs | {relative(one_t, encode_t)} |",
         f"| {name} | `update` with times, append 1 | {encode_t:.0f} µs | {relative(append_t, encode_t)} |",
-        (f"| {name} | `update_time_blocks`, 2 s straddling 3 of 60 blocks | {encode_tb:.0f} µs | "
-         f"{relative(straddle, encode_tb)} |"),
-        (f"| {name} | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | {encode_h:.0f} µs | "
-         f"{relative(straddle_h, encode_h)} |"),
-        (f"| {name} | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | {encode_h:.0f} µs | "
-         f"{relative(one_t_h, encode_h)} |"),
-        (f"| {name} | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | {encode_h:.0f} µs | "
-         f"{relative(every_h, encode_h)} |"),
+        (
+            f"| {name} | `update_time_blocks`, 2 s straddling 3 of 60 blocks | {encode_tb:.0f} µs | "
+            f"{relative(straddle, encode_tb)} |"
+        ),
+        (
+            f"| {name} | `update_time_blocks`, 2 s straddling 3 of 3,600 blocks | {encode_h:.0f} µs | "
+            f"{relative(straddle_h, encode_h)} |"
+        ),
+        (
+            f"| {name} | `update_time_blocks` upsert, 1 sample in 1 of 3,600 blocks | {encode_h:.0f} µs | "
+            f"{relative(one_t_h, encode_h)} |"
+        ),
+        (
+            f"| {name} | `update_time_blocks` upsert, 1 sample in each of 3,600 blocks | {encode_h:.0f} µs | "
+            f"{relative(every_h, encode_h)} |"
+        ),
     ]
 
 
@@ -106,12 +114,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=300)
     args = ap.parse_args()
-    print(f"{platform.machine()} {platform.system()} {platform.release()}, Python {platform.python_version()}, "
-          f"numpy {np.__version__}; median of {args.reps} calls (100 for the block group of 3,600 blocks)\n")
+    print(
+        f"{platform.machine()} {platform.system()} {platform.release()}, Python {platform.python_version()}, "
+        f"numpy {np.__version__}; median of {args.reps} calls (100 for the block group of 3,600 blocks)\n"
+    )
     print("| signal | operation | encode from scratch | update | vs encode |")
     print("|---|---|---|---|---|")
-    for name, x in [("random-walk", minute("random-walk", 1)), ("noisy-sine", minute("noisy-sine", 1)),
-                    ("sensor-0.1", discrete_minute("sensor-0.1", 1))]:
+    for name, x in [
+        ("random-walk", minute("random-walk", 1)),
+        ("noisy-sine", minute("noisy-sine", 1)),
+        ("sensor-0.1", discrete_minute("sensor-0.1", 1)),
+    ]:
         for row in rows(name, x, args.reps):
             print(row)
 

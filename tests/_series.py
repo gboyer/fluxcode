@@ -35,10 +35,20 @@ def planes(layout, flush=True, zstd_levels=(3,)):
         if layout == "byte":
             candidates = [(True, body)]
         else:
-            candidates = [(False, _bitpacking.to_bit_planes(body, num_blocks, int(offsets.plane_byte_offsets[-1]),
-                                                            time_unit != 0))]
-        return _compress.select_smallest_group(candidates, num_blocks, num_samples, offsets, time_unit,
-                                               effort._replace(flush=flush, zstd_levels=zstd_levels))
+            candidates = [
+                (
+                    False,
+                    _bitpacking.to_bit_planes(body, num_blocks, int(offsets.plane_byte_offsets[-1]), time_unit != 0),
+                )
+            ]
+        return _compress.select_smallest_group(
+            candidates,
+            num_blocks,
+            num_samples,
+            offsets,
+            time_unit,
+            effort._replace(flush=flush, zstd_levels=zstd_levels),
+        )
 
     _compress._rust, _compress.pack_body = None, pack
     try:

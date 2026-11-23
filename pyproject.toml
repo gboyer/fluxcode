@@ -78,11 +78,19 @@ markers = [
 ]
 
 [tool.ruff]
+line-length = 120
 extend-exclude = ["experimental"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "PIE", "SIM", "RUF100", "RUF021", "RUF043"]
+ignore = ["E501"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Params is a frozen dataclass, so a Params() default argument is safe to share.
 extend-immutable-calls = ["fluxcode.Params", "fluxcode._api.Params"]
+
+[tool.mypy]
+strict = true
 
 [tool.ty.src]
 exclude = ["experimental"]

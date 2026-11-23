@@ -29,23 +29,23 @@ def offsets(sizes):
 
 
 def test_encode_blocks_round_trip():
-    x = minute("random-walk", 1)[:sum(SIZES)]
+    x = minute("random-walk", 1)[: sum(SIZES)]
     group, lo, hi, mean = fluxcode.encode_blocks(x, SIZES)
     values, times, sizes = fluxcode.decode_group(group)
     assert times is None and sizes.tolist() == SIZES
     off = offsets(SIZES)
     for b, size in enumerate(SIZES):
-        block = x[off[b]:off[b + 1]]
+        block = x[off[b] : off[b + 1]]
         if not size:
             assert np.isnan([lo[b], hi[b], mean[b]]).all()
             continue
         assert (lo[b], hi[b]) == (block.min(), block.max())
         assert mean[b] == pytest.approx(block.mean())
-        assert np.abs(values[off[b]:off[b + 1]] - block).max() <= (block.max() - block.min()) / (2 ** 6 - 0.5)
+        assert np.abs(values[off[b] : off[b + 1]] - block).max() <= (block.max() - block.min()) / (2**6 - 0.5)
     # Each block is encoded on its own: the same block encodes the same in any company
     rows = group_rows(group)
-    alone = group_rows(fluxcode.encode_blocks(x[off[9]:off[10]], [4096]).group)
-    np.testing.assert_array_equal(rows.residuals[off[9]:off[10]], alone.residuals)
+    alone = group_rows(fluxcode.encode_blocks(x[off[9] : off[10]], [4096]).group)
+    np.testing.assert_array_equal(rows.residuals[off[9] : off[10]], alone.residuals)
     assert rows.grid_exponents[9] == alone.grid_exponents[0]
 
 
@@ -96,9 +96,9 @@ def test_short_blocks_skip_the_analysis(size, decimal):
         rng_x = finite.max() - finite.min() if finite.size else 0.0
         fine = _grids.snapped_exponent_for_range(finite.min(), finite.max(), 16) if finite.size else 0
         assert rows.grid_exponents[0] == fine
-        assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2 ** 16 - 0.5)
+        assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2**16 - 0.5)
         anchor = rows.block_anchors.view(np.float64)[0]
-        q = (np.rint(finite / 2.0 ** fine) - np.rint(anchor / 2.0 ** fine)).astype(np.int64)
+        q = (np.rint(finite / 2.0**fine) - np.rint(anchor / 2.0**fine)).astype(np.int64)
     # Order 0: the residuals are the quantized values themselves (signed 16-bit)
     np.testing.assert_array_equal(rows.residuals[np.isfinite(x)].astype(np.int64), q)
 
@@ -127,14 +127,17 @@ def test_target_weights_blocks_by_size():
     np.testing.assert_array_equal(group_rows(mixed.group).residuals[:60_000], group_rows(base).residuals)
 
 
-@pytest.mark.parametrize("x,sizes,msg", [
-    (np.zeros(10), [5, 4], "add up to 9"),
-    (np.zeros(10), [5, 5.0], "integer"),
-    (np.zeros(10), [[5, 5]], "1-D"),
-    (np.zeros(10), [15, -5], "from 0 to 65535"),
-    (np.zeros(70_000), [70_000], "from 0 to 65535"),
-    (np.zeros(0), [0] * 65_536, "65535 blocks"),
-])
+@pytest.mark.parametrize(
+    "x,sizes,msg",
+    [
+        (np.zeros(10), [5, 4], "add up to 9"),
+        (np.zeros(10), [5, 5.0], "integer"),
+        (np.zeros(10), [[5, 5]], "1-D"),
+        (np.zeros(10), [15, -5], "from 0 to 65535"),
+        (np.zeros(70_000), [70_000], "from 0 to 65535"),
+        (np.zeros(0), [0] * 65_536, "65535 blocks"),
+    ],
+)
 def test_bad_block_sizes(x, sizes, msg):
     with pytest.raises(ValueError, match=msg):
         fluxcode.encode_blocks(x, sizes)
@@ -162,8 +165,11 @@ def test_single_sample_blocks_must_be_canonical():
 
     ok = corrupt_group([False, False], [5, 9], [0, 0], [0, 0], np.zeros(2), sizes=[1, 1])
     assert times_of(ok).tolist() == [5, 9]
-    for irregular, steps, refs in [([False, True], [0, 0], [0, 0]), ([False, False], [0, 3], [0, 0]),
-                                   ([False, False], [0, 0], [0, 1])]:
+    for irregular, steps, refs in [
+        ([False, True], [0, 0], [0, 0]),
+        ([False, False], [0, 3], [0, 0]),
+        ([False, False], [0, 0], [0, 1]),
+    ]:
         corrupt = corrupt_group(irregular, [5, 9], steps, refs, np.zeros(2), sizes=[1, 1])
         with pytest.raises(ValueError, match="block 1: a single sample"):
             fluxcode.decode_group(corrupt)
@@ -179,28 +185,37 @@ def test_noise_floor_needs_128_samples():
     noise = rng.normal(size=2 * 127 + 256)
     group = fluxcode.encode_blocks(noise, [127, 127, 256], Params(grids="binary"))
     rows = group_rows(group.group)
-    fine = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
+    fine = [
+        _grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max, strict=True)
+    ]
     assert (rows.grid_exponents[:2] == fine[:2]).all() and rows.grid_exponents[2] > fine[2]
     assert fluxcode._encoder.NOISE_MIN_LEN == 128
     # And 128-sample white-noise blocks gate on almost every block
     blocks = rng.normal(size=20 * 128)
     group128 = fluxcode.encode_blocks(blocks, [128] * 20, Params(grids="binary"))
     rows128 = group_rows(group128.group)
-    fine128 = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group128.block_min, group128.block_max)]
+    fine128 = [
+        _grids.snapped_exponent_for_range(lo, hi, 16)
+        for lo, hi in zip(group128.block_min, group128.block_max, strict=True)
+    ]
     assert sum(rows128.grid_exponents[i] > fine128[i] for i in range(20)) >= 16
 
 
 def test_empty_block_time_columns_must_be_zero():
     """Writers store 0 in an empty block's time_start, time_step and time_ref; decoders check."""
-    group = fluxcode.encode_blocks(np.zeros(16), [8, 0, 8], times=np.r_[np.arange(8), 100 + np.arange(8)],
-                                  time_unit="ns").group
+    group = fluxcode.encode_blocks(
+        np.zeros(16), [8, 0, 8], times=np.r_[np.arange(8), 100 + np.arange(8)], time_unit="ns"
+    ).group
     body = _group.decompress(group).body
     num_blocks = 3
-    for field_start in (_format.time_starts_start(num_blocks), _format.time_steps_start(num_blocks),
-                        _format.time_ref_quotients_start(num_blocks)):
+    for field_start in (
+        _format.time_starts_start(num_blocks),
+        _format.time_steps_start(num_blocks),
+        _format.time_ref_quotients_start(num_blocks),
+    ):
         bad = body.copy()
         bad[field_start + 1] = 1  # byte 0 of block 1's value
-        bad_group = group[:_format.HEADER_BYTES] + _compress.get_zstd_codecs()[0].compress(bad.tobytes())
+        bad_group = group[: _format.HEADER_BYTES] + _compress.get_zstd_codecs()[0].compress(bad.tobytes())
         with pytest.raises(ValueError, match="block 1: empty block with nonzero time columns"):
             fluxcode.decode_group(bad_group)
 
@@ -218,8 +233,9 @@ def encode_hour(x, t, params=Params()):
 
 def update_hour(group, x, t, ranges, time_unit=None):
     """update_time_blocks of a block group made by encode_hour."""
-    return fluxcode.update_time_blocks(group, x, t, start_time=START, block_duration=MINUTE, delete_ranges=ranges,
-                                       time_unit=time_unit)
+    return fluxcode.update_time_blocks(
+        group, x, t, start_time=START, block_duration=MINUTE, delete_ranges=ranges, time_unit=time_unit
+    )
 
 
 def hour_of_data(seed=0, gaps=((5, 20),)):
@@ -244,14 +260,17 @@ def test_encode_time_blocks_divides_by_time():
     assert sizes[-1] > 0 and len(sizes) == int((t[-1] - START) // MINUTE) + 1
 
 
-@pytest.mark.parametrize("start,duration,kwargs", [
-    (START, MINUTE, {}),
-    (datetime.datetime(2026, 3, 1, 12), datetime.timedelta(minutes=1), {}),  # noqa: DTZ001
-    (START.astype("datetime64[s]"), np.timedelta64(60_000_000, "us"), {}),
-    (START.astype("datetime64[m]"), np.timedelta64(1, "m"), {}),
-    (int(START.astype(np.int64)), 60_000, {"time_unit": "ms", "int_times": True}),
-    (START, MINUTE, {"time_unit": "ms", "int_times": True}),
-])
+@pytest.mark.parametrize(
+    "start,duration,kwargs",
+    [
+        (START, MINUTE, {}),
+        (datetime.datetime(2026, 3, 1, 12), datetime.timedelta(minutes=1), {}),
+        (START.astype("datetime64[s]"), np.timedelta64(60_000_000, "us"), {}),
+        (START.astype("datetime64[m]"), np.timedelta64(1, "m"), {}),
+        (int(START.astype(np.int64)), 60_000, {"time_unit": "ms", "int_times": True}),
+        (START, MINUTE, {"time_unit": "ms", "int_times": True}),
+    ],
+)
 def test_time_arguments_convert_exactly(start, duration, kwargs):
     x, t = hour_of_data()
     ref = encode_hour(x, t).group
@@ -259,20 +278,23 @@ def test_time_arguments_convert_exactly(start, duration, kwargs):
     assert fluxcode.encode_time_blocks(x, times, start_time=start, block_duration=duration, **kwargs).group == ref
 
 
-@pytest.mark.parametrize("start,duration,msg", [
-    (START + 10 * MINUTE, MINUTE, "at or after start_time"),
-    (START.astype("datetime64[us]") + np.timedelta64(1, "us"), MINUTE, "whole number of ms"),
-    (START, np.timedelta64(1500, "us"), "whole number of ms"),
-    (START, np.timedelta64(0, "ms"), "positive"),
-    (START, -MINUTE, "positive"),
-    (START, np.timedelta64(1, "ms"), "past the last block"),
-    (np.datetime64("NaT", "ms"), MINUTE, "NaT"),
-    (np.datetime64("2026-03", "M"), MINUTE, "fixed length"),
-    (datetime.datetime(2026, 3, 1, 12, tzinfo=datetime.timezone.utc), MINUTE, "time zone"),
-    (START, 1.5, "timedelta"),
-    ("2026-03-01", MINUTE, "datetime"),
-    (MINUTE, MINUTE, "datetime"),
-])
+@pytest.mark.parametrize(
+    "start,duration,msg",
+    [
+        (START + 10 * MINUTE, MINUTE, "at or after start_time"),
+        (START.astype("datetime64[us]") + np.timedelta64(1, "us"), MINUTE, "whole number of ms"),
+        (START, np.timedelta64(1500, "us"), "whole number of ms"),
+        (START, np.timedelta64(0, "ms"), "positive"),
+        (START, -MINUTE, "positive"),
+        (START, np.timedelta64(1, "ms"), "past the last block"),
+        (np.datetime64("NaT", "ms"), MINUTE, "NaT"),
+        (np.datetime64("2026-03", "M"), MINUTE, "fixed length"),
+        (datetime.datetime(2026, 3, 1, 12, tzinfo=datetime.timezone.utc), MINUTE, "time zone"),
+        (START, 1.5, "timedelta"),
+        ("2026-03-01", MINUTE, "datetime"),
+        (MINUTE, MINUTE, "datetime"),
+    ],
+)
 def test_bad_time_arguments(start, duration, msg):
     x, t = hour_of_data()
     with pytest.raises(ValueError, match=msg):
@@ -314,14 +336,17 @@ def new_data(ranges, step_ms=700, seed=1):
     return np.round(50 * np.cos(np.arange(t.size) / 30 + seed), 2), t
 
 
-@pytest.mark.parametrize("ranges", [
-    [minutes(5, 20)],  # fills the gap exactly: whole empty blocks
-    [minutes(30, 31)],  # one whole block
-    [(START + np.timedelta64(30 * 60_000 + 15_000, "ms"), START + np.timedelta64(31 * 60_000 + 45_000, "ms"))],
-    [minutes(2, 3), minutes(40, 45), (START + np.timedelta64(50 * 60_000 + 1, "ms"), START + 51 * MINUTE)],
-    [minutes(58, 63)],  # past the end: appends
-    [minutes(70, 71)],  # appends past a gap of empty blocks
-])
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        [minutes(5, 20)],  # fills the gap exactly: whole empty blocks
+        [minutes(30, 31)],  # one whole block
+        [(START + np.timedelta64(30 * 60_000 + 15_000, "ms"), START + np.timedelta64(31 * 60_000 + 45_000, "ms"))],
+        [minutes(2, 3), minutes(40, 45), (START + np.timedelta64(50 * 60_000 + 1, "ms"), START + 51 * MINUTE)],
+        [minutes(58, 63)],  # past the end: appends
+        [minutes(70, 71)],  # appends past a gap of empty blocks
+    ],
+)
 def test_update_time_blocks_matches_from_scratch(ranges):
     x, t = hour_of_data()
     group = encode_hour(x, t).group
@@ -353,8 +378,9 @@ def test_update_time_blocks_carries_other_blocks_untouched(monkeypatch):
     ranges = [(START + np.timedelta64(30 * 60_000 + 15_000, "ms"), START + 33 * MINUTE)]  # straddles block 30
     decoded = []
     original = _group.decode_blocks
-    monkeypatch.setattr(_group, "decode_blocks",
-                        lambda parsed, ids, *rest: decoded.append(ids.tolist()) or original(parsed, ids, *rest))
+    monkeypatch.setattr(
+        _group, "decode_blocks", lambda parsed, ids, *rest: decoded.append(ids.tolist()) or original(parsed, ids, *rest)
+    )
     x_new, t_new = new_data(ranges)
     group2, indices, _, _, _ = update_hour(group, x_new, t_new, ranges)
     assert decoded == [[30]] and indices.tolist() == [30, 31, 32]
@@ -363,8 +389,9 @@ def test_update_time_blocks_carries_other_blocks_untouched(monkeypatch):
     for b in set(range(len(before.block_sizes))) - {30, 31, 32}:
         assert before.block_flags[b] == after.block_flags[b]
         assert before.grid_exponents[b] == after.grid_exponents[b] and before.block_anchors[b] == after.block_anchors[b]
-        np.testing.assert_array_equal(before.residuals[off_before[b]:off_before[b + 1]],
-                                      after.residuals[off_after[b]:off_after[b + 1]])
+        np.testing.assert_array_equal(
+            before.residuals[off_before[b] : off_before[b + 1]], after.residuals[off_after[b] : off_after[b + 1]]
+        )
         assert before.time_columns.starts[b] == after.time_columns.starts[b]
     # The straddling block keeps its samples before the range, re-encoded on its own grid
     old_times, new_times = fluxcode.decode_group(group).times, fluxcode.decode_group(group2).times
@@ -388,15 +415,18 @@ def test_update_time_blocks_discards_only():
     assert nothing.group == group2
 
 
-@pytest.mark.parametrize("ranges", [
-    minutes(30, 31),
-    [minutes(30, 31)],
-    (minutes(30, 31),),
-    np.array([minutes(30, 31)]),
-    np.array([minutes(30, 31)]).astype(np.int64),
-    [(datetime.datetime(2026, 3, 1, 12, 30), datetime.datetime(2026, 3, 1, 12, 31))],  # noqa: DTZ001
-    [(datetime.datetime(2026, 3, 1, 12, 30), START + 31 * MINUTE)],  # noqa: DTZ001
-])
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        minutes(30, 31),
+        [minutes(30, 31)],
+        (minutes(30, 31),),
+        np.array([minutes(30, 31)]),
+        np.array([minutes(30, 31)]).astype(np.int64),
+        [(datetime.datetime(2026, 3, 1, 12, 30), datetime.datetime(2026, 3, 1, 12, 31))],
+        [(datetime.datetime(2026, 3, 1, 12, 30), START + 31 * MINUTE)],
+    ],
+)
 def test_delete_range_forms(ranges):
     x, t = hour_of_data()
     group = encode_hour(x, t).group
@@ -412,8 +442,12 @@ def test_delete_ranges_from_any_iterable():
     ref = update_hour(group, x_new, t_new, [minutes(30, 31)]).group
     assert update_hour(group, x_new, t_new, (pair for pair in [minutes(30, 31)])).group == ref
     # Overlapping, touching, empty and unsorted ranges merge into the same union
-    pieces = [minutes(31, 31), (START + 30 * MINUTE + np.timedelta64(20, "s"), START + 31 * MINUTE),
-              minutes(30, 30) , (START + 30 * MINUTE, START + 30 * MINUTE + np.timedelta64(20, "s"))]
+    pieces = [
+        minutes(31, 31),
+        (START + 30 * MINUTE + np.timedelta64(20, "s"), START + 31 * MINUTE),
+        minutes(30, 30),
+        (START + 30 * MINUTE, START + 30 * MINUTE + np.timedelta64(20, "s")),
+    ]
     assert update_hour(group, x_new, t_new, pieces).group == ref
     with pytest.raises(ValueError, match="pairs"):
         update_hour(group, x_new, t_new, 5)
@@ -512,8 +546,9 @@ def test_update_time_blocks_upsert_decodes_only_blocks_it_lands_in(monkeypatch):
     group = encode_hour(x, t).group
     decoded = []
     original = _group.decode_blocks
-    monkeypatch.setattr(_group, "decode_blocks",
-                        lambda parsed, ids, *rest: decoded.append(ids.tolist()) or original(parsed, ids, *rest))
+    monkeypatch.setattr(
+        _group, "decode_blocks", lambda parsed, ids, *rest: decoded.append(ids.tolist()) or original(parsed, ids, *rest)
+    )
     result = update_hour(group, np.array([1.0, 2.0]), np.array([t[900], t[2000]]), None)
     assert decoded == [sorted({int((t[900] - START) // MINUTE), int((t[2000] - START) // MINUTE)})]
     assert result.indices.tolist() == decoded[0]
@@ -530,8 +565,15 @@ def test_update_time_blocks_ranges_past_int64_blocks():
     """With a duration of one tick, a range near int64 maximum is ~2^64 blocks past the start:
     far past the block group's blocks, so discarding it changes nothing."""
     int64 = np.iinfo(np.int64)
-    group = fluxcode.encode_time_blocks(np.arange(3.0), np.arange(3) + int64.min + 1, start_time=int64.min + 1,
-                                       block_duration=1, time_unit="ns").group
-    result = fluxcode.update_time_blocks(group, [], np.zeros(0, np.int64), start_time=int64.min + 1, block_duration=1,
-                                         delete_ranges=[(int64.max - 10, int64.max)])
+    group = fluxcode.encode_time_blocks(
+        np.arange(3.0), np.arange(3) + int64.min + 1, start_time=int64.min + 1, block_duration=1, time_unit="ns"
+    ).group
+    result = fluxcode.update_time_blocks(
+        group,
+        [],
+        np.zeros(0, np.int64),
+        start_time=int64.min + 1,
+        block_duration=1,
+        delete_ranges=[(int64.max - 10, int64.max)],
+    )
     assert result.group == group and result.indices.shape == (0,)

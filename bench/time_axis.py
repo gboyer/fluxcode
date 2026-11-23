@@ -39,9 +39,18 @@ def patterns(rng):
         ("1 kHz, 20 gaps", START_NS + np.cumsum(gaps) * MS),
         ("1 kHz, 1% dropped", START_NS + np.sort(rng.choice(MINUTE * 101 // 100, MINUTE, replace=False)) * MS),
         ("drifting clock (0.99998 ms)", START_NS + np.round(index * 0.99998731 * MS).astype(np.int64)),
-        ("jitter σ=10 µs, ns resolution", START_NS + np.round((index + rng.normal(0, 0.01, MINUTE)) * MS).astype(np.int64)),
-        ("jitter σ=10 µs, µs resolution", START_NS + (index * 1000 + np.round(rng.normal(0, 10, MINUTE))).astype(np.int64) * 1000),
-        ("Poisson events, mean 1 ms, µs", START_NS + np.cumsum(np.round(rng.exponential(1000, MINUTE))).astype(np.int64) * 1000),
+        (
+            "jitter σ=10 µs, ns resolution",
+            START_NS + np.round((index + rng.normal(0, 0.01, MINUTE)) * MS).astype(np.int64),
+        ),
+        (
+            "jitter σ=10 µs, µs resolution",
+            START_NS + (index * 1000 + np.round(rng.normal(0, 10, MINUTE))).astype(np.int64) * 1000,
+        ),
+        (
+            "Poisson events, mean 1 ms, µs",
+            START_NS + np.cumsum(np.round(rng.exponential(1000, MINUTE))).astype(np.int64) * 1000,
+        ),
         ("Poisson events, mean 1 ms, ns", START_NS + np.cumsum(np.round(rng.exponential(MS, MINUTE))).astype(np.int64)),
         ("deadband logging, ms grid", START_NS + np.cumsum(deadband) * MS),
         ("bursts 10 kHz / idle", START_NS + np.cumsum(np.where(index % 1000 < 900, 100_000, 5 * MS))),
@@ -69,7 +78,9 @@ def main():
     plain_group = fluxcode.encode_group(values).group
     plain_encode = best(lambda: fluxcode.encode_group(values), args.reps)
     plain_decode = best(lambda: fluxcode.decode_group(plain_group), args.reps)
-    print(f"values only: {len(plain_group)} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per block group\n")
+    print(
+        f"values only: {len(plain_group)} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per block group\n"
+    )
     print("| timestamps | irregular blocks | time bytes | time bits/sample | encode +µs | decode +µs |")
     print("|---|---|---|---|---|---|")
     for name, ticks in patterns(np.random.default_rng(0)):
@@ -84,8 +95,10 @@ def main():
         extra_bytes = len(group) - len(plain_group)
         encode_time = best(lambda times=times: fluxcode.encode_group(values, times=times), args.reps) - plain_encode
         decode_time = best(lambda group=group: fluxcode.decode_group(group), args.reps) - plain_decode
-        print(f"| {name} | {num_irregular}/60 | {extra_bytes} | {8 * extra_bytes / MINUTE:.3f} | "
-              f"{encode_time:.0f} | {decode_time:.0f} |")
+        print(
+            f"| {name} | {num_irregular}/60 | {extra_bytes} | {8 * extra_bytes / MINUTE:.3f} | "
+            f"{encode_time:.0f} | {decode_time:.0f} |"
+        )
 
 
 def compare_time_errors(time_errors, reps):
@@ -97,24 +110,41 @@ def compare_time_errors(time_errors, reps):
     plain_decode = best(lambda: fluxcode.decode_group(plain_group), reps)
     plain_bytes = len(plain_group)
     errors = [0.0, *time_errors]
-    print(f"values only: {plain_bytes} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per block group; "
-          "cells: bytes the times add, encode/decode time they add (share of values-only), irregular blocks, "
-          "largest move in median intervals\n")
+    print(
+        f"values only: {plain_bytes} bytes, encode {plain_encode:.0f} µs, decode {plain_decode:.0f} µs per block group; "
+        "cells: bytes the times add, encode/decode time they add (share of values-only), irregular blocks, "
+        "largest move in median intervals\n"
+    )
     print("| timestamps | " + " | ".join(f"e = {e:g}" for e in errors) + " |")
     print("|---|" + "---|" * len(errors))
     rng = np.random.default_rng(1)
     index = np.arange(MINUTE)
     jitter = np.round(rng.normal(0, 10_000, MINUTE)).astype(np.int64)
-    free_running = [  # off the epoch's grid: the clock's own phase
-        (f"jitter σ=10 µs, ns, phase {phase // 1000} µs", np.maximum.accumulate(START_NS + phase + index * MS + jitter))
-        for phase in (25_000, 50_000, 123_000)
-    ] + [("drift + jitter σ=10 µs, phase 37 µs",
-          np.maximum.accumulate(START_NS + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter))] + [
-        # periods no 1-2-5 step divides: each block fits a lattice of its own
-        (f"{hz} Hz, jitter 0.5%", np.maximum.accumulate(
-            START_NS + np.round(index * 1e9 / hz + rng.normal(0, 0.005e9 / hz, MINUTE)).astype(np.int64)))
-        for hz in (1024, 60)
-    ]
+    free_running = (
+        [  # off the epoch's grid: the clock's own phase
+            (
+                f"jitter σ=10 µs, ns, phase {phase // 1000} µs",
+                np.maximum.accumulate(START_NS + phase + index * MS + jitter),
+            )
+            for phase in (25_000, 50_000, 123_000)
+        ]
+        + [
+            (
+                "drift + jitter σ=10 µs, phase 37 µs",
+                np.maximum.accumulate(START_NS + 37_000 + np.round(index * 0.99998731 * MS).astype(np.int64) + jitter),
+            )
+        ]
+        + [
+            # periods no 1-2-5 step divides: each block fits a lattice of its own
+            (
+                f"{hz} Hz, jitter 0.5%",
+                np.maximum.accumulate(
+                    START_NS + np.round(index * 1e9 / hz + rng.normal(0, 0.005e9 / hz, MINUTE)).astype(np.int64)
+                ),
+            )
+            for hz in (1024, 60)
+        ]
+    )
     for name, ticks in patterns(np.random.default_rng(0)) + free_running:
         times = ticks.view("datetime64[ns]")
         median = float(np.median(np.diff(ticks)))
@@ -124,12 +154,17 @@ def compare_time_errors(time_errors, reps):
             group = fluxcode.encode_group(values, params, times=times).group
             decoded = fluxcode.decode_group(group)
             moved = np.abs(decoded.times.view(np.int64) - ticks).max() / median
-            encode_time = best(lambda params=params, times=times: fluxcode.encode_group(values, params, times=times), reps) - plain_encode
+            encode_time = (
+                best(lambda params=params, times=times: fluxcode.encode_group(values, params, times=times), reps)
+                - plain_encode
+            )
             decode_time = best(lambda group=group: fluxcode.decode_group(group), reps) - plain_decode
             parsed = _group.decompress(group)
             irregular = int(np.count_nonzero(parsed.block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME))
-            cell = (f"{len(group) - plain_bytes} B, +{encode_time:.0f}/+{decode_time:.0f} µs "
-                    f"(+{100 * encode_time / plain_encode:.0f}%/+{100 * decode_time / plain_decode:.0f}%), {irregular}/60")
+            cell = (
+                f"{len(group) - plain_bytes} B, +{encode_time:.0f}/+{decode_time:.0f} µs "
+                f"(+{100 * encode_time / plain_encode:.0f}%/+{100 * decode_time / plain_decode:.0f}%), {irregular}/60"
+            )
             cells.append(cell if time_error == 0 else f"{cell}, max {moved:.3f}")
         print(f"| {name} | " + " | ".join(cells) + " |")
 

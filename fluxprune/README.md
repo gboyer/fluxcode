@@ -7,15 +7,15 @@ keeps a subset of the points, far fewer and much lossier.
 ```python
 import fluxprune
 
-p = fluxprune.prune(t, x, error_per_point=0.002 / 360)     # 0.2% of the range at 360 points
-p = fluxprune.prune(t, x)                                   # default: 0.1% at a tenth of the points
-p.times, p.values                                           # the kept points
-p.rmse, p.max_error                                         # the errors they leave, in value units
-p.noise                                                     # the white-noise σ the rmse pass reads above
-p = fluxprune.prune(t, x, max_points=360, max_error=0.5)    # with guards
-p.rmse_met, p.max_error_met, p.max_points_met               # which asks were met
+p = fluxprune.prune(t, x, error_per_point=0.002 / 360)  # 0.2% of the range at 360 points
+p = fluxprune.prune(t, x)  # default: 0.1% at a tenth of the points
+p.times, p.values  # the kept points
+p.rmse, p.max_error  # the errors they leave, in value units
+p.noise  # the white-noise σ the rmse pass reads above
+p = fluxprune.prune(t, x, max_points=360, max_error=0.5)  # with guards
+p.rmse_met, p.max_error_met, p.max_points_met  # which asks were met
 p = fluxprune.prune(t, x, error_per_point=0.002 / 360, max_points=720)  # ... and at most 720
-p = fluxprune.prune(t, x, error_per_point=0, max_points=36) # the best 36 points
+p = fluxprune.prune(t, x, error_per_point=0, max_points=36)  # the best 36 points
 p = fluxprune.prune(t, x, error_per_point=np.inf, max_error=0.5)  # the max_error pass alone
 p = fluxprune.prune(t, x, include_regular_intervals=np.timedelta64(1, "h"))  # each hour's first, min, max
 ```

@@ -11,15 +11,33 @@ from tests._series import decode_series, encode_series, encode_unchecked, group_
 from tests._signals import KINDS, minute
 
 
-@pytest.mark.parametrize("kw", [{"min_quantize_bits": 0}, {"max_quantize_bits": 17},
-                                {"min_quantize_bits": 10, "max_quantize_bits": 9}, {"min_quantize_bits": 6.0},
-                                {"diff_orders": frozenset()}, {"diff_orders": {4}}, {"diff_orders": "0"},
-                                {"noise_floor_sigma": -1}, {"noise_floor_sigma": float("nan")}, {"noise_floor_sigma": None},
-                                {"target_bits_per_sample": 0}, {"target_bits_per_sample": 5.99},
-                                {"target_bits_per_sample": True}, {"effort": 0}, {"effort": 10}, {"effort": True},
-                                {"effort": 5.0}, {"effort": None}, {"absolute_tolerance": -0.1},
-                                {"absolute_tolerance": float("nan")}, {"absolute_tolerance": float("inf")},
-                                {"absolute_tolerance": True}])
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"min_quantize_bits": 0},
+        {"max_quantize_bits": 17},
+        {"min_quantize_bits": 10, "max_quantize_bits": 9},
+        {"min_quantize_bits": 6.0},
+        {"diff_orders": frozenset()},
+        {"diff_orders": {4}},
+        {"diff_orders": "0"},
+        {"noise_floor_sigma": -1},
+        {"noise_floor_sigma": float("nan")},
+        {"noise_floor_sigma": None},
+        {"target_bits_per_sample": 0},
+        {"target_bits_per_sample": 5.99},
+        {"target_bits_per_sample": True},
+        {"effort": 0},
+        {"effort": 10},
+        {"effort": True},
+        {"effort": 5.0},
+        {"effort": None},
+        {"absolute_tolerance": -0.1},
+        {"absolute_tolerance": float("nan")},
+        {"absolute_tolerance": float("inf")},
+        {"absolute_tolerance": True},
+    ],
+)
 def test_invalid(kw):
     with pytest.raises(ValueError):
         Params(**kw)
@@ -54,8 +72,9 @@ def exponents(x, params):
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("target", [None, 6.0, 8.0])
 def test_min_max_bits_never_violated(kind, target):
-    p = Params(min_quantize_bits=8, max_quantize_bits=12, noise_floor_sigma=4.0, target_bits_per_sample=target,
-               grids="binary")
+    p = Params(
+        min_quantize_bits=8, max_quantize_bits=12, noise_floor_sigma=4.0, target_bits_per_sample=target, grids="binary"
+    )
     x = minute(kind, 3)
     _, e, rng = exponents(x, p)
     exact = (decode_series(encode_series(x, p)[0]) == x).reshape(len(e), -1).all(1)

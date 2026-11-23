@@ -149,9 +149,7 @@ def get_zstd_codecs(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard
         _local.decompressor = zstandard.ZstdDecompressor()
         _local.compressors = {}
     if level not in _local.compressors:
-        _local.compressors[level] = zstandard.ZstdCompressor(
-            level=level, write_checksum=False, write_content_size=True
-        )
+        _local.compressors[level] = zstandard.ZstdCompressor(level=level, write_checksum=False, write_content_size=True)
     return _local.compressors[level], _local.decompressor
 
 

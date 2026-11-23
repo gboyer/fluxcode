@@ -32,6 +32,7 @@ def default_error_per_point(n: int) -> float:
     """error_per_point when none is given, for n input points: ERROR_AT_A_TENTH at a tenth of them."""
     return ERROR_AT_A_TENTH / (max(int(n), 1) / 10)
 
+
 NOISE_MIN_POINTS = 64
 """max_error's warning that it is below the noise needs this many points for the noise estimate."""
 
@@ -129,7 +130,7 @@ class Ranking:
             return float(np.sqrt(max(float(self._sq_error[self.n - self._clip(k)]), 0.0)))
         e = np.sqrt(np.maximum(self._sq_error, 0.0))
         out = np.full(self.n + 1, np.nan)
-        out[self.min_points:] = e[::-1]
+        out[self.min_points :] = e[::-1]
         return out
 
     def top(self, k: int) -> np.ndarray:
@@ -152,7 +153,7 @@ class Ranking:
             error_per_point = default_error_per_point(self._size)
         if not error_per_point >= 0:
             raise ValueError("error_per_point must be non-negative (0 to inf)")
-        e = self.relative_rmse()[self.min_points:]
+        e = self.relative_rmse()[self.min_points :]
         if noise_floor and self._noise > 0:
             e = np.sqrt(np.maximum(e * e - self._noise * self._noise, 0.0))
         ok = np.flatnonzero(e < error_per_point * np.arange(1, len(e) + 1))
@@ -339,9 +340,7 @@ def _interval_points(t: np.ndarray, x: np.ndarray, live: np.ndarray, interval: I
     return np.concatenate(out)
 
 
-def rank(
-    times: npt.ArrayLike, values: npt.ArrayLike, include_regular_intervals: IntervalLike | None = None
-) -> Ranking:
+def rank(times: npt.ArrayLike, values: npt.ArrayLike, include_regular_intervals: IntervalLike | None = None) -> Ranking:
     """Rank the points (times[i], values[i]) of a series read as straight lines between them.
 
     times: non-decreasing, datetime64 or numbers (repeated times are allowed: a vertical step).
@@ -399,13 +398,36 @@ def rank(
     if m < 3 or duration <= 0 or hi <= lo:
         # nothing to weigh by (all at one time) or nothing to lose (constant): any removal is free
         rest = np.flatnonzero(~req)
-        return Ranking(m, gaps, intervals, np.flatnonzero(req), rest, np.zeros(len(rest) + 1), np.empty(0),
-                       np.zeros(m), live, 0.0, _size=n)
+        return Ranking(
+            m,
+            gaps,
+            intervals,
+            np.flatnonzero(req),
+            rest,
+            np.zeros(len(rest) + 1),
+            np.empty(0),
+            np.zeros(m),
+            live,
+            0.0,
+            _size=n,
+        )
     y = (x[live] - lo) / (hi - lo)
     t = (tau[live] - tau[live[0]]) / duration
     order, delta = rank_kernel(t, y if every else np.where(np.isfinite(y), y, 0.0), ~req)
-    return Ranking(m, gaps, intervals, np.flatnonzero(req), order, np.concatenate(([0.0], np.cumsum(delta))), t, y, live,
-                   float(hi - lo), noise(tau, (x - lo) / (hi - lo)), n)
+    return Ranking(
+        m,
+        gaps,
+        intervals,
+        np.flatnonzero(req),
+        order,
+        np.concatenate(([0.0], np.cumsum(delta))),
+        t,
+        y,
+        live,
+        float(hi - lo),
+        noise(tau, (x - lo) / (hi - lo)),
+        n,
+    )
 
 
 def prune(
@@ -470,8 +492,10 @@ def prune(
     point.
     """
     if refit and include_regular_intervals is not None:
-        raise ValueError("refit can't be combined with include_regular_intervals: refit values could stray "
-                         "past an interval's minimum or maximum, which then wouldn't read back exactly")
+        raise ValueError(
+            "refit can't be combined with include_regular_intervals: refit values could stray "
+            "past an interval's minimum or maximum, which then wouldn't read back exactly"
+        )
     t = np.asarray(times)
     x = np.asarray(values, dtype=np.float64)
     r = rank(t, x, include_regular_intervals)
@@ -498,11 +522,17 @@ def prune(
     if not max_points_met:
         why = [f"{r.gaps} for gaps (non-finite values)"] if r.gaps else []
         why += [f"{r.intervals} for include_regular_intervals"] if r.intervals else []
-        warnings.warn(f"prune: {len(idx)} points kept, over max_points={max_points}: the required points alone "
-                      f"are {r.min_points} ({', '.join(why)})", stacklevel=2)
+        warnings.warn(
+            f"prune: {len(idx)} points kept, over max_points={max_points}: the required points alone "
+            f"are {r.min_points} ({', '.join(why)})",
+            stacklevel=2,
+        )
     if max_error is not None and r._span > 0 and r.n >= NOISE_MIN_POINTS:
         sigma = r.noise
         if max_error < sigma:
-            warnings.warn(f"prune: max_error={max_error:g} is below the noise (σ ≈ {sigma:.3g}): the max_error "
-                          "pass keeps about half the points or more", stacklevel=2)
+            warnings.warn(
+                f"prune: max_error={max_error:g} is below the noise (σ ≈ {sigma:.3g}): the max_error "
+                "pass keeps about half the points or more",
+                stacklevel=2,
+            )
     return Pruned(t[idx], out, r.noise, float(rmse), float(worst), rmse_met, max_error_met, max_points_met)

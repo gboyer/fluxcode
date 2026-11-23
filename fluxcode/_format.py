@@ -458,7 +458,9 @@ def body_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tuple
     # sample is escaped, plus an 8-byte group_time_step trailer when timed.
     columns = num_blocks * (METADATA_BYTES_PER_BLOCK + (TIME_BYTES_PER_BLOCK if has_time else 0))
     min_plane_bytes = plane_byte_count(num_samples)
-    max_plane_bytes = min(num_samples, (num_samples + (SAMPLES_PER_PLANE_BYTE - 1) * num_blocks) // SAMPLES_PER_PLANE_BYTE)
+    max_plane_bytes = min(
+        num_samples, (num_samples + (SAMPLES_PER_PLANE_BYTE - 1) * num_blocks) // SAMPLES_PER_PLANE_BYTE
+    )
     max_bytes_per_plane_byte = SAMPLES_PER_PLANE_BYTE * BYTES_PER_RESIDUAL_SAMPLE + BITS_PER_SAMPLE_CODE
     if has_time:
         max_bytes_per_plane_byte += 2 * TIME_LOW_PLANES
@@ -553,6 +555,7 @@ def unpack_header(group: bytes) -> GroupHeader:
 
 # Column and plane field byte-offset helpers within an uncompressed body.
 
+
 @njit(inline="always")
 def block_sizes_start(num_blocks: int) -> int:
     """Returns the starting byte offset of ``block_sizes`` in an uncompressed body."""
@@ -621,10 +624,14 @@ def sample_code_planes_start(num_blocks: int, num_plane_bytes: int, has_time: bo
     Returns:
         Byte offset immediately following the residual planes.
     """
-    return residual_planes_start(num_blocks, has_time) + BYTES_PER_RESIDUAL_SAMPLE * SAMPLES_PER_PLANE_BYTE * num_plane_bytes
+    return (
+        residual_planes_start(num_blocks, has_time)
+        + BYTES_PER_RESIDUAL_SAMPLE * SAMPLES_PER_PLANE_BYTE * num_plane_bytes
+    )
 
 
 # Byte-planed metadata column readers and writers.
+
 
 @njit(inline="always")
 def put_int64(body: np.ndarray, field_start: int, num_blocks: int, block_idx: int, value: int | np.integer) -> None:
@@ -731,6 +738,7 @@ def get_int16(body: np.ndarray, field_start: int, num_blocks: int, block_idx: in
 
 
 # In-memory columnar representations of an encoded block group.
+
 
 class EncodedTimeColumns(NamedTuple):
     """Per-block and per-sample encoded time columns for a block group.
@@ -853,7 +861,10 @@ def scale_time_columns(body: np.ndarray, sample_offsets: np.ndarray, step: np.ui
     for block_idx in range(num_blocks):
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
             continue
-        for field_start, is_scaled in ((time_starts_start(num_blocks), seen_nonempty), (time_steps_start(num_blocks), True)):
+        for field_start, is_scaled in (
+            (time_starts_start(num_blocks), seen_nonempty),
+            (time_steps_start(num_blocks), True),
+        ):
             if not is_scaled:
                 continue
             value = np.uint64(get_int64(body, field_start, num_blocks, block_idx))

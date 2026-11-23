@@ -71,9 +71,9 @@ def report_samples(found: list[Violation], check: str, bad: np.ndarray, offsets:
     blocks = np.searchsorted(offsets, samples, side="right") - 1
     unique_blocks, first = np.unique(blocks, return_index=True)
     counts = np.bincount(blocks - blocks.min())[unique_blocks - blocks.min()]
-    for block_idx, sample_idx, count in list(zip(unique_blocks.tolist(), samples[first].tolist(), counts.tolist()))[
-        :MAX_REPORTED
-    ]:
+    for block_idx, sample_idx, count in list(
+        zip(unique_blocks.tolist(), samples[first].tolist(), counts.tolist(), strict=True)
+    )[:MAX_REPORTED]:
         found.append(Violation(check, block_idx, f"{what}: {count}, first sample {sample_idx}"))
 
 

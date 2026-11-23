@@ -30,7 +30,7 @@ def check_round_trip(x, params=Params()):
     inf = np.isinf(xv)
     np.testing.assert_array_equal(yv[inf], xv[inf])
     X = np.full(len(lo) * L, np.nan)
-    X[:len(x)] = x
+    X[: len(x)] = x
     X = X.reshape(-1, L)
     for b in range(len(lo)):
         fin = np.isfinite(X[b])
@@ -39,20 +39,27 @@ def check_round_trip(x, params=Params()):
             continue
         assert (lo[b], hi[b]) == (X[b, fin].min(), X[b, fin].max())
         assert np.isclose(mean[b], X[b, fin].mean())
-        err = np.abs(y[b * L:(b + 1) * L][fin[:len(y) - b * L]] - X[b, fin][:len(y) - b * L]).max(initial=0)
-        assert err <= (hi[b] - lo[b]) / (2 ** params.min_quantize_bits - 0.5) + 4 * np.spacing(np.abs(X[b, fin]).max())
+        err = np.abs(y[b * L : (b + 1) * L][fin[: len(y) - b * L]] - X[b, fin][: len(y) - b * L]).max(initial=0)
+        assert err <= (hi[b] - lo[b]) / (2**params.min_quantize_bits - 0.5) + 4 * np.spacing(np.abs(X[b, fin]).max())
     return group, lo
 
 
 @pytest.mark.parametrize("where", ["start", "middle", "end", "scattered", "whole", "alternating"])
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf, "mixed"])
-@pytest.mark.parametrize("params", [Params(), OFF, Params(target_bits_per_sample=6.0)], ids=["default", "off", "target"])
+@pytest.mark.parametrize(
+    "params", [Params(), OFF, Params(target_bits_per_sample=6.0)], ids=["default", "off", "target"]
+)
 def test_round_trip(where, value, params):
-    x = minute("noisy-sine", 1)[:5 * L].copy()
+    x = minute("noisy-sine", 1)[: 5 * L].copy()
     r = np.random.default_rng(2)
-    idx = {"start": np.arange(0, 37), "middle": np.arange(1400, 1900), "end": np.arange(2950, 3000),
-           "scattered": r.choice(5 * L, 300, replace=False), "whole": np.arange(2 * L, 3 * L),
-           "alternating": np.arange(3 * L, 4 * L, 2)}[where]
+    idx = {
+        "start": np.arange(0, 37),
+        "middle": np.arange(1400, 1900),
+        "end": np.arange(2950, 3000),
+        "scattered": r.choice(5 * L, 300, replace=False),
+        "whole": np.arange(2 * L, 3 * L),
+        "alternating": np.arange(3 * L, 4 * L, 2),
+    }[where]
     vals = r.choice([np.nan, np.inf, -np.inf], len(idx)) if value == "mixed" else value
     x[idx] = vals
     check_round_trip(x, params)
@@ -60,7 +67,7 @@ def test_round_trip(where, value, params):
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_every_signal_kind_with_gaps(kind):
-    x = minute(kind, 3)[:10 * L].copy()
+    x = minute(kind, 3)[: 10 * L].copy()
     x[123:456] = np.nan
     x[5000] = np.inf
     x[9999] = -np.inf
@@ -74,8 +81,10 @@ def test_all_non_finite_group_and_padded_last_block():
     assert fluxcode.decode_group(group).values[-1] == np.inf
 
 
-@pytest.mark.parametrize("tail,mean", [([1e308] * 500, 1e308), ([np.nan, 1.0, 2.0, np.inf, np.nan], 1.5),
-                                       ([np.nan] * 7, np.nan), ([-0.0] * 3, 0.0)])
+@pytest.mark.parametrize(
+    "tail,mean",
+    [([1e308] * 500, 1e308), ([np.nan, 1.0, 2.0, np.inf, np.nan], 1.5), ([np.nan] * 7, np.nan), ([-0.0] * 3, 0.0)],
+)
 def test_padded_last_block_mean(tail, mean):
     """The last block's mean covers its real, finite samples, without overflow."""
     _, _, _, means = fluxcode.encode_group(np.r_[np.zeros(L), tail])
@@ -123,9 +132,12 @@ def test_occasional_dropouts_keep_the_noise_floor(kind):
     x = minute(kind, 5)
     y = x.copy()
     y[500::1000] = np.nan
+
     # Bit planes isolate the noise floor: byte planes gain 5% on clean impulses, which the
     # held dropouts break up (the best of both is then still below bit planes on clean data)
-    size = lambda v: sum(map(len, fluxcode.encode(v)[0]))
+    def size(v):
+        return sum(map(len, fluxcode.encode(v)[0]))
+
     with planes("bit"):
         assert size(y) < 1.05 * size(x)
     assert (gated(y) != gated(x)).sum() <= 2  # the same blocks gate, bar ones near the threshold
@@ -135,13 +147,24 @@ def test_mostly_non_finite_blocks_skip_the_noise_floor():
     """Below half finite, the estimate is unreliable (a random walk starts passing the gate), so
     the block keeps full precision."""
     x = np.random.default_rng(5).normal(size=2 * L)
-    x[L + 100:L + 700] = np.nan  # block 1: 40% finite
+    x[L + 100 : L + 700] = np.nan  # block 1: 40% finite
     g = gated(x)
     assert g[0] and not g[1]
 
 
-GAPS = ["one", "run", "every-2nd", "every-3rd", "every-4th", "every-5th", "every-7th", "pairs-of-3", "random-10%",
-        "random-30%", "bursts"]
+GAPS = [
+    "one",
+    "run",
+    "every-2nd",
+    "every-3rd",
+    "every-4th",
+    "every-5th",
+    "every-7th",
+    "pairs-of-3",
+    "random-10%",
+    "random-30%",
+    "bursts",
+]
 
 
 def with_gaps(x, gap, value=np.nan):
@@ -153,7 +176,7 @@ def with_gaps(x, gap, value=np.nan):
     elif gap == "run":
         blocks[:, 100:450] = value
     elif gap.startswith("every-"):
-        blocks[:, ::int(gap[6])] = value
+        blocks[:, :: int(gap[6])] = value
     elif gap == "pairs-of-3":  # 2 missing, 1 present
         blocks[:, 0::3] = value
         blocks[:, 1::3] = value
@@ -163,7 +186,7 @@ def with_gaps(x, gap, value=np.nan):
         i = 0
         while i < len(x):
             i += rng.integers(5, 60)
-            x[i:i + rng.integers(1, 20)] = value
+            x[i : i + rng.integers(1, 20)] = value
             i += 20
     return x
 
@@ -182,7 +205,10 @@ def test_gaps_keep_clean_precision(gap):
     x = minute("sin-4.12hz", 12)
     y = with_gaps(x, gap)
     fin = np.isfinite(y)
-    rmse = lambda v: np.sqrt(np.mean((decode_series(encode_series(v)[0])[fin] - x[fin]) ** 2))
+
+    def rmse(v):
+        return np.sqrt(np.mean((decode_series(encode_series(v)[0])[fin] - x[fin]) ** 2))
+
     assert rmse(y) <= 1.5 * rmse(x)
 
 
@@ -204,9 +230,14 @@ def test_only_canonical_nan():
 
 
 WHOLE = {"nan": np.nan, "+inf": np.inf, "-inf": -np.inf}
-PARAMS = {"default": Params(), "off": OFF, "target": Params(target_bits_per_sample=6.0),
-          "4bit": Params(min_quantize_bits=1, max_quantize_bits=4), "orders1": Params(diff_orders={1}),
-          "nodecimal": Params(grids="binary")}
+PARAMS = {
+    "default": Params(),
+    "off": OFF,
+    "target": Params(target_bits_per_sample=6.0),
+    "4bit": Params(min_quantize_bits=1, max_quantize_bits=4),
+    "orders1": Params(diff_orders={1}),
+    "nodecimal": Params(grids="binary"),
+}
 
 
 @pytest.mark.parametrize("pname", PARAMS)
@@ -226,15 +257,33 @@ def test_whole_group_of_one_non_finite_value(n, value, pname):
 def test_whole_blocks_between_finite_ones(pname):
     """Whole blocks of NaN, +inf and -inf (and a mixed one) between finite blocks of every kind."""
     rng = np.random.default_rng(8)
-    blocks = [minute("noisy-sine", 1)[:L], np.full(L, np.nan), np.round(minute("random-walk", 2)[:L], 2),
-              np.full(L, np.inf), minute("chirp", 3)[:L], np.full(L, -np.inf),
-              rng.choice([np.nan, np.inf, -np.inf], L), np.zeros(L), np.full(L, np.nan)]
+    blocks = [
+        minute("noisy-sine", 1)[:L],
+        np.full(L, np.nan),
+        np.round(minute("random-walk", 2)[:L], 2),
+        np.full(L, np.inf),
+        minute("chirp", 3)[:L],
+        np.full(L, -np.inf),
+        rng.choice([np.nan, np.inf, -np.inf], L),
+        np.zeros(L),
+        np.full(L, np.nan),
+    ]
     x = np.concatenate(blocks)
     check_round_trip(x, PARAMS[pname])
     group, _, _, _ = fluxcode.encode_group(x, PARAMS[pname])
     flags, _, _, _, _, _, codes, _ = group_rows(group)[:8]
     codes = codes.reshape(-1, L)
-    assert [bool(h & BLOCK_FLAG_SAMPLE_CODES) for h in flags] == [False, True, False, True, False, True, True, False, True]
+    assert [bool(h & BLOCK_FLAG_SAMPLE_CODES) for h in flags] == [
+        False,
+        True,
+        False,
+        True,
+        False,
+        True,
+        True,
+        False,
+        True,
+    ]
     # NaN is 01b; +-inf are escaped values (10b), stored once: a run repeats the previous (11b)
     assert (codes[1] == 1).all()
     assert codes[3][0] == 2 and (codes[3][1:] == 3).all() and codes[5][0] == 2 and (codes[5][1:] == 3).all()
@@ -243,18 +292,20 @@ def test_whole_blocks_between_finite_ones(pname):
 
 def test_update_whole_non_finite_blocks():
     """Replace a finite block with all -inf, append an all-NaN block, then replace that with data."""
-    x = minute("random-walk", 9)[:5 * L]
+    x = minute("random-walk", 9)[: 5 * L]
     group, _, _, _ = fluxcode.encode_group(x)
     group, _, mins, maxs, means = fluxcode.update(group, {2: np.full(L, -np.inf), 5: np.full(L, np.nan)})
     assert np.isnan(mins).all() and np.isnan(maxs).all() and np.isnan(means).all()
     y = fluxcode.decode_group(group).values.reshape(-1, L)
     assert (y[2] == -np.inf).all() and np.isnan(y[5]).all()
-    np.testing.assert_array_equal(y[[0, 1, 3, 4]], fluxcode.decode_group(fluxcode.encode_group(x)[0]).values.reshape(-1, L)[[0, 1, 3, 4]])
+    np.testing.assert_array_equal(
+        y[[0, 1, 3, 4]], fluxcode.decode_group(fluxcode.encode_group(x)[0]).values.reshape(-1, L)[[0, 1, 3, 4]]
+    )
     new = minute("sin-4.12hz", 9)[:L]
     group = fluxcode.update(group, {5: new}).group
     y2 = fluxcode.decode_group(group).values.reshape(-1, L)
     np.testing.assert_array_equal(y2[:5], y[:5])
-    assert np.abs(y2[5] - new).max() <= (new.max() - new.min()) / (2 ** 16 - 0.5)
+    assert np.abs(y2[5] - new).max() <= (new.max() - new.min()) / (2**16 - 0.5)
 
 
 def test_bulk_encode_rows_round_trip():

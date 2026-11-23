@@ -356,7 +356,9 @@ def escape_outliers(
             bulk_max = max(bulk_max, value)
     if num_escaped == 0 or num_escaped * ESCAPE_MAX_SHARE > num_samples or not bulk_max >= bulk_min:
         return False, lower_bound, upper_bound
-    new_exp = snapped_exponent_for_range(bulk_min, bulk_max, max_bits) if bulk_max > bulk_min else old_exp - ESCAPE_MIN_GAIN
+    new_exp = (
+        snapped_exponent_for_range(bulk_min, bulk_max, max_bits) if bulk_max > bulk_min else old_exp - ESCAPE_MIN_GAIN
+    )
     if old_exp - max(new_exp, floor_exp) < ESCAPE_MIN_GAIN:
         return False, lower_bound, upper_bound
     # Do not escape samples when the full-range grid already represents the entire block exactly.
@@ -416,7 +418,7 @@ def collect_escaped_values(
     blocks = np.searchsorted(offsets, positions, side="right") - 1
     values: list[float] = []
     previous_block, previous_value = -1, math.nan
-    for position, block in zip(positions.tolist(), blocks.tolist()):
+    for position, block in zip(positions.tolist(), blocks.tolist(), strict=True):
         value = float(samples[position])
         # Round non-float32 finite outliers to the full-range max_bits grid so low mantissa bytes zero out.
         if math.isfinite(value) and float(np.float32(value)) != value:
@@ -460,9 +462,7 @@ def unpack_escaped_values(body: np.ndarray, start: int, num_escapes: int) -> np.
         return np.zeros(0)
     end = start + BYTES_PER_ESCAPED_VALUE * num_escapes
     return (
-        np.ascontiguousarray(body[start:end].reshape(BYTES_PER_ESCAPED_VALUE, num_escapes).T)
-        .view(np.float64)
-        .ravel()
+        np.ascontiguousarray(body[start:end].reshape(BYTES_PER_ESCAPED_VALUE, num_escapes).T).view(np.float64).ravel()
     )
 
 
@@ -546,7 +546,9 @@ def count_block_escapes(
     """
     num_blocks = sample_offsets.shape[0] - 1
     num_plane_bytes = int(plane_byte_offsets[num_blocks])
-    code_planes = sample_code_planes_view(body, num_blocks, num_plane_bytes, int(code_plane_offsets[num_blocks]), has_time)
+    code_planes = sample_code_planes_view(
+        body, num_blocks, num_plane_bytes, int(code_plane_offsets[num_blocks]), has_time
+    )
     out_offsets[0] = 0
     for block_idx in range(num_blocks):
         count = 0

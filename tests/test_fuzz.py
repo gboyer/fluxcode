@@ -103,12 +103,14 @@ def check_case(x: np.ndarray, params: Params) -> str | None:
     try:
         with np.errstate(all="ignore"):
             result = fluxcode.encode_group(x, params, block_len=BLOCK_LEN)
-            found = verify.encode_group(result, x, params, block_len=BLOCK_LEN) or verify.fixed_point(result.group, params)
+            found = verify.encode_group(result, x, params, block_len=BLOCK_LEN) or verify.fixed_point(
+                result.group, params
+            )
             if found:
                 return failure(found)
             if params.target_bits_per_sample is None and not encodes_alone(x, result.group, params):
                 return "not alone"  # the target caps the whole group
-    except Exception:  # noqa: BLE001 (any exception is the finding)
+    except Exception:
         return "crash"
     return None
 
@@ -123,11 +125,11 @@ def encodes_alone(x: np.ndarray, group: bytes, params: Params) -> bool:
         return True
     together = group_rows(group)
     for block, start in enumerate(range(0, x.size, BLOCK_LEN)):
-        alone = group_rows(fluxcode.encode_group(x[start:start + BLOCK_LEN], params, block_len=BLOCK_LEN).group)
+        alone = group_rows(fluxcode.encode_group(x[start : start + BLOCK_LEN], params, block_len=BLOCK_LEN).group)
         for field in ("block_flags", "grid_exponents", "grid_scales", "block_anchors"):
             if getattr(alone, field)[0].tobytes() != getattr(together, field)[block].tobytes():
                 return False
-        if not np.array_equal(alone.residuals, together.residuals[start:start + alone.residuals.size]):
+        if not np.array_equal(alone.residuals, together.residuals[start : start + alone.residuals.size]):
             return False
     return True
 
@@ -199,8 +201,11 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
             else:
                 span = int(ticks[-1]) - int(ticks[0])
                 duration = max(period * int(rng.choice([1, 10, 100, 1000])), span // 60_000 + 1)
-                hour: TimeBlocks = {"start_time": int(ticks[0]) - int(rng.integers(0, duration)),
-                                    "block_duration": duration, "time_unit": unit}
+                hour: TimeBlocks = {
+                    "start_time": int(ticks[0]) - int(rng.integers(0, duration)),
+                    "block_duration": duration,
+                    "time_unit": unit,
+                }
                 result = fluxcode.encode_time_blocks(x, ticks, params, **hour)
                 found = verify.encode_time_blocks(result, x, ticks, params, **hour)
                 if found:
@@ -212,7 +217,7 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
                     group, found = random_time_update(rng, edges, group, x, ticks, params, hour)
                     if found:
                         return step, cast(str, failure(found))
-    except Exception:  # noqa: BLE001 (any exception is the finding)
+    except Exception:
         return step, "crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
     return None
 
@@ -227,8 +232,8 @@ def random_update(rng: np.random.Generator, group: bytes, params: Params) -> tup
     ticks = decoded.times.view(np.int64)
     if rng.random() < 0.7 and nonempty.size:
         block = int(rng.choice(nonempty))
-        block_ticks = ticks[offsets[block]:offsets[block + 1]]
-        values = decoded.values[offsets[block]:offsets[block + 1]] * rng.uniform(0.5, 2) + rng.normal()
+        block_ticks = ticks[offsets[block] : offsets[block + 1]]
+        values = decoded.values[offsets[block] : offsets[block + 1]] * rng.uniform(0.5, 2) + rng.normal()
     else:
         block = sizes.size + int(rng.integers(0, 3))
         n = int(rng.integers(0, 20))
@@ -241,8 +246,13 @@ def random_update(rng: np.random.Generator, group: bytes, params: Params) -> tup
 
 
 def random_time_update(
-    rng: np.random.Generator, edges: np.random.Generator, group: bytes, x: np.ndarray, ticks: np.ndarray,
-    params: Params, hour: TimeBlocks,
+    rng: np.random.Generator,
+    edges: np.random.Generator,
+    group: bytes,
+    x: np.ndarray,
+    ticks: np.ndarray,
+    params: Params,
+    hour: TimeBlocks,
 ) -> tuple[bytes, list[verify.Violation]]:
     """update_time_blocks (an upsert, a range deletion, or both) or replace_time_blocks from the source.
 
@@ -280,8 +290,9 @@ def random_time_update(
             a, b = min(a, b), max(a, b)
             ranges = (a, b if b > a else a + duration)
         result = fluxcode.update_time_blocks(group, values, new_ticks, exact, delete_ranges=ranges, **hour)
-        return result.group, verify.update_time_blocks(result, group, values, new_ticks, exact, delete_ranges=ranges,
-                                                       **hour)
+        return result.group, verify.update_time_blocks(
+            result, group, values, new_ticks, exact, delete_ranges=ranges, **hour
+        )
     # Whole blocks from the source data, perhaps scaled, perhaps one past the end
     ids = (ticks - start) // duration
     candidates = np.unique(ids)
@@ -306,8 +317,8 @@ DECIMAL_PARAMS = [
 def to_decimals(x: np.ndarray, decimals: int) -> np.ndarray:
     """The doubles nearest x rounded to the given decimal places (negative: tens, hundreds...)."""
     if decimals >= 0:
-        return np.round(x * 10.0 ** decimals) / 10.0 ** decimals
-    return np.round(x / 10.0 ** -decimals) * 10.0 ** -decimals
+        return np.round(x * 10.0**decimals) / 10.0**decimals
+    return np.round(x / 10.0**-decimals) * 10.0**-decimals
 
 
 def check_decimal_case(seed: int, case: int) -> str | None:
@@ -318,7 +329,7 @@ def check_decimal_case(seed: int, case: int) -> str | None:
     params_idx = int(rng.integers(0, len(DECIMAL_PARAMS)))
     params = DECIMAL_PARAMS[params_idx]
     n = int(rng.choice(LENGTHS))
-    unit = 10.0 ** -decimals
+    unit = 10.0**-decimals
 
     def draw(count: int) -> np.ndarray:  # noise, a walk, or a few levels, 1 to ~300,000 steps wide
         spread = 10 ** rng.uniform(0, 5.5) * unit
@@ -351,9 +362,10 @@ def check_decimal_case(seed: int, case: int) -> str | None:
                 new_ticks = np.sort(rng.integers(0, n + 1000, int(rng.choice(LENGTHS)))).astype(np.int64)
                 new = draw(new_ticks.size)
                 updated = fluxcode.update_time_blocks(result.group, new, new_ticks, params, **hour)
-                found = verify.update_time_blocks(updated, result.group, new, new_ticks, params, decimals=decimals,
-                                                  **hour)
-    except Exception:  # noqa: BLE001 (any exception is the finding)
+                found = verify.update_time_blocks(
+                    updated, result.group, new, new_ticks, params, decimals=decimals, **hour
+                )
+    except Exception:
         return f"{step}: crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
     return f"{step}: {failure(found)} (DECIMAL_PARAMS[{params_idx}])" if found else None
 

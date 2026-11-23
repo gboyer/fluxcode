@@ -178,12 +178,10 @@ class Params:
         min_bits = self.min_quantize_bits
         max_bits = self.max_quantize_bits
         if not (is_int(min_bits) and is_int(max_bits) and 1 <= min_bits <= max_bits <= 16):
-            raise ValueError(
-                f"need 1 <= min_quantize_bits <= max_quantize_bits <= 16, got {min_bits!r}, {max_bits!r}"
-            )
+            raise ValueError(f"need 1 <= min_quantize_bits <= max_quantize_bits <= 16, got {min_bits!r}, {max_bits!r}")
         orders = self.diff_orders
         if not isinstance(orders, Iterable) or isinstance(orders, (str, bytes)):
-            raise ValueError(f"diff_orders must be a set of orders, got {orders!r}")  # noqa: TRY004
+            raise ValueError(f"diff_orders must be a set of orders, got {orders!r}")
         frozen_orders = frozenset(orders)
         if not frozen_orders or not all(is_int(order) and 0 <= order <= 3 for order in frozen_orders):
             raise ValueError(f"diff_orders must be a non-empty subset of {{0, 1, 2, 3}}, got {set(frozen_orders)!r}")
@@ -193,7 +191,7 @@ class Params:
             raise ValueError(f"noise_floor_sigma must be a finite number >= 0, got {noise_factor!r}")
         target_bits = self.target_bits_per_sample
         if target_bits is not None and not (
-            is_real(target_bits) and MIN_TARGET_BITS <= target_bits and np.isfinite(target_bits)
+            is_real(target_bits) and target_bits >= MIN_TARGET_BITS and np.isfinite(target_bits)
         ):
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"

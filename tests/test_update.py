@@ -27,11 +27,11 @@ def rebuilt(group, edit):
     rows = group_rows(group)
     edit(*rows)
     body = _oracle.write_group(*rows[:7], time_columns=rows.time_columns)
-    return group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
+    return group[: _format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
 def by_index(indices, blocks):
-    return dict(zip(indices, blocks))
+    return dict(zip(indices, blocks, strict=True))
 
 
 @pytest.mark.parametrize("indices", [[0], [59], [3, 17, 42], list(range(60)), [10, 5]])
@@ -67,13 +67,13 @@ def test_update_copies_carried_blocks_without_unpacking(monkeypatch):
     t[5] += np.timedelta64(1, "ms")  # block 0 irregular: it has time residual planes
     x, _, _, _, _ = encoded()
     group = fluxcode.encode_group(x, times=t).group
-    expected = fluxcode.update(group, {1: x[L:2 * L] + 1}, times={1: t[L:2 * L]}).group
+    expected = fluxcode.update(group, {1: x[L : 2 * L] + 1}, times={1: t[L : 2 * L]}).group
 
     def unpack_everything(*args, **kwargs):
         raise AssertionError("unpacked every block")
 
     monkeypatch.setattr(_bitpacking, "unshuffle_residual_block", unpack_everything)
-    assert fluxcode.update(group, {1: x[L:2 * L] + 1}, times={1: t[L:2 * L]}).group == expected
+    assert fluxcode.update(group, {1: x[L : 2 * L] + 1}, times={1: t[L : 2 * L]}).group == expected
 
 
 def test_untouched_blocks_identical_with_target():
@@ -87,7 +87,7 @@ def test_untouched_blocks_identical_with_target():
 
 def test_append():
     x, group, lo, _, _ = encoded(n=20_000)
-    new = minute("sin-4.12hz", 43)[:3 * L].reshape(3, L)
+    new = minute("sin-4.12hz", 43)[: 3 * L].reshape(3, L)
     group2, _, lo2, hi2, _ = fluxcode.update(group, by_index([20, 21, 22], new))
     assert lo2.shape == hi2.shape == (3,)
     ref_groups, ref_lo, _, _ = encode_series(np.concatenate([x, new.ravel()]))
@@ -98,7 +98,7 @@ def test_append():
 
 def test_replace_and_append_together():
     x, group, _, _, _ = encoded(n=10_000)
-    new = minute("chirp", 44)[:2 * L].reshape(2, L)
+    new = minute("chirp", 44)[: 2 * L].reshape(2, L)
     group2 = fluxcode.update(group, {10: new[0], 4: new[1]}).group
     x2 = np.concatenate([x, new[0]]).reshape(11, L)
     x2[4] = new[1]
@@ -110,10 +110,10 @@ def test_blocks_change_size():
     empty blocks); the result equals encoding the new blocks from scratch."""
     x, group, _, _, _ = encoded(n=10_500)  # a short last block of 500
     sizes = [L] * 10 + [500]
-    new = {3: np.arange(7.0), 5: np.zeros(0), 10: minute("chirp", 3)[:2 * L], 13: np.ones(9)}
+    new = {3: np.arange(7.0), 5: np.zeros(0), 10: minute("chirp", 3)[: 2 * L], 13: np.ones(9)}
     group2, updated, lo, _, mean = fluxcode.update(group, new)
     assert updated.tolist() == [3, 5, 10, 11, 12, 13]
-    blocks = [x[b * L:(b + 1) * L] for b in range(11)]
+    blocks = [x[b * L : (b + 1) * L] for b in range(11)]
     blocks += [np.zeros(0), np.zeros(0), np.zeros(0)]
     for idx, block in new.items():
         blocks[idx] = block
@@ -132,9 +132,16 @@ def test_empty_update_returns_the_group():
     assert updated.group == group and updated.indices.shape == (0,)
 
 
-@pytest.mark.parametrize("blocks,msg", [({-1: np.zeros(L)}, ">= 0"), ({1.0: np.zeros(L)}, "integers"),
-                                        ([np.zeros(L)], "map block indices"), ({1: np.zeros((2, L))}, "1-D"),
-                                        ({1: np.zeros(65_536)}, "0 to 65535")])
+@pytest.mark.parametrize(
+    "blocks,msg",
+    [
+        ({-1: np.zeros(L)}, ">= 0"),
+        ({1.0: np.zeros(L)}, "integers"),
+        ([np.zeros(L)], "map block indices"),
+        ({1: np.zeros((2, L))}, "1-D"),
+        ({1: np.zeros(65_536)}, "0 to 65535"),
+    ],
+)
 def test_bad_blocks(blocks, msg):
     _, group, _, _, _ = encoded()
     with pytest.raises(ValueError, match=msg):
@@ -171,7 +178,7 @@ def test_update_refuses_groups_it_cannot_read(head_bits):
     _, group, _, _, _ = encoded()
     raw_body = _oracle.write_group(*group_rows(group)[:7])
     raw_body[5] |= head_bits  # block_flags are the body's first bytes
-    bad = group[:_format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
+    bad = group[: _format.HEADER_BYTES] + zstandard.ZstdCompressor(level=3).compress(raw_body.tobytes())
     with pytest.raises(ValueError, match="block 5: block flags"):
         fluxcode.update(bad, {0: np.zeros(L)})
     with pytest.raises(ValueError, match="block 5: block flags"):
@@ -216,8 +223,10 @@ def test_update_checks_time_unit_if_given():
     group = fluxcode.encode_group(np.arange(20.0), times=t, block_len=10).group
     new = {1: np.zeros(10)}
     new_times = {1: t[10:]}
-    assert fluxcode.update(group, new, times=new_times, time_unit="ms").group == fluxcode.update(
-        group, new, times=new_times).group
+    assert (
+        fluxcode.update(group, new, times=new_times, time_unit="ms").group
+        == fluxcode.update(group, new, times=new_times).group
+    )
     with pytest.raises(ValueError, match="time_unit is us but the block group stores ms"):
         fluxcode.update(group, new, times=new_times, time_unit="us")
     with pytest.raises(ValueError, match="time_unit must be one of"):

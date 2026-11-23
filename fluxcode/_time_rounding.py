@@ -532,7 +532,7 @@ def snap_and_check_lattice(
         np.int64(INT64_MIN) + step <= first
         and last <= np.int64(INT64_MAX) - step
         and step < FLOAT_ROUNDING_SPAN
-        and -FLOAT_ROUNDING_SPAN < first_offset
+        and first_offset > -FLOAT_ROUNDING_SPAN
         and last_offset < FLOAT_ROUNDING_SPAN
     ):
         return -2
