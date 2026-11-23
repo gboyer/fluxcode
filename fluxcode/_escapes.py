@@ -254,20 +254,14 @@ def escape_outliers(
         decimal_exp, _, _ = decimal_grid(samples, lower_bound, upper_bound, old_exp, scratch_quantized)
         if decimal_exp != NO_DECIMAL and _on_decimal_grid(samples, codes, coded, decimal_exp):
             return False, lower_bound, upper_bound
-    # Hold escaped samples (and re-hold any prior non-finite samples so they don't hold a glitch)
-    held[:] = samples
-    previous = center_val
-    for sample_idx in range(num_samples):
-        uncoded = not coded or codes[sample_idx] == CODE_FINITE
-        if uncoded and abs(samples[sample_idx] - center_val) <= threshold:
-            previous = samples[sample_idx]
-        else:
-            held[sample_idx] = previous
+    # Mark escaped samples, then re-hold every coded (non-finite or escaped) sample from the bulk
+    # so leading glitches and non-finite runs after a glitch stay strictly inside [bulk_min, bulk_max].
     if not coded:
         codes[:] = CODE_FINITE
     for sample_idx in range(num_samples):
         if codes[sample_idx] == CODE_FINITE and abs(samples[sample_idx] - center_val) > threshold:
             codes[sample_idx] = CODE_ESCAPE
+    hold_coded(samples, codes, held)
     return True, bulk_min, bulk_max
 
 

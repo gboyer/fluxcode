@@ -365,7 +365,6 @@ Code layout (`fluxcode/`), from the public API down:
 - `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: the time axis
   kernels (§4); `_grids.py`, `_noise.py`, `_escapes.py` and `_extreme_magnitudes.py`: quantization
   grids, noise estimation, coded/escaped values, and extreme-magnitude handling.
-  NaN/inf blocks and extreme ranges, each off the common path.
 - `verify.py`: checks a call's result against the guarantees (ENCODER §6), from the decoded
   output; nothing on the encode path uses it.
 - `_format.py`: the header, field offsets and row types (§7); `_bitpacking.py`: writing and
