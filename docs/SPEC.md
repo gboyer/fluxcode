@@ -386,7 +386,7 @@ A conforming decoder MUST reject a block group whenever any of the following che
 - **Pre-decompression frame size:**
   - The Zstandard frame's recorded content size does not lie within the plausible `[min_body_size, max_body_size]` bounds derived from the header:
     - minimum plane bytes: `ceil(num_samples / 8)` per plane, no block flags set (and `E = 0`);
-    - maximum plane bytes: up to 7 padding samples per block, every block flagged with sample codes and wide time residuals (plus up to `8 × num_samples` bytes of `escaped_values`).
+    - maximum plane bytes: up to 7 padding samples per block, every block flagged with sample codes and wide time residuals (plus up to `8 × num_samples` bytes of `escaped_values`, and `+ 8` bytes for `group_time_step` when `time_unit != 0`).
 - **Body sizes:**
   - The sum of `block_sizes` does not equal `num_samples`;
   - The decompressed content size does not equal the exact `body_size` computed once `block_flags`, `block_sizes`, and `E` are known.

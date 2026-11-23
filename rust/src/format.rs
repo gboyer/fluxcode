@@ -35,7 +35,7 @@ pub const BYTES_PER_FLAGS: usize = 1;
 pub const BYTES_PER_SIZE: usize = 2;
 /// Byte width of each block's grid-exponent entry (`i16`).
 pub const BYTES_PER_EXPONENT: usize = 2;
-/// Byte width of each block's grid-scale entry (`i32`).
+/// Byte width of each block's grid-scale entry (`u32`).
 pub const BYTES_PER_SCALE: usize = 4;
 /// Byte width of each block's anchor value (`i64`).
 pub const BYTES_PER_ANCHOR: usize = 8;

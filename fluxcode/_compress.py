@@ -21,8 +21,13 @@ import zstandard
 
 from . import _bitpacking, _body, _escapes, _format
 
-RUST_INTERFACE_VERSION: int = 6
-"""Expected ``fluxcode_rs.INTERFACE_VERSION`` matching the positional call signatures below."""
+RUST_INTERFACE_VERSION: int = 7
+"""Lockstep version guard matching ``fluxcode_rs.INTERFACE_VERSION``.
+
+``fluxcode`` and ``fluxcode_rs`` are always developed and deployed in lockstep (no cross-version
+ABI compatibility is intended). Bump this freely whenever the Python<->Rust boundary changes so
+stale local builds fall back cleanly with a warning.
+"""
 
 
 def _load_rust() -> ModuleType | None:

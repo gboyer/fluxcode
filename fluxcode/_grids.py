@@ -720,7 +720,7 @@ def quantize_power_of_two(
 
 
 @njit(inline="always")
-def _common_twos(gcd: int | np.integer, anchor_index: np.int64) -> int:
+def common_trailing_zeros(gcd: int | np.integer, anchor_index: np.int64) -> int:
     """Counts trailing zero bits shared by ``gcd`` (positive) and ``anchor_index``.
 
     Args:

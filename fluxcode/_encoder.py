@@ -43,10 +43,10 @@ from ._grids import (
     GRIDS_DECIMAL,
     GRIDS_RATIONAL,
     NO_DECIMAL,
-    _common_twos,
     block_grid_step,
     center_anchor,
     choose_decimal_or_binary_grid,
+    common_trailing_zeros,
     floor_exponent,
     moved_off_tolerance_grid,
     on_binary_grid,
@@ -366,7 +366,7 @@ def zero_residual_fraction(residuals: np.ndarray) -> float:
     return zeros / max(residuals.shape[0], 1)
 
 
-@njit(nogil=True, cache=True)
+@njit(inline="always")
 def _try_scale_decimal_grid(
     quantized: np.ndarray, grid_exp: int, anchor_index: np.int64
 ) -> tuple[int, int, np.int64, np.int64]:
@@ -392,7 +392,7 @@ def _try_scale_decimal_grid(
     return 0, grid_exp, anchor_index, np.int64(0)
 
 
-@njit(nogil=True, cache=True)
+@njit(inline="always")
 def _quantize_tolerance_grid(
     samples: np.ndarray,
     tol_num: np.int64,
@@ -419,7 +419,7 @@ def _quantize_tolerance_grid(
     return BLOCK_FLAG_SCALED, tol_fine_exp, np.int64(tol_base), tol_num | (np.int64(1) << SCALE_SHIFT)
 
 
-@njit(nogil=True, cache=True)
+@njit(inline="always")
 def _try_scale_binary_grid(
     samples: np.ndarray,
     lower_bound: float,
@@ -455,7 +455,7 @@ def _try_scale_binary_grid(
     gcd = _rational.index_gcd(scratch_quantized)
     if gcd > 1 and (tol_step == 0.0 or on_binary_grid(samples, quant_exp)):
         # Coarsen quant_exp by the common power of two so the grid stays unscaled whenever possible.
-        twos = min(_common_twos(gcd, base_int), E_MAX - quant_exp)
+        twos = min(common_trailing_zeros(gcd, base_int), E_MAX - quant_exp)
         if twos:
             _rational.divide_indices_in_place(scratch_quantized, np.int64(1) << twos)
             gcd >>= twos
@@ -760,7 +760,7 @@ def _reencode_with_bit_reductions(
                 block_residuals[:] = backup_residuals
 
 
-@njit(nogil=True, cache=True)
+@njit(inline="always")
 def _encode_short_block(
     block_samples: np.ndarray,
     block_min: float,
@@ -813,7 +813,7 @@ def _encode_short_block(
     return flags, grid_exp, anchor_index, anchor
 
 
-@njit(nogil=True, cache=True)
+@njit(inline="always")
 def _budget_bits_at_planned_step(
     flags: int,
     grid_exp: int,

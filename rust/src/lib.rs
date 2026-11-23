@@ -27,9 +27,12 @@ mod planes;
 use compress::ResidualLayout;
 use format::{BlockColumns, GroupShape};
 
-/// ABI version checked by `fluxcode/_compress.py` (`RUST_INTERFACE_VERSION`) before enabling the
-/// extension.
-const INTERFACE_VERSION: u32 = 6;
+/// Lockstep interface version checked by `fluxcode/_compress.py` (`RUST_INTERFACE_VERSION`).
+///
+/// `fluxcode` and `fluxcode_rs` are always developed and deployed in lockstep—no cross-version
+/// ABI compatibility is intended. Bump this freely whenever the Python↔Rust boundary changes so
+/// stale local builds fall back cleanly with a warning.
+const INTERFACE_VERSION: u32 = 7;
 
 /// Encodes and compresses a block group without a time axis directly from columnar NumPy arrays.
 ///
@@ -38,20 +41,20 @@ const INTERFACE_VERSION: u32 = 6;
 /// `zstd_levels`, or libzstd errors.
 #[pyfunction]
 #[pyo3(signature = (
-    block_flags, block_sizes, grid_params, grid_scales, value_anchors, residuals, codes, escapes,
-    layout, flush, zstd_levels
+    block_flags, block_sizes, grid_exponents, grid_scales, block_anchors, residuals, sample_codes,
+    escaped_values, layout, flush, zstd_levels
 ))]
 #[allow(clippy::too_many_arguments)]
 fn compress_group<'py>(
     py: Python<'py>,
     block_flags: PyReadonlyArray1<u8>,
     block_sizes: PyReadonlyArray1<i64>,
-    grid_params: PyReadonlyArray1<i64>,
+    grid_exponents: PyReadonlyArray1<i64>,
     grid_scales: PyReadonlyArray1<i64>,
-    value_anchors: PyReadonlyArray1<i64>,
+    block_anchors: PyReadonlyArray1<i64>,
     residuals: PyReadonlyArray1<i16>,
-    codes: PyReadonlyArray1<u8>,
-    escapes: PyReadonlyArray1<f64>,
+    sample_codes: PyReadonlyArray1<u8>,
+    escaped_values: PyReadonlyArray1<f64>,
     layout: &str,
     flush: bool,
     zstd_levels: Vec<i32>,
@@ -61,12 +64,12 @@ fn compress_group<'py>(
     let columns = BlockColumns::new(
         block_flags.as_slice()?,
         block_sizes.as_slice()?,
-        grid_params.as_slice()?,
+        grid_exponents.as_slice()?,
         grid_scales.as_slice()?,
-        value_anchors.as_slice()?,
+        block_anchors.as_slice()?,
         residuals.as_slice()?,
-        codes.as_slice()?,
-        escapes.as_slice()?,
+        sample_codes.as_slice()?,
+        escaped_values.as_slice()?,
     )
     .map_err(PyValueError::new_err)?;
     let layout = ResidualLayout::parse(layout).map_err(PyValueError::new_err)?;
@@ -79,13 +82,13 @@ fn compress_group<'py>(
 /// Packs and compresses a pre-built uncompressed byte-plane body (with or without a time axis)
 /// into a block group (8-byte header + zstd frame).
 ///
-/// `num_octets` is the total number of 8-sample groups (plane bytes per bit plane) across all
+/// `num_plane_bytes` is the total number of 8-sample groups (plane bytes per bit plane) across all
 /// blocks; `time_unit` is `0` when no time axis is present. Releases the GIL during transposition
 /// and compression. Raises `ValueError` if the shape overflows the header, `layout` is invalid,
 /// `body` is too short, or libzstd fails.
 #[pyfunction]
 #[pyo3(signature = (
-    body, num_blocks, num_samples, num_octets, time_unit, layout, flush, zstd_levels,
+    body, num_blocks, num_samples, num_plane_bytes, time_unit, layout, flush, zstd_levels,
     group_time_step = false
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -94,7 +97,7 @@ fn pack_group<'py>(
     body: PyReadonlyArray1<u8>,
     num_blocks: usize,
     num_samples: usize,
-    num_octets: usize,
+    num_plane_bytes: usize,
     time_unit: u8,
     layout: &str,
     flush: bool,
@@ -105,7 +108,7 @@ fn pack_group<'py>(
     let shape = GroupShape {
         num_blocks,
         num_samples,
-        num_plane_bytes: num_octets,
+        num_plane_bytes,
         time_unit,
         group_time_step,
     };
