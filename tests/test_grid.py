@@ -8,7 +8,7 @@ import pytest
 from _series import group_rows
 
 import fluxcode
-from fluxcode import Params, _encoder
+from fluxcode import Params, _grids
 from fluxcode._format import BLOCK_FLAG_DECIMAL
 
 RAW = Params(noise_floor_sigma=0, grids="binary")
@@ -41,7 +41,7 @@ def test_minimum_halfway_between_grid_points(e, base):
     assert got_e == e
     assert anchor == np.rint(lo / step) * step  # ties to even
     q = np.empty(1000, np.int32)
-    _encoder.quantize_grid(x, e, np.rint(lo / step), q)
+    _grids.quantize_grid(x, e, np.rint(lo / step), q)
     assert q[0] == 0 and q.min() == 0
     y = decode(group)
     assert np.abs(y - x).max() <= step / 2
@@ -51,9 +51,9 @@ def test_minimum_halfway_between_grid_points(e, base):
 def test_fencepost_power_of_two_range():
     """[1, 2] gets 2^B steps at B < 16 (grid-aligned data in it is exact), and 2^15 at B = 16,
     where 2^16 + 1 levels don't fit."""
-    assert _encoder.range_exponent(1.0, 2.0, 12) == -12
-    assert _encoder.range_exponent(1.0, 2.0, 16) == -15
-    assert _encoder.range_exponent(0.0, 1.0, 12) == -12
+    assert _grids.range_exponent(1.0, 2.0, 12) == -12
+    assert _grids.range_exponent(1.0, 2.0, 16) == -15
+    assert _grids.range_exponent(0.0, 1.0, 12) == -12
     k = np.random.default_rng(0).integers(0, 4097, 1000)
     k[:2] = 0, 4096
     x = 1 + k / 4096
@@ -67,8 +67,8 @@ def test_storage_edge_at_16_bits():
     q = 65,536: one level coarser. q never reaches 2^16 anywhere near the edge."""
     step = 2.0 ** -10
     lo, hi = 0.4 * step, 65_535.6 * step  # rint: 0 and 65,536
-    assert _encoder.exponent(hi - lo, 16) == -10  # the unsnapped rule fits
-    assert _encoder.range_exponent(lo, hi, 16) == -9
+    assert _grids.exponent(hi - lo, 16) == -10  # the unsnapped rule fits
+    assert _grids.range_exponent(lo, hi, 16) == -9
     x = np.linspace(lo, hi, 1000)
     group, e, _ = encode_block(x, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=16))
     assert e == -9
@@ -78,8 +78,8 @@ def test_storage_edge_at_16_bits():
     for _ in range(20_000):
         lo = rng.uniform(-3, 3) * step
         hi = lo + (65_535 + rng.uniform(-1, 1)) * step
-        e = _encoder.range_exponent(lo, hi, 16)
-        assert _encoder.quantize_block(np.array([lo, hi]), lo, hi, e, q) == np.rint(lo / 2.0 ** e) * 2.0 ** e
+        e = _grids.range_exponent(lo, hi, 16)
+        assert _grids.quantize_block(np.array([lo, hi]), lo, hi, e, q) == np.rint(lo / 2.0 ** e) * 2.0 ** e
         assert q[0] == 0 and q[1] <= 65_535
 
 
@@ -91,7 +91,7 @@ def test_range_exponent_is_never_coarser_than_unsnapped(bits):
     for _ in range(5_000):
         lo = rng.normal() * 10.0 ** rng.integers(-5, 5)
         hi = lo + rng.uniform(0, 1) * 10.0 ** rng.integers(-5, 5)
-        old, new = _encoder._unsnapped_exponent(lo, hi, bits), _encoder.range_exponent(lo, hi, bits)
+        old, new = _grids._unsnapped_exponent(lo, hi, bits), _grids.range_exponent(lo, hi, bits)
         assert old - (bits < 16) <= new <= old + (bits == 16)
         limit = 2 ** bits if bits < 16 else 2 ** 16 - 1
         assert np.rint(hi / 2.0 ** new) - np.rint(lo / 2.0 ** new) <= limit
@@ -149,7 +149,7 @@ def test_no_tie_bias_when_coarsening():
     coarse = e + 1
     q = np.empty(1000, np.int32)
     base = np.rint(y.min() / 2.0 ** coarse)
-    _encoder.quantize_grid(y, coarse, base, q)
+    _grids.quantize_grid(y, coarse, base, q)
     shift = (base + q) * 2.0 ** coarse - y
     assert np.mean(np.abs(shift) == 2.0 ** e) > 0.3  # many ties
     assert abs(shift.mean()) < 0.05 * 2.0 ** e

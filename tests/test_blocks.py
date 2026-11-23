@@ -11,7 +11,7 @@ from _series import group_rows
 from _signals import minute
 
 import fluxcode
-from fluxcode import Params, _compress, _encoder, _format, _group
+from fluxcode import Params, _compress, _format, _grids, _group
 from fluxcode._format import BLOCK_FLAG_NONFINITE, BLOCK_FLAG_ORDER, SHORT_BLOCK_LEN
 
 SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
@@ -94,7 +94,7 @@ def test_short_blocks_skip_the_analysis(size, decimal):
         q = np.round(finite * 100).astype(np.int64) - rows.value_anchors[0]
     else:
         rng_x = finite.max() - finite.min() if finite.size else 0.0
-        fine = _encoder.range_exponent(finite.min(), finite.max(), 16) if finite.size else 0
+        fine = _grids.range_exponent(finite.min(), finite.max(), 16) if finite.size else 0
         assert rows.grid_params[0] == fine
         assert np.nanmax(np.abs(y - x), initial=0) <= rng_x / (2 ** 16 - 0.5)
         q = (np.rint(finite / 2.0 ** fine) - np.rint(lo[0] / 2.0 ** fine)).astype(np.int64)
@@ -178,7 +178,7 @@ def test_noise_floor_needs_256_samples():
     noise = rng.normal(size=2 * 255 + 256)
     group = fluxcode.encode_blocks(noise, [255, 255, 256], Params(grids="binary"))
     rows = group_rows(group.group)
-    fine = [_encoder.range_exponent(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
+    fine = [_grids.range_exponent(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
     assert (rows.grid_params[:2] == fine[:2]).all() and rows.grid_params[2] > fine[2]
 
 

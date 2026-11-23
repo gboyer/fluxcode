@@ -7,7 +7,7 @@ import pytest
 from _series import decode_series, encode_series, encode_unchecked, group_rows
 from _signals import KINDS, minute
 
-from fluxcode import Params, _encoder
+from fluxcode import Params, _grids
 
 
 @pytest.mark.parametrize("kw", [{"min_quantize_bits": 0}, {"max_quantize_bits": 17},
@@ -58,9 +58,9 @@ def test_min_max_bits_never_violated(kind, target):
     exact = (decode_series(encode_series(x, p)[0]) == x).reshape(len(e), -1).all(1)
     for b in range(len(e)):
         if rng[b] > 0:
-            assert _encoder.exponent(rng[b], 12) <= e[b]
+            assert _grids.exponent(rng[b], 12) <= e[b]
             # Only an exact coarse grid (the index gcd: a +-100 square on 2^3) is coarser
-            assert e[b] <= _encoder.exponent(rng[b], 8) or exact[b]
+            assert e[b] <= _grids.exponent(rng[b], 8) or exact[b]
 
 
 def size(x, p):

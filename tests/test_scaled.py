@@ -83,7 +83,7 @@ def test_grids_are_found_and_decode(name):
         np.testing.assert_array_equal(y, x)
     else:
         err = np.abs(y - x).reshape(-1, L).max(1)
-        fine = [2.0 ** fluxcode._encoder.range_exponent(b.min(), b.max(), 16) for b in x.reshape(-1, L)]
+        fine = [2.0 ** fluxcode._grids.range_exponent(b.min(), b.max(), 16) for b in x.reshape(-1, L)]
         assert (err <= np.array(fine) / 4).all()
     dens = group_rows(plain).grid_scales >> SCALE_SHIFT
     assert (dens <= 1).all()  # no rational search: D = 1 (or unscaled)

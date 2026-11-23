@@ -15,7 +15,7 @@ import numpy as np
 import numpy.typing as npt
 import zstandard
 
-from . import _args, _bitpacking, _compress, _decoder, _encoder, _format, _time
+from . import _args, _bitpacking, _compress, _decoder, _encoder, _format, _grids, _time
 from ._types import DecodedGroup, EncodedGroup, EncodedSeries, Params, UpdatedGroup
 
 
@@ -64,7 +64,7 @@ def kernel_args(params: Params) -> tuple[int, int, int, float, float, int]:
         sum(1 << order for order in params.diff_orders),
         float(params.noise_floor_sigma),
         float(params.target_bits_per_sample or 0.0),
-        _encoder.GRIDS_LEVELS[params.grids],
+        _grids.GRIDS_LEVELS[params.grids],
     )
 
 
