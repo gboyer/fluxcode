@@ -358,6 +358,19 @@ factual finding held except the period predictor's numbers, which had a differen
   (predictions into a scratch array, then added: 4 × i32 lanes) was twice as slow on runs of a
   period's length (`period_simd.py`). The owner wanted SIMD if it paid; it doesn't here.
 
+**Speed with the predictor on (2026-11-22, `period_speed.py`: effort 5 against effort 6, which
+differ only by the predictor; interleaved in one process, battery power):** encode +14% over the
+corpus: +35% on the 6 signals that use it (up to +65% on a clean 50.3 Hz sine), +10% on the 41 that
+never take it (0 to +36%: oscillating blocks that pass the crossing check run the whole search and
+then fail the gain test). Decode unchanged (−1% on the signals using it, 0 elsewhere). ENCODER's
+"about +5% on a non-periodic block" understates it.
+
+**Put on ice (2026-11-22, the owner):** the predictor lives on this branch, `period-predictor`
+(from value-exp at ae1738d); value-exp itself no longer has it. To pick it up again: the gain is
+−15% motor current, −18% line voltage, nothing elsewhere; the costs are above; open ideas are a
+cheaper early reject for oscillating blocks it won't take, and the free-gain 2-tap lead on the
+accelerometers (3.4).
+
 **Script index** (timing microbenchmarks not cited above): `kernels.py`, `kernels2.py` (noise
 kernel variants and the fused checks, the per-stage µs of 3.1), `time_noise.py` (noise estimate
 cost per block), `ptime.py` (the period search, 3.4).
