@@ -357,7 +357,7 @@ uv run python bench/bench_gb.py --gib 0.05   # a quick benchmark; the full run i
 Code layout (`fluxcode/`), from the public API down:
 
 - `_api.py`: the public functions (encode, decode, update); `_types.py`: `Params` and the result
-  tuples.
+  tuples; `_args.py`: argument validation and coercion.
 - `_group.py`: building and parsing block groups from flat sample arrays and block sizes;
   `_time_blocks.py`: dividing timed samples into blocks of a fixed duration.
 - `_compress.py`: the compression policy (efforts, layout choice, flush points, framing, candidate
@@ -373,7 +373,7 @@ Code layout (`fluxcode/`), from the public API down:
   `EncodedTimeColumns`, `BodyLayout`, SPEC §6); `_body.py`: body serialization, time-field
   reading/validation, and binary splicing for `update`; `_bitpacking.py`: bit/byte-plane
   transposition, zigzag, and sample-code & time-residual plane codecs. `rust/src/` has the
-  same-named `format.rs` and `bitpacking.rs`.
+  same-named `format.rs` and `bitpacking.rs`, plus `planes.rs`.
 
 The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
 defining each kernel, not the constants and helpers it inlines from other modules. After editing

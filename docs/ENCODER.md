@@ -858,8 +858,8 @@ N their total samples.
     quadratic: 0.21 → 0.54 bits/sample at t = 2).
   - The target is meant to cap unexpectedly high usage, so t must be at least 6, where the
     quadratic's estimate is under budget.
-  - Supporting lower targets would need a check of the actual compressed size (a TODO in the
-    encoder).
+  - Supporting lower targets would need a check of the actual compressed size (currently enforced
+    at `MIN_TARGET_BITS = 6.0` in `fluxcode/_types.py`).
   - Validate on real data (`bench/estimate.py`).
 - **In `update`, `update_time_blocks` and `replace_time_blocks`** the cap applies to the re-encoded blocks only, with a
   budget of t × their samples.
