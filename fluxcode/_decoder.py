@@ -21,11 +21,12 @@ from ._bitpacking import (
     unshuffle_block,
     unzigzag16,
 )
+from ._escapes import restore_coded
 from ._format import (
+    BLOCK_FLAG_CODED,
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_LONG_TIME,
-    BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
     BLOCK_FLAG_RESERVED,
     BLOCK_FLAG_SCALED,
@@ -44,7 +45,6 @@ from ._format import (
     scale_valid,
     value_anchor_start,
 )
-from ._nonfinite import restore_nonfinite
 
 # Validation statuses of uncompressed block groups (plain ints: numba kernels use them)
 OK: int = 0
@@ -288,6 +288,8 @@ def decode_group(
     out_samples: np.ndarray,
     byte_planes: bool,
     has_time: bool,
+    escapes: np.ndarray,
+    escape_offsets: np.ndarray,
 ) -> None:
     """Decodes the given blocks of an uncompressed body into the output array.
 
@@ -359,6 +361,9 @@ def decode_group(
             dequantize_decimal(block_residuals, anchor_bits[0], param_val, block_out)
         else:
             dequantize_pow2(block_residuals, anchor_float[0], param_val, block_out)
-        # Restore non-finite samples (NaN, +/-inf) from code planes
-        if flags & BLOCK_FLAG_NONFINITE:
-            restore_nonfinite(code_planes, code_offsets[block_idx], block_out)
+        # Restore coded samples (NaN and escaped values) from code planes
+        if flags & BLOCK_FLAG_CODED:
+            restore_coded(
+                code_planes, code_offsets[block_idx], escapes[escape_offsets[block_idx]:escape_offsets[block_idx + 1]],
+                block_out,
+            )

@@ -15,7 +15,17 @@ import numpy as np
 import numpy.typing as npt
 import zstandard
 
-from . import _args, _bitpacking, _compress, _decoder, _encoder, _format, _grids, _time
+from . import (
+    _args,
+    _bitpacking,
+    _compress,
+    _decoder,
+    _encoder,
+    _escapes,
+    _format,
+    _grids,
+    _time,
+)
 from ._types import DecodedGroup, EncodedGroup, EncodedSeries, Params, UpdatedGroup
 
 
@@ -122,6 +132,12 @@ def encode_rows(
     )
     # The kernel writes the value flags; the time rows set the time flags
     rows.block_flags[:] |= block_flags
+    rows = rows._replace(
+        escapes=_escapes.collect_escapes(
+            samples, block_sizes, rows.block_flags, rows.codes, stats.block_min, stats.block_max,
+            params.max_quantize_bits,
+        )
+    )
     return rows, stats
 
 
@@ -323,6 +339,8 @@ class ParsedGroup(NamedTuple):
         block_flags: 1D uint8 array of block flags (a view of the body).
         block_sizes: 1D int64 array of block sizes.
         layout: The blocks' Layout.
+        escapes: 1D float64 array of escaped values (from the body's escapes trailer).
+        escape_offsets: 1D int64 array of each block's first escaped value (num_blocks + 1).
     """
 
     raw_body: np.ndarray
@@ -330,6 +348,8 @@ class ParsedGroup(NamedTuple):
     block_flags: np.ndarray
     block_sizes: np.ndarray
     layout: _format.Layout
+    escapes: np.ndarray
+    escape_offsets: np.ndarray
 
     @property
     def has_time(self) -> bool:
@@ -368,11 +388,22 @@ def decompress(group: bytes) -> ParsedGroup:
     block_sizes, offsets = _format.read_layout(raw_body, num_blocks)
     if int(offsets.sample_offsets[-1]) != num_samples:
         raise ValueError(f"block group's block sizes add up to {int(offsets.sample_offsets[-1])}, not its {num_samples} samples")
-    # The exact size depends on which blocks carry non-finite code planes and time residual planes
-    if raw_body.shape[0] != _format.group_size(num_blocks, offsets, has_time):
-        raise ValueError(
-            f"block group body of {raw_body.shape[0]} bytes doesn't match its blocks' sizes and flags"
+    # The exact size depends on coded planes, time residual planes, and the escapes trailer
+    fields_size = _format.group_size(num_blocks, offsets, has_time)
+    escape_offsets = np.zeros(num_blocks + 1, np.int64)
+    escapes_ok = False
+    if raw_body.shape[0] >= fields_size:
+        escapes_ok = _escapes.escape_offsets(
+            raw_body, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets, has_time, escape_offsets
         )
+    if (
+        raw_body.shape[0] < fields_size or not escapes_ok
+        or raw_body.shape[0] - fields_size != _format.BYTES_PER_ESCAPE * int(escape_offsets[-1])
+    ):
+        raise ValueError(
+            f"block group body of {raw_body.shape[0]} bytes doesn't match its blocks' sizes, flags and codes"
+        )
+    escapes = _escapes.read_escapes(raw_body, fields_size, int(escape_offsets[-1]))
     validation_status, failing_block_idx = _decoder.check_group(raw_body, offsets.sample_offsets, has_time)
     if validation_status == _decoder.BAD_FLAGS:
         raise ValueError(
@@ -385,7 +416,7 @@ def decompress(group: bytes) -> ParsedGroup:
         raise ValueError(f"block {failing_block_idx}: anchor out of range (corrupt block group)")
     if validation_status == _decoder.BAD_SCALE:
         raise ValueError(f"block {failing_block_idx}: grid scale invalid for its grid (corrupt block group)")
-    return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets)
+    return ParsedGroup(raw_body, header, block_flags, block_sizes, offsets, escapes, escape_offsets)
 
 
 def read_time_rows(parsed: ParsedGroup, block_ids: np.ndarray) -> _format.TimeRows:
@@ -471,7 +502,7 @@ def decode_blocks(
     values = np.empty(parsed.header.num_samples)
     _decoder.decode_group(
         parsed.raw_body, offsets.sample_offsets, offsets.octet_offsets, offsets.code_offsets, block_ids, values,
-        parsed.header.byte_planes, parsed.has_time,
+        parsed.header.byte_planes, parsed.has_time, parsed.escapes, parsed.escape_offsets,
     )
     ticks = None
     if parsed.has_time:
@@ -832,6 +863,12 @@ def splice(
         )
     # Splice modified block rows directly into the binary body
     body, offsets = _bitpacking.splice_body(old_body, parsed.layout, old_starts, indices, new_rows, new_offsets)
+    escapes = _escapes.splice_escapes(
+        parsed.escapes, parsed.escape_offsets, num_old_blocks, num_blocks, indices,
+        new_rows.block_flags, new_rows.codes, new_rows.escapes, new_offsets,
+    )
+    if escapes.shape[0]:
+        body = np.concatenate([body, _escapes.escape_bytes(escapes)])
     # Repack and compress the spliced block group
     group = _compress.pack(
         body, offsets, num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,

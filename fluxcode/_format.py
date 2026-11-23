@@ -71,8 +71,8 @@ BLOCK_FLAG_ORDER: int = 0x03
 BLOCK_FLAG_DECIMAL: int = 0x04
 """Block flags: decimal quantization (bit 2)."""
 
-BLOCK_FLAG_NONFINITE: int = 0x08
-"""Block flags: non-finite code planes present (bit 3)."""
+BLOCK_FLAG_CODED: int = 0x08
+"""Block flags: 2-bit code planes present for non-finite and/or escaped samples (bit 3)."""
 
 BLOCK_FLAG_IRREGULAR_TIME: int = 0x10
 """Block flags: irregular times, with time residual planes (bit 4); only valid in block groups with
@@ -112,18 +112,22 @@ SHORT_BLOCK_LEN: int = 8
 (max_quantize_bits), on a decimal grid if one is detected, and order 0."""
 
 
-# Two-bit codes of non-finite samples (plain ints: numba kernels use them)
+# Two-bit codes for coded blocks (plain ints: numba kernels use them)
 CODE_FINITE: int = 0
-"""Two-bit code representing a finite sample (00b)."""
+"""Two-bit code representing a sample quantized on the block's grid (00b)."""
 
 CODE_NAN: int = 1
 """Two-bit code representing a NaN sample (01b)."""
 
-CODE_POS_INF: int = 2
-"""Two-bit code representing positive infinity (+inf, 10b)."""
+CODE_ESCAPE: int = 2
+"""Two-bit code representing an escaped sample (10b): its value is the block's next float64
+in the escapes trailer (±inf or an outlier stored apart so the bulk keeps its precision)."""
 
-CODE_NEG_INF: int = 3
-"""Two-bit code representing negative infinity (-inf, 11b)."""
+CODE_REPEAT: int = 3
+"""Two-bit code representing a repeat of the block's previous escaped value (11b)."""
+
+BYTES_PER_ESCAPE: int = 8
+"""Bytes per escaped value: float64, byte-planed at the end of the body."""
 
 
 class TimeUnitCode(enum.IntEnum):
@@ -307,7 +311,7 @@ def _fill_layout(
         flags = block_flags[block_idx]
         out_sample_offsets[block_idx + 1] = out_sample_offsets[block_idx] + num_samples
         out_octet_offsets[block_idx + 1] = out_octet_offsets[block_idx] + num_octets
-        out_code_offsets[block_idx + 1] = out_code_offsets[block_idx] + (num_octets if flags & BLOCK_FLAG_NONFINITE else 0)
+        out_code_offsets[block_idx + 1] = out_code_offsets[block_idx] + (num_octets if flags & BLOCK_FLAG_CODED else 0)
         out_short_offsets[block_idx + 1] = out_short_offsets[block_idx] + (
             num_octets if flags & BLOCK_FLAG_IRREGULAR_TIME else 0
         )
@@ -407,7 +411,8 @@ def group_size_bounds(num_blocks: int, num_samples: int, has_time: bool) -> tupl
     if has_time:
         plane_bytes_per_octet += 2 * TIME_SHORT_PLANES
     smallest = columns + fewest_octets * 8 * BYTES_PER_RESIDUAL_SAMPLE
-    return smallest, columns + most_octets * plane_bytes_per_octet
+    # At most every sample escaped (8 bytes per escaped float64 in the trailer)
+    return smallest, columns + most_octets * plane_bytes_per_octet + BYTES_PER_ESCAPE * num_samples
 
 
 class GroupHeader(NamedTuple):
@@ -754,6 +759,7 @@ class GroupRows(NamedTuple):
         residuals: 1D int16 array of every sample's residual.
         codes: 1D uint8 array of every sample's code (zeros in unflagged blocks).
         time_rows: The time axis rows, or None for a block group without a time axis.
+        escapes: 1D float64 array of escaped values in block and sample order (one per CODE_ESCAPE).
     """
 
     block_flags: np.ndarray
@@ -764,3 +770,4 @@ class GroupRows(NamedTuple):
     residuals: np.ndarray
     codes: np.ndarray
     time_rows: TimeRows | None
+    escapes: np.ndarray = np.zeros(0)

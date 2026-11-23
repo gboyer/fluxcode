@@ -332,7 +332,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
     params = Params(noise_floor_sigma=0)
     group = fluxcode.encode_blocks(x, sizes, params, times=ticks, time_unit="ns").group
     rows = group_rows(group)
-    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_NONFINITE) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))
+    assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_CODED) == len(set(np.searchsorted(offsets, [1, n // 2, n - 1], "right")))
     assert np.count_nonzero(rows.block_flags & _format.BLOCK_FLAG_LONG_TIME) == 1
     body = _group.decompress(group).raw_body
     for field, field_offsets in _plane_fields(body, num_blocks):

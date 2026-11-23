@@ -9,10 +9,10 @@ import pytest
 
 from fluxcode import _bitpacking, _format
 from fluxcode._format import (
+    BLOCK_FLAG_CODED,
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_LONG_TIME,
-    BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_SCALED,
 )
 
@@ -30,7 +30,7 @@ def random_rows(rng, sizes, has_time, nonfinite=0.3, irregular=0.5, long=0.3):
     offsets = np.concatenate([[0], np.cumsum(sizes)])
     filled = sizes > 0
     flags = (rng.integers(0, 4, num_blocks) | rng.choice([0, BLOCK_FLAG_DECIMAL], num_blocks)).astype(np.uint8)
-    flags |= np.where(filled & (rng.random(num_blocks) < nonfinite), BLOCK_FLAG_NONFINITE, 0).astype(np.uint8)
+    flags |= np.where(filled & (rng.random(num_blocks) < nonfinite), BLOCK_FLAG_CODED, 0).astype(np.uint8)
     params = np.where(filled, rng.integers(-2 ** 15, 2 ** 15, num_blocks), 0)
     scaled = filled & (rng.random(num_blocks) < 0.3)
     flags |= np.where(scaled, BLOCK_FLAG_SCALED, 0).astype(np.uint8)
@@ -38,7 +38,7 @@ def random_rows(rng, sizes, has_time, nonfinite=0.3, irregular=0.5, long=0.3):
     anchors = np.where(filled, rng.integers(-2 ** 63, 2 ** 63 - 1, num_blocks), 0)
     residuals = rng.integers(-2 ** 15, 2 ** 15, num_samples).astype(np.int16)
     codes = np.zeros(num_samples, np.uint8)
-    for block_idx in np.flatnonzero(flags & BLOCK_FLAG_NONFINITE):
+    for block_idx in np.flatnonzero(flags & BLOCK_FLAG_CODED):
         codes[offsets[block_idx]:offsets[block_idx + 1]] = rng.integers(0, 4, sizes[block_idx])
     flags[~filled] = 0
     time_rows = None
@@ -101,7 +101,7 @@ def test_round_trip(size, byte_planes, has_time):
     rng = np.random.default_rng(size)
     for _ in range(3):
         rows = random_rows(rng, [size, 5, size, 0, size, 9], has_time)
-        body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows)
+        body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows, escapes=rows.escapes)
         assert body.shape[0] == _format.group_size(6, _format.layout(rows.block_flags, rows.block_sizes), has_time)
         assert_rows_equal(_oracle.read_group(body, 6, byte_planes, has_time), rows)
         assert_padding_zero(body, rows, byte_planes, has_time)
@@ -112,10 +112,10 @@ def test_round_trip(size, byte_planes, has_time):
 def test_round_trip_largest_block(byte_planes, has_time):
     rows = random_rows(np.random.default_rng(1), [_format.MAX_BLOCK_LEN, 1, 0, 3], has_time, nonfinite=1,
                        irregular=1, long=1)
-    assert rows.block_flags[0] & BLOCK_FLAG_NONFINITE
+    assert rows.block_flags[0] & BLOCK_FLAG_CODED
     if has_time:
         assert rows.block_flags[0] & BLOCK_FLAG_LONG_TIME and rows.block_flags[3] & BLOCK_FLAG_IRREGULAR_TIME
-    body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows)
+    body = _oracle.write_group(*rows[:7], byte_planes=byte_planes, time_rows=rows.time_rows, escapes=rows.escapes)
     assert_rows_equal(_oracle.read_group(body, 4, byte_planes, has_time), rows)
     assert_padding_zero(body, rows, byte_planes, has_time)
 
@@ -126,7 +126,7 @@ def test_flags_select_the_fields():
     rows = random_rows(np.random.default_rng(2), [20] * 40, True)
     lay = _format.layout(rows.block_flags, rows.block_sizes)
     octets = np.diff(lay.octet_offsets)
-    for flag, field_offsets in [(BLOCK_FLAG_NONFINITE, lay.code_offsets), (BLOCK_FLAG_IRREGULAR_TIME, lay.short_offsets),
+    for flag, field_offsets in [(BLOCK_FLAG_CODED, lay.code_offsets), (BLOCK_FLAG_IRREGULAR_TIME, lay.short_offsets),
                                 (BLOCK_FLAG_LONG_TIME, lay.long_offsets)]:
         flagged = (rows.block_flags & flag) > 0
         assert 0 < flagged.sum() < 40

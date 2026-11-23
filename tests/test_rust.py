@@ -140,7 +140,7 @@ def test_pack_group_rejects_a_short_body_and_an_unknown_layout():
     with pytest.raises(ValueError, match="too short"):
         fluxcode_rs.pack_group(np.zeros(10, np.uint8), 1, 8, 1, 0, "best", True, [3])
     with pytest.raises(ValueError, match="layout"):
-        fluxcode_rs.pack_group(np.zeros(13 + 16, np.uint8), 1, 8, 1, 0, "size", True, [3])
+        fluxcode_rs.pack_group(np.zeros(17 + 16, np.uint8), 1, 8, 1, 0, "size", True, [3])
 
 
 def test_mismatched_rows_are_rejected():
@@ -149,7 +149,7 @@ def test_mismatched_rows_are_rejected():
     with pytest.raises(ValueError, match="rows"):
         fluxcode_rs.compress_group(
             flags, sizes, np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(2, np.int64), np.zeros(5, np.int16),
-            np.zeros(6, np.uint8), "heuristic", True, [3],
+            np.zeros(6, np.uint8), np.zeros(0, np.float64), "heuristic", True, [3],
         )
 
 
@@ -158,8 +158,31 @@ def test_unknown_layout_is_rejected():
     with pytest.raises(ValueError, match="layout"):
         fluxcode_rs.compress_group(
             flags, np.array([3], np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64), np.zeros(1, np.int64),
-            np.zeros(3, np.int16), np.zeros(3, np.uint8), "size", True, [3],
+            np.zeros(3, np.int16), np.zeros(3, np.uint8), np.zeros(0, np.float64), "size", True, [3],
         )
+
+
+def test_rust_and_python_match_with_escapes():
+    """Groups with escaped outliers and ±inf use Rust compress_group natively and match Python byte-for-byte."""
+    rng = np.random.default_rng(11)
+    x = 5 + 0.3 * np.sin(np.arange(10_000) / 500) + rng.normal(0, 0.002, 10_000)
+    x[[100, 1500, 5000]] = [-9999.0, 1e6, np.inf]
+    x[7000:7010] = -9999.0
+    for effort in (1, 4, 5):
+        params = Params(effort=effort)
+        group_rust = fluxcode.encode_group(x, params).group
+        saved = _compress._rust
+        try:
+            _compress._rust = None
+            group_python = fluxcode.encode_group(x, params).group
+        finally:
+            _compress._rust = saved
+        if SAME_ZSTD:
+            assert group_rust == group_python
+        else:
+            np.testing.assert_array_equal(
+                fluxcode.decode_group(group_rust).values, fluxcode.decode_group(group_python).values
+            )
 
 
 def test_bit_planes_use_the_vector_path_of_the_architecture():

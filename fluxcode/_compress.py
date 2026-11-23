@@ -18,9 +18,9 @@ from typing import NamedTuple
 import numpy as np
 import zstandard
 
-from . import _bitpacking, _format
+from . import _bitpacking, _escapes, _format
 
-RUST_INTERFACE_VERSION: int = 4
+RUST_INTERFACE_VERSION: int = 5
 """Version of the extension interface this code calls (compress_group, pack_group and the
 policy constants).
 
@@ -315,7 +315,7 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     if _rust is not None and rows.time_rows is None:
         return _rust.compress_group(  # type: ignore[no-any-return]
             rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
-            rows.codes, effort.layout, effort.flush, list(effort.zstd_levels),
+            rows.codes, rows.escapes, effort.layout, effort.flush, list(effort.zstd_levels),
         )
     offsets = _format.layout(rows.block_flags, rows.block_sizes)
 
@@ -324,4 +324,6 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
         rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
         rows.codes, rows.time_rows, offsets,
     )
+    if rows.escapes.shape[0]:
+        body = np.concatenate([body, _escapes.escape_bytes(rows.escapes)])
     return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)

@@ -12,7 +12,7 @@ from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format, _grids, _group
-from fluxcode._format import BLOCK_FLAG_NONFINITE, BLOCK_FLAG_ORDER, SHORT_BLOCK_LEN
+from fluxcode._format import BLOCK_FLAG_CODED, BLOCK_FLAG_ORDER, SHORT_BLOCK_LEN
 
 SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
 
@@ -82,7 +82,7 @@ def test_short_blocks_skip_the_analysis(size, decimal):
     group, _, _, _ = fluxcode.encode_blocks(x, [size], params)
     rows = group_rows(group)
     flags = int(rows.block_flags[0])
-    assert flags & BLOCK_FLAG_ORDER == 0 and flags & BLOCK_FLAG_NONFINITE
+    assert flags & BLOCK_FLAG_ORDER == 0 and flags & BLOCK_FLAG_CODED
     finite = x[np.isfinite(x)]
     y = fluxcode.decode_group(group).values
     np.testing.assert_array_equal(np.isnan(y), np.isnan(x))

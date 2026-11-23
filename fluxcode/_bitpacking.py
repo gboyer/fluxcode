@@ -14,9 +14,9 @@ import numpy as np
 from numba import njit
 
 from ._format import (
+    BLOCK_FLAG_CODED,
     BLOCK_FLAG_IRREGULAR_TIME,
     BLOCK_FLAG_LONG_TIME,
-    BLOCK_FLAG_NONFINITE,
     BYTES_PER_ANCHOR,
     BYTES_PER_PARAM,
     BYTES_PER_RESIDUAL_SAMPLE,
@@ -1042,7 +1042,7 @@ def write_rows(
             bplanes[1, sample_start:sample_start + block_len],
         )
         bplanes[:, sample_start + block_len:8 * octet_offsets[block_idx + 1]] = 0
-        if block_flags[block_idx] & BLOCK_FLAG_NONFINITE:
+        if block_flags[block_idx] & BLOCK_FLAG_CODED:
             # Store 2-bit code planes for flagged blocks
             put_codes(codes[sample_offsets[block_idx]:sample_offsets[block_idx + 1]], cplanes, code_offsets[block_idx])
 
@@ -1271,7 +1271,7 @@ def _splice_body(
             bplanes[1, sample_start:sample_start + block_len],
         )
         bplanes[:, sample_start + block_len:8 * octet_offsets[block_idx]] = 0
-        if flags & BLOCK_FLAG_NONFINITE:
+        if flags & BLOCK_FLAG_CODED:
             put_codes(new_codes[first_sample:first_sample + block_len], cplanes, code_offsets[block_idx - 1])
         if has_time and flags & BLOCK_FLAG_IRREGULAR_TIME:
             shuffle_time_residuals(

@@ -17,10 +17,11 @@ from numba.cpython.unsafe.numbers import leading_zeros as _leading_zeros
 
 from . import _extreme_magnitudes as xm
 from . import _rational
+from ._escapes import ESCAPE_MIN_LEN, escape_outliers, fill_nonfinite, hold_coded
 from ._format import (
+    BLOCK_FLAG_CODED,
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_IRREGULAR_TIME,
-    BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
     BLOCK_FLAG_SCALED,
     E_MAX,
@@ -39,6 +40,7 @@ from ._grids import (
     _common_twos,
     center_anchor,
     decimal_grid,
+    floor_exponent,
     plan_block_step,
     planned_multiple,
     quantize_block,
@@ -48,7 +50,6 @@ from ._grids import (
     stored_step,
 )
 from ._noise import block_noise
-from ._nonfinite import fill_nonfinite
 from ._time import CADENCE_SAMPLES
 
 leading_zeros = cast("Callable[[int | np.integer], int]", _leading_zeros)
@@ -615,9 +616,10 @@ def _apply_target_reallocation(
             backup_residuals = scratch_residuals[:block_len]
             backup_residuals[:] = block_residuals
             block_samples = samples[first_sample:first_sample + block_len]
-            has_nonfinite = prev_flags & BLOCK_FLAG_NONFINITE
-            if has_nonfinite:
-                fill_nonfinite(block_samples, scratch_held[:block_len], out_codes[first_sample:first_sample + block_len])
+            has_coded = prev_flags & BLOCK_FLAG_CODED
+            if has_coded:
+                # Hold coded samples (non-finite or escaped) as the first pass did
+                hold_coded(block_samples, out_codes[first_sample:first_sample + block_len], scratch_held[:block_len])
                 block_samples = scratch_held[:block_len]
             target_exp = min(block_exponents[block_idx] + bit_reductions[block_idx], E_MAX)
             (
@@ -643,8 +645,8 @@ def _apply_target_reallocation(
                 anchor,
                 decimal_base,
             )
-            if has_nonfinite:
-                out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
+            if has_coded:
+                out_block_flags[block_idx] |= BLOCK_FLAG_CODED
             # Roll back if re-quantization failed to reduce estimated bits
             if estimate_bits(block_residuals) >= estimated_bits_per_block[block_idx]:
                 out_block_flags[block_idx] = prev_flags
@@ -750,9 +752,9 @@ def encode_group(
         block_residuals = out_residuals[first_sample:first_sample + block_len]
         block_quantized = scratch_quantized[:block_len]
         block_min, block_max, block_mean, bad_sample_idx = block_stats(block_samples)
-        has_nonfinite = bad_sample_idx >= 0
+        has_coded = bad_sample_idx >= 0
         finite_count = block_len
-        if has_nonfinite:
+        if has_coded:
             # Impute non-finite values with sample-and-held finite values
             block_min, block_max, block_mean, finite_count = fill_nonfinite(
                 block_samples, scratch_held[:block_len], block_codes
@@ -766,7 +768,7 @@ def encode_group(
         out_block_maxima[block_idx] = block_max
         out_block_means[block_idx] = block_mean
         # All non-finite block defaults to zero range
-        if has_nonfinite and finite_count == 0:
+        if has_coded and finite_count == 0:
             block_min = block_max = 0.0
         if block_len <= SHORT_BLOCK_LEN:
             # Too short to analyze: the finest step, stored without differences. Decimal
@@ -791,18 +793,18 @@ def encode_group(
                     block_quantized, 0, 0, fine_exp, np.int64(0), anchor, np.int64(0)
                 )
             residual(block_quantized, 0, block_residuals)
-            if has_nonfinite:
-                out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
+            if has_coded:
+                out_block_flags[block_idx] |= BLOCK_FLAG_CODED
             continue
         base_lower_bounds[block_idx] = block_min
         base_upper_bounds[block_idx] = block_max
         noise_sigma = noise_rho = 0.0
+        # Only irregular times steer the noise floor: regular ones are as no times
+        irregular = timed and (time_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME) != 0
         if noise_factor > 0 and block_max > block_min and block_len >= NOISE_MIN_LEN:
-            # Only irregular times steer the noise floor: regular ones are as no times
-            irregular = timed and (time_flags[block_idx] & BLOCK_FLAG_IRREGULAR_TIME) != 0
             noise_sigma, noise_rho = block_noise(
                 block_samples,
-                block_codes if has_nonfinite else no_codes,
+                block_codes if has_coded else no_codes,
                 ticks[first_sample:first_sample + block_len] if irregular else no_ticks,
                 range_scale(block_min, block_max),
                 scratch_pivots,
@@ -810,6 +812,25 @@ def encode_group(
                 scratch_noise_weights,
                 math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
             )
+        # Outliers stored apart (escapes), when that refines the rest of the block (§5.1.1)
+        if finite_count > 0 and block_len >= ESCAPE_MIN_LEN:
+            escaped, bulk_min, bulk_max = escape_outliers(
+                block_samples, scratch_index[:block_len], block_codes, has_coded, block_mean, block_min, block_max,
+                floor_exponent(noise_factor, noise_sigma, noise_rho), max_bits, grids, block_quantized,
+            )
+            if escaped:
+                scratch_held[:block_len] = scratch_index[:block_len]
+                block_samples = scratch_held[:block_len]
+                block_min, block_max = bulk_min + 0.0, bulk_max + 0.0
+                base_lower_bounds[block_idx], base_upper_bounds[block_idx] = block_min, block_max
+                has_coded = True
+                # Re-estimate noise without the escaped samples (dropouts/glitches skew the first estimate)
+                if noise_factor > 0 and block_len >= NOISE_MIN_LEN and block_max > block_min:
+                    noise_sigma, noise_rho = block_noise(
+                        block_samples, block_codes, ticks[first_sample:first_sample + block_len] if irregular else no_ticks,
+                        range_scale(block_min, block_max), scratch_pivots, scratch_noise_diffs, scratch_noise_weights,
+                        math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
+                    )
         # Plan quantization exponent
         planned_exp = plan_block_step(
             block_samples, block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits
@@ -830,8 +851,8 @@ def encode_group(
             block_residuals,
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
-        if has_nonfinite:
-            out_block_flags[block_idx] |= BLOCK_FLAG_NONFINITE
+        if has_coded:
+            out_block_flags[block_idx] |= BLOCK_FLAG_CODED
         if use_target:
             # Every block counts from its planned exponent, also on an exact coarser grid (a decimal
             # grid, the index gcd's, a scaled grid), with the budget below in the same units (§5.8)

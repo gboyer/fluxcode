@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Garry Boyer
 //! The block group format's constants, offsets and header, as in `fluxcode/_format.py`.
 
-/// Block flags bit 3: the block has non-finite code planes.
-pub const BLOCK_FLAG_NONFINITE: u8 = 0x08;
+/// Block flags bit 3: the block has 2-bit code planes (non-finite and/or escaped samples).
+pub const BLOCK_FLAG_CODED: u8 = 0x08;
 
 /// Block group header flags bit 0: the residual planes are byte planes.
 const GROUP_FLAG_BYTE_PLANES: u8 = 1;
@@ -31,8 +31,10 @@ pub const OCTET_SAMPLES: usize = 8;
 pub const BIT_PLANES: usize = 16;
 /// Bytes of the residual planes per octet.
 pub const RESIDUAL_BYTES_PER_OCTET: usize = BIT_PLANES;
-/// Bytes of the non-finite code planes (2 bits per sample) per octet of a flagged block.
+/// Bytes of the 2-bit code planes per octet of a coded block.
 pub const CODE_BYTES_PER_OCTET: usize = 2;
+/// Bytes per escaped float64 value in the byte-planed escapes trailer.
+pub const BYTES_PER_ESCAPE: usize = 8;
 
 /// Offset of the block_sizes field in the body.
 pub fn block_sizes_start(num_blocks: usize) -> usize {
@@ -112,6 +114,7 @@ pub struct Rows<'a> {
     pub value_anchors: &'a [i64],
     pub residuals: &'a [i16],
     pub codes: &'a [u8],
+    pub escapes: &'a [f64],
     pub sample_offsets: Vec<usize>,
     pub octet_offsets: Vec<usize>,
     pub code_offsets: Vec<usize>,
@@ -120,6 +123,7 @@ pub struct Rows<'a> {
 impl<'a> Rows<'a> {
     /// The rows of a block group without a time axis with their offsets (`_format._fill_layout`),
     /// or an error if the fields disagree.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         block_flags: &'a [u8],
         block_sizes: &'a [i64],
@@ -128,6 +132,7 @@ impl<'a> Rows<'a> {
         value_anchors: &'a [i64],
         residuals: &'a [i16],
         codes: &'a [u8],
+        escapes: &'a [f64],
     ) -> Result<Self, String> {
         let num_blocks = block_flags.len();
         let mismatch = || "rows don't match the layout".to_string();
@@ -148,7 +153,7 @@ impl<'a> Rows<'a> {
             }
             let size = block_sizes[block_idx] as usize;
             let octets = size.div_ceil(OCTET_SAMPLES);
-            let has_codes = block_flags[block_idx] & BLOCK_FLAG_NONFINITE != 0;
+            let has_codes = block_flags[block_idx] & BLOCK_FLAG_CODED != 0;
             sample_offsets[block_idx + 1] = sample_offsets[block_idx] + size;
             octet_offsets[block_idx + 1] = octet_offsets[block_idx] + octets;
             code_offsets[block_idx + 1] =
@@ -173,6 +178,7 @@ impl<'a> Rows<'a> {
             value_anchors,
             residuals,
             codes,
+            escapes,
             sample_offsets,
             octet_offsets,
             code_offsets,

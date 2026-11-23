@@ -4,8 +4,8 @@
 
 use crate::format::{
     block_sizes_start, grid_params_start, grid_scale_start, residual_start, value_anchor_start,
-    Rows, BIT_PLANES, BLOCK_FLAG_NONFINITE, BYTES_PER_ANCHOR, BYTES_PER_PARAM, BYTES_PER_SCALE,
-    BYTES_PER_SIZE, CODE_BYTES_PER_OCTET, METADATA_BYTES_PER_BLOCK, OCTET_SAMPLES,
+    Rows, BIT_PLANES, BLOCK_FLAG_CODED, BYTES_PER_ANCHOR, BYTES_PER_ESCAPE, BYTES_PER_PARAM,
+    BYTES_PER_SCALE, BYTES_PER_SIZE, CODE_BYTES_PER_OCTET, METADATA_BYTES_PER_BLOCK, OCTET_SAMPLES,
     RESIDUAL_BYTES_PER_OCTET,
 };
 use crate::planes::{self, transpose8};
@@ -32,19 +32,36 @@ fn put_byte_planed(
 
 /// The uncompressed body of a block group without a time axis, in the byte-plane layout: the
 /// metadata columns, the zigzagged residuals as a low and a high byte plane (each block padded with
-/// zeros to whole octets of 8 samples), then the non-finite code planes.
+/// zeros to whole octets of 8 samples), the 2-bit code planes, and any byte-planed escaped float64s.
 pub fn write_body(rows: &Rows) -> Vec<u8> {
     let (num_blocks, num_octets) = (rows.shape.num_blocks, rows.shape.num_octets);
     let num_code_octets = rows.code_offsets[num_blocks];
     let residuals_start = METADATA_BYTES_PER_BLOCK * num_blocks;
     let residual_bytes = RESIDUAL_BYTES_PER_OCTET * num_octets;
-    let mut body =
-        vec![0u8; residuals_start + residual_bytes + CODE_BYTES_PER_OCTET * num_code_octets];
+    let code_bytes = CODE_BYTES_PER_OCTET * num_code_octets;
+    let escape_bytes = BYTES_PER_ESCAPE * rows.escapes.len();
+    let mut body = vec![0u8; residuals_start + residual_bytes + code_bytes + escape_bytes];
     write_columns(rows, &mut body);
-    let (residual_planes, code_planes) = body[residuals_start..].split_at_mut(residual_bytes);
+    let (residual_planes, tail) = body[residuals_start..].split_at_mut(residual_bytes);
+    let (code_planes, escape_planes) = tail.split_at_mut(code_bytes);
     write_residual_planes(rows, residual_planes);
     write_code_planes(rows, code_planes, num_code_octets);
+    write_escape_planes(rows.escapes, escape_planes);
     body
+}
+
+/// Writes byte-planed escaped float64 values (all byte 0s, all byte 1s, ...).
+fn write_escape_planes(escapes: &[f64], escape_planes: &mut [u8]) {
+    let num_escapes = escapes.len();
+    if num_escapes == 0 {
+        return;
+    }
+    for (idx, &val) in escapes.iter().enumerate() {
+        let bits = val.to_bits();
+        for byte_idx in 0..BYTES_PER_ESCAPE {
+            escape_planes[byte_idx * num_escapes + idx] = (bits >> (8 * byte_idx)) as u8;
+        }
+    }
 }
 
 /// Writes the flags, block_sizes, grid_params, grid_scale and value_anchor fields.
@@ -117,7 +134,7 @@ fn write_residual_planes(rows: &Rows, residual_planes: &mut [u8]) {
 fn write_code_planes(rows: &Rows, code_planes: &mut [u8], num_code_octets: usize) {
     let (plane0, plane1) = code_planes.split_at_mut(num_code_octets);
     for block_idx in 0..rows.shape.num_blocks {
-        if rows.block_flags[block_idx] & BLOCK_FLAG_NONFINITE == 0 {
+        if rows.block_flags[block_idx] & BLOCK_FLAG_CODED == 0 {
             continue;
         }
         let first_sample = rows.sample_offsets[block_idx];

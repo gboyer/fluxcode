@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pytest
 
-from fluxcode import _decoder, _encoder, _grids, _noise, _nonfinite, _time
+from fluxcode import _decoder, _encoder, _escapes, _grids, _noise, _time
 
 RNG = np.random.default_rng(0)
 
@@ -302,7 +302,7 @@ def test_noise_masked_matches_reference(kind, frac, scale_k):
         y = x.copy()
         y[rng.random(1000) < frac] = np.nan
         xf, codes = np.empty(1000), np.empty(1000, np.uint8)
-        lo, hi, _, _ = _nonfinite.fill_nonfinite(y, xf, codes)
+        lo, hi, _, _ = _escapes.fill_nonfinite(y, xf, codes)
         k = _grids.range_scale(lo, hi)
         sigma, rho = _noise.noise_masked(xf, codes, k, 500, d, w)
         yr = np.ldexp(np.where(codes == 0, y, 0.0), -k)
