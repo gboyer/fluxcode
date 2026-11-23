@@ -31,9 +31,10 @@ jobs:
       # (rustc --test is used directly because pyo3's extension-module feature omits libpython linkage on Linux)
       - run: rustc --edition 2021 --test -O rust/src/planes.rs -o planes_test && ./planes_test
       - run: uv run ruff check
+      - run: uv run ruff format --check
       # experimental/ is excluded from the lint config: still check it for syntax errors and undefined names
       - run: uv run ruff check --isolated --select E9,F63,F7,F82 experimental
       # ...and run the parts that reach into fluxcode's private modules
       - run: uv run --locked --project experimental python experimental/smoke.py
-      - run: uv run mypy fluxcode fluxprune
+      - run: uv run mypy --strict fluxcode fluxprune rust/fluxcode_rs.pyi
       - run: uv run ty check

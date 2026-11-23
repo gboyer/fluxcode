@@ -3,6 +3,7 @@
 """Each numba stage against a small numpy reference."""
 
 import math
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -169,8 +170,6 @@ def test_allocate_target():
 
 # Extreme ranges, against exact rational arithmetic (fractions.Fraction holds any double exactly)
 
-from fractions import Fraction
-
 DBL_MAX = float(np.finfo(np.float64).max)
 TINY = 5e-324
 
@@ -218,12 +217,12 @@ def test_quantize_and_dequantize_extremes(lo, hi, bits):
     q = np.empty(200, np.int32)
     anchor = _grids.quantize_power_of_two(x, lo, hi, e, q)
     assert (anchor, q.tolist()) == ref_quantize(x, lo, e)
-    assert ((0 <= q) & (q < 2 ** 16)).all() and q[0] == 0
+    assert ((q >= 0) & (q < 2 ** 16)).all() and q[0] == 0
     y = np.empty(200)
     _decoder.dequantize_pow2(q, anchor, e, y)
     assert np.isfinite(y).all()
     half = Fraction(2) ** (e - 1)
-    for xi, yi in zip(x, y):
+    for xi, yi in zip(x, y, strict=True):
         assert abs(Fraction(yi) - Fraction(xi)) <= half
 
 

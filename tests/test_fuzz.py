@@ -108,7 +108,7 @@ def check_case(x: np.ndarray, params: Params) -> str | None:
                 return failure(found)
             if params.target_bits_per_sample is None and not encodes_alone(x, result.group, params):
                 return "not alone"  # the target caps the whole group
-    except Exception:  # noqa: BLE001 (any exception is the finding)
+    except Exception:
         return "crash"
     return None
 
@@ -212,7 +212,7 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
                     group, found = random_time_update(rng, edges, group, x, ticks, params, hour)
                     if found:
                         return step, cast(str, failure(found))
-    except Exception:  # noqa: BLE001 (any exception is the finding)
+    except Exception:
         return step, "crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
     return None
 
@@ -353,7 +353,7 @@ def check_decimal_case(seed: int, case: int) -> str | None:
                 updated = fluxcode.update_time_blocks(result.group, new, new_ticks, params, **hour)
                 found = verify.update_time_blocks(updated, result.group, new, new_ticks, params, decimals=decimals,
                                                   **hour)
-    except Exception:  # noqa: BLE001 (any exception is the finding)
+    except Exception:
         return f"{step}: crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
     return f"{step}: {failure(found)} (DECIMAL_PARAMS[{params_idx}])" if found else None
 

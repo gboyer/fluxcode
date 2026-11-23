@@ -80,7 +80,7 @@ def decode_or_report(group: bytes, found: list[Violation]) -> Decoded | None:
     """Decodes ``group``, appending a ``"decode"`` violation and returning None on any error."""
     try:
         return decode(group)
-    except Exception as exc:  # noqa: BLE001 (any failure to decode is the finding)
+    except Exception as exc:
         found.append(Violation("decode", -1, f"{type(exc).__name__}: {exc}"))
         return None
 

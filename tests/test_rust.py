@@ -58,7 +58,7 @@ def test_rust_groups_match_python_groups(effort):
             assert rust == python, name
         else:
             # another libzstd may code the same body differently: the block groups still decode alike
-            for group_rust, group_python in zip(rust, python):
+            for group_rust, group_python in zip(rust, python, strict=True):
                 a, b = fluxcode.decode_group(group_rust), fluxcode.decode_group(group_python)
                 assert np.array_equal(a.values, b.values, equal_nan=True), name
                 assert abs(len(group_rust) - len(group_python)) <= 0.02 * len(group_python) + 16, name

@@ -330,7 +330,7 @@ def encode_series(
                 snap=False,
             )
         )
-    groups, mins, maxs, means = (list(col) for col in zip(*parts))
+    groups, mins, maxs, means = (list(col) for col in zip(*parts, strict=True))
     return EncodedSeries(groups, mins, maxs, means)
 
 

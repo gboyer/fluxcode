@@ -97,7 +97,7 @@ ALL_KINDS = FLEET + KINDS + DISCRETE_NAMES
 PRESETS = {
     "sensor-mix": {"analog": 35, "held": 25, "digital": 10, "vibration": 10, "counter": 5,
                 "sensor-0.1": 5, "noisy-sine": 5, "random-walk": 5},
-    "all": {k: 1 for k in ALL_KINDS},
+    "all": dict.fromkeys(ALL_KINDS, 1),
 }
 # A guess at a fleet's clocks: mostly on a perfect grid, many with a few gaps, some noisy.
 TIME_PRESETS = {"none": {}, "clock-mix": {"grid": 60, "grid+gaps": 30, "noisy": 10}} | {c: {c: 1} for c in CLOCKS}
@@ -187,7 +187,7 @@ class Workload:
         if self.tag_clock is None:
             self.enc = [[fluxcode.encode_group(x, self.params).group for x in xs] for xs in self.pool]
         else:
-            self.enc = [[[fluxcode.encode_group(x, self.params, times=ts).group for x, ts in zip(xs, tp)]
+            self.enc = [[[fluxcode.encode_group(x, self.params, times=ts).group for x, ts in zip(xs, tp, strict=True)]
                          for tp in self.time_pool] for xs in self.pool]
         self.nan_enc = {tu: fluxcode.encode_group(self.group(*tu)[0], self.params, times=self.times(*tu)).group
                         for tu in self.nan_spans}
@@ -357,7 +357,7 @@ def compress_both(compressor, byte_body, bit_body):
 def breakdown(wl, reps=200):
     p = wl.params
     rows = []
-    for k, xs in zip(wl.kinds, wl.pool):
+    for k, xs in zip(wl.kinds, wl.pool, strict=True):
         x = xs[1]
         sizes = np.full(BLOCKS, BLOCK)
         cz, dz = _compress.get_zstd_codecs()

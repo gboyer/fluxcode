@@ -42,7 +42,7 @@ def assert_keeps_to_the_time_error(given, decoded, block_sizes, time_error):
     """In every block of at least 3 times: none moved more than e mean intervals (2% more), and at most
     one in 20 more than e times its own interval (the smaller of the two either side)."""
     offsets = np.concatenate([[0], np.cumsum(block_sizes)])
-    for first, end in zip(offsets[:-1].tolist(), offsets[1:].tolist()):
+    for first, end in zip(offsets[:-1].tolist(), offsets[1:].tolist(), strict=True):
         raw, got = given[first:end], decoded[first:end]
         if raw.size < 3:
             np.testing.assert_array_equal(got, raw)

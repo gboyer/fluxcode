@@ -256,7 +256,7 @@ def _check_stats(
         # Fastmath summation may reorder terms, causing up to 2 * count ULPs of rounding error.
         mean_tolerance = 2.0 * count[blocks] * np.spacing(magnitude[blocks])
         mean_ok = np.where(some, np.abs(stats[2] - mean[blocks]) <= mean_tolerance, np.isnan(stats[2]))
-    for name, stat, want in zip(("block_min", "block_max"), stats, expected):
+    for name, stat, want in zip(("block_min", "block_max"), stats[:2], expected, strict=True):
         for pos in np.flatnonzero(~((stat == want) | (np.isnan(stat) & np.isnan(want))))[:MAX_REPORTED].tolist():
             found.append(Violation("stats", int(blocks[pos]), f"{name} {stat[pos]:.17g}, not {want[pos]:.17g}"))
     for pos in np.flatnonzero(~mean_ok)[:MAX_REPORTED].tolist():

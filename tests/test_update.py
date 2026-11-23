@@ -31,7 +31,7 @@ def rebuilt(group, edit):
 
 
 def by_index(indices, blocks):
-    return dict(zip(indices, blocks))
+    return dict(zip(indices, blocks, strict=True))
 
 
 @pytest.mark.parametrize("indices", [[0], [59], [3, 17, 42], list(range(60)), [10, 5]])

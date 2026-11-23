@@ -416,7 +416,7 @@ def collect_escaped_values(
     blocks = np.searchsorted(offsets, positions, side="right") - 1
     values: list[float] = []
     previous_block, previous_value = -1, math.nan
-    for position, block in zip(positions.tolist(), blocks.tolist()):
+    for position, block in zip(positions.tolist(), blocks.tolist(), strict=True):
         value = float(samples[position])
         # Round non-float32 finite outliers to the full-range max_bits grid so low mantissa bytes zero out.
         if math.isfinite(value) and float(np.float32(value)) != value:

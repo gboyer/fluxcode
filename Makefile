@@ -26,9 +26,10 @@ test-public: ## Run opt-in public-dataset verification tests
 
 check: ## Run CI-equivalent checks (ruff, experimental smoke, mypy, ty, offline pytest)
 	uv run ruff check
+	uv run ruff format --check
 	uv run ruff check --isolated --select E9,F63,F7,F82 experimental
 	uv run --locked --project experimental python experimental/smoke.py
-	uv run mypy fluxcode fluxprune
+	uv run mypy --strict fluxcode fluxprune rust/fluxcode_rs.pyi
 	uv run ty check
 	uv run pytest
 

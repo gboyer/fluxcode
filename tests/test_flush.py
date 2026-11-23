@@ -114,7 +114,10 @@ def test_higher_efforts_are_never_larger(kind):
 
 def test_efforts_trade_size():
     kinds = ("sin-9.87hz", "random-walk", "noisy-sine", "chirp", "gauss-spikes")
-    size = lambda effort: sum(len(fluxcode.encode(minute(kind, 6), Params(effort=effort))[0][0]) for kind in kinds)
+
+    def size(effort):
+        return sum(len(fluxcode.encode(minute(kind, 6), Params(effort=effort))[0][0]) for kind in kinds)
+
     assert size(5) <= size(4) <= 1.03 * size(5)  # flushed against one block run: smaller in total, not per block group
     assert size(4) <= size(2) <= size(1)
 

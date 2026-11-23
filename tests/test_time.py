@@ -369,7 +369,7 @@ def test_update_with_times_matches_reencode(indices):
     for position, block_idx in enumerate(indices):
         edited_values[block_idx * BLOCK_LEN:(block_idx + 1) * BLOCK_LEN] = new_blocks[position]
         edited_times[block_idx * BLOCK_LEN:(block_idx + 1) * BLOCK_LEN] = new_times[position]
-    updated = fluxcode.update(group, dict(zip(indices, new_blocks)), times=dict(zip(indices, new_times))).group
+    updated = fluxcode.update(group, dict(zip(indices, new_blocks, strict=True)), times=dict(zip(indices, new_times, strict=True))).group
     assert updated == fluxcode.encode_group(edited_values, times=edited_times).group
     np.testing.assert_array_equal(fluxcode.decode_group(updated).times, edited_times)
 

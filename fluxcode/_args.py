@@ -187,7 +187,7 @@ def as_block_sizes(block_sizes: npt.ArrayLike) -> np.ndarray:
     if sizes.ndim != 1 or not (np.issubdtype(sizes.dtype, np.integer) or sizes.shape[0] == 0):
         raise ValueError(f"block_sizes must be a 1-D integer array, got {sizes.dtype} of shape {sizes.shape}")
     sizes = np.ascontiguousarray(sizes, np.int64)
-    if sizes.shape[0] and not (0 <= sizes.min() and sizes.max() <= _format.MAX_BLOCK_LEN):
+    if sizes.shape[0] and not (sizes.min() >= 0 and sizes.max() <= _format.MAX_BLOCK_LEN):
         raise ValueError(f"block sizes must be from 0 to {_format.MAX_BLOCK_LEN}")
     return sizes
 
@@ -343,7 +343,7 @@ def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
         if len(items) == 2 and not any(isinstance(item, (tuple, list, np.ndarray)) for item in items):
             items = [items]
     else:
-        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")  # noqa: TRY004
+        raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")
     pairs = []
     for item in items:
         pair = list(item) if isinstance(item, (tuple, list)) or (isinstance(item, np.ndarray) and item.ndim) else None
@@ -433,7 +433,7 @@ def update_blocks(
             the times don't match the block group's time axis or the blocks.
     """
     if not isinstance(blocks, Mapping):
-        raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")  # noqa: TRY004
+        raise ValueError(f"blocks must map block indices to samples, got {type(blocks).__name__}")
     if not all(is_int(idx) and idx >= 0 for idx in blocks):
         raise ValueError(f"block indices must be integers >= 0, got {sorted(map(repr, blocks))}")
     indices = sorted(int(idx) for idx in blocks)
@@ -457,7 +457,7 @@ def update_blocks(
     if times is not None:
         times_by_index = {int(idx): block_times for idx, block_times in times.items()}
         block_ticks = [as_ticks(times_by_index[idx], None, stored_unit)[0] for idx in indices]
-        for idx, block, tick_block in zip(indices, samples, block_ticks):
+        for idx, block, tick_block in zip(indices, samples, block_ticks, strict=True):
             if tick_block.shape != block.shape:
                 raise ValueError(f"block {idx}: times must have the shape of its samples {block.shape}, got {tick_block.shape}")
         ticks = np.concatenate(block_ticks) if block_ticks else np.zeros(0, np.int64)
@@ -477,7 +477,7 @@ def block_list(blocks: Iterable[int]) -> np.ndarray:
         ValueError: If blocks isn't an iterable of distinct integers from 0 to MAX_BLOCKS - 1.
     """
     if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Iterable):
-        raise ValueError(f"blocks must be block indices, got {type(blocks).__name__}")  # noqa: TRY004
+        raise ValueError(f"blocks must be block indices, got {type(blocks).__name__}")
     indices = list(np.asarray(blocks).ravel().tolist()) if isinstance(blocks, np.ndarray) else list(blocks)
     if not all(is_int(idx) and 0 <= idx < _format.MAX_BLOCKS for idx in indices):
         raise ValueError(f"blocks must be integers from 0 to {_format.MAX_BLOCKS - 1}, got {indices!r}")

@@ -201,7 +201,10 @@ def test_noise_floor_no_effect_on_clean_signals(name, f):
 @pytest.mark.parametrize("name", NOISY)
 def test_noise_floor_shrinks_noisy_signals(name):
     x = minute(name, 33)
-    size = lambda p: sum(map(len, encode_series(x, p)[0]))
+
+    def size(p):
+        return sum(map(len, encode_series(x, p)[0]))
+
     assert size(Params(noise_floor_sigma=0.25)) < 0.6 * size(OFF)
 
 
@@ -405,7 +408,7 @@ def test_block_sizes_not_a_multiple_of_8(sizes):
 
 def _with_header(group, **fields):
     """block group with some header fields replaced (version, flags, num_blocks, num_samples)."""
-    values = dict(zip(["version", "flags", "num_blocks", "num_samples"], _format.GROUP_HEADER.unpack_from(group)))
+    values = dict(zip(["version", "flags", "num_blocks", "num_samples"], _format.GROUP_HEADER.unpack_from(group), strict=True))
     values.update(fields)
     return _format.GROUP_HEADER.pack(*values.values()) + group[_format.HEADER_BYTES:]
 
@@ -528,7 +531,7 @@ def test_decode_many_independent_groups():
     xs = [np.arange(1500.0), np.arange(60_000.0) % 7, np.cumsum(np.ones(12_345))]
     encs = [fluxcode.encode_group(x) for x in xs]
     ys = fluxcode.decode([e[0] for e in encs])
-    for x, y in zip(xs, ys):
+    for x, y in zip(xs, ys, strict=True):
         np.testing.assert_array_equal(y.values, x)
         assert y.times is None
 
@@ -546,5 +549,5 @@ def test_encode_group_limit():
         fluxcode.encode_group(np.zeros(10), block_len=0)
     with pytest.raises(ValueError, match="block_len"):
         fluxcode.encode_group(np.zeros(10), block_len=65_536)
-    with pytest.raises(ValueError, match="2\\^26|67108864"):
+    with pytest.raises(ValueError, match=r"2\^26|67108864"):
         fluxcode.encode_group(np.zeros(_format.MAX_GROUP_SAMPLES + 1), block_len=65_535)

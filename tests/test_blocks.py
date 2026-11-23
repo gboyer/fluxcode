@@ -179,14 +179,14 @@ def test_noise_floor_needs_128_samples():
     noise = rng.normal(size=2 * 127 + 256)
     group = fluxcode.encode_blocks(noise, [127, 127, 256], Params(grids="binary"))
     rows = group_rows(group.group)
-    fine = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
+    fine = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max, strict=True)]
     assert (rows.grid_exponents[:2] == fine[:2]).all() and rows.grid_exponents[2] > fine[2]
     assert fluxcode._encoder.NOISE_MIN_LEN == 128
     # And 128-sample white-noise blocks gate on almost every block
     blocks = rng.normal(size=20 * 128)
     group128 = fluxcode.encode_blocks(blocks, [128] * 20, Params(grids="binary"))
     rows128 = group_rows(group128.group)
-    fine128 = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group128.block_min, group128.block_max)]
+    fine128 = [_grids.snapped_exponent_for_range(lo, hi, 16) for lo, hi in zip(group128.block_min, group128.block_max, strict=True)]
     assert sum(rows128.grid_exponents[i] > fine128[i] for i in range(20)) >= 16
 
 
@@ -246,7 +246,7 @@ def test_encode_time_blocks_divides_by_time():
 
 @pytest.mark.parametrize("start,duration,kwargs", [
     (START, MINUTE, {}),
-    (datetime.datetime(2026, 3, 1, 12), datetime.timedelta(minutes=1), {}),  # noqa: DTZ001
+    (datetime.datetime(2026, 3, 1, 12), datetime.timedelta(minutes=1), {}),
     (START.astype("datetime64[s]"), np.timedelta64(60_000_000, "us"), {}),
     (START.astype("datetime64[m]"), np.timedelta64(1, "m"), {}),
     (int(START.astype(np.int64)), 60_000, {"time_unit": "ms", "int_times": True}),
@@ -394,8 +394,8 @@ def test_update_time_blocks_discards_only():
     (minutes(30, 31),),
     np.array([minutes(30, 31)]),
     np.array([minutes(30, 31)]).astype(np.int64),
-    [(datetime.datetime(2026, 3, 1, 12, 30), datetime.datetime(2026, 3, 1, 12, 31))],  # noqa: DTZ001
-    [(datetime.datetime(2026, 3, 1, 12, 30), START + 31 * MINUTE)],  # noqa: DTZ001
+    [(datetime.datetime(2026, 3, 1, 12, 30), datetime.datetime(2026, 3, 1, 12, 31))],
+    [(datetime.datetime(2026, 3, 1, 12, 30), START + 31 * MINUTE)],
 ])
 def test_delete_range_forms(ranges):
     x, t = hour_of_data()

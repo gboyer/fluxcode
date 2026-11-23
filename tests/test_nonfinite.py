@@ -125,7 +125,9 @@ def test_occasional_dropouts_keep_the_noise_floor(kind):
     y[500::1000] = np.nan
     # Bit planes isolate the noise floor: byte planes gain 5% on clean impulses, which the
     # held dropouts break up (the best of both is then still below bit planes on clean data)
-    size = lambda v: sum(map(len, fluxcode.encode(v)[0]))
+    def size(v):
+        return sum(map(len, fluxcode.encode(v)[0]))
+
     with planes("bit"):
         assert size(y) < 1.05 * size(x)
     assert (gated(y) != gated(x)).sum() <= 2  # the same blocks gate, bar ones near the threshold
@@ -182,7 +184,10 @@ def test_gaps_keep_clean_precision(gap):
     x = minute("sin-4.12hz", 12)
     y = with_gaps(x, gap)
     fin = np.isfinite(y)
-    rmse = lambda v: np.sqrt(np.mean((decode_series(encode_series(v)[0])[fin] - x[fin]) ** 2))
+
+    def rmse(v):
+        return np.sqrt(np.mean((decode_series(encode_series(v)[0])[fin] - x[fin]) ** 2))
+
     assert rmse(y) <= 1.5 * rmse(x)
 
 

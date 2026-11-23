@@ -75,10 +75,9 @@ def discrete_minute(name, seed):
     kind, qt = next((k, q) for n, k, q in DISCRETE if n == name)
     x = minute(kind, seed)
     den = round(1 / qt)
-    if abs(den * qt - 1) < 1e-12:  # 1 / den: K / den, the double nearest it (decimals as parsing "12.345" gives)
-        x = np.round(x * den) / den
-    else:  # an ADC quantum: counts times the step
-        x = np.round(x / qt) * qt
+    # 1 / den: K / den, the double nearest it (decimals as parsing "12.345" gives);
+    # otherwise an ADC quantum: counts times the step.
+    x = np.round(x * den) / den if abs(den * qt - 1) < 1e-12 else np.round(x / qt) * qt
     if "float32" in name:
         x = x.astype(np.float32).astype(np.float64)
     return x

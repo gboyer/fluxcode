@@ -60,11 +60,11 @@ def random_rows(rng, sizes, has_time, nonfinite=0.3, irregular=0.5, long=0.3):
 
 
 def assert_rows_equal(got, want):
-    for name, got_field, want_field in zip(_format.EncodedBlockColumns._fields, got, want):
+    for name, got_field, want_field in zip(_format.EncodedBlockColumns._fields, got, want, strict=True):
         if name == "time_columns":
             assert (got_field is None) == (want_field is None)
             if want_field is not None:
-                for got_column, want_column in zip(got_field, want_field):
+                for got_column, want_column in zip(got_field, want_field, strict=True):
                     np.testing.assert_array_equal(got_column, want_column)
         else:
             np.testing.assert_array_equal(got_field, want_field, err_msg=name)
@@ -162,7 +162,7 @@ def test_shuffle_round_trip_and_layout(sizes):
     raw = _oracle.write_group(flags, sizes, param, scale, anchor, resid)
     lay = _format.compute_body_layout(flags, sizes)
     assert raw.shape[0] == _format.body_byte_size(N, lay, False)
-    for got, want in zip(_columns(raw, N), (flags, sizes, param, scale, anchor)):
+    for got, want in zip(_columns(raw, N), (flags, sizes, param, scale, anchor), strict=True):
         np.testing.assert_array_equal(got, want)
     s = resid.astype(np.int32)
     u = ((s << 1) ^ (s >> 15)) & 0xFFFF
@@ -175,7 +175,7 @@ def test_shuffle_round_trip_and_layout(sizes):
         np.testing.assert_array_equal(bits[:, :sizes[b]], ((block_u[None] >> np.arange(16)[:, None]) & 1).astype(np.uint8))
         assert not bits[:, sizes[b]:].any()  # each block's last octet is padded with zero bits
     rows = _oracle.read_group(raw, N)
-    for got, want in zip(rows[:6], (flags, sizes, param, scale, anchor, resid)):
+    for got, want in zip(rows[:6], (flags, sizes, param, scale, anchor, resid), strict=True):
         np.testing.assert_array_equal(got, want)
     with pytest.raises(ValueError, match="doesn't hold"):
         _oracle.read_group(raw[:-1], N)
@@ -198,7 +198,7 @@ def test_byte_planes_round_trip_and_layout():
     np.testing.assert_array_equal(planes[0], u & 0xFF)
     np.testing.assert_array_equal(planes[1], u >> 8)
     rows = _oracle.read_group(raw, N, byte_planes=True)
-    for got, want in zip(rows[:6], (flags, sizes, param, scale, anchor, resid)):
+    for got, want in zip(rows[:6], (flags, sizes, param, scale, anchor, resid), strict=True):
         np.testing.assert_array_equal(got, want)
 
 

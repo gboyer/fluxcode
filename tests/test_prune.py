@@ -19,7 +19,7 @@ def exact_mse(t, x, keep, values=None):
     is exact. Each segment j -> j+1 lies on the line between the kept points around it (which also settles
     repeated times)."""
     t = np.asarray(t, np.float64)
-    v = dict(zip(keep.tolist(), x[keep] if values is None else values))
+    v = dict(zip(keep.tolist(), x[keep] if values is None else values, strict=True))
     total = 0.0
     for j in range(len(t) - 1):
         h = t[j + 1] - t[j]
@@ -38,7 +38,7 @@ def max_deviation(t, x, keep, values=None):
     """Largest distance in value of an input point from the kept points' lines, by brute force (a point at
     the time of a vertical step: its distance from the step's span of values)."""
     t = np.asarray(t, np.float64)
-    v = dict(zip(keep.tolist(), x[keep] if values is None else values))
+    v = dict(zip(keep.tolist(), x[keep] if values is None else values, strict=True))
     worst = 0.0
     for a, b in itertools.pairwise(keep):
         for j in range(a + 1, b):
@@ -114,7 +114,7 @@ def test_repeated_times_and_degenerate_inputs():
         assert r.relative_rmse(k) == pytest.approx(np.sqrt(exact_mse(t, x, r.top(k))) / 5, abs=1e-12)
     for t, x in [([], []), ([0], [1.0]), ([0, 1], [1.0, 2.0]), ([0, 1, 2], [3.0, 3, 3]), ([5, 5, 5, 5], [1.0, 2, 3, 4])]:
         p = fluxprune.prune(np.array(t, np.int64), np.array(x))
-        assert len(p) == min(len(x), 2) or len(x) == 4 and len(p) >= 2
+        assert len(p) == min(len(x), 2) or (len(x) == 4 and len(p) >= 2)
         assert p.rmse == 0 and p.max_error == 0 and p.rmse_met and p.max_error_met and p.max_points_met
     with pytest.raises(ValueError):
         fluxprune.prune(np.array([0, 2, 1]), np.zeros(3))
