@@ -48,6 +48,22 @@ dev = [
 requires = ["hatchling>=1.27"]  # PEP 639 license metadata
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+exclude = [
+    "**/__pycache__",
+    "**/*.py[cod]",
+    "**/*.nbc",
+    "**/*.nbi",
+    "**/.mypy_cache",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/.venv",
+    "**/*.egg-info",
+    "**/*~",
+    "**/.DS_Store",
+    "rust/target",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["fluxcode", "fluxprune"]
 
