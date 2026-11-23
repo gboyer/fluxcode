@@ -258,10 +258,11 @@ def pack(
     num_samples: int,
     effort: Effort,
     time_unit: int,
-    allow_rust: bool = True,
-    _quantized: bool = False,
 ) -> bytes:
     """Compresses an uncompressed byte-plane body into complete block group bytes.
+
+    A body with a time axis whose start increases and steps share a factor is stored over it: the
+    time quantum (SPEC §3, header flag bit 4), appended to the body.
 
     Args:
         body: 1D uint8 array containing the uncompressed body, residuals as byte planes.
@@ -274,20 +275,28 @@ def pack(
     Returns:
         Serialized block group bytes containing header and compressed zstd frame.
     """
-    has_time = time_unit != 0
-    num_octets = int(offsets.octet_offsets[-1])
-    if has_time and not _quantized:
+    group_flags = 0
+    if time_unit != 0:
         # Start increases and steps share a factor (seconds in ns ticks): stored over it (header flag bit 4)
         quantum = _format.time_quantum(body, offsets.sample_offsets)
         if quantum > 1:
             body = body.copy()
             _format.scale_time_columns(body, offsets.sample_offsets, quantum, True)
             body = np.concatenate([body, np.array([quantum], np.uint64).view(np.uint8)])
-            group = pack(body, offsets, num_blocks, num_samples, effort, time_unit, allow_rust=allow_rust,
-                         _quantized=True)
-            return group[:1] + bytes([group[1] | _format.GROUP_FLAG_TIME_QUANTUM]) + group[2:]
-    # Fast path: delegate to Rust extension if available
-    if _rust is not None and allow_rust:
+            group_flags = _format.GROUP_FLAG_TIME_QUANTUM
+    group = _pack_planes(body, offsets, num_blocks, num_samples, effort, time_unit)
+    # Both packers write the header from the layout alone: header flags beyond it are set here
+    return group[:1] + bytes([group[1] | group_flags]) + group[2:] if group_flags else group
+
+
+def _pack_planes(
+    body: np.ndarray, offsets: _format.Layout, num_blocks: int, num_samples: int, effort: Effort, time_unit: int,
+) -> bytes:
+    """pack's residual layout and zstd: the body's bytes after the residual planes (escaped values,
+    the time quantum) are copied as they are, by the Rust extension too."""
+    has_time = time_unit != 0
+    num_octets = int(offsets.octet_offsets[-1])
+    if _rust is not None:
         return _rust.pack_group(  # type: ignore[no-any-return]
             body, num_blocks, num_samples, num_octets, time_unit, effort.layout, effort.flush,
             list(effort.zstd_levels),
@@ -324,7 +333,8 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     Returns:
         The block group bytes.
     """
-    # The Rust extension packs bodies without escaped values (the common case); others take the Python path
+    # The Rust extension builds bodies without a time axis or escaped values (the common case); the
+    # others are written here and packed (by the Rust extension too, if present)
     has_escapes = rows.escapes.shape[0] > 0
     if _rust is not None and rows.time_rows is None and not has_escapes:
         return _rust.compress_group(  # type: ignore[no-any-return]
@@ -340,4 +350,4 @@ def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_uni
     )
     if has_escapes:
         body = np.concatenate([body, _format.escape_bytes(rows.escapes)])
-    return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit, allow_rust=not has_escapes)
+    return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)

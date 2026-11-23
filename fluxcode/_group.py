@@ -923,7 +923,6 @@ def splice(
     # Repack and compress the spliced block group
     group = _compress.pack(
         body, offsets, num_blocks, num_samples, _compress.EFFORTS[params.effort], parsed.header.time_unit,
-        allow_rust=not escapes.shape[0],
     )
     return UpdatedGroup(group, indices, *stats)
 
