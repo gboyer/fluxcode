@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""White-noise level and autocorrelation estimation on second differences.
+"""White-noise level estimation for the noise floor (ENCODER §5.2).
 
-Provides robust estimation of high-frequency white noise standard deviation
-(sigma) and the lag-1 autocorrelation coefficient (rho) of second differences.
-Used by the encoder's noise floor gate to coarsen quantization steps on blocks
-dominated by white measurement noise without degrading deterministic or
-random-walk signals.
+A block's noise level is the spectral level at the top of its band: the robust spread of its 12th
+differences, whose kernel barely passes content below a third of the sample rate. The level
+counts only if it looks like white noise there: the differences' lag-1 autocorrelation over
+NOISE_GATE of white noise's, the lag-2 one near white noise's, no correlation left at long lags
+(a tone). Where the top band fails those (an anti-alias filter's stopband), lower bands are tried
+(_lower_band); first differences cap the level (_first_difference_cap).
+
+Blocks with non-finite samples take a narrower path (noise_weighted): the 12th differences of
+all-finite windows with the lag-2 check and the cap, but no long-lag test and no lower bands, or
+second differences of finite triplets when gaps are dense.
 
 A block with irregular times gets a noise floor only if it has a cadence: nearly all of its
 intervals one scan apart (`cadence`). That covers jittered clocks and gaps; a swinging-door or
@@ -17,7 +22,6 @@ consecutive scans count.
 """
 
 import math
-import os
 
 import numpy as np
 from numba import njit
@@ -38,10 +42,11 @@ CLIP_SIGMAS: float = 4.0
 CLIP_PASSES: int = 2
 """Number of iterative outlier clipping passes used in scale re-estimation."""
 
-NOISE_ORDER: int = int(os.environ.get("FLUXCODE_X_NOISE_ORDER", "12"))
+NOISE_ORDER: int = 12
 """Order k of the differences the noise is measured on, on regular (or no) times: its kernel
 (2 sin(pi f))^(2k) / C(2k, k) reads the spectral density at the top of the band, so a signal's
-content below about a third of the sample rate barely leaks in (FLUXCODE_X_NOISE_ORDER: experiment)."""
+content below about a third of the sample rate barely leaks in (orders 2 and 6 were measured
+against it: experimental/value/LOG.md §3.1)."""
 
 NOISE_COEFS = tuple((-1) ** (NOISE_ORDER - j) * math.comb(NOISE_ORDER, j) for j in range(NOISE_ORDER + 1))
 """The k-th difference's coefficients, oldest sample first."""
@@ -61,7 +66,7 @@ a tone near half the sample rate (a toggle every sample or few), which k-th diff
 an alternation of rho -1 and lag-2 rho +1."""
 
 def _band_kernel(center: float) -> np.ndarray:
-    """12th differences moved to center a band at `center` of the sample rate (modulated by
+    """NOISE_ORDER-th differences moved to center a band at `center` of the sample rate (modulated by
     cos 2 pi (0.5 - center) j), with 4 more zeros at 0 so slow signals stay out."""
     taps = np.array([(-1) ** (NOISE_ORDER - j) * math.comb(NOISE_ORDER, j) for j in range(NOISE_ORDER + 1)], np.float64)
     taps = taps * np.cos(2 * np.pi * (0.5 - center) * np.arange(NOISE_ORDER + 1))
@@ -74,7 +79,7 @@ gate fails: under an anti-alias filter (flat to about 0.45 of the rate in a sigm
 top band is the filter's stopband, and the noise plateau sits below it."""
 
 BAND_KERNELS = tuple(_band_kernel(center) for center in BAND_CENTERS)
-"""Each band's taps (17)."""
+"""Each band's taps (NOISE_ORDER + 5: 17)."""
 
 BAND_GAINS = tuple(float(np.sqrt(np.dot(kernel, kernel))) for kernel in BAND_KERNELS)
 """Each band kernel's output standard deviation on white noise of sigma 1."""
@@ -94,7 +99,7 @@ PLATEAU_RATIO: float = 1.25
 spectrum may fall toward the top (an anti-alias filter's roll-off) but not rise into the band."""
 
 DECAY_LAGS: tuple[int, ...] = (20, 21, 22, 23)
-"""Lags past the span of every kernel (13 and 17 taps): white noise through a kernel is uncorrelated
+"""Lags past the span of every kernel (13 and 17 taps at k = 12): white noise through a kernel is uncorrelated
 there, a tone stays correlated at every lag."""
 
 DECAY_LIMIT: float = 0.25
@@ -126,7 +131,7 @@ CHORD_WHITE_RHO: float = -2.0 / 3.0
 """Lag-1 autocorrelation of white noise's second differences."""
 
 NOISE_WINDOW: int = 256
-"""Valid second differences per window of the noise level (up to twice as many are one window)."""
+"""Valid differences per window of the noise level (up to twice as many are one window)."""
 
 QUIET_RATIO: float = 0.75
 """The noise level is the windows' mean spread, or the quietest window's over QUIET_RATIO if
@@ -135,13 +140,14 @@ On steady white noise the quietest of up to 255 windows never measured below 0.7
 so steady noise reads unbiased (the plain minimum read 5% low over 3 windows, 18% over 255)."""
 
 MIN_ONE_SCAN_TRIPLETS: int = 254
-"""Fewest triplets of consecutive scans an irregular block needs for a noise floor: as many as
-the second differences of the smallest block that gets one (_encoder.NOISE_MIN_LEN, 256)."""
+"""Fewest triplets of consecutive scans an irregular block needs for a noise floor: the second
+differences of a 256-sample block. Higher than regular blocks' _encoder.NOISE_MIN_LEN (128): a
+chord's gate needs more of them to tell a random walk from white noise."""
 
 
 @njit(nogil=True, cache=True, fastmath=True)
 def _robust_noise(diffs: np.ndarray, mean_diff: float) -> tuple[float, float]:
-    """The robust spread and lag-1 autocorrelation of second differences.
+    """The robust spread and lag-1 autocorrelation of differences (k-th, or chords).
 
     Splits the mean-removed differences into windows of NOISE_WINDOW or more; in each, a robust
     standard deviation comes from the mean absolute deviation re-estimated CLIP_PASSES times
@@ -150,7 +156,7 @@ def _robust_noise(diffs: np.ndarray, mean_diff: float) -> tuple[float, float]:
     autocorrelation of the clipped differences.
 
     Args:
-        diffs: 1D float64 array of at least 2 second differences, overwritten with the clipped,
+        diffs: 1D float64 array of at least 2 differences, overwritten with the clipped,
             mean-removed differences.
         mean_diff: Their mean.
 
@@ -222,7 +228,7 @@ def _robust_noise_weighted(
     valid differences.
 
     Args:
-        diffs: 1D float64 array of second differences (0 where invalid), overwritten with the
+        diffs: 1D float64 array of differences (0 where invalid), overwritten with the
             clipped, mean-removed differences (still 0 where invalid).
         weights: 1D float64 array of 1.0 (valid) or 0.0 per difference.
         num_valid: Number of valid differences (at least 2).
@@ -326,24 +332,28 @@ def _twelfth_differences(samples: np.ndarray, scale_factor: float, out: np.ndarr
 
 @njit(nogil=True, cache=True, fastmath=True)
 def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_sigma: float = 0.0) -> tuple[float, float]:
-    """Estimates white-noise standard deviation and lag-1 autocorrelation.
+    """Estimates a clean block's white-noise level and its gate (the module docstring).
 
-    Evaluates second differences of finite samples scaled by 2^-scale_exp (which brings the
-    block's range into [0.5, 1.0)) to prevent intermediate overflow or underflow, removes their
-    mean (a parabolic trend) and takes their robust spread and autocorrelation (_robust_noise).
+    The 12th differences of the samples scaled by 2^-scale_exp (which brings the block's range into
+    [0.5, 1.0), so no sum overflows or underflows), less their mean (a polynomial trend), give a
+    robust spread and lag-1 autocorrelation (_robust_noise). If the top band isn't white noise (the
+    gate, the lag-2 and long-lag checks), the level is the highest lower band with noise in it
+    (_lower_band), else there is none. First differences cap the level (_first_difference_cap).
 
     Args:
         samples: 1D float64 array of finite samples.
         scale_exp: Power-of-two scaling exponent that maps the block range to [0.5, 1.0).
-        scratch_diffs: 1D float64 scratch array of at least len(samples) - 2.
+        scratch_diffs: 1D float64 scratch array of at least len(samples).
+        min_sigma: A level under this can't coarsen the block's finest step: such a block skips
+            the checks, the lower bands and the cap, and may exit early on its head (HEAD_DIFFS).
 
     Returns:
         A tuple of (sigma, rho):
-            sigma: Estimated white-noise standard deviation in original signal units, or 0.0
-                if a window's variation is negligible or underflows.
-            rho: Lag-1 autocorrelation of clipped second differences (typically -2/3 for white
-                noise, -1/2 for random walks, and positive for smooth signals). Returns
-                (0.0, 0.0) if fewer than 4 samples are present.
+            sigma: The white-noise standard deviation in the samples' units, or 0.0 for none
+                (no white noise, a window without variation, an underflow, or fewer than
+                NOISE_ORDER + 2 samples).
+            rho: The 12th differences' lag-1 autocorrelation as a share of white noise's (1 on
+                white noise, over NOISE_GATE passes the gate); 1.0 when a lower band sets sigma.
     """
     num_diffs = samples.shape[0] - NOISE_ORDER
     # Need at least two differences to compute lag-1 autocorrelation
@@ -355,53 +365,17 @@ def noise(samples: np.ndarray, scale_exp: int, scratch_diffs: np.ndarray, min_si
     else:
         samples, scale_factor = xm.prescale(samples, scale_exp)
     diffs = scratch_diffs[:num_diffs]
-    sum_diffs = 0.0
-    if NOISE_ORDER == 2:
-        for diff_idx in range(num_diffs):
-            # Second difference: samples[i + 2] - 2 * samples[i + 1] + samples[i]
-            diff_val = (
-                samples[diff_idx + 2] * scale_factor
-                - 2.0 * (samples[diff_idx + 1] * scale_factor)
-                + samples[diff_idx] * scale_factor
-            )
-            diffs[diff_idx] = diff_val
-            sum_diffs += diff_val
-    elif NOISE_ORDER == 6:
-        # Offset slices from index 0 vectorize; the taps are 1, -6, 15, -20, 15, -6, 1
-        s0, s1, s2, s3 = samples[:num_diffs], samples[1:num_diffs + 1], samples[2:num_diffs + 2], samples[3:num_diffs + 3]
-        s4, s5, s6 = samples[4:num_diffs + 4], samples[5:num_diffs + 5], samples[6:num_diffs + 6]
-        for diff_idx in range(num_diffs):
-            # Each sample scaled first (a power of two, so exact): unscaled sums could overflow
-            diff_val = (
-                (s0[diff_idx] * scale_factor + s6[diff_idx] * scale_factor)
-                - 6.0 * (s1[diff_idx] * scale_factor + s5[diff_idx] * scale_factor)
-                + 15.0 * (s2[diff_idx] * scale_factor + s4[diff_idx] * scale_factor)
-                - 20.0 * (s3[diff_idx] * scale_factor)
-            )
-            diffs[diff_idx] = diff_val
-            sum_diffs += diff_val
-    elif NOISE_ORDER == 12:
-        # A clean block's top band is its rounding, far under any step: judge that on the head first
-        if min_sigma > 0 and num_diffs >= 2 * HEAD_DIFFS:
-            head_mean = _twelfth_differences(samples, scale_factor, diffs, HEAD_DIFFS) / HEAD_DIFFS
-            # A plain mean absolute deviation: outliers only raise it (no early exit), never lower it
-            deviation = 0.0
-            for diff_idx in range(HEAD_DIFFS):
-                deviation += abs(diffs[diff_idx] - head_mean)
-            head_spread = MAD_TO_SD * deviation / HEAD_DIFFS
-            if math.ldexp(head_spread / SIGMA_GAIN, scale_exp) * LOWER_BAND_REACH * HEAD_MARGIN < min_sigma:
-                return 0.0, 0.0
-        sum_diffs = _twelfth_differences(samples, scale_factor, diffs, num_diffs)
-    else:
-        for diff_idx in range(num_diffs):
-            diffs[diff_idx] = 0.0
-        for j in range(NOISE_ORDER + 1):
-            coef = NOISE_COEFS[j] * scale_factor
-            shifted = samples[j:j + num_diffs]
-            for diff_idx in range(num_diffs):
-                diffs[diff_idx] += coef * shifted[diff_idx]
-        for diff_idx in range(num_diffs):
-            sum_diffs += diffs[diff_idx]
+    # A clean block's top band is its rounding, far under any step: judge that on the head first
+    if min_sigma > 0 and num_diffs >= 2 * HEAD_DIFFS:
+        head_mean = _twelfth_differences(samples, scale_factor, diffs, HEAD_DIFFS) / HEAD_DIFFS
+        # A plain mean absolute deviation: outliers only raise it (no early exit), never lower it
+        deviation = 0.0
+        for diff_idx in range(HEAD_DIFFS):
+            deviation += abs(diffs[diff_idx] - head_mean)
+        head_spread = MAD_TO_SD * deviation / HEAD_DIFFS
+        if math.ldexp(head_spread / SIGMA_GAIN, scale_exp) * LOWER_BAND_REACH * HEAD_MARGIN < min_sigma:
+            return 0.0, 0.0
+    sum_diffs = _twelfth_differences(samples, scale_factor, diffs, num_diffs)
     # Subtract the mean difference (a polynomial trend of degree k)
     spread, rho = _robust_noise(diffs, sum_diffs / num_diffs)
     sigma = spread / SIGMA_GAIN
@@ -631,8 +605,9 @@ def _decayed(clipped: np.ndarray) -> bool:
 
 @njit(nogil=True, cache=True, fastmath=True)
 def _white_shape(clipped: np.ndarray) -> bool:
-    """_lag2_white and _decayed in one pass: the lag-2 and long-lag autocorrelations of the clipped
-    differences (over the pairs past the longest lag)."""
+    """Whether the clipped, mean-removed differences look white past lag 1: their lag-2
+    autocorrelation within RHO2_TOLERANCE of white noise's (WHITE_RHO2), and _decayed's long-lag
+    test, in one pass over the pairs past the longest lag."""
     num_diffs = clipped.shape[0]
     first = DECAY_LAGS[len(DECAY_LAGS) - 1]
     if num_diffs <= 2 * first:
@@ -660,24 +635,9 @@ def _white_shape(clipped: np.ndarray) -> bool:
 
 
 @njit(nogil=True, cache=True, fastmath=True)
-def _lag2_white(clipped: np.ndarray) -> bool:
-    """Whether the clipped, mean-removed k-th differences' lag-2 autocorrelation is within
-    RHO2_TOLERANCE of white noise's."""
-    num_diffs = clipped.shape[0]
-    sum_sq = 0.0
-    lag2 = 0.0
-    later, earlier = clipped[2:], clipped[:num_diffs - 2]
-    for diff_idx in range(num_diffs - 2):
-        sum_sq += later[diff_idx] * later[diff_idx]
-        lag2 += later[diff_idx] * earlier[diff_idx]
-    if not sum_sq > 0:
-        return False
-    return abs((lag2 / sum_sq) / WHITE_RHO2 - 1.0) < RHO2_TOLERANCE
-
-
-@njit(nogil=True, cache=True, fastmath=True)
 def _lag2_white_weighted(clipped: np.ndarray, weights: np.ndarray) -> bool:
-    """_lag2_white over pairs of valid differences two apart."""
+    """Whether the lag-2 autocorrelation over pairs of valid differences two apart is within
+    RHO2_TOLERANCE of white noise's (WHITE_RHO2)."""
     num_diffs = clipped.shape[0]
     sum_sq = 0.0
     lag2 = 0.0
@@ -761,7 +721,7 @@ def _coded_diffs(
     samples: np.ndarray, codes: np.ndarray, scale_factor: float, order: int, scratch_diffs: np.ndarray,
     scratch_weights: np.ndarray,
 ) -> tuple[int, float, float]:
-    """Writes the order-k differences (k = 1, 2 or NOISE_ORDER) of the scaled samples, valid (weight 1) where
+    """Writes the order-k differences (k = 2 or NOISE_ORDER) of the scaled samples, valid (weight 1) where
     the window of k + 1 samples is all finite, else 0 with weight 0.
 
     Returns:
@@ -782,9 +742,7 @@ def _coded_diffs(
         if has_codes and codes[diff_idx + order] != CODE_FINITE:
             last_bad = diff_idx + order
         diff_val = 0.0
-        if order == 1:
-            diff_val = samples[diff_idx + 1] * scale_factor - samples[diff_idx] * scale_factor
-        elif order == 2:
+        if order == 2:
             diff_val = (
                 samples[diff_idx + 2] * scale_factor
                 - 2.0 * (samples[diff_idx + 1] * scale_factor)

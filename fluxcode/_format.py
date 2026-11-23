@@ -90,9 +90,6 @@ BLOCK_FLAG_PERIOD: int = 0x80
 """Block flags: period predictor (bit 7): the block's indices are predicted from those a period earlier
 (SPEC §4), whose parameters are in the high half of the grid_scale field."""
 
-BLOCK_FLAG_RESERVED: int = 0x00
-"""Block flags: no reserved bits are left."""
-
 PERIOD_SHIFT: int = 32
 """grid_scale holds a period block's period P in bits 32-47 (2 to 65,535)."""
 
@@ -779,7 +776,8 @@ class GroupRows(NamedTuple):
         block_flags: 1D uint8 array of block flags.
         block_sizes: 1D int64 array of block sizes.
         grid_params: 1D int64 array of block grid parameters.
-        grid_scales: 1D int64 array of block grid scales (N | D << 16; 0 on unscaled blocks).
+        grid_scales: 1D int64 array of block grid scales (N | D << 16; 0 on unscaled blocks), with a period
+            block's P | w << 16 in the high half (PERIOD_SHIFT).
         value_anchors: 1D int64 array of block value anchors.
         residuals: 1D int16 array of every sample's residual.
         codes: 1D uint8 array of every sample's code (zeros in unflagged blocks).

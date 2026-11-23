@@ -28,7 +28,6 @@ from ._format import (
     BLOCK_FLAG_NONFINITE,
     BLOCK_FLAG_ORDER,
     BLOCK_FLAG_PERIOD,
-    BLOCK_FLAG_RESERVED,
     BLOCK_FLAG_SCALED,
     E_MAX,
     E_MIN,
@@ -281,9 +280,9 @@ def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: boo
                 return BAD_SCALE, block_idx
         elif period_bits:
             return BAD_SCALE, block_idx
-        # Reserved bit 7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
+        # Every bit has a meaning (none is reserved): bit 4 needs a time axis and bit 5 needs bit 4
         irregular_time = flags & BLOCK_FLAG_IRREGULAR_TIME
-        if flags & BLOCK_FLAG_RESERVED or (irregular_time and not has_time):
+        if irregular_time and not has_time:
             return BAD_FLAGS, block_idx
         if flags & BLOCK_FLAG_LONG_TIME and not irregular_time:
             return BAD_FLAGS, block_idx

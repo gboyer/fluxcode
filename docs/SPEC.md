@@ -137,7 +137,7 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
     [−2^15, 2^15), so integrating mod 2^16 and reading the result as int16 (§5) recovers q
     exactly: two bytes per sample suffice.
   - The prepended zeros make the first residuals the start values, so there's no separate header.
-- **Period predictor** (block flag bit 7, order k from 1 to 3): the first P + 1 residuals are the
+- **Period predictor** (block flag bit 7): the first P + 1 residuals are the
   order-k residuals of q as above; the rest are the prediction errors e of q themselves, with no
   difference taken on them. P and w come from `grid_scale`:
 
@@ -148,7 +148,8 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
 
   - The prediction is q a period earlier, between lags P and P + 1 by w/64 (a fractional period),
     with unit gain, so a level carries over exactly. Every e and q is read as int16 (mod 2^16).
-  - k is never 0 on a period block. A block shorter than P + 2 samples is all head.
+  - Any order k (0–3) decodes; the reference encoder uses the predictor only on blocks of order
+    1–3. A block shorter than P + 2 samples is all head.
 
 ## 5. Decoding one block
 

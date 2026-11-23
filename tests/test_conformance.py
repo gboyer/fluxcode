@@ -587,7 +587,7 @@ def test_period_predictor_stays_out_of_targets():
 def _spec_period_indices(residuals, order, period, weight):
     """SPEC §4/§5 period blocks, in plain integers: the head integrated `order` times, then q[n] =
     r[n] + (((64 - w) q[n - P] + w q[n - P - 1] + 32) >> 6), each read as int16."""
-    wrap = lambda v: ((v + 32768) & 0xFFFF) - 32768  # noqa: E731
+    wrap = lambda v: ((v + 32768) & 0xFFFF) - 32768
     head = [int(r) for r in residuals[:min(len(residuals), period + 1)]]
     for _ in range(order):
         total = 0

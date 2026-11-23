@@ -289,7 +289,7 @@ def ref_robust_noise(d, ok):
 
 
 def ref_lag2_white(dv, ok):
-    """_noise._lag2_white(_weighted): the clipped differences' lag-2 autocorrelation within
+    """_noise._white_shape's lag-2 test and _lag2_white_weighted: the clipped differences' lag-2 autocorrelation within
     RHO2_TOLERANCE of white noise's, over valid pairs two apart."""
     pair = ok[2:] & ok[:-2]
     sum_sq = np.sum((dv[2:] ** 2)[pair])
