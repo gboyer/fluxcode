@@ -335,5 +335,5 @@ def compress_columns(columns: _format.EncodedBlockColumns, num_samples: int, eff
         offsets,
     )
     if columns.escaped_values.shape[0]:
-        body = np.concatenate([body, _escapes.escape_bytes(columns.escaped_values)])
+        body = np.concatenate([body, _escapes.pack_escaped_values(columns.escaped_values)])
     return pack_body(body, offsets, columns.block_flags.shape[0], num_samples, effort, time_unit)

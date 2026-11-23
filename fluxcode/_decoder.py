@@ -21,7 +21,7 @@ from ._bitpacking import (
     unshuffle_residual_block,
     unzigzag_sample,
 )
-from ._escapes import restore_coded
+from ._escapes import restore_exception_samples
 from ._format import (
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_IRREGULAR_TIME,
@@ -359,7 +359,7 @@ def decode_blocks(
         else:
             dequantize_pow2(block_residuals, anchor_float[0], exponent, block_out)
         if flags & BLOCK_FLAG_SAMPLE_CODES:
-            restore_coded(
+            restore_exception_samples(
                 code_planes,
                 code_plane_offsets[block_idx],
                 escaped_values[escape_offsets[block_idx] : escape_offsets[block_idx + 1]],

@@ -309,7 +309,7 @@ def estimate_lattice_origin(times: np.ndarray, period: np.int64, quantum: np.int
         residual = offset - np.round(offset / period_float) * period_float
         near = abs(residual) < 0.25 * period_float
         total += residual * near
-        count += near
+        count += int(near)
     origin = first + np.int64(np.round(total / max(count, 1)))
     step = max(quantum // PHASE_STEPS, np.int64(1))
     return _round_tick(origin, step, np.int64(0)) if step > 1 else origin
@@ -457,8 +457,8 @@ def max_move_within_error(times: np.ndarray, out: np.ndarray, allowed: np.ndarra
         for chunk_idx in range(chunk_end - chunk_start):
             move = abs(rounded[chunk_idx] - given[chunk_idx])
             move_float = np.float64(move)
-            too_far += move_float > max_move
-            outliers += move_float > chunk_allowed[chunk_idx]
+            too_far += int(move_float > max_move)
+            outliers += int(move_float > chunk_allowed[chunk_idx])
             largest = max(largest, move)
         if too_far or outliers > max_outliers:
             return -1
@@ -652,7 +652,7 @@ def grid_cannot_meet_error(times: np.ndarray, block_len: int, quantum: np.int64,
             distance = abs(interval - np.round(interval * inverse) * quantum_float)
             # Handle half-way ties where np.round may pick either multiple.
             distance = min(distance, quantum_float - distance)
-            forced += (distance > threshold * interval) & (interval < FLOAT_EXACT_INTERVAL)
+            forced += int((distance > threshold * interval) & (interval < FLOAT_EXACT_INTERVAL))
         if forced > limit:
             return True
         if chunk_end >= GRID_TEST_GIVE_UP and forced * num_intervals < limit * chunk_end:
