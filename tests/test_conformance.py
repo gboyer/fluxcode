@@ -582,3 +582,42 @@ def test_period_predictor_stays_out_of_targets():
     x = _mains()
     rows = group_rows(fluxcode.encode_group(x, Params(effort=9, target_bits_per_sample=6.0)).group)
     assert not (rows.block_flags & _format.BLOCK_FLAG_PERIOD).any()
+
+
+def _spec_period_indices(residuals, order, period, weight):
+    """SPEC §4/§5 period blocks, in plain integers: the head integrated `order` times, then q[n] =
+    r[n] + (((64 - w) q[n - P] + w q[n - P - 1] + 32) >> 6), each read as int16."""
+    wrap = lambda v: ((v + 32768) & 0xFFFF) - 32768  # noqa: E731
+    head = [int(r) for r in residuals[:min(len(residuals), period + 1)]]
+    for _ in range(order):
+        total = 0
+        for i, r in enumerate(head):
+            total = wrap(total + r)
+            head[i] = total
+    q = head
+    for n in range(len(q), len(residuals)):
+        q.append(wrap(int(residuals[n]) + (((64 - weight) * q[n - period] + weight * q[n - period - 1] + 32) >> 6)))
+    return np.array(q, np.int64)
+
+
+def test_period_blocks_decode_as_the_spec_says():
+    """Period blocks (block flag bit 7) rebuilt from their rows by SPEC §4's rule alone match decoding."""
+    rng = np.random.default_rng(3)
+    t = np.arange(20_000)
+    x = (30 + 2 * np.sin(2 * np.pi * t / 7000)) * np.sin(2 * np.pi * t / 100.4) + rng.normal(0, 0.1, t.size)
+    group = fluxcode.encode_group(x, Params(effort=6, grids="binary")).group
+    rows = group_rows(group)
+    values = fluxcode.decode_group(group).values
+    offsets = np.concatenate([[0], np.cumsum(rows.block_sizes)])
+    checked = 0
+    for b, flags in enumerate(rows.block_flags.tolist()):
+        if not flags & _format.BLOCK_FLAG_PERIOD:
+            continue
+        scale = int(rows.grid_scales[b])
+        period, weight = scale >> 32 & 0xFFFF, np.int8(scale >> 48 & 0xFF).item()
+        assert flags & BLOCK_FLAG_ORDER and 2 <= period and scale & 0xFFFFFFFF == 0
+        q = _spec_period_indices(rows.residuals[offsets[b]:offsets[b + 1]], flags & BLOCK_FLAG_ORDER, period, weight)
+        anchor = rows.value_anchors[b:b + 1].view(np.float64)[0]
+        np.testing.assert_array_equal(values[offsets[b]:offsets[b + 1]], anchor + q * 2.0 ** rows.grid_params[b])
+        checked += 1
+    assert checked >= 10

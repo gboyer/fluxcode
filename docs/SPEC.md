@@ -137,17 +137,18 @@ The fluxcode block group format: float64 samples in blocks, with optional exact 
     [−2^15, 2^15), so integrating mod 2^16 and reading the result as int16 (§5) recovers q
     exactly: two bytes per sample suffice.
   - The prepended zeros make the first residuals the start values, so there's no separate header.
-- **Period predictor** (block flag bit 7): the residuals are those of the prediction errors e of q,
-  with k (0–3) the difference order taken on top of them, P and w from `grid_scale`:
+- **Period predictor** (block flag bit 7, order k from 1 to 3): the first P + 1 residuals are the
+  order-k residuals of q as above; the rest are the prediction errors e of q themselves, with no
+  difference taken on them. P and w come from `grid_scale`:
 
   ```
-  e[0] = q[0];   e[n] = q[n] − q[n−1]  for 1 ≤ n ≤ P
-  e[n] = q[n] − (((64 − w)·q[n−P] + w·q[n−P−1] + 32) >> 6)   for n > P      # >> rounds down
-  r = k-th difference of (0, …, 0, e[0], …, e[n-1]), as above
+  r[n] = (order-k residual of q, as above)                                for 0 ≤ n ≤ P
+  r[n] = e[n] = q[n] − (((64 − w)·q[n−P] + w·q[n−P−1] + 32) >> 6)          for n > P      # >> rounds down
   ```
 
   - The prediction is q a period earlier, between lags P and P + 1 by w/64 (a fractional period),
     with unit gain, so a level carries over exactly. Every e and q is read as int16 (mod 2^16).
+  - k is never 0 on a period block. A block shorter than P + 2 samples is all head.
 
 ## 5. Decoding one block
 
@@ -177,9 +178,9 @@ scaled, power of two: y[i] = (float64(K0 + N · q[i]) · 2^e) / D            (�
   - From 971 up, `q·2^e` itself can overflow while the sum doesn't. Evaluate at half scale:
     `y = max(min(2·(a/2 + q·2^(e−1)), DBL_MAX), −DBL_MAX)`, with `y = a` where q = 0 (a/2 rounds if a is
     subnormal). That is bit-identical to `a + q·2^e` wherever the latter is finite.
-- **Period blocks** (block flag bit 7): after integrating, the result is e; undo the prediction in
-  sample order: q[0] = e[0], q[n] = e[n] + q[n−1] for 1 ≤ n ≤ P, then q[n] = e[n] + (((64 − w)·q[n−P]
-  + w·q[n−P−1] + 32) >> 6), each read as int16.
+- **Period blocks** (block flag bit 7): integrate only the first min(n, P + 1) residuals, `order`
+  times as above, which gives q[0] … q[P]. Then, in sample order, q[n] = r[n] + (((64 − w)·q[n−P] +
+  w·q[n−P−1] + 32) >> 6) for n > P, each read as int16.
 - **Codes** (block flag bit 3): after dequantizing, overwrite samples with code 01 with NaN (the
   canonical quiet NaN), 10 with the block's next escaped value, 11 with its previous one again. A
   block's escaped values start after those of the blocks before it.
