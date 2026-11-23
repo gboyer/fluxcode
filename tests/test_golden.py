@@ -16,10 +16,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _signals import discrete_minute, minute
 
 import fluxcode
 from fluxcode import Params
+from tests._signals import discrete_minute, minute
 
 GOLDEN = Path(__file__).with_name("golden.json")
 

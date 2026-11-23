@@ -292,7 +292,7 @@ NO_TICKS = np.zeros(0, np.int64)
 @pytest.mark.parametrize("frac", [0.001, 0.01, 0.05, 0.2])
 @pytest.mark.parametrize("scale_k", [0, -1060, 1000])
 def test_noise_masked_matches_reference(kind, frac, scale_k):
-    from _signals import minute
+    from tests._signals import minute
     rng = np.random.default_rng(int(frac * 1000) + abs(scale_k))
     X = np.ldexp(minute(kind, 4).reshape(60, 1000)[:10] / 128, scale_k)  # ranges up to ~2^1000 / ~2^-1060
     d, w = np.empty(1000), np.empty(1000)

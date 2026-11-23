@@ -9,21 +9,18 @@ pattern, on one-minute block groups (60 blocks of 1000) of a 4.12 Hz sine. Singl
 
 import argparse
 import os
-import sys
 import time
-from pathlib import Path
 
 os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 
-import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+import tests._fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 
-from _signals import MINUTE, clock_minute, minute
-
+# isort: split
 import fluxcode
 from fluxcode import _format, _group
+from tests._signals import MINUTE, clock_minute, minute
 
 START_NS = 1_790_000_000_000_000_000  # 2026-09-21, in ns since 1970
 MS = 1_000_000

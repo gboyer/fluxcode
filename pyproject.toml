@@ -86,7 +86,3 @@ extend-immutable-calls = ["fluxcode.Params", "fluxcode._api.Params"]
 
 [tool.ty.src]
 exclude = ["experimental"]
-
-[tool.ty.environment]
-# bench/ imports the signal and series helpers from tests/ (it puts tests/ on sys.path).
-extra-paths = ["tests"]

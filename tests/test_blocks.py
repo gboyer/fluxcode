@@ -7,12 +7,12 @@ import datetime
 
 import numpy as np
 import pytest
-from _series import group_rows
-from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format, _grids, _group
 from fluxcode._format import BLOCK_FLAG_ORDER, BLOCK_FLAG_SAMPLE_CODES, SHORT_BLOCK_LEN
+from tests._series import group_rows
+from tests._signals import minute
 
 SIZES = [1000, 0, 1, 2, 7, 8, 9, 0, 255, 4096, 0]
 
@@ -158,7 +158,7 @@ def test_times_in_tiny_and_empty_blocks():
 def test_single_sample_blocks_must_be_canonical():
     """A block of one sample has no deltas: the decoder accepts only a step and reference of 0,
     regular."""
-    from test_time import corrupt_group
+    from tests.test_time import corrupt_group
 
     ok = corrupt_group([False, False], [5, 9], [0, 0], [0, 0], np.zeros(2), sizes=[1, 1])
     assert times_of(ok).tolist() == [5, 9]

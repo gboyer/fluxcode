@@ -17,20 +17,17 @@ encoding the same block group from scratch.
 import argparse
 import os
 import platform
-import sys
 import time
-from pathlib import Path
 
 os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 
-import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+import tests._fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 
-from _signals import discrete_minute, minute
-
+# isort: split
 import fluxcode
+from tests._signals import discrete_minute, minute
 
 START = np.datetime64("2026-01-01T00:00", "ms")
 SECOND = np.timedelta64(1, "s")

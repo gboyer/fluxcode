@@ -7,18 +7,14 @@ floor off), and what the target then delivers.
     uv run python bench/estimate.py
 """
 
-import sys
-from pathlib import Path
-
-import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+import tests._fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 
-from _series import decode_series, encode_series
-from _signals import DISCRETE, KINDS, discrete_minute, minute
-
+# isort: split
 from fluxcode import Params, _compress, _encoder, _group
+from tests._series import decode_series, encode_series
+from tests._signals import DISCRETE, KINDS, discrete_minute, minute
 
 B16 = Params(min_quantize_bits=16, noise_floor_sigma=0)
 

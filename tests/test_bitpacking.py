@@ -3,7 +3,6 @@
 """Packing rows into body bytes and back (_bitpacking): bit and byte planes, code planes, time
 residual planes, their padding, and the body writers and readers."""
 
-import _oracle
 import numpy as np
 import pytest
 
@@ -15,6 +14,7 @@ from fluxcode._format import (
     BLOCK_FLAG_SCALED,
     BLOCK_FLAG_WIDE_TIME,
 )
+from tests import _oracle
 
 RNG = np.random.default_rng(0)
 

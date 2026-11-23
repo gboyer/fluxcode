@@ -7,18 +7,12 @@ package fails CI here instead of when the report is next regenerated.
     uv run --project experimental python experimental/smoke.py
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent / "tests"), str(HERE.parent / "bench")]
-
-import fluxcode  # noqa: E402
-import make_time_report  # noqa: E402
-from tslab.flux.adapters import FluxCodec, ideal_quantum  # noqa: E402
-from tslab.prune import baselines  # noqa: E402
+import fluxcode
+import make_time_report
+from tslab.flux.adapters import FluxCodec, ideal_quantum
+from tslab.prune import baselines
 
 
 def main():

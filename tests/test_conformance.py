@@ -2,11 +2,15 @@
 # Copyright (c) 2026 Garry Boyer
 """docs/SPEC.md §8 and docs/ENCODER.md §7 conformance tests, through the public API."""
 
-import _oracle
 import numpy as np
 import pytest
 import zstandard
-from _series import (
+
+import fluxcode
+from fluxcode import Params, _bitpacking, _format, _grids, _group
+from fluxcode._format import BLOCK_FLAG_DECIMAL, BLOCK_FLAG_ORDER
+from tests import _oracle
+from tests._series import (
     decode_series,
     encode_series,
     flags_params,
@@ -14,11 +18,7 @@ from _series import (
     group_rows,
     planes,
 )
-from _signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
-
-import fluxcode
-from fluxcode import Params, _bitpacking, _format, _grids, _group
-from fluxcode._format import BLOCK_FLAG_DECIMAL, BLOCK_FLAG_ORDER
+from tests._signals import CLEAN, DISCRETE, KINDS, NOISY, discrete_minute, minute
 
 OFF = Params(noise_floor_sigma=0)
 

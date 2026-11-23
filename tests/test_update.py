@@ -2,15 +2,15 @@
 # Copyright (c) 2026 Garry Boyer
 """update: untouched blocks decode identically; without a target, update == encoding the new data."""
 
-import _oracle
 import numpy as np
 import pytest
 import zstandard
-from _series import encode_series, group_rows
-from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _bitpacking, _format
+from tests import _oracle
+from tests._series import encode_series, group_rows
+from tests._signals import minute
 
 L = 1000
 

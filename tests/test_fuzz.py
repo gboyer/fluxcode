@@ -23,23 +23,20 @@ also how often the soft target moves decoded data on re-encode).
 
 import argparse
 import collections
-import sys
 import traceback
 from dataclasses import replace
-from pathlib import Path
 from typing import TypedDict, cast
 
 if __name__ == "__main__":
     # A cache keyed on every source, as for the benchmarks (pytest's conftest uses a throwaway one)
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
-    import _fresh_numba_cache  # noqa: F401
+    import tests._fresh_numba_cache  # noqa: F401
 
 import numpy as np
 import pytest
-from _series import group_rows
 
 import fluxcode
 from fluxcode import Params, TimeUnit, verify
+from tests._series import group_rows
 
 PARAMS = [
     Params(),

@@ -32,19 +32,19 @@ import multiprocessing as mp
 import os
 import platform
 import subprocess
-import sys
 import threading
 import time
-from pathlib import Path
 
 os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 
-import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+import tests._fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 
-from _signals import (
+# isort: split
+import fluxcode
+from fluxcode import Params, _bitpacking, _body, _compress, _decoder, _format, _group
+from tests._signals import (
     CLOCKS,
     DISCRETE,
     KINDS,
@@ -53,9 +53,6 @@ from _signals import (
     discrete_minute,
     minute,
 )
-
-import fluxcode
-from fluxcode import Params, _bitpacking, _body, _compress, _decoder, _format, _group
 
 BLOCK, BLOCKS = 1000, 60
 DAY_GROUPS = 1440

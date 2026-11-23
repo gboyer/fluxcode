@@ -9,11 +9,11 @@ from itertools import pairwise
 
 import numpy as np
 import pytest
-from _series import group_rows
 
 import fluxcode
 from fluxcode import Params, _time, _time_rounding, verify
 from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME
+from tests._series import group_rows
 
 MS = 1_000_000  # ns
 START = 1_790_000_000_000_000_000  # 2026-09-21, in ns: a multiple of every quantum below 1 s
