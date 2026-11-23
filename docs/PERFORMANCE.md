@@ -1,7 +1,7 @@
 # fluxcode performance report
 
 2026-09-24; every table rerun on 2026-10-01 (AC power, one run each, load average about 1.6),
-last after the int16 `grid_params` column. How fast fluxcode encodes and decodes a day of data
+last after the int16 `grid_exponents` column. How fast fluxcode encodes and decodes a day of data
 from a sensor fleet (a synthetic day-scale stress test), where the time goes, and which inputs
 slow it down. Raw output: [bench/STRESS_RESULTS.md](../bench/STRESS_RESULTS.md);
 harness: [bench/stress.py](../bench/stress.py).
@@ -22,7 +22,7 @@ twice, with bit planes and with byte planes, and the smaller kept. That makes th
 and encode about 1.5x slower; `planes="bit"` skips the second pass. Variable block sizes alone (a
 per-block `block_sizes` column, an 8-byte header, flat per-block offsets in every kernel) cost
 encode +1–3% (+2–6 µs per block group) and decode +2–4% (+2–5 µs), and block groups are 1–7 bytes
-smaller. Snapping the grid costs nothing measurable, nor does the int16 `grid_params` column, except
+smaller. Snapping the grid costs nothing measurable, nor does the int16 `grid_exponents` column, except
 on block groups of thousands of tiny blocks whose body drops below 256 KB, where libzstd switches
 parameters (updates below).
 
@@ -84,7 +84,7 @@ day, 1.5x the baseline. Performance is more than sufficient for this use case. W
 
 ### Where the time goes (one block group, single thread, µs)
 
-| kind | bits/sample | kernels | write_group | zstd | encode_group | decode_group |
+| kind | bits/sample | kernels | write_body | zstd | encode_group | decode_group |
 |---|---|---|---|---|---|---|
 | analog | 5.90 | 95 | 31 | 59 | 252 | 78 |
 | held | 0.26 | 96 | 31 | 22 | 175 | 90 |
@@ -92,7 +92,7 @@ day, 1.5x the baseline. Performance is more than sufficient for this use case. W
 | sensor-0.1 | 1.77 | 115 | 31 | 60 | 335 | 108 |
 | random-walk | 12.67 | 99 | 32 | 87 | 314 | 98 |
 
-`write_group` and `zstd` are one bit-plane pass; `encode_group` (default `planes="best"`) does a
+`write_body` and `zstd` are one bit-plane pass; `encode_group` (default `planes="best"`) does a
 bit-plane and a byte-plane pass. Encode is numba kernels (quantization, order pick, residual),
 about 31 µs for the bit-plane shuffle, and 8-87 µs of zstd per pass depending on entropy.
 
@@ -109,7 +109,7 @@ about 31 µs for the bit-plane shuffle, and 8-87 µs of zstd per pass depending 
 - **NaN runs cost little.** Blocks that are entirely NaN are cheap; only the two
   partial blocks at the ends of each run take the non-finite path.
 - **Scattered NaNs are the worst case.** A tag with intermittent bad-quality samples sends every
-  affected block down the non-finite path. Before the `noise_finite` rewrite (branch-free loops,
+  affected block down the non-finite path. Before the `estimate_masked_noise` rewrite (branch-free loops,
   scratch buffers allocated once per block group), the 1%-scattered case took 137 s; after it, 108 s
   with bit planes only (2026-09-25), and 158 s with both plane passes now.
 - **Decimal detection near misses.** A block on a decimal grid except for one late sample makes
@@ -157,7 +157,7 @@ Per clock kind, every tag on that clock (250 tags, the same session; percentages
 - **Noisy clocks dominate the mix.** The 10% of tags on a noisy clock add 7.1 bits/sample of real
   jitter entropy, most of the day's extra 7.8 GB, and each irregular block goes through the GCD,
   the reference, 32 residual planes and zstd.
-- **32 residual planes, 64 only for long blocks** (a residual of 2^32 or more: in ns ticks, a gap of
+- **32 residual planes, 64 only for wide-time blocks** (a residual of 2^32 or more: in ns ticks, a gap of
   seconds). zstd scans zero bytes at about 9 GB/s, so the 32 dead planes per block cost 26-38 µs of
   encode per irregular block group (the day: 101.1 s before, 92.5 s after, 2026-09-27), at the same
   size.
@@ -203,13 +203,13 @@ table: [bench/UPDATE_RESULTS.md](../bench/UPDATE_RESULTS.md)):
 | `update_time_blocks`, one sample (replaced) in each of the 3,600 blocks | +39% to +81% (+541 to +705 µs) |
 
 An update decompresses the old block group, encodes only the new blocks, and copies every carried
-block's bytes into the new body (`_bitpacking.splice_body`), so it skips the kernels and the shuffle
+block's bytes into the new body (`_body.splice_body`), so it skips the kernels and the shuffle
 for the rest. Its floor is zstd: with `planes="best"` it compresses twice, as encode does. The
 bodies are built in byte planes, which are what the carried blocks are copied between (a bit-plane
 block group's residual region is converted once, by one transpose, before the copy), and the
 bit-plane body for the second candidate is derived from the byte-plane one by one more transpose of
-the whole region (`_bitpacking.to_bit_planes`): octets line up across the region, so no block is
-converted on its own. The same holds for `write_group` when a block group is encoded, which is why it
+the whole region (`_bitpacking.to_bit_planes`): 8-sample groups line up across the region, so no block is
+converted on its own. The same holds for `_body.write_body` when a block group is encoded, which is why it
 writes byte planes only (3,600 blocks of 10: writing bit planes directly took 195 µs; byte planes take
 52 µs plus the 24 µs transpose). In `update_time_blocks`
 the decoded and new samples are merged in one numba pass over both (they are sorted): which old
@@ -229,14 +229,14 @@ None of these change the format.
 **Structure**
 - **Compiled calls per block group, never per block.** The encoder stages for all blocks of a block
   group run in one `@njit` call (`_encoder.encode_group`), and the serializer
-  (`_bitpacking.write_group`) in a second one, writing every field straight into one output buffer.
+  (`_body.write_body`) in a second one, writing every field straight into one output buffer.
   Allocations are per block group and small (the 120 KB block group buffer costs 0.2 µs). zstd
   contexts are reused, one per thread.
 - **Rare inputs stay off the common path.** Blocks holding NaN or ±inf are handled in
-  `_nonfinite.py`. Subnormal ranges, ranges at or past 2^1023 and overflowing sums are handled in
+  `_escapes.py`. Subnormal ranges, ranges at or past 2^1023 and overflowing sums are handled in
   `_extreme_magnitudes.py`. Each is reached through one branch per block, so the clean path in
   `_encoder.py` and `_decoder.py` reads as the plain algorithm. The noise estimator and its
-  constants live in `_noise.py`, shared by the clean and non-finite variants.
+  constants live in `_noise.py`, shared by the clean (`estimate_clean_noise`) and masked (`estimate_masked_noise`) variants.
 - **Parallelism:** none inside the codec. Block groups are independent, and the kernels release the
   GIL, so threads and processes scale the same.
 
@@ -250,7 +250,7 @@ None of these change the format.
 - **Noise estimate** is compiled with `fastmath=True`; its float sums otherwise run serially at
   FP-add latency (7.2 → 1.5 µs/block). That's safe because only the encoder evaluates it. The
   format-defining arithmetic (quantize, reconstruct) is compiled without fastmath. Blocks holding
-  NaN or inf use a separate weighted copy (`_nonfinite.noise_finite`), so the weights cost clean blocks nothing.
+  NaN or inf use a separate weighted copy (`_noise.estimate_masked_noise`), so the weights cost clean blocks nothing.
 - **Decimal detection** exits on the first off-grid sample, typical for continuous data (~0.4 µs
   per block). The successful candidate's quantized values are kept instead of quantizing again.
 - **Bit-shuffle** uses an 8×8 bit transpose per 8 bytes: three mask-and-shift steps on a uint64
@@ -274,7 +274,7 @@ None of these change the format.
   and `a[i] − b[i]`): 0.2 µs.
 - **Chunked loops** (`for i in range(start, min(start + 64, n))` over whole arrays, to stop
   early between chunks) stay scalar for the same reason; slice each chunk and index the slices
-  from 0. The time-error check (`_time.lattice_error`, `within_allowances`): 0.82 → 0.33 µs.
+  from 0. The time-error check (`_time_rounding.snap_and_check_lattice`, `max_move_within_error`): 0.82 → 0.33 µs.
 - **int64 products** have no NEON multiply. Compute differences in int32 (they fit: |d3| < 2^19)
   and widen for the square: the order pick went from 0.47 to 0.15 µs.
 - **Float min/max reductions** don't vectorize even with fastmath: use four independent chains
@@ -287,7 +287,7 @@ None of these change the format.
 - **fastmath reassociates across inlined helpers:** `x * s1 * s2` can become `x * (s1 * s2)`,
   which overflows. The first multiply of a two-step scale lives in a function compiled without
   fastmath (`_extreme_magnitudes._scaled`).
-- **Small code changes can move a hot loop's codegen:** an overflow fallback in `_nonfinite.fill_nonfinite`
+- **Small code changes can move a hot loop's codegen:** an overflow fallback in `_escapes.impute_nonfinite`
   that tested `isfinite(x[i])` instead of the codes slowed the whole function from 0.7 to
   1.15 µs/block, even though the fallback never ran. Time the stage before and after a refactor.
 - Benchmark stages with every output used: LLVM removes unused reductions, which makes them look free.
@@ -295,17 +295,17 @@ None of these change the format.
   it doesn't vectorize, and in `splice_body` cost 6-10x an explicit loop. Indexing with a runtime
   signed offset (`dst[offset + i]`) also blocks vectorization, through the negative-index
   wraparound check. The fast form slices both rows first and indexes them from 0
-  (`_bitpacking._copy_columns` / `_copy_bytes`): 96 → 14 µs for a 60-block splice, and 100 → 40 µs
+  (`_body._copy_columns` / `_body._copy_bytes`): 96 → 14 µs for a 60-block splice, and 100 → 40 µs
   when converting plane modes.
 
 ## Optimizations considered and not taken
 
-**Fusing `write_group` into the encode kernel.** Rejected. It would couple the encoder to the
+**Fusing `write_body` into the encode kernel.** Rejected. It would couple the encoder to the
 format writer that `update` shares, and a measurement showed it would save almost nothing:
 
-| part of `write_group` (one block group, data in cache) | µs |
+| part of `write_body` (one block group, data in cache) | µs |
 |---|---|
-| whole `write_group` | 27-29 |
+| whole `write_body` | 27-29 |
 | allocating the 120 KB buffer | 0.2 |
 | zigzag | 2 |
 | 8x8 bit transposes | ~13 |

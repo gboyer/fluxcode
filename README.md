@@ -362,14 +362,18 @@ Code layout (`fluxcode/`), from the public API down:
   `_time_blocks.py`: dividing timed samples into blocks of a fixed duration.
 - `_compress.py`: the compression policy (efforts, layout choice, flush points, framing, candidate
   choice); `rust/src/compress.rs` is its port.
-- `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: the time axis
-  kernels (§4); `_grids.py`, `_noise.py`, `_escapes.py` and `_extreme_magnitudes.py`: quantization
-  grids, noise estimation, coded/escaped values, and extreme-magnitude handling.
+- `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: exact
+  timestamp encoding/decoding and cadence detection (§4); `_time_rounding.py`: lossy `time_error`
+  timestamp rounding and clock-lattice fitting; `_grids.py`, `_rational.py`, `_noise.py`,
+  `_escapes.py` and `_extreme_magnitudes.py`: quantization grids, noise estimation, sample
+  exception codes and escaped values, and extreme-magnitude handling.
 - `verify.py`: checks a call's result against the guarantees (ENCODER §6), from the decoded
   output; nothing on the encode path uses it.
-- `_format.py`: the header, field offsets and row types (§7); `_bitpacking.py`: writing and
-  reading the body's fields, and splicing bodies for `update`. `rust/src/` has the same-named
-  `format.rs` and `bitpacking.rs`.
+- `_format.py`: the header, field offsets and column structs (`EncodedBlockColumns`,
+  `EncodedTimeColumns`, `BodyLayout`, SPEC §6); `_body.py`: body serialization, time-field
+  reading/validation, and binary splicing for `update`; `_bitpacking.py`: bit/byte-plane
+  transposition, zigzag, and sample-code & time-residual plane codecs. `rust/src/` has the
+  same-named `format.rs` and `bitpacking.rs`.
 
 The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
 defining each kernel, not the constants and helpers it inlines from other modules. After editing

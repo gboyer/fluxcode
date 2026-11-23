@@ -191,7 +191,7 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
     non-negative, so zigzag only shifts them up a bit plane (plane 0 all zero), and they are about
     √(σ² + (mean − min)²).
 - **Group time step (`group_time_step`).** On packing, the GCD q of the block group's stored start
-  increases and per-block `time_step` values (SPEC.md §3); q ≥ 2 stores them divided by q with an
+  increases and per-block `time_steps` values (SPEC.md §3); q ≥ 2 stores them divided by q with an
   8-byte trailer (header flags bit 4). It is computed on the body, so an update recomputes it (a
   new block off the seconds drops it; restoring the block restores it, byte for byte). Measured
   on simulated historian archives (`experimental/value/archive_time.py`, a day per group, hourly
@@ -206,7 +206,7 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
   - **Mean interval** m: the block's span over its intervals, (last − first)/(n − 1). Exact and
     O(1); gaps inside a block stretch it, which only loosens the cap below (the check keeps the
     step honest).
-  - **The check** (`within_error`), applied to every candidate below after it is clamped to the
+  - **The check** (`check_within_time_error`), applied to every candidate below after it is clamped to the
     block's bounds: no tick moves more than e·m·1.02, and at most one in 20 (5%) moves more than
     e times its own interval, the smaller of the two either side of it as given. The finest 5%
     (unusually close times) may be off by more than e of their own interval, but by no more than
@@ -284,7 +284,7 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
   - **Order across blocks** (blocks without bounds): rounding keeps each block in order. Where a
     block's first tick rounded below the ticks before it, the boundary gets a point m between the
     two ticks next to it as given; every earlier tick above m is lowered to it, and the block's
-    ticks below m are raised to it (`clamp_boundaries`). Every earlier tick was given at or below
+    ticks below m are raised to it (`clamp_block_boundaries`). Every earlier tick was given at or below
     m and every later one at or above it, so no tick moves further than its rounding did. m is
     the block's first rounded tick if the block before moved more (it gives way), else that
     block's last. That takes near-duplicate times across a block boundary where the rate changes.
@@ -303,7 +303,7 @@ The format stores a 2-bit code per non-finite sample (SPEC.md §2). The encoder:
   - A regular series costs only its per-block start, step and reference: about 65 bytes per
     block group of 60 blocks.
   - A gap costs only its own block.
-  - Long blocks are rare: in ns ticks with a GCD of 1, a gap of about 2 s or more; in µs ticks
+  - Wide-time blocks are rare: in ns ticks with a GCD of 1, a gap of about 2 s or more; in µs ticks
     or on any coarser grid, a gap of over half an hour.
   - Measured costs per clock shape, and the measurements behind the design (the GCD, plain
     deltas, the reference, 32 planes), are in [TUNING.md](TUNING.md#time-axis).
@@ -661,7 +661,7 @@ power-of-two grid: t = the trailing zero bits common to N and the anchor's index
   (N = 5) or odd integers.
 - **Zero low bits are nearly free in bit planes; odd factors aren't**: 0.05 data on 0.01 is 19%
   larger, 1/3 on 2^e 49% (experimental/grids). So the power of two goes into the exponent while
-  the grid stays absolute (no grid_scale), and only the rest into N.
+  the grid stays absolute (no `grid_scales` entry), and only the rest into N.
 - **Cost.** It stops at the first index the gcd doesn't divide: a few samples on ordinary data.
   A block whose gcd survives reads every index (a mask while it is a power of two, then one
   branch-free OR of the rest), about 0.6 µs per 1000 samples.
@@ -700,7 +700,7 @@ for B = 10, then 2, with B^p <= S < B^(p+1):
   step the previous block couldn't rationalize, 2.5 µs on a float gain like 0.013712345678), but
   wasn't worth the state it adds between blocks. This is a simplicity choice, not a guarantee
   (§6).
-- **Cost** (`fit_step` alone, single thread, per 1000 samples, against 4–6 µs to encode a block):
+- **Cost** (`fit_rational_step` alone, single thread, per 1000 samples, against 4–6 µs to encode a block):
   0.03 µs to reject a random walk, about 0.2 µs on a smooth ramp, 2.8 µs to fit a hidden grid;
   the index gcd 0.08 µs on ordinary data, 0.16–0.7 µs when its gcd survives the block. Whole
   encodes (bench/RESULTS.md, the hidden grids after each table's total): +0.13 µs per block (+3%)
@@ -920,7 +920,7 @@ N their total samples.
     untouched samples changed in testing).
 - **`update` leaves other blocks untouched.** It replaces or appends whole blocks of a block group,
   of any size.
-  - The other blocks' flags, grid parameter, anchor, residuals, codes and time rows carry over
+  - The other blocks' flags, grid exponent, grid scale, anchor, residuals, sample codes and time fields carry over
     unchanged: they are neither dequantized nor re-encoded, and decode to identical values.
   - Indices skipped past the block group's end are appended as empty blocks.
   - With a time axis, `update` takes the new blocks' times (required exactly when the block group
@@ -1060,7 +1060,7 @@ alone, it uses today's encoder as an oracle: that is not a guarantee (§6).
    - regular series store no planes; a gap makes only its block irregular, with the GCD as its
      step;
    - jitter takes the rounded mean as its reference, and skewed deltas the minimum;
-   - only a block whose residuals reach 2^32 is long;
+   - only a block whose residuals reach 2^32 is wide-time;
    - these round-trip: equal timestamps, all-equal blocks, short last blocks, blocks of 0, 1 and
      2 samples (a 2-sample block whose delta exceeds int64 maximum), leading empty blocks before
      negative ticks, ticks at both ends of int64, and a block spanning more than half of it;

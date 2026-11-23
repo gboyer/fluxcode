@@ -88,7 +88,7 @@ better, or slower than compressing twice), and narrow-residual exceptions to the
 
 The header records the residual layout: 16 bit planes or 2 byte planes. On clean periodic signals
 whose cycles repeat across the block group, zstd finds long matches in the byte planes that the
-8-sample octets of the bit planes break up: in the prototype on synthetic minute block groups, sines
+8-sample groups of the bit planes break up: in the prototype on synthetic minute block groups, sines
 at B = 10 went from 2.39 to 1.12 bits/sample (sin-50.3hz 4.09 to 0.99).
 
 Measured on 2026-10-01 (default params, B = 16, zstd level 3, 8 one-minute block groups per signal),
@@ -325,10 +325,10 @@ threads, where memory bandwidth is shared, that costs 12–29% ([PERFORMANCE.md]
   per sample, because a spread of ±60 flips planes 3–10 together (and crossing 1024 flips more), and
   each plane is coded on its own. Residuals from the reference cut jitter by 4–16%, dropped samples
   by half and a drifting clock by 80%, and cost about 15 bytes per block group with gaps (the
-  `time_ref` column). The mean alone lost 4–17% on skewed deltas, and the median matched the
+  `time_ref_quotients` column). The mean alone lost 4–17% on skewed deltas, and the median matched the
   mean-or-minimum choice at the cost of a selection per block; the variance rule matched a per-block
   best of both on every shape measured.
-- 32 planes, with 64 for long blocks only: zstd scans a run of zero bytes at about 9 GB/s, so 64
+- 32 planes, with 64 for wide-time blocks only: zstd scans a run of zero bytes at about 9 GB/s, so 64
   planes per block spent 50–70 µs per irregular block group compressing the dead planes 32–63. Fewer
   planes lose size instead: this libzstd (1.5.7) compresses these bodies 1–3% better above 256 KB
   (splitting blocks where the statistics change), and a group-wide plane count or per-block widths
@@ -411,10 +411,10 @@ Poisson events since the jump to a short interval's step (2026-10-13; before: 83
   time and back up through the skipped steps (exact too, but slower: Poisson 5.9 → 7.5 µs per block,
   deadband 3.0 → 4.2, since a decade that passes usually overshoots and adds a second full pass).
 - **Vectorized** (2026-10-13, same bytes): every candidate (the lattice of the block before, each
-  grid, a lattice of its own) is rounded, clamped and checked in one pass (`lattice_error`; a grid
+  grid, a lattice of its own) is rounded, clamped and checked in one pass (`snap_and_check_lattice`; a grid
   is the lattice through its rounded first tick) against each tick's allowed move, worked out once
-  per block (`tick_allowances`), in float64 chunks of 64 ticks that stop at the chunk a failing
-  candidate fails in; `regular_step`, `within_error` and `grid_fails` run in the same branch-free
+  per block (`compute_tick_allowances`), in float64 chunks of 64 ticks that stop at the chunk a failing
+  candidate fails in; `uniform_interval`, `check_within_time_error` and `grid_cannot_meet_error` run in the same branch-free
   chunks. LLVM vectorizes such a chunk only as a loop over slices of its own (an inner loop over a
   range of the whole arrays stays scalar), and the largest move is an integer maximum. Float64
   rounds exactly within 2^48 ticks of the lattice's origin, ties up (an eighth of a tick added
@@ -423,12 +423,12 @@ Poisson events since the jump to a short interval's step (2026-10-13; before: 83
   can't bite (0.92 → 0.76 µs per pass without bounds). The phase's 64 sampled ticks are gathered
   once per block and their residues taken in float64 from the first one's (0.20 → 0.16 µs per
   try). Per block of 1000 ticks: a failing try no longer rounds every tick first and stops within
-  64 ticks of where it fails, `regular_step` on irregular ticks 0.54 → 0.02 µs (three calls per
+  64 ticks of where it fails, `uniform_interval` on irregular ticks 0.54 → 0.02 µs (three calls per
   block), the lattice of the block before 1.22 → 0.63 µs (was `snap_lattice`'s integer
   division and a separate check). `snap_ticks` per block at e = 0.05, against 7908862: Poisson
   7.8 → 3.5 µs, deadband 4.9 → 2.3, the noisy clock 5.0 → 2.1, jittered clocks 3.6 → 1.2, 1024 Hz
   4.2 → 1.6, a perfect grid 0.73 → 0.31.
-- **Measured and dropped** (2026-10-13): a stronger interval test (`grid_fails` with each tick's
+- **Measured and dropped** (2026-10-13): a stronger interval test (`grid_cannot_meet_error` with each tick's
   own allowed move, and outliers counted as a cover of the forced intervals: at least the larger of
   half of them and those less their adjacent pairs) cut Poisson from 4.5 to 3 tries per block and
   deadband from 2 to 1, but was slower overall (Poisson 3.9 → 4.5 µs per block, clocks +0.3 to
