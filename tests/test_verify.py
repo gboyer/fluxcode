@@ -79,6 +79,25 @@ def test_values_off_their_grid(series):
     assert found == {"step_bound"}  # 0.01 is within range / 63.5 (and the noise floor may coarsen these blocks)
 
 
+def test_escaped_blocks_keep_their_grid():
+    """In a block with escapes, the rest of the block is held to its own grid, not the full range's bound."""
+    rng = np.random.default_rng(4)
+    x = np.sin(np.arange(4000) / 50) + rng.normal(0, 1e-4, 4000)
+    glitches = [17, 1500, 3333]
+    x[glitches] = 1e6
+    result = fluxcode.encode_group(x)
+    decoded = verify._decode(result.group)
+    assert decoded.escaped.any()
+    np.testing.assert_array_equal(np.flatnonzero(decoded.escaped_samples), glitches)
+    assert verify.encode_group(result, x) == []
+    # The bulk moved by 0.01: far inside the full range's 1e6 / 2^15, far outside the bulk's grid
+    y = x + 0.01
+    y[glitches] = 1e6
+    moved = fluxcode.encode_group(y)._replace(block_min=result.block_min, block_max=result.block_max,
+                                              block_mean=result.block_mean)
+    assert checks(verify.encode_group(moved, x)) == {"step_bound"}
+
+
 def test_coarser_than_the_params(series):
     x, _ = series
     coarse = fluxcode.encode_group(x, Params(min_quantize_bits=1, max_quantize_bits=3))

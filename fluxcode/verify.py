@@ -31,7 +31,9 @@ Checked, per block (the `check` of each Violation):
         the noise floor off or fewer than 128 samples) is off by more than
         range / (2^max_quantize_bits - 1/2).
     "step_bound": a sample decoded further than its block's stored grid allows: half the step
-        2^e, a quarter of a decimal step 10^p (the detection tolerance), half a scaled step.
+        2^e, a quarter of a decimal step 10^p (the detection tolerance), half a scaled step. An
+        escaped sample (ENCODER §5.1.1) is held to the block's full range at
+        max_quantize_bits instead, and the rest of its block to the grid.
     "untouched": a block an update didn't re-encode decodes differently. (The samples
         update_time_blocks keeps in a block it re-encodes are checked by the bounds: on a grid
         holding their points, any other decoded value is a step away, past the step bound.)
@@ -60,7 +62,7 @@ import numpy as np
 import numpy.typing as npt
 from numba import njit
 
-from . import _api, _args, _format, _group
+from . import _api, _args, _bitpacking, _format, _group
 from ._args import DurationLike, RangesLike, TimeLike
 from ._format import BLOCK_FLAG_DECIMAL, BLOCK_FLAG_SCALED
 from ._types import (
@@ -386,6 +388,7 @@ class _Decoded(NamedTuple):
     values: np.ndarray
     ticks: np.ndarray | None
     escaped: np.ndarray  # per block: holds escaped values (ENCODER §5.1.1)
+    escaped_samples: np.ndarray  # per sample: an escaped value (code 10 or 11)
 
     @property
     def num_blocks(self) -> int:
@@ -406,9 +409,28 @@ def _decode(group: bytes) -> _Decoded:
     for byte_idx in range(4):  # the low half: N | D << 16 (the high half holds a period block's parameters)
         scales |= raw[start + byte_idx * num_blocks:start + (byte_idx + 1) * num_blocks] << (8 * byte_idx)
     sizes = parsed.block_sizes.astype(np.int64)
+    escaped = np.diff(parsed.escape_offsets) > 0
     return _Decoded(parsed.header.time_unit, sizes, np.concatenate([[0], np.cumsum(sizes)]),
                     parsed.block_flags.astype(np.int64), grid_params, scales, values, ticks,
-                    np.diff(parsed.escape_offsets) > 0)
+                    escaped, _escaped_samples(parsed, escaped))
+
+
+def _escaped_samples(parsed: _group.ParsedGroup, escaped: np.ndarray) -> np.ndarray:
+    """Per sample, whether it decodes an escaped value (code 10 or 11, in a block with escapes)."""
+    layout = parsed.layout
+    out = np.zeros(int(layout.sample_offsets[-1]), bool)
+    if not escaped.any():
+        return out
+    num_blocks = escaped.shape[0]
+    planes = _bitpacking.code_planes_view(parsed.raw_body, num_blocks, int(layout.octet_offsets[-1]),
+                                          int(layout.code_offsets[-1]), parsed.has_time)
+    bits = np.arange(8)
+    for block_idx in np.flatnonzero(escaped).tolist():
+        first, end = int(layout.code_offsets[block_idx]), int(layout.code_offsets[block_idx + 1])
+        codes = (((planes[0, first:end, None] >> bits) & 1) | (((planes[1, first:end, None] >> bits) & 1) << 1)).ravel()
+        start, stop = int(layout.sample_offsets[block_idx]), int(layout.sample_offsets[block_idx + 1])
+        out[start:stop] = codes[:stop - start] >= _format.CODE_ESCAPE
+    return out
 
 
 def _decode_or_report(group: bytes, found: list[Violation]) -> _Decoded | None:
@@ -562,22 +584,27 @@ def _check_values(
         # At half scale, so that neither the errors nor the ranges of blocks spanning +-DBL_MAX overflow
         half_range = np.where(count > 0, hi / 2 - lo / 2, 0.0)
         half_ulps = 2 * np.spacing(magnitude)  # x - lo and lo + q step each round once (4 ulps)
+        grid_half = _grid_bounds(new) / 2
+        # The rest of a block with escapes keeps its grid's bound; its escaped samples keep the bound of
+        # the block's full range at max_quantize_bits (exact if float32 holds them)
+        bulk_error, escaped_error = _split_errors(given, new, half_error)
         bounds = [
-            ("range_bound", half_range / (2.0 ** params.min_quantize_bits - 0.5), "range / (2^min_quantize_bits - 1/2)"),
-            # Escaped samples keep the bound of the block's full range at max_quantize_bits, not the bulk's grid
-            ("step_bound", np.where(new.escaped, np.maximum(_grid_bounds(new) / 2, half_range / (2.0 ** params.max_quantize_bits - 1) * 2),
-                                    _grid_bounds(new) / 2), "the stored grid's (or, with escapes, the full range's)"),
+            ("range_bound", half_range / (2.0 ** params.min_quantize_bits - 0.5), "range / (2^min_quantize_bits - 1/2)",
+             half_error),
+            ("step_bound", grid_half, "the stored grid's", bulk_error),
+            ("step_bound", np.maximum(grid_half, half_range / (2.0 ** params.max_quantize_bits - 1) * 2),
+             "an escaped sample's: the full range's at max_quantize_bits", escaped_error),
         ]
         if params.target_bits_per_sample is None:
             fine = (params.noise_floor_sigma == 0) | (sizes < NOISE_FLOOR_MIN_SAMPLES)
             # tolerance lets a step reach 2 * tolerance (within min_quantize_bits' range_bound)
             fine_bound = np.where(fine, np.maximum(half_range / (2.0 ** params.max_quantize_bits - 0.5), params.tolerance / 2),
                                   np.inf)
-            bounds.append(("fine_bound", fine_bound, "range / (2^max_quantize_bits - 1/2), or tolerance"))
-        for check, half_bound, what in bounds:
-            over = encoded & (count > 0) & ~(half_error <= half_bound + half_ulps)
+            bounds.append(("fine_bound", fine_bound, "range / (2^max_quantize_bits - 1/2), or tolerance", half_error))
+        for check, half_bound, what, block_error in bounds:
+            over = encoded & (count > 0) & ~(block_error <= half_bound + half_ulps)
             for block_idx in np.flatnonzero(over)[:_MAX_REPORTED].tolist():
-                found.append(Violation(check, block_idx, f"max error {2 * half_error[block_idx]:.17g} over "
+                found.append(Violation(check, block_idx, f"max error {2 * block_error[block_idx]:.17g} over "
                                        f"{what} {2 * half_bound[block_idx]:.17g}"))
     _check_stats(found, result, encoded, count, lo, hi, mean, magnitude)
 
@@ -598,7 +625,7 @@ def _check_decimals(
         raise ValueError(f"decimals must be from -22 to 22, got {decimals}")
     if params.target_bits_per_sample is not None or params.grids == "binary" or not given.shape[0]:
         return
-    if params.tolerance > (10.0 ** -decimals if decimals >= 0 else 10.0 ** -decimals) / 2:
+    if params.tolerance > 10.0 ** -decimals / 2:
         return  # tolerance's step may be coarser than the decimals'
 
     finite = np.isfinite(given)
@@ -616,6 +643,22 @@ def _check_decimals(
                & ((params.noise_floor_sigma == 0) | (sizes < NOISE_FLOOR_MIN_SAMPLES)))
     bad = np.repeat(checked, sizes) & finite & (new.values != given)
     _report_samples(found, "decimal", bad, new.offsets, "decimal samples of a block guaranteed exact changed")
+
+
+def _split_errors(given: np.ndarray, new: _Decoded, half_error: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per block, the largest error at half scale of its samples that aren't escaped, and of those
+    that are (0 in blocks without escapes); finite samples only."""
+    bulk = half_error.copy()
+    escaped = np.zeros_like(half_error)
+    for block_idx in np.flatnonzero(new.escaped).tolist():
+        first, end = new.offsets[block_idx], new.offsets[block_idx + 1]
+        with np.errstate(all="ignore"):
+            error = np.abs(given[first:end] / 2 - new.values[first:end] / 2)
+        error = np.where(np.isfinite(given[first:end]) & np.isfinite(new.values[first:end]), error, 0.0)
+        which = new.escaped_samples[first:end]
+        bulk[block_idx] = error[~which].max(initial=0.0)
+        escaped[block_idx] = error[which].max(initial=0.0)
+    return bulk, escaped
 
 
 @njit(nogil=True, cache=True)
