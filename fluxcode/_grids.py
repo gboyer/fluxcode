@@ -23,6 +23,8 @@ from ._format import (
     P_MIN,
     SCALE_MASK,
     SCALE_SHIFT,
+    SCALED_E_MAX,
+    SCALED_E_MIN,
 )
 
 NO_DECIMAL: int = 99
@@ -49,6 +51,25 @@ NO_FLOOR_EXP: int = E_MIN - 64
 FLOOR_MARGIN: float = 1.02
 """How far past a power of two the noise floor's step may be for a block already on the grid
 one finer to keep it (preserve_finer_grid): above the 0.26% quantizing adds to sigma."""
+
+TOLERANCE_STEP_BITS: int = 4
+"""A tolerance scaled step is N points of 2^(e - TOLERANCE_STEP_BITS), N in [17, 31]: within 6% of 2 * abs_tol."""
+
+
+def tolerance_exponent(abs_tol: float) -> int:
+    """Exponent of the largest power-of-two step whose half is at most `abs_tol` (Params.absolute_tolerance);
+    NO_FLOOR_EXP for 0."""
+    if not abs_tol > 0:
+        return NO_FLOOR_EXP
+    return min(math.floor(math.log2(abs_tol)) + 1, E_MAX)
+
+
+def tolerance_step(abs_tol: float) -> float:
+    """Maximum step 2 * abs_tol if finite and positive, else 0.0."""
+    if not abs_tol > 0:
+        return 0.0
+    step = 2.0 * float(abs_tol)
+    return step if math.isfinite(step) else 0.0
 
 FLOAT64_EXACT_INT_LIMIT: float = 2.0 ** 52
 """Scaled-magnitude limit for decimal candidates: below 2^52 a double's spacing is at most
@@ -287,15 +308,73 @@ def plan_block_step(
     noise_factor: float,
     min_bits: int,
     max_bits: int,
-) -> int:
-    """Plans a block's power-of-two exponent with noise-floor hysteresis."""
+    tolerance_exp: int = NO_FLOOR_EXP,
+    tol_step: float = 0.0,
+) -> tuple[int, float]:
+    """Plans a block's step before grid detection and the target: (exponent, tolerance_step or 0.0).
+
+    Starts from `plan_step` (max_bits coarsened by noise floor, capped at min_bits). If
+    `tolerance_exp` is coarser than that, `absolute_tolerance` coarsens past `min_bits` all the
+    way to `min(tolerance_exp, E_MAX)` (and passes `tol_step` for `tolerance_grid` under
+    `grids="rational"`). When the noise floor (not tolerance) sets the step, `preserve_finer_grid`
+    provides floor hysteresis for fixed points.
+    """
     planned_exp = plan_step(lower_bound, upper_bound, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
-    if noise_rho > NOISE_GATE and upper_bound > lower_bound:
+    block_tol_step = 0.0
+    if upper_bound > lower_bound and tolerance_exp > planned_exp:
+        planned_exp = min(tolerance_exp, E_MAX)
+        block_tol_step = tol_step
+    if noise_rho > NOISE_GATE and upper_bound > lower_bound and planned_exp > tolerance_exp:
         planned_exp = max(
             preserve_finer_grid(samples, planned_exp, noise_factor * noise_sigma),
             range_exponent(lower_bound, upper_bound, max_bits),
         )
-    return planned_exp
+    return planned_exp, block_tol_step
+
+
+@njit(nogil=True, cache=True)
+def tolerance_grid(lower_bound: float, quant_exp: int, tol_step: float) -> tuple[np.int64, int, float]:
+    """Tolerance's scaled grid for a block whose step it sets: N points of the fine grid
+    2^(quant_exp - TOLERANCE_STEP_BITS), N in [17, 31], anchored on multiples of the step
+    (so decoded data lies on it and re-encodes to itself).
+
+    Returns:
+        (N, fine_exp, base_index), or (0, fine_exp, 0.0) when not applicable.
+    """
+    fine_exp = quant_exp - TOLERANCE_STEP_BITS
+    if not (tol_step > 0 and quant_exp == math.floor(math.log2(tol_step))):
+        return np.int64(0), fine_exp, 0.0
+    if not (SCALED_E_MIN <= fine_exp <= SCALED_E_MAX):
+        return np.int64(0), fine_exp, 0.0
+    fine_step = math.ldexp(1.0, fine_exp)
+    num = np.int64(tol_step / fine_step)
+    if num <= (1 << TOLERANCE_STEP_BITS):
+        return np.int64(0), fine_exp, 0.0
+    step = float(num) * fine_step
+    base = math.floor(lower_bound / step) * num
+    if not (math.isfinite(base) and abs(base) < INDEX_LIMIT):
+        return np.int64(0), fine_exp, 0.0
+    return num, fine_exp, float(base)
+
+
+@njit(nogil=True, cache=True)
+def moved_off_tolerance_grid(
+    samples: np.ndarray, num: np.int64, fine_exp: int, decimal_exp: int, base_index: np.int64, quantized: np.ndarray,
+) -> bool:
+    """Whether every sample is already exact on the tolerance scaled grid `k * num * 2^fine_exp`
+    and the detected decimal grid would move at least one sample (protecting fixed points)."""
+    step = float(num) * math.ldexp(1.0, fine_exp)
+    inv_step = 1.0 / step
+    divide = decimal_exp < 0
+    power = 10.0 ** abs(decimal_exp)
+    moved = False
+    for sample_idx in range(samples.shape[0]):
+        sample = samples[sample_idx]
+        if math.floor(sample * inv_step + 0.5) * step != sample:
+            return False
+        index = float(base_index + quantized[sample_idx])
+        moved |= (index / power if divide else index * power) != sample
+    return moved
 
 
 @njit(nogil=True, cache=True)

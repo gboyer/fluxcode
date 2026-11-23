@@ -7,7 +7,8 @@ import pytest
 from _series import decode_series, encode_series, encode_unchecked, group_rows
 from _signals import KINDS, minute
 
-from fluxcode import Params, _grids
+import fluxcode
+from fluxcode import Params, _grids, verify
 
 
 @pytest.mark.parametrize("kw", [{"min_quantize_bits": 0}, {"max_quantize_bits": 17},
@@ -16,7 +17,9 @@ from fluxcode import Params, _grids
                                 {"noise_floor_sigma": -1}, {"noise_floor_sigma": float("nan")}, {"noise_floor_sigma": None},
                                 {"target_bits_per_sample": 0}, {"target_bits_per_sample": 5.99},
                                 {"target_bits_per_sample": True}, {"effort": 0}, {"effort": 10}, {"effort": True},
-                                {"effort": 5.0}, {"effort": None}])
+                                {"effort": 5.0}, {"effort": None}, {"absolute_tolerance": -0.1},
+                                {"absolute_tolerance": float("nan")}, {"absolute_tolerance": float("inf")},
+                                {"absolute_tolerance": True}])
 def test_invalid(kw):
     with pytest.raises(ValueError):
         Params(**kw)
@@ -108,3 +111,53 @@ def test_small_targets_can_grow_repeat_heavy_groups():
     x = minute("quadratic", 9)
     assert len(kernel_groups(x, 2.0)) > len(kernel_groups(x, 0.0))
     assert kernel_groups(x, 6.0) == kernel_groups(x, 0.0)  # under budget at the minimum target
+
+
+@pytest.mark.parametrize("grids", ["binary", "decimal", "rational"])
+def test_absolute_tolerance_coarsens_and_is_fixed_point(grids):
+    """absolute_tolerance coarsens steps up to 2 * absolute_tolerance, including past min_quantize_bits
+    on quiet blocks, and decoded data re-encodes as a fixed point."""
+    rng = np.random.default_rng(17)
+    # 1) Moderate range: 0..100, absolute_tolerance=0.3 (step <= 0.6)
+    x = 50.0 + 50.0 * np.sin(np.arange(2000) / 150.0) + rng.normal(0, 0.01, 2000)
+    params = Params(noise_floor_sigma=0, grids=grids, absolute_tolerance=0.3)
+    res = fluxcode.encode_group(x, params)
+    y = fluxcode.decode_group(res.group).values
+    assert np.abs(y - x).max() <= 0.3 + 1e-12
+    assert verify.encode_group(res, x, params) == []
+    assert verify.fixed_point(res.group, params) == []
+
+    # 2) Quiet block spanning 0.1 °C with absolute_tolerance=0.5: coarsens past min_quantize_bits (6)
+    quiet = 20.0 + 0.1 * np.sin(np.arange(1000) / 80.0)
+    p_quiet = Params(min_quantize_bits=6, noise_floor_sigma=0, grids=grids, absolute_tolerance=0.5)
+    res_q = fluxcode.encode_group(quiet, p_quiet)
+    y_q = fluxcode.decode_group(res_q.group).values
+    assert np.abs(y_q - quiet).max() <= 0.5 + 1e-12
+    assert np.unique(y_q).size <= 2  # NOT forced to 64 levels!
+    assert verify.encode_group(res_q, quiet, p_quiet) == []
+    assert verify.fixed_point(res_q.group, p_quiet) == []
+
+    # 3) Quiet block straddling a midpoint [20.45, 20.55] with absolute_tolerance=0.6 (scaled under rational)
+    straddle = np.linspace(20.45, 20.55, 1000)
+    p_straddle = Params(min_quantize_bits=6, noise_floor_sigma=0, grids=grids, absolute_tolerance=0.6)
+    res_s = fluxcode.encode_group(straddle, p_straddle)
+    y_s = fluxcode.decode_group(res_s.group).values
+    assert np.abs(y_s - straddle).max() <= 0.6 + 1e-12
+    assert verify.encode_group(res_s, straddle, p_straddle) == []
+    assert verify.fixed_point(res_s.group, p_straddle) == []
+
+    # 4) Short block (<= 8 samples) honours absolute_tolerance
+    short = np.array([10.0, 10.03, 10.07, 10.09])
+    res_short = fluxcode.encode_blocks(short, [4], p_quiet)
+    assert np.abs(fluxcode.decode_group(res_short.group).values - short).max() <= 0.5 + 1e-12
+    assert verify.encode_blocks(res_short, short, [4], p_quiet) == []
+    assert verify.fixed_point(res_short.group, p_quiet) == []
+
+
+def test_absolute_tolerance_huge_value_is_safe():
+    """Huge absolute_tolerance (near DBL_MAX) does not overflow and remains a fixed point."""
+    x = np.linspace(1.0, 2.0, 1000)
+    params = Params(noise_floor_sigma=0, absolute_tolerance=1e308)
+    res = fluxcode.encode_group(x, params)
+    assert verify.encode_group(res, x, params) == []
+    assert verify.fixed_point(res.group, params) == []

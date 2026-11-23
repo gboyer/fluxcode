@@ -41,6 +41,7 @@ from ._grids import (
     center_anchor,
     decimal_grid,
     floor_exponent,
+    moved_off_tolerance_grid,
     plan_block_step,
     planned_multiple,
     quantize_block,
@@ -48,6 +49,7 @@ from ._grids import (
     range_scale,
     snap_anchor,
     stored_step,
+    tolerance_grid,
 )
 from ._noise import block_noise
 from ._time import CADENCE_SAMPLES
@@ -377,6 +379,7 @@ def encode_block(
     scratch_rational: np.ndarray,
     scratch_index: np.ndarray,
     out_residuals: np.ndarray,
+    tol_step: float = 0.0,
 ) -> tuple[int, int, np.int64, float, np.int64]:
     """Encodes one block: quantizes, scales the grid, picks predictor order, and computes residuals.
 
@@ -417,6 +420,12 @@ def encode_block(
         decimal_exp, grid_index, quant_exp = decimal_grid(
             samples, lower_bound, upper_bound, quant_exp, scratch_quantized
         )
+        if decimal_exp != NO_DECIMAL and tol_step > 0 and grids >= GRIDS_RATIONAL:
+            tol_num, tol_fine_exp, _ = tolerance_grid(lower_bound, quant_exp, tol_step)
+            if tol_num and moved_off_tolerance_grid(
+                samples, tol_num, tol_fine_exp, decimal_exp, grid_index, scratch_quantized
+            ):
+                decimal_exp, grid_index = NO_DECIMAL, np.int64(0)
         param_val = quant_exp
         if decimal_exp != NO_DECIMAL:
             decimal_detected = True
@@ -455,18 +464,31 @@ def encode_block(
                     scale = gcd | (np.int64(1) << SCALE_SHIFT)  # D = 1
                     grid_index = base_int
                     flags |= BLOCK_FLAG_SCALED
-            # No common factor: search (not for subnormal steps, which no scaled grid has, and
-            # whose 1 / step would overflow)
-            elif range_span < xm.WIDE_RANGE and quant_exp >= SCALED_E_MIN:
+            # No common factor (and not already constant on 2^quant_exp): search rational / tolerance grid
+            elif gcd == 1 and range_span < xm.WIDE_RANGE and quant_exp >= SCALED_E_MIN:
                 found, decimal, param, num, den, rational_index = _rational.detect_rational(
                     samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_rational, scratch_index,
                 )
+                tol_num, tol_fine_exp, tol_base = tolerance_grid(lower_bound, quant_exp, tol_step)
+                if found and tol_num:
+                    # Keep tolerance's form unless an exact rational grid is strictly coarser (fixed points)
+                    found_step = float(num) / den * (10.0 ** param if decimal else math.ldexp(1.0, param))
+                    found = bool(found_step > tol_num * math.ldexp(1.0, tol_fine_exp) * (1.0 + 2.0 ** -40))
                 if found:
                     flags |= BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if decimal else 0)
                     param_val = param
                     scale = np.int64(num) | (np.int64(den) << SCALE_SHIFT)
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
+                elif tol_num:
+                    inv_step = 1.0 / (tol_num * math.ldexp(1.0, tol_fine_exp))
+                    origin = tol_base * math.ldexp(1.0, tol_fine_exp)
+                    for sample_idx in range(samples.shape[0]):
+                        scratch_quantized[sample_idx] = np.int32(math.floor((samples[sample_idx] - origin) * inv_step + 0.5))
+                    flags |= BLOCK_FLAG_SCALED
+                    param_val = tol_fine_exp
+                    scale = tol_num | (np.int64(1) << SCALE_SHIFT)
+                    grid_index = np.int64(tol_base)
     # Select difference order minimizing residual variance (a shift of q doesn't change it)
     selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
     grid_index, anchor = center_anchor(scratch_quantized, selected_order, flags, param_val, grid_index, anchor, scale)
@@ -668,6 +690,8 @@ def encode_group(
     noise_factor: float,
     target_bits: float,
     grids: int,
+    tolerance_exp: int,
+    tol_step: float,
     out_block_flags: np.ndarray,
     out_grid_params: np.ndarray,
     out_grid_scales: np.ndarray,
@@ -771,9 +795,10 @@ def encode_group(
         if has_coded and finite_count == 0:
             block_min = block_max = 0.0
         if block_len <= SHORT_BLOCK_LEN:
-            # Too short to analyze: the finest step, stored without differences. Decimal
-            # detection needs no analysis, so decimal data stays exact
+            # Too short to analyze: the finest step (or absolute_tolerance if coarser), stored without differences.
             fine_exp = range_exponent(block_min, block_max, max_bits)
+            if block_max > block_min and tolerance_exp > fine_exp:
+                fine_exp = min(tolerance_exp, E_MAX)
             decimal_exp, decimal_base = NO_DECIMAL, np.int64(0)
             if grids >= GRIDS_DECIMAL and block_max > block_min and block_max - block_min < xm.WIDE_RANGE:
                 decimal_exp, decimal_base, fine_exp = decimal_grid(
@@ -816,7 +841,7 @@ def encode_group(
         if finite_count > 0 and block_len >= ESCAPE_MIN_LEN:
             escaped, bulk_min, bulk_max = escape_outliers(
                 block_samples, scratch_index[:block_len], block_codes, has_coded, block_mean, block_min, block_max,
-                floor_exponent(noise_factor, noise_sigma, noise_rho), max_bits, grids, block_quantized,
+                max(floor_exponent(noise_factor, noise_sigma, noise_rho), tolerance_exp), max_bits, grids, block_quantized,
             )
             if escaped:
                 scratch_held[:block_len] = scratch_index[:block_len]
@@ -832,8 +857,9 @@ def encode_group(
                         math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
                     )
         # Plan quantization exponent
-        planned_exp = plan_block_step(
-            block_samples, block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits
+        planned_exp, block_tol_step = plan_block_step(
+            block_samples, block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits,
+            tolerance_exp, tol_step,
         )
         block_exponents[block_idx] = planned_exp
         (
@@ -849,6 +875,7 @@ def encode_group(
             scratch_rational[:block_len],
             scratch_index[:block_len],
             block_residuals,
+            block_tol_step,
         )
         _store_anchor(out_value_anchors, anchor_floats, block_idx, out_block_flags[block_idx], anchor, decimal_base)
         if has_coded:

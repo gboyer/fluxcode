@@ -579,16 +579,19 @@ def _check_values(
         # Bulk samples keep the stored grid's bound; escaped samples keep the full-range max_quantize_bits bound
         bulk_error, escaped_error = _split_errors(given, new, half_error)
         bounds = [
-            ("range_bound", half_range / (2.0 ** params.min_quantize_bits - 0.5),
-             "range / (2^min_quantize_bits - 1/2)", half_error),
+            ("range_bound", np.maximum(half_range / (2.0 ** params.min_quantize_bits - 0.5), params.absolute_tolerance / 2),
+             "range / (2^min_quantize_bits - 1/2), or absolute_tolerance", half_error),
             ("step_bound", grid_half, "the stored grid's", bulk_error),
             ("step_bound", np.maximum(grid_half, half_range / (2.0 ** params.max_quantize_bits - 1) * 2),
              "an escaped sample's: the full range's at max_quantize_bits", escaped_error),
         ]
         if params.target_bits_per_sample is None:
             fine = (params.noise_floor_sigma == 0) | (sizes < NOISE_FLOOR_MIN_SAMPLES)
-            fine_bound = np.where(fine, half_range / (2.0 ** params.max_quantize_bits - 0.5), np.inf)
-            bounds.append(("fine_bound", fine_bound, "range / (2^max_quantize_bits - 1/2)", half_error))
+            fine_bound = np.where(
+                fine, np.maximum(half_range / (2.0 ** params.max_quantize_bits - 0.5), params.absolute_tolerance / 2),
+                np.inf,
+            )
+            bounds.append(("fine_bound", fine_bound, "range / (2^max_quantize_bits - 1/2), or absolute_tolerance", half_error))
         for check, half_bound, what, block_error in bounds:
             over = encoded & (count > 0) & ~(block_error <= half_bound + half_ulps)
             for block_idx in np.flatnonzero(over)[:_MAX_REPORTED].tolist():
@@ -613,6 +616,8 @@ def _check_decimals(
         raise ValueError(f"decimals must be from -22 to 22, got {decimals}")
     if params.target_bits_per_sample is not None or params.grids == "binary" or not given.shape[0]:
         return
+    if params.absolute_tolerance > 10.0 ** -decimals / 2:
+        return  # absolute_tolerance's step may be coarser than the decimals'
     finite = np.isfinite(given)
     with np.errstate(all="ignore"):
         k = np.round(given * 10.0 ** decimals) if decimals >= 0 else np.round(given / 10.0 ** -decimals)

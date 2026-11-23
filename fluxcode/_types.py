@@ -132,6 +132,12 @@ class Params:
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
             the block group is compressed (the residual layout, zstd block boundaries and level),
             never the decoded values; ENCODER.md lists what each effort does.
+        absolute_tolerance: An absolute error acceptable for every value (in the values' units),
+            0.0 (the default) for none. Each block's step may coarsen up to 2 * absolute_tolerance,
+            even past min_quantize_bits (so quiet blocks spanning less than 2 * absolute_tolerance
+            are not forced to finer levels), while the noise floor may still coarsen further where
+            noise dominates. With grids "rational" a step set by absolute_tolerance uses 94-100% of
+            the allowance (a scaled grid); with "binary" or "decimal", 50-100% (a power of two).
         time_error: How far timestamps may move, as a share of an interval (0 to
             MAX_TIME_ERROR); 0 (the default) stores times exactly. Each block's times are
             rounded to one 1-2-5 step: the largest of at most 2 * time_error mean intervals (the
@@ -160,6 +166,7 @@ class Params:
     grids: str = "rational"
     effort: int = 4
     time_error: float = 0.0
+    absolute_tolerance: float = 0.0
 
     def __post_init__(self) -> None:
         """Validates parameter types, domains, and structural constraints.
@@ -192,6 +199,9 @@ class Params:
             raise ValueError(
                 f"target_bits_per_sample must be None or a finite number >= {MIN_TARGET_BITS:g}, got {target_bits!r}"
             )
+        abs_tol = self.absolute_tolerance
+        if not (is_real(abs_tol) and abs_tol >= 0 and np.isfinite(abs_tol)):
+            raise ValueError(f"absolute_tolerance must be a finite number >= 0, got {abs_tol!r}")
         if self.grids not in GRIDS:
             raise ValueError(f"grids must be one of {', '.join(map(repr, GRIDS))}, got {self.grids!r}")
         if not (is_int(self.effort) and MIN_EFFORT <= self.effort <= MAX_EFFORT):
