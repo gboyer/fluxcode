@@ -60,8 +60,15 @@ sqrt((1 - 3 rho^2 + 4 rho^4) / m) on m differences (0.044 at 256 samples, so -0.
 from -1/2). Random walks pass the gate 9% of the time at 64 samples, 0.8% at 256 and none at 1000,
 while white noise still passes 96% of the time at 256 (ENCODER §5.2)."""
 
-PICK_LEN: int = 250
-"""Number of initial samples evaluated to select the predictor difference order."""
+PICK_LEN: int = 256
+"""Blocks up to this many samples pick their predictor order on every sample; longer ones on
+PICK_WINDOWS evenly spread windows of PICK_WINDOW_LEN (the same 256 samples)."""
+
+PICK_WINDOWS: int = 8
+"""Windows a long block picks its order on."""
+
+PICK_WINDOW_LEN: int = 32
+"""Samples per order-pick window."""
 
 NUM_HIST_CHAINS: int = 4
 """Number of interleaved histogram accumulator chains to prevent pipeline write stalls."""
@@ -158,39 +165,30 @@ def block_stats(samples: np.ndarray) -> tuple[float, float, float, int]:
     return min_val, max_val, total_sum / num_samples, -1
 
 
-@njit(nogil=True, cache=True)
-def pick_order(quantized_samples: np.ndarray, num_samples: int, orders_mask: int) -> int:
-    """Selects the predictor order (0-3) minimizing difference variance.
-
-    The variance is measured over the first num_samples quantized samples.
-
-    Args:
-        quantized_samples: 1D int32 array of quantized integers.
-        num_samples: Number of samples evaluated (at least 3; the caller limits it to PICK_LEN).
-        orders_mask: Bitmask of allowable orders (bit k enables order k).
+@njit(inline="always")
+def _order_sums(segment: np.ndarray) -> tuple[np.int64, np.int64, np.int64, np.int64, np.int64, np.int64, np.int64, np.int64]:
+    """Sums of the order-0 to order-3 differences of one contiguous segment (at least 4 samples).
 
     Returns:
-        Selected difference order (0, 1, 2, or 3). Ties favor lower orders.
+        A tuple of (sum_q, sum_sq_q, sum_d1, sum_sq_d1, sum_d2, sum_sq_d2, sum_d3, sum_sq_d3) over the
+        segment's len, len - 1, len - 2 and len - 3 differences.
     """
+    num_samples = segment.shape[0]
     sum_q = sum_sq_q = sum_sq_diff1 = sum_sq_diff2 = sum_sq_diff3 = np.int64(0)
     for sample_idx in range(3):
-        val = np.int64(quantized_samples[sample_idx])
+        val = np.int64(segment[sample_idx])
         sum_q += val
         sum_sq_q += val * val
     for sample_idx in range(1, 3):
-        diff = np.int64(quantized_samples[sample_idx]) - quantized_samples[sample_idx - 1]
+        diff = np.int64(segment[sample_idx]) - segment[sample_idx - 1]
         sum_sq_diff1 += diff * diff
-    diff_order2 = (
-        np.int64(quantized_samples[2])
-        - 2 * np.int64(quantized_samples[1])
-        + quantized_samples[0]
-    )
+    diff_order2 = np.int64(segment[2]) - 2 * np.int64(segment[1]) + segment[0]
     sum_sq_diff2 += diff_order2 * diff_order2
     # Offset slices from index 0 avoid numba's negative-index checks, so the loop vectorizes
-    slice_0 = quantized_samples[3:num_samples]
-    slice_1 = quantized_samples[2:num_samples - 1]
-    slice_2 = quantized_samples[1:num_samples - 2]
-    slice_3 = quantized_samples[:num_samples - 3]
+    slice_0 = segment[3:num_samples]
+    slice_1 = segment[2:num_samples - 1]
+    slice_2 = segment[1:num_samples - 2]
+    slice_3 = segment[:num_samples - 3]
     for sample_idx in range(num_samples - 3):
         sample_a = slice_0[sample_idx]
         sample_b = slice_1[sample_idx]
@@ -205,28 +203,49 @@ def pick_order(quantized_samples: np.ndarray, num_samples: int, orders_mask: int
         sum_sq_diff1 += np.int64(diff1) * np.int64(diff1)
         sum_sq_diff2 += np.int64(diff2) * np.int64(diff2)
         sum_sq_diff3 += np.int64(diff3) * np.int64(diff3)
-    # Telescoping sums give exact mean differences in O(1)
-    sum_diff1 = np.int64(quantized_samples[num_samples - 1]) - quantized_samples[0]
-    sum_diff2 = (
-        (np.int64(quantized_samples[num_samples - 1]) - quantized_samples[num_samples - 2])
-        - (np.int64(quantized_samples[1]) - quantized_samples[0])
-    )
+    # Telescoping sums give exact sums of differences in O(1)
+    last = num_samples - 1
+    sum_diff1 = np.int64(segment[last]) - segment[0]
+    sum_diff2 = (np.int64(segment[last]) - segment[last - 1]) - (np.int64(segment[1]) - segment[0])
     sum_diff3 = (
-        (np.int64(quantized_samples[num_samples - 1]) - 2 * np.int64(quantized_samples[num_samples - 2]) + quantized_samples[num_samples - 3])
-        - (np.int64(quantized_samples[2]) - 2 * np.int64(quantized_samples[1]) + quantized_samples[0])
+        (np.int64(segment[last]) - 2 * np.int64(segment[last - 1]) + segment[last - 2])
+        - (np.int64(segment[2]) - 2 * np.int64(segment[1]) + segment[0])
     )
+    return sum_q, sum_sq_q, sum_diff1, sum_sq_diff1, sum_diff2, sum_sq_diff2, sum_diff3, sum_sq_diff3
+
+
+@njit(nogil=True, cache=True)
+def pick_order(quantized_samples: np.ndarray, orders_mask: int) -> int:
+    """Selects the predictor order (0-3) minimizing difference variance.
+
+    A block of up to PICK_LEN samples is measured whole; a longer one on PICK_WINDOWS windows of
+    PICK_WINDOW_LEN samples spread evenly over it (differences within each window), so a block
+    whose character changes part way (a move, a ramp, a burst) is judged on all of it.
+
+    Args:
+        quantized_samples: 1D int32 array of the block's quantized integers (at least 4).
+        orders_mask: Bitmask of allowable orders (bit k enables order k).
+
+    Returns:
+        Selected difference order (0, 1, 2, or 3). Ties favor lower orders.
+    """
+    num_samples = quantized_samples.shape[0]
+    num_windows, window_len = 1, num_samples
+    if num_samples > PICK_LEN:
+        num_windows, window_len = PICK_WINDOWS, PICK_WINDOW_LEN
+    sums = np.zeros(8, np.int64)
+    for window_idx in range(num_windows):
+        window_start = window_idx * (num_samples - window_len) // max(num_windows - 1, 1)
+        window_sums = _order_sums(quantized_samples[window_start:window_start + window_len])
+        for sum_idx in range(8):
+            sums[sum_idx] += window_sums[sum_idx]
     best_order, min_variance = 0, 1e300
-    candidates = (
-        (0, sum_q, sum_sq_q),
-        (1, sum_diff1, sum_sq_diff1),
-        (2, sum_diff2, sum_sq_diff2),
-        (3, sum_diff3, sum_sq_diff3),
-    )
-    for order_idx, sum_diff_val, sum_sq_diff_val in candidates:
+    for order_idx in range(4):
         # Skip orders not permitted by caller's bitmask
         if not (orders_mask >> order_idx) & 1:
             continue
-        valid_count = num_samples - order_idx
+        valid_count = num_windows * (window_len - order_idx)
+        sum_diff_val, sum_sq_diff_val = sums[2 * order_idx], sums[2 * order_idx + 1]
         # Variance of the differences: (n * sum(d^2) - sum(d)^2) / n^2, n = valid_count
         variance = (valid_count * float(sum_sq_diff_val) - float(sum_diff_val) ** 2) / (valid_count * valid_count)
         if variance < min_variance:
@@ -448,7 +467,7 @@ def encode_block(
                     grid_index = rational_index
                     scratch_quantized[:] = scratch_rational
     # Select difference order minimizing residual variance
-    selected_order = pick_order(scratch_quantized, min(PICK_LEN, samples.shape[0]), orders_mask)
+    selected_order = pick_order(scratch_quantized[:samples.shape[0]], orders_mask)
     # Compute modular differences mod 2^16
     residual(scratch_quantized, selected_order, out_residuals)
     return flags | selected_order, param_val, grid_index, anchor, scale

@@ -86,20 +86,26 @@ def test_detect_decimal_rejects_continuous():
     assert _grids.detect_decimal(x, x.min(), x.max(), ps, q)[0] == _grids.NO_DECIMAL
 
 
-def ref_order(q, m, orders):
-    var = {k: np.var(np.diff(q[:m].astype(np.int64), k)) for k in sorted(orders)}
+def ref_order(q, orders):
+    n = len(q)
+    if n <= _encoder.PICK_LEN:
+        windows = [q.astype(np.int64)]
+    else:
+        nw, wl = _encoder.PICK_WINDOWS, _encoder.PICK_WINDOW_LEN
+        windows = [q[i * (n - wl) // (nw - 1):i * (n - wl) // (nw - 1) + wl].astype(np.int64) for i in range(nw)]
+    var = {k: np.var(np.concatenate([np.diff(w, k) for w in windows])) for k in sorted(orders)}
     best = min(var.values())
     return min(k for k in var if var[k] <= best * (1 + 1e-12))
 
 
-@pytest.mark.parametrize("m", [4, 250, 1000])
+@pytest.mark.parametrize("m", [4, 256, 1000])
 @pytest.mark.parametrize("orders", [{0, 1, 2, 3}, {1, 2}, {0, 3}])
 @pytest.mark.parametrize("i", range(5))
 def test_pick_order(i, orders, m):
     x = some_blocks()[i]
     q = np.empty(1000, np.int32)
     _grids.quantize(x, x.min(), _grids.exponent(x.max() - x.min(), 16), q)
-    assert _encoder.pick_order(q, m, sum(1 << k for k in orders)) == ref_order(q, m, orders)
+    assert _encoder.pick_order(q[:m], sum(1 << k for k in orders)) == ref_order(q[:m], orders)
 
 
 @pytest.mark.parametrize("order", range(4))
