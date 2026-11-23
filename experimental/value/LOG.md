@@ -17,6 +17,7 @@ accuracy assumptions open to question, nothing pushed to main.
 5. [Decisions taken with the owner](#5-decisions-taken-with-the-owner)
 6. [Open decisions](#6-open-decisions)
 7. [Production review checklist](#7-production-review-checklist)
+8. [Review response (2026-11-22)](#8-review-response-2026-11-22)
 
 ## 1. Setup
 
@@ -59,14 +60,16 @@ then the same on another checkout and `uv run python compare.py /tmp/main.json /
 
 | measure | main | value-exp |
 |---|---|---|
-| 1 GiB benchmark, 15 signals | 4.76 bits/sample | 4.01 (−16%, mostly the random walks, now floored) |
+| 1 GiB benchmark, 15 signals | 4.76 bits/sample | 4.01 (−16%) |
+| of which the 2 random walks (floored by the new definition, now lossy) | 12.62, 9.28 | 5.63, 5.63: 94% of the saving |
+| the other 13 signals (same meaning as main) | 3.81 | 3.76 (−1.3%; gauss-spikes −8%, quadratic +0.07 b/s) |
 | corpus fast (DAQ-like) | | −28% |
 | corpus slow (1 s tags, hourly blocks) | | −13%; −28% more in 4-minute blocks |
 | corpus synth | | −11% |
 | sparse daily archives (tank level, valve) | 577 / 461 B/day | 473 / 355 (−18% / −23%) |
 | glitched blocks (one −9999 or 1e6) | rest of block within 0.125 / 5 | within 0.000244 (as clean blocks) |
 | encode, Python path | 5.12 µs/block | 5.71 (+12%) |
-| decode | 1.79 µs/block | 1.75 (−2%) |
+| decode (whole branch, 1 GiB run) | 1.79 µs/block | 1.75 (−2%; order-0 blocks alone about 6% faster, 3.3) |
 
 Full benchmark tables: `bench/RESULTS.md`. Tests: 1871 pass, Rust extension included.
 
@@ -144,11 +147,21 @@ look at. Docs: ENCODER.md and SPEC.md sections named; TUNING.md has the noise fl
 
 - **Hypothesis.** Mains-frequency signals (motor current, line voltage) repeat every cycle; a
   prediction from one period earlier beats fixed differences.
-- **Evidence.** `period.py`: at default effort it gave motor current −41%, line voltage −19%,
-  fast −31% overall, but cost +30–90% encode on oscillating blocks; so it is gated to effort ≥ 6
-  (effort never changes decoded values) and off with a target. Optimized search 8.5 → 3.5
-  µs/block; at effort 6 motor current −15%, line voltage −18%, no other realistic signal changed.
-  An exactly repeating synthetic sine can come out larger (zstd already matches its repeats).
+- **Evidence.** `period.py` (an offline prototype: free-gain 2-tap least squares at the best of
+  all lags, its own residual swap) first gave motor current −41%, line voltage −19%, fast −31%
+  overall, on the corpus and encoder of the time; the shipped predictor (unit gain, fractional
+  lag, crossing-based search, `ptime.py` for its speed: 8.5 → 3.5 µs/block) cost +30–90% encode
+  on oscillating blocks, so it is gated to effort ≥ 6 and off with a target. The −41% is not a
+  baseline for the shipped code: re-measured 2026-11-22 on the current branch, the shipped
+  predictor gives motor current −15.2% at effort 4 (forced on) and −15.3% at effort 6, line
+  voltage −18.7% / −17.7%, fast set −3.7% in total, nothing else; the prototype itself now gives
+  motor current −2.7%, line voltage −12.3%, but −9.7% / −8.9% on the two accelerometers, where
+  the shipped one finds nothing (a free-gain 2-tap predictor acting as short-term prediction: an
+  open lead, §8). The faster search gave up nothing.
+- **Size can grow.** An exactly repeating clean sine (zstd already matches its repeats) can come
+  out larger at effort 6–9 than at effort 5: 4 of 45 sines tried (12 bits) grew, by up to +58%
+  (908 → 1432 B). That breaks ENCODER §1's "no block group grows from effort 5 to 9"; the test
+  of it uses signals the predictor doesn't touch (§8).
 - **Commits.** 1d24bcf, 133d23f, 4af70cf. SPEC §4 (block flag bit 7, grid_scale widened to
   int64), ENCODER §5.7.1, Rust interface version 5.
 - **Review.** Decode is sequential for period blocks (+0.3–0.5 µs).
@@ -278,9 +291,11 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
   `escapes` field (SPEC §2, §6); block flag bit 7 period and the int64 grid_scale (SPEC §4);
   header flag bit 4 and the trailing `time_quantum` (SPEC §3, §6). Golden hashes were
   regenerated for these.
-- **Rust.** Interface version bumped for the period predictor; the Rust compress path declines
-  groups with escapes (Python packs them); the Rust packer handles the time quantum.
-- **verify.** Step bounds account for escapes and tolerance; decimal exactness is checked only
+- **Rust.** Interface version bumped for the period predictor; the Rust compress path (rows to
+  body) declines groups with a time axis or escapes, which are written in Python and then packed
+  by the Rust packer (it copies the bytes after the residual planes: escapes, time quantum).
+- **verify.** Step bounds account for escapes per sample (an escaped sample to the full range's
+  bound, the rest of its block to the grid) and for tolerance; decimal exactness is checked only
   where tolerance permits it.
 - **Fuzzing.** `tests/test_fuzz.py` covers random magnitudes, grids, non-finite values and
   random clocks (whose periods exercise the time quantum). At the end of the work it was extended
@@ -289,6 +304,53 @@ cdced2e, 5655570 (1 GiB reruns on AC power), cfc4ef5, 44901e5 (studies), ef6e7f2
   index wrap and fixed-point failures, all fixed and pinned (appendix below).
 - **Performance.** Encode +12% (noise estimate), decode −2%; the period predictor adds encode
   time on oscillating blocks at effort ≥ 6 only.
+
+## 8. Review response (2026-11-22)
+
+An independent review of the branch at c8fbec7 was checked claim by claim against the code; every
+factual finding held except the period predictor's numbers, which had a different cause (3.4).
+
+**Fixed:**
+- SPEC §4/§5 described period blocks wrong (said the head is first differences and the order is
+  taken over all errors; the code writes the head as order-k residuals and the errors raw). SPEC
+  now matches the decoder; `test_period_blocks_decode_as_the_spec_says` rebuilds period blocks
+  from the rule alone.
+- One function plans a block's step (`_encoder.plan_block_step`: max_bits, noise floor, tolerance,
+  min_bits, keep_floor_grid); tolerance's scaled grid is its own helper (`tolerance_grid`), with
+  why it only applies under `grids="rational"`; the noise gate test is one helper
+  (`floor_exponent`), shared by escape detection. Output byte-identical (golden hashes).
+- Experiment code out of production: the `FLUXCODE_X_NOISE_ORDER` switch and the order-2/6/generic
+  branches of `noise()` (comparing orders now needs a checkout before 2026-11-22), the unused
+  `_lag2_white`, `BLOCK_FLAG_RESERVED = 0` and its test, `_coded_diffs`' unused order 1.
+- Groups with escapes (and updates of them) now go through the Rust packer too: it was byte-identical
+  on 740 glitch groups at efforts 1, 4, 6, 9. `pack` no longer calls itself for the time quantum.
+- `verify` checks escaped blocks per sample (was: the whole block loosened to the full range's
+  bound, so the claim that the rest keeps clean precision was never checked); the identical
+  ternary in the decimal check removed.
+- Names left from `max_error`: `tolerance_step`, `TOLERANCE_STEP_BITS`, `tolerance_num/_fine_exp/_base`.
+- Docstrings: `_noise` (module, `noise()`, second-difference wording, `MIN_ONE_SCAN_TRIPLETS`),
+  `escape_outliers` (both triggers, robust standard deviations), `encode_block`/`encode_group`
+  (new arguments, centered anchors, period bits in grid_scale), `try_period` and
+  `PERIOD_SIDE_BITS` (a variance estimate, not class entropy), `GroupRows.grid_scales`, the
+  decoder's reserved-bit comment, `Params.effort` (the period predictor from 6), `Params.tolerance`
+  and ENCODER (the scaled step needs `grids="rational"`), TUNING.md (a tolerance section).
+- This log: the headline split (random walks 94% of the 1 GiB saving), decode figures labelled,
+  period numbers re-measured.
+
+**Script index** (timing microbenchmarks not cited above): `kernels.py`, `kernels2.py` (noise
+kernel variants and the fused checks, the per-stage µs of 3.1), `time_noise.py` (noise estimate
+cost per block), `ptime.py` (the period search, 3.4).
+
+**Open, for the owner:**
+- The period predictor at its re-measured value (motor current −15%, line voltage −18%, fast set
+  −3.7%, nothing else) against its costs (the last block flag bit, grid_scale widened to 8 bytes,
+  sequential decode of period blocks, a Rust interface bump), and, if kept, effort 5 → 9 growth
+  on clean repeating signals (try both residual versions, or drop the guarantee).
+- The two noise paths: a block with one dropout takes `noise_weighted`, which has the lag-2 check
+  and the cap but not the long-lag test or the lower bands, so a dropout can change whether a
+  block is floored (unify, or document).
+- Held-out data: the estimator's guards were tuned on the corpus they are measured on.
+- The prototype's free-gain 2-tap predictor on the accelerometers (−9%, 3.4).
 
 ## Appendix: final fuzz run
 
