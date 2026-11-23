@@ -368,7 +368,7 @@ def one_scan_intervals_equal(times: np.ndarray, interval: float) -> bool:
         delta = ticks_next[interval_idx] - ticks_prev[interval_idx]
         is_scan = (delta > lower) & (delta < upper)
         differing_bits |= (delta ^ scan) * is_scan
-    return differing_bits == 0
+    return bool(differing_bits == 0)
 
 
 @njit(inline="always")
@@ -408,7 +408,7 @@ def uniform_interval(times: np.ndarray) -> int:
             differing_bits |= (chunk_next[chunk_idx] - chunk_prev[chunk_idx]) ^ first
         if differing_bits != 0:
             return 0
-    return first
+    return int(first)
 
 
 @njit(inline="always")

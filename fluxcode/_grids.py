@@ -163,9 +163,9 @@ def grid_index(value: float, quant_exp: int) -> float:
         Nearest integer grid index represented as a float64.
     """
     if quant_exp >= xm.E_TINY:
-        return np.rint(value * math.ldexp(1.0, -quant_exp))
+        return float(np.rint(value * math.ldexp(1.0, -quant_exp)))
     # When quant_exp < E_TINY, 2^-quant_exp overflows float64; apply two exact power-of-two factors.
-    return np.rint(value * math.ldexp(1.0, -xm.E_TINY) * math.ldexp(1.0, xm.E_TINY - quant_exp))
+    return float(np.rint(value * math.ldexp(1.0, -xm.E_TINY) * math.ldexp(1.0, xm.E_TINY - quant_exp)))
 
 
 @njit(nogil=True, cache=True)

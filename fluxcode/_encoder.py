@@ -363,7 +363,7 @@ def zero_residual_fraction(residuals: np.ndarray) -> float:
     zeros = 0
     for sample_idx in range(residuals.shape[0]):
         zeros += residuals[sample_idx] == 0
-    return zeros / max(residuals.shape[0], 1)
+    return float(zeros / max(residuals.shape[0], 1))
 
 
 @njit(inline="always")

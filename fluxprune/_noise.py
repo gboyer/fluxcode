@@ -31,7 +31,7 @@ reads, to 2^-52."""
 
 
 @njit(cache=True)
-def noise_kernel(ticks, y, lower, upper):
+def noise_kernel(ticks: np.ndarray, y: np.ndarray, lower: int, upper: int) -> float:
     """The white-noise σ of y (in y's units) from each point's distance to its neighbours' chord, over
     the triplets whose two intervals are one scan (lower < interval < upper) and whose values are finite;
     0 with none. O(n)."""
@@ -50,10 +50,10 @@ def noise_kernel(ticks, y, lower, upper):
         m += 1
     if m == 0:
         return 0.0
-    return MAD_TO_SIGMA * np.median(r[:m])
+    return float(MAD_TO_SIGMA * np.median(r[:m]))
 
 
-def noise(tau, y):
+def noise(tau: np.ndarray, y: np.ndarray) -> float:
     """σ of y at times tau (float offsets from 0, non-decreasing, the last positive), or 0 without a
     cadence."""
     ticks = np.round(tau * (TICKS / tau[-1])).astype(np.int64)
