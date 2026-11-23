@@ -1,21 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Encodes and updates block groups whose blocks are divided by time.
+"""Fixed-duration time-partitioned block groups: encoding, point updates, and block replacement.
 
-Block b of a block group holds the samples timed in
-[start_time + b * block_duration, start_time + (b + 1) * block_duration).
+Block ``b`` holds samples timed in ``[start_time + b * block_duration, start_time + (b + 1) * block_duration)``.
+``start_time`` and ``block_duration`` are supplied by the caller (not stored in the group header).
 
-The start time and duration aren't stored: the caller keeps them (typically the start is
-part of the block group's storage key) and passes the same ones to update_time_blocks. Times, the
-start, the duration and delete ranges are all converted to int64 ticks in the times' unit.
-
-With a time error (Params.time_error), each block's times are rounded within its range: a time
-that would round below the block's start is raised to it, and one that would round past its end
-is lowered to the end itself (the next block's start, kept in this block so that its grid stays
-whole). Times are rounded only from the values given: update_time_blocks stores new times exactly,
-and replace_time_blocks re-encodes whole blocks, so a stored time is never rounded again.
-update_time_blocks replaces and deletes by time, so it also reaches a time stored at the end of
-the block before a boundary (_end_blocks).
+When ``Params.time_error > 0``, each block's timestamps are rounded within ``[block_start, block_end]``
+(inclusive of ``block_end`` so a tick near the upper edge can snap onto the next block's start
+without leaving its block). Because ``update_time_blocks`` operates by timestamp, it also inspects
+any preceding block that may hold a tick rounded up to its upper boundary.
 """
 
 from collections.abc import Iterable
@@ -29,64 +22,66 @@ from ._args import DurationLike, RangesLike, TimeLike
 from ._types import EncodedGroup, Params, UpdatedGroup
 
 
-def block_ids(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
-    """Calculates the block index for each timestamp tick.
+def assign_time_blocks(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
+    """Maps each timestamp tick to its fixed-duration block index ``(tick - start) // duration``.
 
     Args:
-        ticks: 1D int64 array of sample timestamp ticks.
-        start: Starting timestamp tick of block 0.
-        duration: Positive integer duration in ticks per block.
+        ticks: 1D int64 array of timestamp ticks.
+        start: Anchor tick of block 0.
+        duration: Positive block duration in ticks.
 
     Returns:
-        1D int64 array of block indices corresponding to each tick.
+        1D int64 array of block indices matching ``ticks``.
 
     Raises:
-        ValueError: If duration is non-positive, any tick precedes start, or
-            any tick maps to a block index at or beyond MAX_BLOCKS.
+        ValueError: If ``duration <= 0``, any tick precedes ``start``, or any block index
+            reaches ``MAX_BLOCKS``.
     """
     if duration <= 0:
         raise ValueError(f"block_duration must be positive, got {duration} ticks")
     if ticks.shape[0] and ticks.min() < start:
         raise ValueError(f"times must be at or after start_time: got {int(ticks.min())} before {start}")
-    # Compute block indices as unsigned 64-bit integers to avoid overflow
+    # Subtract in uint64 to avoid signed int64 overflow when start is negative and ticks are large.
     ids = (ticks.astype(np.uint64) - np.uint64(start % 2**64)) // np.uint64(duration)
     if ids.shape[0] and ids.max() >= _format.MAX_BLOCKS:
-        raise ValueError(f"times reach block {int(ids.max())}, past the last block a block group holds ({_format.MAX_BLOCKS - 1})")
+        raise ValueError(
+            f"times reach block {int(ids.max())}, past the last block a block group holds ({_format.MAX_BLOCKS - 1})"
+        )
     return ids.astype(np.int64)
 
 
-def chunk(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
-    """Calculates block sample counts for sorted timestamps.
+def time_block_sizes(ticks: np.ndarray, start: int, duration: int) -> np.ndarray:
+    """Computes per-block sample counts from block 0 through the last non-empty time block.
 
     Args:
-        ticks: 1D int64 array of sorted timestamp ticks.
-        start: Starting timestamp tick of block 0.
-        duration: Duration of each block in ticks.
+        ticks: 1D int64 array of non-decreasing timestamp ticks.
+        start: Anchor tick of block 0.
+        duration: Positive block duration in ticks.
 
     Returns:
-        1D int64 array of block sizes from block 0 through the last non-empty block.
+        1D int64 array of block sample counts (empty array when ``ticks`` is empty).
     """
-    ids = block_ids(ticks, start, duration)
+    ids = assign_time_blocks(ticks, start, duration)
     return np.bincount(ids, minlength=int(ids[-1]) + 1 if ids.shape[0] else 0).astype(np.int64)
 
 
 def block_bounds(indices: np.ndarray, start: int, duration: int) -> tuple[np.ndarray, np.ndarray]:
-    """The ticks the given blocks' times may round to: from each block's start to its end, the
-    end included (the int64 maximum at most).
+    """Computes inclusive ``[low, high]`` timestamp rounding bounds for each block in ``indices``.
 
     Args:
         indices: 1D int64 array of block indices.
-        start: Starting tick of block 0.
-        duration: Block duration in ticks.
+        start: Anchor tick of block 0.
+        duration: Positive block duration in ticks.
 
     Returns:
-        A tuple of (lows, highs): 1D int64 arrays.
+        Tuple ``(lows, highs)`` of 1D int64 arrays, with ``highs`` capped at ``INT64_MAX``.
     """
     if not indices.shape[0]:
         return np.zeros(0, np.int64), np.zeros(0, np.int64)
     if start + (int(indices.max()) + 1) * duration <= _time.INT64_MAX:
         lows = start + indices * duration
         return lows, lows + duration
+    # Fall back to Python arbitrary-precision ints when the upper bound approaches INT64_MAX.
     lows = np.array([start + int(idx) * duration for idx in indices.tolist()], np.int64)
     highs = np.array([min(start + (int(idx) + 1) * duration, _time.INT64_MAX) for idx in indices.tolist()], np.int64)
     return lows, highs
@@ -100,28 +95,28 @@ def encode_time_blocks(
     block_duration: DurationLike,
     time_unit: str | None,
 ) -> EncodedGroup:
-    """Encodes a timed series into fixed-duration blocks in a single block group.
+    """Encodes a timed series into fixed-duration blocks within a single block group.
 
     Args:
-        samples: 1D array-like of series samples (may be empty).
-        times: Timestamps matching samples in length and non-decreasing in order.
+        samples: 1D array-like of float64 samples (may be empty).
+        times: Non-decreasing timestamps matching ``samples`` in length.
         params: Encoder configuration parameters.
-        start_time: Starting time anchor for block 0.
-        block_duration: Duration of each block.
+        start_time: Anchor time for block 0.
+        block_duration: Positive duration of each block.
         time_unit: Optional time unit string for integer timestamps.
 
     Returns:
-        EncodedGroup tuple (group, block_min, block_max, block_mean).
+        ``EncodedGroup`` holding the compressed bytes and per-block min, max, and mean.
 
     Raises:
-        ValueError: If timestamps or time parameters are invalid.
+        ValueError: If timestamps, time arguments, or block/sample counts are invalid.
     """
     series_arr = _args.as_series(samples, allow_empty=True)
     ticks, unit_code = _args.series_ticks(times, time_unit, series_arr.shape[0])
     assert ticks is not None
     start = _args.to_ticks(start_time, unit_code, "start_time")
     duration = _args.to_ticks(block_duration, unit_code, "block_duration", duration=True)
-    sizes = chunk(ticks, start, duration)
+    sizes = time_block_sizes(ticks, start, duration)
     if params.time_error > 0:
         indices = np.arange(sizes.shape[0], dtype=np.int64)
         ticks, _ = _group.snap_ticks(ticks, sizes, params.time_error, bounds=block_bounds(indices, start, duration))
@@ -142,35 +137,33 @@ def _merge_samples(
     out_values: np.ndarray,
     block_sizes: np.ndarray,
 ) -> int:
-    """Merges new samples into existing samples in chronological order.
+    """Merges surviving existing samples and incoming new samples in chronological order.
 
-    An existing sample is deleted if any deletion range covers it or if a new sample
-    shares its timestamp. New samples at identical timestamps preserve their input order.
-    Only blocks that gain or lose samples have their contents written.
+    Existing samples covered by ``ranges`` or sharing a timestamp with any incoming sample are
+    discarded. Only blocks that gain or lose samples are written to ``out_ticks``/``out_values``.
 
     Args:
-        old_ticks: 1D int64 array of existing sample timestamps.
-        old_values: 1D float64 array of existing sample values.
+        old_ticks: 1D int64 array of decoded existing sample timestamps.
+        old_values: 1D float64 array of decoded existing sample values.
         old_blocks: 1D int64 array mapping each existing sample to its block index.
-        new_ticks: 1D int64 array of new sample timestamps.
-        new_values: 1D float64 array of new sample values.
-        new_blocks: 1D int64 array mapping each new sample to its block index.
-        ranges: 2D int64 array of disjoint [start, end) deletion ranges.
-        changed: Output boolean array of every block (initially False), set to True for
-            blocks that gain or lose samples.
-        out_ticks: Output 1D int64 array receiving merged timestamps.
-        out_values: Output 1D float64 array receiving merged sample values.
-        block_sizes: Output 1D int64 array of every block (initially 0) receiving the sample
-            count of each changed block.
+        new_ticks: 1D int64 array of incoming sample timestamps.
+        new_values: 1D float64 array of incoming sample values.
+        new_blocks: 1D int64 array mapping each incoming sample to its block index.
+        ranges: 2D int64 array of sorted, disjoint ``[start, end)`` deletion ranges.
+        changed: Output 1D bool array (initially False) set True for blocks that changed.
+        out_ticks: Output 1D int64 array receiving merged timestamps of changed blocks.
+        out_values: Output 1D float64 array receiving merged values of changed blocks.
+        block_sizes: Output 1D int64 array (initially 0) accumulating sample counts of changed blocks.
 
     Returns:
-        The total number of samples written to out_ticks and out_values.
+        Total number of samples written into ``out_ticks`` and ``out_values``.
     """
+    # Pass 1: sweep old_ticks against sorted new_ticks and deletion ranges to mark survivors and
+    # changed blocks. Pass 2: merge-join surviving samples of changed blocks with new samples.
     num_old, num_new, num_ranges = old_ticks.shape[0], new_ticks.shape[0], ranges.shape[0]
     keep = np.empty(num_old, np.bool_)
     range_idx = 0
     new_idx = 0
-    # Determine which old samples survive deletions and replacements
     for old_idx in range(num_old):
         tick = old_ticks[old_idx]
         while new_idx < num_new and new_ticks[new_idx] < tick:
@@ -183,12 +176,10 @@ def _merge_samples(
         keep[old_idx] = not gone
         if gone:
             changed[old_blocks[old_idx]] = True
-    # Mark blocks with incoming new samples as changed
     for new_idx in range(num_new):
         changed[new_blocks[new_idx]] = True
     write_idx = 0
     new_idx = 0
-    # Interleave surviving old samples and new samples into output arrays
     for old_idx in range(num_old + 1):
         while new_idx < num_new and (old_idx == num_old or new_ticks[new_idx] < old_ticks[old_idx]):
             out_ticks[write_idx] = new_ticks[new_idx]
@@ -205,26 +196,32 @@ def _merge_samples(
 
 
 def _block_masks(ranges: np.ndarray, start: int, duration: int, num_blocks: int) -> tuple[np.ndarray, np.ndarray]:
-    """Finds the existing blocks that deletion ranges touch, and those they cover.
-
-    A block is touched if any range overlaps it, and covered if ranges contain it whole.
+    """Computes boolean masks of existing blocks touched (overlapped) and fully covered by ``ranges``.
 
     Args:
-        ranges: 2D int64 array of sorted, disjoint [start, end) deletion ranges.
-        start: Starting timestamp tick of block 0.
-        duration: Positive integer duration in ticks per block.
+        ranges: 2D int64 array of sorted, disjoint ``[start, end)`` deletion ranges.
+        start: Anchor tick of block 0.
+        duration: Positive block duration in ticks.
         num_blocks: Number of existing blocks.
 
     Returns:
-        A tuple of (touched, covered) boolean arrays of length num_blocks.
+        Tuple ``(touched, covered)`` of 1D bool arrays of length ``num_blocks``.
     """
     touched = np.zeros(num_blocks, np.bool_)
     covered = np.zeros(num_blocks, np.bool_)
     for range_start, range_end in ranges.tolist():
         if range_end <= start:
             continue
-        touched[min(max(range_start - start, 0) // duration, num_blocks):min(-(-(range_end - start) // duration), num_blocks)] = True
-        covered[min(max(-(-(range_start - start) // duration), 0), num_blocks):min((range_end - start) // duration, num_blocks)] = True
+        touched[
+            min(max(range_start - start, 0) // duration, num_blocks) : min(
+                -(-(range_end - start) // duration), num_blocks
+            )
+        ] = True
+        covered[
+            min(max(-(-(range_start - start) // duration), 0), num_blocks) : min(
+                (range_end - start) // duration, num_blocks
+            )
+        ] = True
     return touched, covered
 
 
@@ -238,28 +235,31 @@ def update_time_blocks(
     delete_ranges: RangesLike | None,
     time_unit: str | None,
 ) -> UpdatedGroup:
-    """Applies point updates and range deletions to time-partitioned block groups.
+    """Applies timestamp-keyed upserts and range deletions to a time-partitioned block group.
 
     Args:
-        group: Existing compressed block group bytes.
-        samples: Array-like of new samples (may be empty).
-        times: Array-like of timestamps for the new samples.
-        params: Encoder configuration parameters.
-        start_time: Starting time anchor for block 0.
-        block_duration: Duration of each block.
-        delete_ranges: Optional time intervals to delete before adding samples.
-        time_unit: Optional time unit string, checked against block group header.
+        group: Existing compressed block group bytes (must have a time axis).
+        samples: 1D array-like of new samples (may be empty).
+        times: Non-decreasing timestamps matching ``samples``.
+        params: Encoder configuration parameters (``time_error`` must be 0 when adding samples).
+        start_time: Anchor time for block 0.
+        block_duration: Positive duration of each block.
+        delete_ranges: Optional ``[start, end)`` time ranges to delete before inserting samples.
+        time_unit: Optional time unit string checked against the group header.
 
     Returns:
-        UpdatedGroup tuple containing the updated block group and modified block statistics.
+        ``UpdatedGroup`` with the updated bytes, modified block indices, and block statistics.
 
     Raises:
-        ValueError: If block group lacks a time axis, arguments are invalid, or sizes overflow.
+        ValueError: If the group has no time axis, ``time_error > 0`` with new samples, inputs
+            are invalid, or any block exceeds ``MAX_BLOCK_LEN``.
     """
+    # Identify blocks overlapped by deletions, boundary-rounded ticks, or incoming samples;
+    # decode only those partial blocks (skipping fully covered blocks), merge in chronological
+    # order, and splice changed blocks back while carrying untouched blocks verbatim.
     parsed = _group.decompress(group)
     if not parsed.has_time:
         raise ValueError("the block group has no time axis: use update")
-    # Validate series samples, timestamps, and deletion intervals
     series_samples, ticks, start, duration, ranges = _args.time_blocks_update(
         samples, times, start_time, block_duration, delete_ranges, time_unit, parsed.header.time_unit
     )
@@ -268,35 +268,41 @@ def update_time_blocks(
             "update_time_blocks stores new times exactly, so it takes no time_error: "
             "replace_time_blocks re-encodes whole blocks with one"
         )
-    new_ids = block_ids(ticks, start, duration)
+    new_ids = assign_time_blocks(ticks, start, duration)
     steps = np.diff(ticks)
     if new_ids.shape[0] and (steps < 0).any():
         raise _args.decrease_error(ticks, int(np.flatnonzero(steps < 0)[0]) + 1)
     num_old_blocks = parsed.header.num_blocks
     touched, covered = _block_masks(ranges, start, duration, num_old_blocks)
-    time_rows = _group.read_time_rows(parsed, np.zeros(0, np.int64))
-    # A block holding a time at its end is reached there too, and isn't covered without it
-    ends = _end_blocks(parsed, time_rows, ticks, new_ids, ranges, start, duration, covered)
+    time_columns = _group.read_time_columns(parsed, np.zeros(0, np.int64))
+    # Blocks holding a tick rounded up to their upper boundary must also be decoded when touched.
+    ends = _blocks_with_end_tick(parsed, time_columns, ticks, new_ids, ranges, start, duration, covered)
     touched[ends] = True
     covered[ends] = False
     touched &= ~covered
-    # Decode existing blocks touched by deletions or new samples (excluding fully covered ones)
     decoded = np.flatnonzero(touched | _new_blocks_mask(new_ids, num_old_blocks, covered))
-    _group.read_time_residuals(parsed, time_rows, decoded)
-    gathered_ticks, gathered_values, gathered_blocks = _gather(parsed, decoded, time_rows)
-    # Determine total block count including newly appended blocks
+    _group.read_time_residuals(parsed, time_columns, decoded)
+    gathered_ticks, gathered_values, gathered_blocks = _gather(parsed, decoded, time_columns)
     num_blocks = max(num_old_blocks, int(new_ids[-1]) + 1 if new_ids.shape[0] else 0)
     changed = np.zeros(num_blocks, np.bool_)
     sizes = np.zeros(num_blocks, np.int64)
     num_gathered = gathered_ticks.shape[0]
     merged_ticks = np.empty(num_gathered + ticks.shape[0], np.int64)
     merged_values = np.empty(num_gathered + ticks.shape[0])
-    # Merge existing and new samples chronologically
     num_merged = _merge_samples(
-        gathered_ticks, gathered_values, gathered_blocks, ticks, series_samples, new_ids, ranges, changed, merged_ticks,
-        merged_values, sizes,
+        gathered_ticks,
+        gathered_values,
+        gathered_blocks,
+        ticks,
+        series_samples,
+        new_ids,
+        ranges,
+        changed,
+        merged_ticks,
+        merged_values,
+        sizes,
     )
-    # Account for covered blocks that lost all existing samples
+    # Mark previously non-empty blocks that were completely wiped by deletion ranges.
     covered_ids = np.flatnonzero(covered)
     changed[covered_ids] |= parsed.block_sizes[covered_ids] > 0
     indices = np.flatnonzero(changed)
@@ -305,7 +311,6 @@ def update_time_blocks(
     sizes = sizes[indices]
     if sizes.max() > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
-    # Splice updated blocks into the block group while carrying unchanged blocks verbatim
     return _group.splice(
         parsed,
         indices,
@@ -313,7 +318,7 @@ def update_time_blocks(
         sizes,
         merged_ticks[:num_merged],
         params,
-        time_rows,
+        time_columns,
         snap=False,
     )
 
@@ -328,25 +333,28 @@ def replace_time_blocks(
     block_duration: DurationLike,
     time_unit: str | None,
 ) -> UpdatedGroup:
-    """Replaces the declared blocks of a time-partitioned block group with the samples timed in them.
+    """Replaces whole declared blocks of a time-partitioned block group from source samples.
 
     Args:
-        group: Existing compressed block group bytes.
-        blocks: The block indices replaced.
-        samples: Array-like of their new samples (may be empty).
-        times: Array-like of the samples' timestamps, non-decreasing.
-        params: Encoder configuration parameters.
-        start_time: Starting time anchor for block 0.
-        block_duration: Duration of each block.
-        time_unit: Optional time unit string, checked against block group header.
+        group: Existing compressed block group bytes (must have a time axis).
+        blocks: Iterable of distinct block indices to replace.
+        samples: 1D array-like of replacement samples (may be empty).
+        times: Non-decreasing timestamps matching ``samples``; every tick must fall inside ``blocks``.
+        params: Encoder configuration parameters (may include ``time_error > 0``).
+        start_time: Anchor time for block 0.
+        block_duration: Positive duration of each block.
+        time_unit: Optional time unit string checked against the group header.
 
     Returns:
-        UpdatedGroup tuple containing the updated block group and the re-encoded blocks' statistics.
+        ``UpdatedGroup`` with the updated bytes, re-encoded block indices, and block statistics.
 
     Raises:
-        ValueError: If the block group lacks a time axis, a time falls outside the declared
-            blocks or decreases, or the arguments are invalid.
+        ValueError: If the group has no time axis, any timestamp falls outside ``blocks`` or
+            decreases, any block exceeds ``MAX_BLOCK_LEN``, or arguments are invalid.
     """
+    # Validate that all incoming samples map into declared blocks, compute per-block sizes,
+    # optionally round ticks within each block's [start, end] seeded by preceding stored blocks,
+    # and splice the replacement blocks into the group.
     parsed = _group.decompress(group)
     if not parsed.has_time:
         raise ValueError("the block group has no time axis: use update")
@@ -354,7 +362,7 @@ def replace_time_blocks(
     series_samples, ticks, start, duration, _ = _args.time_blocks_update(
         samples, times, start_time, block_duration, None, time_unit, parsed.header.time_unit
     )
-    ids = block_ids(ticks, start, duration)
+    ids = assign_time_blocks(ticks, start, duration)
     if ticks.shape[0] > 1 and (np.diff(ticks) < 0).any():
         raise _args.decrease_error(ticks, int(np.flatnonzero(np.diff(ticks) < 0)[0]) + 1)
     positions = np.searchsorted(indices, ids)
@@ -368,23 +376,22 @@ def replace_time_blocks(
     sizes = np.bincount(positions, minlength=indices.shape[0]).astype(np.int64)
     if sizes.max() > _format.MAX_BLOCK_LEN:
         raise ValueError(f"a block would hold over {_format.MAX_BLOCK_LEN} samples")
-    time_rows = _group.read_time_rows(parsed, np.zeros(0, np.int64))
+    time_columns = _group.read_time_columns(parsed, np.zeros(0, np.int64))
     if params.time_error > 0 and ticks.shape[0]:
         num_blocks = max(parsed.header.num_blocks, int(indices[-1]) + 1)
         spliced_sizes = np.zeros(num_blocks, np.int64)
-        spliced_sizes[:parsed.header.num_blocks] = parsed.block_sizes
+        spliced_sizes[: parsed.header.num_blocks] = parsed.block_sizes
         spliced_sizes[indices] = sizes
-        # Each block continues the clock of the stored block before it, and stays in its range
-        _, seed_ticks, seed_steps = _group.stored_seeds(parsed, time_rows, spliced_sizes, indices)
+        _, seed_ticks, seed_steps = _group.stored_seeds(parsed, time_columns, spliced_sizes, indices)
         ticks, _ = _group.snap_ticks(
             ticks, sizes, params.time_error, seed_ticks, seed_steps, block_bounds(indices, start, duration)
         )
-    return _group.splice(parsed, indices, series_samples, sizes, ticks, params, time_rows, snap=False)
+    return _group.splice(parsed, indices, series_samples, sizes, ticks, params, time_columns, snap=False)
 
 
-def _end_blocks(
+def _blocks_with_end_tick(
     parsed: _group.ParsedGroup,
-    time_rows: _format.TimeRows,
+    time_columns: _format.EncodedTimeColumns,
     ticks: np.ndarray,
     new_ids: np.ndarray,
     ranges: np.ndarray,
@@ -392,34 +399,33 @@ def _end_blocks(
     duration: int,
     covered: np.ndarray,
 ) -> np.ndarray:
-    """Finds the stored blocks that hold a time at their end which an update reaches.
-
-    Rounding can store a time at a block's end, the next block's start (module docstring), so
-    a block's times lie in [its start, its end], the end included. A new sample or a delete
-    range at that time reaches the block although its block index is the next one's, and a
-    range covering [its start, its end) leaves that time. Only blocks whose end is a new time
-    or a range's start or end are candidates, and only their last stored times are read.
+    """Finds stored blocks whose last tick sits at their exact upper boundary and is affected by the update.
 
     Args:
-        parsed: The block group.
-        time_rows: Its time rows (the columns at least; candidate irregular blocks' residuals
-            are unpacked into them).
-        ticks: 1D int64 array of the new samples' ticks.
-        new_ids: 1D int64 array of their blocks.
-        ranges: 2D int64 array of sorted, disjoint [start, end) deletion ranges.
-        start: Starting tick of block 0.
-        duration: Block duration in ticks.
-        covered: 1D bool array of the stored blocks the ranges cover, by [start, end).
+        parsed: Existing parsed block group.
+        time_columns: Its ``EncodedTimeColumns`` (metadata columns loaded; candidate irregular
+            blocks' residuals are unpacked on demand).
+        ticks: 1D int64 array of incoming sample timestamps.
+        new_ids: 1D int64 array of block indices for ``ticks``.
+        ranges: 2D int64 array of sorted, disjoint ``[start, end)`` deletion ranges.
+        start: Anchor tick of block 0.
+        duration: Positive block duration in ticks.
+        covered: 1D bool mask of stored blocks covered by ``ranges`` on ``[block_start, block_end)``.
 
     Returns:
-        1D int64 array of the blocks, increasing: those not covered whose end is a new time or
-        deleted, and those covered whose end isn't deleted.
+        Strictly increasing 1D int64 array of stored block indices holding a tick at their upper
+        boundary that is either deleted/replaced (if not covered) or survives (if covered).
     """
+    # Only blocks whose upper boundary coincides with an incoming sample timestamp or a deletion
+    # range edge can be affected; inspect only those candidates' stored last ticks.
     num_blocks = parsed.header.num_blocks
     lows, _ = block_bounds(new_ids, start, duration)
     candidates = [new_ids[ticks == lows] - 1]
-    edge_ids = [(edge - start) // duration - 1 for edge in ranges.ravel().tolist()
-                if edge > start and (edge - start) % duration == 0]
+    edge_ids = [
+        (edge - start) // duration - 1
+        for edge in ranges.ravel().tolist()
+        if edge > start and (edge - start) % duration == 0
+    ]
     candidates.append(np.array([idx for idx in edge_ids if idx < num_blocks], np.int64))
     blocks = np.unique(np.concatenate(candidates))
     blocks = blocks[(blocks >= 0) & (blocks < num_blocks)]
@@ -430,12 +436,12 @@ def _end_blocks(
     deleted = _in_ranges(ends, ranges)
     reached = np.where(covered[blocks], ~deleted, deleted | np.isin(ends, ticks))
     blocks, ends = blocks[reached], ends[reached]
-    last_ticks, _ = _group.stored_tails(parsed, time_rows, blocks)
+    last_ticks, _ = _group.stored_tails(parsed, time_columns, blocks)
     return blocks[last_ticks == ends]
 
 
 def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
-    """Which ticks lie in one of the sorted, disjoint [start, end) ranges."""
+    """Returns a boolean mask of which ticks fall inside any sorted, disjoint ``[start, end)`` range."""
     if not ranges.shape[0]:
         return np.zeros(ticks.shape[0], np.bool_)
     idx = np.searchsorted(ranges[:, 0], ticks, side="right") - 1
@@ -443,38 +449,19 @@ def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
 
 
 def _new_blocks_mask(new_ids: np.ndarray, num_old_blocks: int, covered: np.ndarray) -> np.ndarray:
-    """Marks the stored blocks new samples fall in, except those deletions cover whole.
-
-    Args:
-        new_ids: 1D int64 array of the new samples' blocks.
-        num_old_blocks: Number of stored blocks.
-        covered: 1D bool array of the stored blocks deletions cover.
-
-    Returns:
-        1D bool array of num_old_blocks.
-    """
+    """Returns a boolean mask of existing blocks receiving new samples, excluding fully covered ones."""
     mask = np.zeros(num_old_blocks, np.bool_)
     mask[new_ids[new_ids < num_old_blocks]] = True
     return mask & ~covered
 
 
 def _gather(
-    parsed: _group.ParsedGroup, decoded: np.ndarray, time_rows: _format.TimeRows
+    parsed: _group.ParsedGroup, decoded: np.ndarray, time_columns: _format.EncodedTimeColumns
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Decodes stored blocks into one chronological run.
-
-    Args:
-        parsed: The block group.
-        decoded: 1D int64 array of the blocks to decode, increasing.
-        time_rows: Its time rows, with those blocks' residuals.
-
-    Returns:
-        A tuple of (ticks, values, blocks): the blocks' samples, block after block, and the
-        block of each.
-    """
+    """Decodes the specified stored blocks into flat chronological ``(ticks, values, block_ids)`` arrays."""
     if not decoded.shape[0]:
         return np.zeros(0, np.int64), np.zeros(0), np.zeros(0, np.int64)
-    all_values, all_ticks = _group.decode_blocks(parsed, decoded, time_rows)
+    all_values, all_ticks = _group.decode_blocks(parsed, decoded, time_columns)
     assert all_ticks is not None
     run_sizes = parsed.block_sizes[decoded]
     run_starts = parsed.layout.sample_offsets[decoded]
