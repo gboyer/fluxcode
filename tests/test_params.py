@@ -161,3 +161,38 @@ def test_absolute_tolerance_huge_value_is_safe():
     res = fluxcode.encode_group(x, params)
     assert verify.encode_group(res, x, params) == []
     assert verify.fixed_point(res.group, params) == []
+
+
+def test_absolute_tolerance_scaled_grid_fixed_point_even_gcd():
+    """Regression: tolerance_grid values whose 2^e indices have gcd > 1 stay a fixed point."""
+    rng = np.random.default_rng(42)
+    x = rng.normal(10.0, 0.02, 1000)
+    for nf in (0.0, 0.25):
+        params = Params(grids="rational", absolute_tolerance=0.05, noise_floor_sigma=nf)
+        res = fluxcode.encode_group(x, params)
+        assert verify.encode_group(res, x, params) == []
+        assert verify.fixed_point(res.group, params) == []
+
+
+def test_constant_bulk_with_glitches_escapes_and_fixed_point():
+    """Regression: glitches on a constant (or tolerance-collapsed) bulk are still escaped."""
+    rng = np.random.default_rng(42)
+    for bulk in (np.full(995, 5.0), rng.normal(5.0, 0.01, 995)):
+        x = np.concatenate([bulk, [-9999.0, 1e6, np.nan, np.inf, -np.inf]])
+        for grids in ("binary", "decimal", "rational"):
+            for tol in (0.0, 0.05, 0.5):
+                params = Params(grids=grids, absolute_tolerance=tol)
+                res = fluxcode.encode_group(x, params)
+                y = fluxcode.decode_group(res.group).values
+                assert np.abs(y[:995] - bulk).max() <= max(0.01, tol) + 1e-12
+                assert verify.encode_group(res, x, params) == []
+                assert verify.fixed_point(res.group, params) == []
+
+
+def test_decayed_masked_rejects_zero_energy():
+    """Regression: _decayed_masked must return False when no valid lag pairs have energy."""
+    from fluxcode._noise import _decayed_masked
+
+    clipped = np.zeros(200, np.float64)
+    weights = np.ones(200, np.float64)
+    assert not _decayed_masked(clipped, weights, 200.0)

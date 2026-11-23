@@ -230,7 +230,7 @@ def escape_outliers(
         center_val = kept_sum / kept
         deviation /= kept
     threshold = ESCAPE_DEVIATIONS * MAD_TO_SD * deviation
-    if not threshold > 0:
+    if not math.isfinite(threshold) or threshold < 0.0:
         return False, lower_bound, upper_bound
     num_escaped = 0
     bulk_min, bulk_max = math.inf, -math.inf

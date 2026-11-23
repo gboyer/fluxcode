@@ -345,7 +345,7 @@ def _decayed_masked(clipped: np.ndarray, weights: np.ndarray, num_valid: float) 
             pair = weights[diff_idx] * weights[diff_idx - lag]
             sum_sq += clipped[diff_idx] * clipped[diff_idx] * pair
             cross += clipped[diff_idx] * clipped[diff_idx - lag] * pair
-        if sum_sq > 0 and abs(cross / sum_sq) >= limit:
+        if not sum_sq > 0 or abs(cross / sum_sq) >= limit:
             return False
     return True
 

@@ -42,6 +42,7 @@ from ._grids import (
     decimal_grid,
     floor_exponent,
     moved_off_tolerance_grid,
+    on_binary_grid,
     plan_block_step,
     planned_multiple,
     quantize_block,
@@ -449,7 +450,7 @@ def encode_block(
         if grids >= GRIDS_RATIONAL and non_constant and not math.isnan(base_index):
             gcd = _rational.index_gcd(scratch_quantized)
             base_int = np.int64(base_index)
-            if gcd > 1:
+            if gcd > 1 and (tol_step == 0.0 or on_binary_grid(samples, quant_exp)):
                 # The power of two shared with the anchor's index coarsens the exponent: the
                 # grid stays absolute and unscaled
                 twos = min(_common_twos(gcd, base_int), E_MAX - quant_exp)
@@ -464,8 +465,8 @@ def encode_block(
                     scale = gcd | (np.int64(1) << SCALE_SHIFT)  # D = 1
                     grid_index = base_int
                     flags |= BLOCK_FLAG_SCALED
-            # No common factor (and not already constant on 2^quant_exp): search rational / tolerance grid
-            elif gcd == 1 and range_span < xm.WIDE_RANGE and quant_exp >= SCALED_E_MIN:
+            # No exact common factor (and not already constant on 2^quant_exp): search rational / tolerance grid
+            elif gcd >= 1 and range_span < xm.WIDE_RANGE and quant_exp >= SCALED_E_MIN:
                 found, decimal, param, num, den, rational_index = _rational.detect_rational(
                     samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), scratch_rational, scratch_index,
                 )

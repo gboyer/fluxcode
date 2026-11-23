@@ -358,22 +358,41 @@ def tolerance_grid(lower_bound: float, quant_exp: int, tol_step: float) -> tuple
 
 
 @njit(nogil=True, cache=True)
+def on_tolerance_grid(samples: np.ndarray, num: np.int64, fine_exp: int) -> bool:
+    """Whether every sample is an exact multiple of `num * 2^fine_exp` (exact in float64)."""
+    for sample_idx in range(samples.shape[0]):
+        scaled = math.ldexp(samples[sample_idx], -fine_exp)
+        if scaled != math.floor(scaled) or not math.isfinite(scaled) or abs(scaled) >= 2.0 * FLOAT64_EXACT_INT_LIMIT:
+            return False
+        if np.int64(scaled) % num != 0:
+            return False
+    return True
+
+
+@njit(nogil=True, cache=True)
+def on_binary_grid(samples: np.ndarray, quant_exp: int) -> bool:
+    """Whether every sample is an exact multiple of `2^quant_exp`."""
+    for sample_idx in range(samples.shape[0]):
+        scaled = math.ldexp(samples[sample_idx], -quant_exp)
+        if scaled != math.floor(scaled) or not math.isfinite(scaled):
+            return False
+    return True
+
+
+@njit(nogil=True, cache=True)
 def moved_off_tolerance_grid(
     samples: np.ndarray, num: np.int64, fine_exp: int, decimal_exp: int, base_index: np.int64, quantized: np.ndarray,
 ) -> bool:
     """Whether every sample is already exact on the tolerance scaled grid `k * num * 2^fine_exp`
     and the detected decimal grid would move at least one sample (protecting fixed points)."""
-    step = float(num) * math.ldexp(1.0, fine_exp)
-    inv_step = 1.0 / step
+    if not on_tolerance_grid(samples, num, fine_exp):
+        return False
     divide = decimal_exp < 0
     power = 10.0 ** abs(decimal_exp)
     moved = False
     for sample_idx in range(samples.shape[0]):
-        sample = samples[sample_idx]
-        if math.floor(sample * inv_step + 0.5) * step != sample:
-            return False
         index = float(base_index + quantized[sample_idx])
-        moved |= (index / power if divide else index * power) != sample
+        moved |= (index / power if divide else index * power) != samples[sample_idx]
     return moved
 
 

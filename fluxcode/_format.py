@@ -7,9 +7,9 @@ residual planes) is in _bitpacking.
 
 A block group is an 8-byte header followed by one zstd frame holding the body. The header
 (little-endian) is: format version (uint8, 1), flags (uint8; bit 0 selects byte planes for
-the residual planes, bits 1-3 hold the time unit, bits 4-7 are 0), the block count (uint16)
-and the sample count (uint32). Every block records its own size, 0 to 65,535 samples, and
-the block sizes add up to the sample count.
+the residual planes, bits 1-3 hold the time unit, bit 4 indicates a group_time_step trailer,
+bits 5-7 are 0), the block count (uint16) and the sample count (uint32). Every block records
+its own size, 0 to 65,535 samples, and the block sizes add up to the sample count.
 
 Each block of n samples takes num_octets = ceil(n / 8) bytes of every bit plane (none for an
 empty block): when n isn't a multiple of 8, the high bits of its last byte are padding, and
@@ -22,10 +22,11 @@ only when the header's time unit is not 0):
 
     1. block_flags (num_blocks bytes):
        Bits 0-1 encode the predictor difference order (0-3); bit 2 indicates
-       decimal quantization; bit 3 indicates non-finite code planes; bit 4
-       indicates irregular times (time residual planes); bit 5 (with bit 4) indicates
-       long time residuals (64 planes instead of 32); bit 6 indicates a scaled grid (the
-       grid_scale field); bit 7 is reserved and must be zero. An empty block's flags are 0.
+       decimal quantization; bit 3 indicates 2-bit code planes (non-finite and/or
+       escaped samples); bit 4 indicates irregular times (time residual planes);
+       bit 5 (with bit 4) indicates long time residuals (64 planes instead of 32);
+       bit 6 indicates a scaled grid (the grid_scale field); bit 7 is reserved and
+       must be zero. An empty block's flags are 0.
     2. block_sizes (2 * num_blocks bytes):
        Per-block uint16 sample count, byte-planed (all low bytes, then all high bytes).
     3. grid_params (2 * num_blocks bytes):
@@ -34,14 +35,16 @@ only when the header's time unit is not 0):
     4. grid_scale (4 * num_blocks bytes, byte-planed):
        Per-block uint32: N | D << 16 of a scaled block (step N / D times 2^e or 10^p), 0 otherwise.
     5. value_anchor (8 * num_blocks bytes, byte-planed: all byte 0s, all byte 1s, ...):
-       Per-block reconstruction base: the bits of the float64 block minimum on the
-       power-of-two grid, or the int64 grid index K0 of the minimum on a decimal or scaled grid.
+       Per-block reconstruction base for signed int16 grid indices q in [-32768, 32767]:
+       the bits of a finite float64 on a power-of-two grid, or the int64 grid index K0
+       on a decimal or scaled grid.
     6. time_start (8 * num_blocks bytes, byte-planed; time only):
        The first non-empty block's start time as int64, then each non-empty block's start
-       minus the previous non-empty block's start as uint64 (0 for an empty block). Starts
-       are non-decreasing by construction.
+       minus the previous non-empty block's start as uint64 (0 for an empty block), divided
+       by group_time_step when header flag bit 4 is set. Starts are non-decreasing.
     7. time_step (8 * num_blocks bytes, byte-planed; time only):
-       Per-block int64 step: the GCD of the block's time deltas (0 if all are 0).
+       Per-block int64 step: the GCD of the block's time deltas (0 if all are 0), divided
+       by group_time_step when header flag bit 4 is set.
     8. time_ref (8 * num_blocks bytes, byte-planed; time only):
        Per-block uint64 reference quotient: sample i > 0's quotient
        (time[i] - time[i-1]) / time_step is time_ref plus its residual (0 in a regular
@@ -49,13 +52,17 @@ only when the header's time unit is not 0):
     9. residual_planes (16 bytes per octet of every block):
        Zigzag-encoded int16 differences mod 2^16, as 16 bit planes across all
        blocks, or (flags bit 0) as 2 byte planes: every low byte, then every high byte.
-    10. nonfinite_code_planes (2 bytes per octet of the blocks with non-finite values):
+    10. code_planes (2 bytes per octet of the blocks with bit 3 set):
        2 code bit planes for the flagged blocks, encoding sample categories
-       (00: finite, 01: NaN, 10: +inf, 11: -inf).
+       (00: on grid, 01: NaN, 10: escaped value, 11: repeat previous escaped value).
     11. time_residual_planes (32 bytes per octet of the irregular blocks, then 32 per octet
        of the long blocks; time only): per sample of an irregular block, its quotient minus
        time_ref, mod 2^64 and zigzagged (0 for sample 0), as bit planes like the residual
        planes: planes 0-31 of every irregular block, then planes 32-63 of the long blocks.
+    12. escapes (8 * num_escapes bytes, byte-planed; optional):
+       Escaped float64 values (±inf and outliers) in block/sample order, one per code 10.
+    13. group_time_step (8 bytes, uint64; present iff header flag bit 4 is set):
+       Common factor >= 2 dividing all stored time_start increases and time_step values.
 """
 
 import enum

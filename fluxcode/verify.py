@@ -610,7 +610,7 @@ def _check_decimals(
     nearest k / 10^decimals), they span fewer than 2^(max_quantize_bits - 1) decimal steps (then
     the B-bit power-of-two step is finer than 10^-decimals, which detection needs), k stays
     under 2^52, the params detect decimal grids, there is no target, and the noise floor is off
-    or the block is under 256 samples. Other blocks aren't.
+    or the block is under 128 samples. Other blocks aren't.
     """
     if not -22 <= decimals <= 22:
         raise ValueError(f"decimals must be from -22 to 22, got {decimals}")
