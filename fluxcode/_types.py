@@ -130,13 +130,15 @@ class Params:
             up to 65,535: 0.05, thirds, ADC counts of 10 V / 4095, a calibration's gain and
             offset, stored exactly).
         effort: Encoder effort, MIN_EFFORT (fastest) to MAX_EFFORT (smallest). It changes how
-            the block group is compressed (the residual layout, zstd block boundaries and level),
-            never the decoded values; ENCODER.md lists what each effort does.
+            the block group is compressed (the residual layout, zstd block boundaries and level)
+            and, from 6, lets blocks take the period predictor (not with a target, whose steps
+            it would move), never the decoded values; ENCODER.md lists what each effort does.
         tolerance: An absolute error that is acceptable for every value (in the values' units), 0 (the
             default) for none. A permission, not a bound: each block's step may coarsen to at most
             2 * tolerance, so samples decode within tolerance, or within what they would without
             it where that is coarser (the noise floor). It never coarsens past min_quantize_bits.
-            A per-tag setting from what is known of the signal (a sensor's accuracy, a ±0.1% of
+            With grids "rational" a step tolerance sets uses 94-100% of the allowance (a scaled
+            grid), with "binary" or "decimal" 50-100% (a power of two). A per-tag setting from what is known of the signal (a sensor's accuracy, a ±0.1% of
             span transmitter's ±0.2 °C), not a default: the right value depends on the tag's units
             and range over its lifetime.
         time_error: How far timestamps may move, as a share of an interval (0 to

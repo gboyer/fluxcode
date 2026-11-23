@@ -156,6 +156,26 @@ ADC's) costs about 4 µs per block; the index gcd's (0.05 = 5 × 0.01) costs not
 `"decimal"` is the choice for a tag known to be on such a grid whose encode time matters more than
 its size; `"binary"` skips every grid search, for data that are never on a grid.
 
+## Tolerance
+
+**`tolerance`** (default 0, off) lets each block's step coarsen to 2·`tolerance`, in the values'
+units. It is a per-tag setting, not a default to tune once: the right value comes from what is
+known of the tag (a transmitter's ±0.1% of span, a thermocouple's ±0.5 °C) and its range over its
+life. Measured on the realistic corpus (`experimental/value/tolerance_span.py`, mean of 46 signals,
+tolerance as a share of each signal's span):
+
+| `tolerance` | 0 | 0.01% of span | 0.1% of span | 1% of span |
+|---|---|---|---|---|
+| bits/sample | 4.16 | 3.86 (−7%) | 2.92 (−30%) | 2.05 (−51%) |
+
+- **Noise-floored signals** gain only once `tolerance` passes their floor (f·σ/2); smooth or
+  oversampled ones gain most (line voltage 5.4 → 1.4 b/s at 0.1%).
+- **`grids`:** with `"rational"` (the default) a step `tolerance` sets is a scaled grid using
+  94–100% of the allowance; with `"binary"` or `"decimal"` it is a power of two, 50–100% (about 3%
+  larger at 0.1% of span).
+- **Decimal data** stays exact while its step is at least 2·`tolerance`.
+- The algorithm is in ENCODER.md §1 and §5.4.
+
 ## Noise floor: measured behaviour
 
 B = 16, orders 0–3, decimal detection, bit-shuffle, minute block groups. Noisy test signals only:

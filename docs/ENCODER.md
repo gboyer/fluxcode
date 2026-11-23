@@ -54,7 +54,9 @@ How the `fluxcode` package encodes. The format it writes is specified in [SPEC.m
   have without it where the noise floor is coarser. Where `tolerance` sets the step (finer than
   `min_quantize_bits`' coarsest) and the block has no exact grid (no index gcd, no rational
   grid, §5.4), the step is a scaled grid of N points of 2^(e−4), N = ⌊2·`tolerance` / 2^(e−4)⌋
-  (17–31): 94–100% of the allowance instead of 50–100%. It never coarsens past `min_quantize_bits`,
+  (17–31): 94–100% of the allowance instead of 50–100%. That takes `grids="rational"` (the
+  default): `"binary"` and `"decimal"` allow only power-of-two and decimal steps, so there the step
+  is 2^e, 50–100% of the allowance. It never coarsens past `min_quantize_bits`,
   and decimal data whose step is at least 2·`tolerance` stays exact (a coarser step is a
   power-of-two grid, not a decimal one). Measured on the realistic corpus
   (`experimental/value/tolerance_span.py`, mean of 46 signals):
