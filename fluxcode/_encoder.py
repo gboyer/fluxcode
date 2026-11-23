@@ -39,7 +39,7 @@ from ._grids import (
     _common_twos,
     center_anchor,
     decimal_grid,
-    plan_step,
+    plan_block_step,
     planned_multiple,
     quantize_block,
     range_exponent,
@@ -54,12 +54,11 @@ from ._time import CADENCE_SAMPLES
 leading_zeros = cast("Callable[[int | np.integer], int]", _leading_zeros)
 """Numba intrinsic counting leading zero bits, typed as its jitted call signature."""
 
-NOISE_MIN_LEN: int = 256
-"""Smallest block the noise floor applies to. Below it the rho test can't tell white noise (rho
-= -2/3) from a random walk (-1/2): the estimate's standard error is about
-sqrt((1 - 3 rho^2 + 4 rho^4) / m) on m differences (0.044 at 256 samples, so -0.6 is 2.25 of them
-from -1/2). Random walks pass the gate 9% of the time at 64 samples, 0.8% at 256 and none at 1000,
-while white noise still passes 96% of the time at 256 (ENCODER §5.2)."""
+NOISE_MIN_LEN: int = 128
+"""Smallest block the noise floor applies to. Below it a single step or spike dominates the
+12th differences; from 128 up, clean signals read far below the B-bit step while white noise
+passes the gate 96% of the time (ENCODER §5.2). Irregular times keep their own minimum
+(_noise.MIN_ONE_SCAN_TRIPLETS = 254) for second divided differences."""
 
 PICK_LEN: int = 256
 """Blocks up to this many samples pick their predictor order on every sample; longer ones on
@@ -809,9 +808,12 @@ def encode_group(
                 scratch_pivots,
                 scratch_noise_diffs,
                 scratch_noise_weights,
+                math.ldexp(1.0, range_exponent(block_min, block_max, max_bits)) / noise_factor,
             )
         # Plan quantization exponent
-        planned_exp = plan_step(block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+        planned_exp = plan_block_step(
+            block_samples, block_min, block_max, noise_sigma, noise_rho, noise_factor, min_bits, max_bits
+        )
         block_exponents[block_idx] = planned_exp
         (
             out_block_flags[block_idx], out_grid_params[block_idx], decimal_base, anchor, out_grid_scales[block_idx],

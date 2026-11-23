@@ -75,7 +75,7 @@ from ._types import (
 TIME_SLACK: float = 1.02
 """How far past time_error mean intervals a rounded time may move (ENCODER.md §6: 2% more)."""
 
-NOISE_FLOOR_MIN_SAMPLES: int = 256
+NOISE_FLOOR_MIN_SAMPLES: int = 128
 """Blocks shorter than this never get the noise floor (ENCODER.md §5.2)."""
 
 

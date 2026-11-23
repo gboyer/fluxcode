@@ -172,15 +172,22 @@ def test_single_sample_blocks_must_be_canonical():
             fluxcode.update(corrupt, {2: [1.0]}, times={2: [20]})
 
 
-def test_noise_floor_needs_256_samples():
-    """Below 256 samples the gate can't tell white noise from a random walk: blocks keep the
-    finest step. From 256 white noise gates as before."""
+def test_noise_floor_needs_128_samples():
+    """Below NOISE_MIN_LEN (128) samples a single step or spike dominates 12th differences: blocks keep
+    the finest step. From 128 white noise gates as before."""
     rng = np.random.default_rng(4)
-    noise = rng.normal(size=2 * 255 + 256)
-    group = fluxcode.encode_blocks(noise, [255, 255, 256], Params(grids="binary"))
+    noise = rng.normal(size=2 * 127 + 256)
+    group = fluxcode.encode_blocks(noise, [127, 127, 256], Params(grids="binary"))
     rows = group_rows(group.group)
     fine = [_grids.range_exponent(lo, hi, 16) for lo, hi in zip(group.block_min, group.block_max)]
     assert (rows.grid_params[:2] == fine[:2]).all() and rows.grid_params[2] > fine[2]
+    assert fluxcode._encoder.NOISE_MIN_LEN == 128
+    # And 128-sample white-noise blocks gate on almost every block
+    blocks = rng.normal(size=20 * 128)
+    group128 = fluxcode.encode_blocks(blocks, [128] * 20, Params(grids="binary"))
+    rows128 = group_rows(group128.group)
+    fine128 = [_grids.range_exponent(lo, hi, 16) for lo, hi in zip(group128.block_min, group128.block_max)]
+    assert sum(rows128.grid_params[i] > fine128[i] for i in range(20)) >= 16
 
 
 def test_empty_block_time_columns_must_be_zero():

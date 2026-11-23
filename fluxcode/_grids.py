@@ -12,6 +12,7 @@ import numpy as np
 from numba import njit
 
 from . import _extreme_magnitudes as xm
+from . import _noise as _noise_mod
 from ._format import (
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_SCALED,
@@ -39,8 +40,15 @@ GRIDS_RATIONAL: int = 2
 GRIDS_LEVELS: dict[str, int] = {"binary": GRIDS_BINARY, "decimal": GRIDS_DECIMAL, "rational": GRIDS_RATIONAL}
 """Params.grids to its level: each level adds grids to the one before."""
 
-NOISE_RHO: float = -0.6
-"""Autocorrelation threshold for noise gating (white noise gives rho = -2/3)."""
+NOISE_GATE: float = _noise_mod.NOISE_GATE
+"""The noise gate (_noise.NOISE_GATE): lag-1 autocorrelation share over this passes."""
+
+NO_FLOOR_EXP: int = E_MIN - 64
+"""floor_exponent without a noise floor: finer than any step."""
+
+FLOOR_MARGIN: float = 1.02
+"""How far past a power of two the noise floor's step may be for a block already on the grid
+one finer to keep it (preserve_finer_grid): above the 0.26% quantizing adds to sigma."""
 
 FLOAT64_EXACT_INT_LIMIT: float = 2.0 ** 52
 """Scaled-magnitude limit for decimal candidates: below 2^52 a double's spacing is at most
@@ -204,6 +212,35 @@ def range_scale(lower_bound: float, upper_bound: float) -> int:
 
 
 @njit(nogil=True, cache=True)
+def floor_exponent(noise_factor: float, noise_sigma: float, noise_rho: float) -> int:
+    """The noise floor's exponent floor(log2(f * sigma)) if the noise gate passes, else NO_FLOOR_EXP."""
+    if noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0:
+        return math.floor(math.log2(noise_factor * noise_sigma))
+    return NO_FLOOR_EXP
+
+
+@njit(nogil=True, cache=True)
+def preserve_finer_grid(samples: np.ndarray, planned_exp: int, floor_step: float) -> int:
+    """Floor hysteresis for fixed points: keeps `planned_exp - 1` when the block is already
+    exactly on that finer grid and `floor_step` is within FLOOR_MARGIN past 2^planned_exp.
+
+    Quantizing onto a grid raises sigma slightly (~0.26%), which can push a marginal floor
+    just across a power-of-two boundary on re-encode. Preserving the finer grid keeps decoded
+    data a fixed point without affecting original data or floors clear of the boundary.
+    """
+    if not floor_step > 0 or math.floor(math.log2(floor_step)) != planned_exp:
+        return planned_exp
+    if floor_step >= math.ldexp(1.0, planned_exp) * FLOOR_MARGIN:
+        return planned_exp
+    inv_step = math.ldexp(1.0, 1 - planned_exp)
+    for sample_idx in range(samples.shape[0]):
+        scaled = samples[sample_idx] * inv_step
+        if scaled != math.floor(scaled) or not math.isfinite(scaled):
+            return planned_exp
+    return planned_exp - 1
+
+
+@njit(nogil=True, cache=True)
 def plan_step(
     lower_bound: float,
     upper_bound: float,
@@ -222,7 +259,7 @@ def plan_step(
         lower_bound: Minimum sample value in the block.
         upper_bound: Maximum sample value in the block.
         noise_sigma: Estimated white-noise standard deviation.
-        noise_rho: Lag-1 autocorrelation of second differences.
+        noise_rho: Whiteness gate statistic (_noise.block_noise): over NOISE_GATE passes.
         noise_factor: Noise floor multiplier (0.0 to disable).
         min_bits: Hard minimum precision bits.
         max_bits: Hard maximum precision bits.
@@ -234,12 +271,31 @@ def plan_step(
         return 0
     # Start with finest allowed step at max_bits
     planned_exp = range_exponent(lower_bound, upper_bound, max_bits)
-    # Check noise gate: white noise gives rho = -2/3; the gate is rho < NOISE_RHO
-    if noise_factor > 0 and noise_rho < NOISE_RHO and noise_sigma > 0:
-        # Coarsen the step up to noise_factor * noise_sigma
-        planned_exp = max(planned_exp, math.floor(math.log2(noise_factor * noise_sigma)))
+    # Coarsen the step up to noise_factor * noise_sigma where the noise gate passes
+    planned_exp = max(planned_exp, floor_exponent(noise_factor, noise_sigma, noise_rho))
     # Clamp to coarsest allowed step at min_bits
     return min(planned_exp, range_exponent(lower_bound, upper_bound, min_bits))
+
+
+@njit(nogil=True, cache=True)
+def plan_block_step(
+    samples: np.ndarray,
+    lower_bound: float,
+    upper_bound: float,
+    noise_sigma: float,
+    noise_rho: float,
+    noise_factor: float,
+    min_bits: int,
+    max_bits: int,
+) -> int:
+    """Plans a block's power-of-two exponent with noise-floor hysteresis."""
+    planned_exp = plan_step(lower_bound, upper_bound, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+    if noise_rho > NOISE_GATE and upper_bound > lower_bound:
+        planned_exp = max(
+            preserve_finer_grid(samples, planned_exp, noise_factor * noise_sigma),
+            range_exponent(lower_bound, upper_bound, max_bits),
+        )
+    return planned_exp
 
 
 @njit(nogil=True, cache=True)

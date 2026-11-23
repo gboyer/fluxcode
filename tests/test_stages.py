@@ -54,10 +54,10 @@ def test_plan_step_precedence():
     fine, coarse = _grids.exponent(rng, 16), _grids.exponent(rng, 6)
     lo, hi = -40.0, 60.0
     assert _grids.plan_step(lo, hi, 0.0, 0.0, 0.0, 6, 16) == fine
-    assert _grids.plan_step(lo, hi, 1.0, -0.7, 0.25, 6, 16) == -2  # floor(log2(0.25))
-    assert _grids.plan_step(lo, hi, 1.0, -0.5, 0.25, 6, 16) == fine  # not gated
-    assert _grids.plan_step(lo, hi, 1e6, -0.7, 0.25, 6, 16) == coarse  # min bits caps the noise floor
-    assert _grids.plan_step(5.0, 5.0, 1.0, -0.7, 0.25, 6, 16) == 0
+    assert _grids.plan_step(lo, hi, 1.0, 0.95, 0.25, 6, 16) == -2  # floor(log2(0.25))
+    assert _grids.plan_step(lo, hi, 1.0, 0.5, 0.25, 6, 16) == fine  # not gated
+    assert _grids.plan_step(lo, hi, 1e6, 0.95, 0.25, 6, 16) == coarse  # min bits caps the noise floor
+    assert _grids.plan_step(5.0, 5.0, 1.0, 0.95, 0.25, 6, 16) == 0
 
 
 def test_quantize():
@@ -255,7 +255,7 @@ def test_noise_scale_extremes():
         if k > -1050:  # at -1060 the samples themselves are rounded to the subnormal grid
             assert rho == ref[1] and sigma == math.ldexp(ref[0], k)
         else:
-            assert rho < -0.6
+            assert rho > _noise.NOISE_GATE
 
 
 def ref_robust_noise(d, ok):
@@ -291,68 +291,103 @@ NO_TICKS = np.zeros(0, np.int64)
 @pytest.mark.parametrize("kind", ["random-walk", "noisy-sine", "chirp", "sin-4.12hz", "impulses", "gauss-spikes"])
 @pytest.mark.parametrize("frac", [0.001, 0.01, 0.05, 0.2])
 @pytest.mark.parametrize("scale_k", [0, -1060, 1000])
-def test_noise_weighted_matches_reference(kind, frac, scale_k):
+def test_noise_masked_matches_reference(kind, frac, scale_k):
     from _signals import minute
     rng = np.random.default_rng(int(frac * 1000) + abs(scale_k))
     X = np.ldexp(minute(kind, 4).reshape(60, 1000)[:10] / 128, scale_k)  # ranges up to ~2^1000 / ~2^-1060
     d, w = np.empty(1000), np.empty(1000)
+    order = _noise.NOISE_ORDER
+    coefs = np.array(_noise.NOISE_COEFS, np.float64)
     for x in X:
         y = x.copy()
         y[rng.random(1000) < frac] = np.nan
         xf, codes = np.empty(1000), np.empty(1000, np.uint8)
         lo, hi, _, _ = _nonfinite.fill_nonfinite(y, xf, codes)
         k = _grids.range_scale(lo, hi)
-        sigma, rho = _noise.noise_weighted(xf, codes, NO_TICKS, 0, 0, k, 0, d, w)
-        yr = np.ldexp(y, -k)  # exact rescale for the reference
-        ok = (codes[:-2] | codes[1:-1] | codes[2:]) == 0
-        spread, rr = ref_robust_noise(yr[2:] - 2 * yr[1:-1] + yr[:-2], ok)
-        if scale_k == -1060:  # subnormal samples are already rounded: compare the gate only
-            assert (rho < -0.6) == (rr < -0.6)
-            continue
-        assert rho == pytest.approx(rr, abs=1e-9)
-        assert sigma == pytest.approx(math.ldexp(spread, k) / math.sqrt(6), rel=1e-9)
+        sigma, rho = _noise.noise_masked(xf, codes, k, 500, d, w)
+        yr = np.ldexp(np.where(codes == 0, y, 0.0), -k)
+        # 12th differences if >= 500 valid windows, else 2nd differences
+        ok12 = np.convolve(codes != 0, np.ones(order + 1, int), "valid") == 0
+        if ok12.sum() >= 500:
+            diffs = np.convolve(yr, coefs[::-1], "valid")
+            spread, rr = ref_robust_noise(diffs, ok12)
+            rr_share = rr / _noise.WHITE_RHO
+            ref_sigma = math.ldexp(spread, k) / _noise.SIGMA_GAIN
+            if scale_k == -1060:
+                continue
+            if rho > _noise.NOISE_GATE:
+                assert sigma <= ref_sigma * (1 + 1e-9)
+        else:
+            ok2 = (codes[:-2] | codes[1:-1] | codes[2:]) == 0
+            if ok2.sum() < 500:
+                assert (sigma, rho) == (0.0, 0.0)
+                continue
+            spread, rr = ref_robust_noise(yr[2:] - 2 * yr[1:-1] + yr[:-2], ok2)
+            rr_share = rr / _noise.DIVIDED_DIFF_WHITE_RHO
+            if scale_k == -1060:
+                assert (rho > _noise.NOISE_GATE) == (rr_share > _noise.NOISE_GATE)
+                continue
+            assert rho == pytest.approx(rr_share, abs=1e-9)
+            assert sigma == pytest.approx(math.ldexp(spread, k) / _noise.DIVIDED_DIFF_GAIN, rel=1e-9)
 
 
 def test_noise_matches_reference():
-    """noise is the reference on plain second differences (every triplet valid), over one window
-    and over many."""
+    """noise is the reference on 12th differences of white noise, over one window and over many."""
     rng = np.random.default_rng(4)
+    coefs = np.array(_noise.NOISE_COEFS, np.float64)
     for x in (rng.normal(size=1000), np.r_[rng.normal(0, 0.01, 3000), rng.normal(0, 1, 3000)]):
         k = _grids.range_scale(x.min(), x.max())
         sigma, rho = _noise.noise(x, k, np.empty(x.size))
         xr = np.ldexp(x, -k)
-        spread, rr = ref_robust_noise(xr[2:] - 2 * xr[1:-1] + xr[:-2], np.ones(x.size - 2, bool))
-        assert rho == pytest.approx(rr, abs=1e-9)
-        assert sigma == pytest.approx(math.ldexp(spread, k) / math.sqrt(6), rel=1e-9)
+        diffs = np.convolve(xr, coefs[::-1], "valid")
+        spread, rr = ref_robust_noise(diffs, np.ones(diffs.size, bool))
+        assert rho == pytest.approx(rr / _noise.WHITE_RHO, abs=1e-9)
+        assert sigma == pytest.approx(math.ldexp(spread, k) / _noise.SIGMA_GAIN, rel=1e-9)
 
 
-def test_noise_weighted_with_equal_intervals_is_plain():
-    """On equal intervals the chord difference is the plain second difference, and with every
-    triplet valid noise_weighted is noise (to the last bits)."""
-    x = np.random.default_rng(5).normal(size=1000)
-    k = _grids.range_scale(x.min(), x.max())
-    d, w = np.empty(1000), np.empty(1000)
-    ref_sigma, ref_rho = _noise.noise(x, k, d)
-    for ticks, lower, upper in ((np.arange(1000, dtype=np.int64) * 7, 3, 11), (NO_TICKS, 0, 0)):
-        sigma, rho = _noise.noise_weighted(x, NO_CODES, ticks, lower, upper, k, 0, d, w)
-        assert sigma == pytest.approx(ref_sigma, rel=1e-12) and rho == pytest.approx(ref_rho, rel=1e-12)
+def test_noise_masked_rejects_tones_and_detects_bandlimited_noise():
+    """Masked blocks get the same long-lag tone rejection and lower-subband (anti-alias)
+    detection as clean blocks."""
+    rng = np.random.default_rng(42)
+    t = np.arange(1000, dtype=np.float64)
+    # High-frequency tone with a few NaN dropouts: must NOT gate as white noise
+    tone = np.sin(2 * np.pi * 0.44 * t)
+    codes = np.zeros(1000, np.uint8)
+    codes[[100, 450, 800]] = 1
+    k = _grids.range_scale(tone.min(), tone.max())
+    sigma_tone, rho_tone = _noise.noise_masked(tone, codes, k, 500, np.empty(1000), np.empty(1000))
+    assert rho_tone <= _noise.NOISE_GATE and sigma_tone == 0.0
+
+    # Band-limited white noise (low-pass filtered at ~0.35 Fs, like a sigma-delta DAQ) with dropouts
+    white = rng.normal(0, 0.01, 1064)
+    # Simple sinc lowpass at 0.35 Fs
+    n = np.arange(-32, 33)
+    h = np.sinc(2 * 0.35 * n) * np.hanning(len(n))
+    h /= h.sum()
+    bandlimited = np.convolve(white, h, "valid")
+    assert bandlimited.shape[0] == 1000
+    k_bl = _grids.range_scale(bandlimited.min(), bandlimited.max())
+    sig_clean, rho_clean = _noise.noise(bandlimited, k_bl, np.empty(1000))
+    sig_masked, rho_masked = _noise.noise_masked(bandlimited, codes, k_bl, 500, np.empty(1000), np.empty(1000))
+    assert rho_clean > _noise.NOISE_GATE and sig_clean > 0.002
+    assert rho_masked > _noise.NOISE_GATE and sig_masked == pytest.approx(sig_clean, rel=0.15)
 
 
-def test_noise_weighted_cancels_slopes_across_unequal_intervals():
-    """A ramp sampled at jittered times has no noise of its own: the chord difference cancels
-    it, where the plain second difference sees the jitter as noise."""
+def test_noise_irregular_cancels_slopes_across_unequal_intervals():
+    """A ramp sampled at jittered times has no noise of its own: the second divided difference
+    cancels it, where the plain 12th difference sees the jitter as noise."""
     rng = np.random.default_rng(6)
     ticks = np.arange(1000, dtype=np.int64) * 1000 + rng.integers(-200, 201, 1000)
     noisy = 0.001 * ticks.astype(float) + rng.normal(0, 0.01, 1000)
     d, w = np.empty(1000), np.empty(1000)
     k = _grids.range_scale(noisy.min(), noisy.max())
     lower, upper, _ = _noise.cadence(ticks, np.empty(_time.CADENCE_SAMPLES, np.int64))
-    sigma, rho = _noise.noise_weighted(noisy, NO_CODES, ticks, lower, upper, k, 0, d, w)
-    assert sigma == pytest.approx(0.01, rel=0.1) and rho < -0.6
+    sigma, rho = _noise.noise_irregular(noisy, NO_CODES, ticks, lower, upper, k, 0, d, w)
+    assert sigma == pytest.approx(0.01, rel=0.1) and rho > _noise.NOISE_GATE
     assert _noise.noise(noisy, k, d)[0] > 5 * sigma
 
 
-def test_chord_difference_is_unbiased_for_any_intervals():
+def test_divided_difference_is_unbiased_for_any_intervals():
     """White noise at intervals spread over the whole one-scan window reads its own sigma: each
     triplet is scaled to the variance of a regular second difference."""
     rng = np.random.default_rng(13)
@@ -360,8 +395,8 @@ def test_chord_difference_is_unbiased_for_any_intervals():
     ticks = np.cumsum(rng.integers(510, 1490, n)).astype(np.int64)
     x = rng.normal(0, 1, n)
     k = _grids.range_scale(x.min(), x.max())
-    sigma, rho = _noise.noise_weighted(x, NO_CODES, ticks, 500, 1500, k, 0, np.empty(n), np.empty(n))
-    assert sigma == pytest.approx(1.0, rel=0.02) and rho < -0.6
+    sigma, rho = _noise.noise_irregular(x, NO_CODES, ticks, 500, 1500, k, 0, np.empty(n), np.empty(n))
+    assert sigma == pytest.approx(1.0, rel=0.02) and rho > _noise.NOISE_GATE
 
 
 def test_robust_noise_floors_by_the_quietest_window():
@@ -369,7 +404,7 @@ def test_robust_noise_floors_by_the_quietest_window():
     rng = np.random.default_rng(7)
     x = np.r_[rng.normal(0, 0.01, 600), rng.normal(0, 1, 600)]
     sigma, rho = _noise.noise(x, _grids.range_scale(x.min(), x.max()), np.empty(1200))
-    assert sigma == pytest.approx(0.01 / 0.75, rel=0.15) and rho < -0.6
+    assert sigma == pytest.approx(0.01 / 0.75, rel=0.15) and rho > _noise.NOISE_GATE
 
 
 @pytest.mark.parametrize("n", [1000, 16_000, 65_536])
