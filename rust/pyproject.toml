@@ -12,3 +12,4 @@ dependencies = ["numpy>=1.24"]
 
 [tool.maturin]
 module-name = "fluxcode_rs"
+include = [{ path = "fluxcode_rs.pyi", format = "sdist" }]
