@@ -352,6 +352,27 @@ cost per block), `ptime.py` (the period search, 3.4).
 - Held-out data: the estimator's guards were tuned on the corpus they are measured on.
 - The prototype's free-gain 2-tap predictor on the accelerometers (−9%, 3.4).
 
+**Sinusoidal baseline (2026-11-22, `sinusoid.py`, offline prototype).** Asked by the owner as an
+alternative to the period predictor: per block, least squares fit of c + K harmonics of one
+frequency (refined around the crossing estimate; optionally amplitudes linear in time) to the
+block's indices q; residuals q − round(fit) at order 0, side info charged (32 bits for the
+frequency, 24 per coefficient), taken per block on a Gaussian estimate. The grid is unchanged (the
+baseline is subtracted in index space), so decoded values are the same. Against fixed orders,
+effort 4 back end:
+
+| signal | shipped period | K = 1 | K = 3 | K = 7 | K = 7, amplitudes linear in time |
+|---|---|---|---|---|---|
+| motor current | −15.2% | 0 | 0 | −14.0% | −13.3% |
+| line voltage | −18.7% | 0 | 0 | −20.4% | −25.3% |
+| sin-50.3hz (bench) | −40.1% | −32.6% | −30.9% | −27.9% | −82.8% |
+| noisy-sine, accelerometer | 0 | 0 | 0 | 0 | 0 |
+
+One or three harmonics never pay on the realistic signals (their 5th and 7th harmonics, load
+changes within a block); seven do, about as well as the period predictor on motor current and
+better on line voltage. Its decode has no dependency between samples (order 0, each fit value
+from n alone), but needs a deterministic integer evaluation of up to 30 terms per sample and a
+variable-size per-block parameter field. Not built.
+
 ## Appendix: final fuzz run
 
 `tests/test_fuzz.py` extended (finite glitches −9999, ±1e6, 32767 in 15% of value cases; a
