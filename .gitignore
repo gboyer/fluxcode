@@ -6,4 +6,5 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 experimental/.golden*/
+experimental/public_datasets/data/
 *~

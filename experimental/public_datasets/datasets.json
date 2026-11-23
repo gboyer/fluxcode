@@ -1,0 +1,523 @@
+{
+  "schema_version": 1,
+  "groups": {
+    "CWRU Vibration": {
+      "source": "Case Western Reserve University Bearing Data Center (via srigas/CWRU_Bearing_NumPy)",
+      "source_url": "https://engineering.case.edu/bearingdatacenter",
+      "license": "Public academic research (CWRU); NumPy mirror MIT",
+      "citation": "Case Western Reserve University Bearing Data Center (1730 RPM, 12 kHz & 48 kHz); packaged by srigas/CWRU_Bearing_NumPy.",
+      "sampling": "12 kHz & 48 kHz mechanical accelerometer waveforms (normal, inner-race fault, ball fault; hidden ADC calibration step)."
+    },
+    "MIT-BIH ECG": {
+      "source": "PhysioNet MIT-BIH Arrhythmia Database (records 100, 101)",
+      "source_url": "https://physionet.org/content/mitdb/1.0.0/",
+      "license": "ODC-By 1.0",
+      "citation": "Moody GB, Mark RG (2001). The impact of the MIT-BIH Arrhythmia Database. IEEE Eng in Med and Biol 20(3):45-50. PhysioNet.",
+      "sampling": "360 Hz 2-channel ECG (650k samples/ch), 11-bit ADC scaled to mV (0.005 mV scaled decimal grid)."
+    },
+    "IRIS Seismic": {
+      "source": "IRIS/EarthScope FDSN (IU.ANMO.00.BHZ/BH1, 2023-02-06 M7.8 earthquake)",
+      "source_url": "https://service.iris.edu/fdsnws/dataselect/1/",
+      "license": "CC0 1.0 / Public Domain (GSN/USGS/EarthScope)",
+      "citation": "Albuquerque Seismological Laboratory (ASL)/USGS (1988). Global Seismograph Network (GSN - IRIS/USGS), Network IU, Station ANMO.",
+      "sampling": "40 Hz 24-bit sigma-delta broadband seismometer (288k samples/ch, steep anti-alias filter; raw counts & calibrated m/s velocity)."
+    },
+    "BIDMC Clinical": {
+      "source": "PhysioNet BIDMC PPG and Respiration Dataset (record 01)",
+      "source_url": "https://physionet.org/content/bidmc/1.0.0/",
+      "license": "ODC-By 1.0",
+      "citation": "Pimentel MAF et al. (2016). Toward a Robust Estimation of Respiratory Rate From Pulse Oximeters. IEEE TBME. PhysioNet BIDMC v1.0.0.",
+      "sampling": "125 Hz clinical monitor (60k samples/ch: RESP, PLETH, ECG II & V)."
+    },
+    "UCI Power": {
+      "source": "UCI Individual Household Electric Power Consumption",
+      "source_url": "https://archive.ics.uci.edu/dataset/235",
+      "license": "CC BY 4.0",
+      "citation": "Hebrail G, Berard A (2006). Individual Household Electric Power Consumption. UCI Machine Learning Repository.",
+      "sampling": "1-min smart-meter telemetry (~2.08M rows x 7 ch), exact timestamps + ~1.3% NaN gaps."
+    },
+    "UCI Hydraulic": {
+      "source": "UCI Condition Monitoring of Hydraulic Systems",
+      "source_url": "https://archive.ics.uci.edu/dataset/447",
+      "license": "CC BY 4.0",
+      "citation": "Helwig N, Pignanelli E, Schütze A (2018). Condition Monitoring of Hydraulic Systems. UCI Machine Learning Repository.",
+      "sampling": "Multi-rate industrial hydraulic PLC/DAQ (100 Hz pressure/motor power, 10 Hz flow, 1 Hz temp/vibration)."
+    },
+    "SKAB Industrial": {
+      "source": "Skoltech Anomaly Benchmark (SKAB)",
+      "source_url": "https://github.com/waico/SKAB",
+      "license": "CC BY-SA 4.0 (data) / GPL-3.0 (code)",
+      "citation": "Katser ID, Kozitsin VO (2020). Skoltech Anomaly Benchmark (SKAB). GitHub waico/SKAB.",
+      "sampling": "1 Hz industrial water-circulation plant PLC sensors (7 channels) with timestamps."
+    },
+    "UCI AirQuality": {
+      "source": "UCI Air Quality",
+      "source_url": "https://archive.ics.uci.edu/dataset/360",
+      "license": "CC BY 4.0",
+      "citation": "Vito S (2008). Air Quality. UCI Machine Learning Repository.",
+      "sampling": "Hourly chemical sensor array (9,357 rows), exact timestamps + -200 error-code glitches."
+    },
+    "UCI Appliances": {
+      "source": "UCI Appliances Energy Prediction",
+      "source_url": "https://archive.ics.uci.edu/dataset/374",
+      "license": "CC BY 4.0",
+      "citation": "Candanedo L (2017). Appliances Energy Prediction. UCI Machine Learning Repository.",
+      "sampling": "10-min indoor/outdoor temp & humidity sensors (averaged 1/3, 1/4 rational grids) + rv1 uniform random noise."
+    },
+    "NOAA Buoy": {
+      "source": "NOAA NDBC Station 46026 (San Francisco, 2023)",
+      "source_url": "https://www.ndbc.noaa.gov/station_page.php?station=46026",
+      "license": "Public Domain (U.S. Government / NOAA)",
+      "citation": "NOAA National Data Buoy Center (NDBC), Station 46026, 2023 Standard Meteorological Data.",
+      "sampling": "10-min ocean buoy telemetry with gaps & 99/999 sentinels (tested raw and sentinels -> NaN)."
+    },
+    "ERA5 Weather": {
+      "source": "Open-Meteo ERA5 Reanalysis (San Francisco 2023, hourly)",
+      "source_url": "https://open-meteo.com/en/docs/historical-weather-api",
+      "license": "CC BY 4.0 (Open-Meteo) / Copernicus C3S License (ERA5)",
+      "citation": "Hersbach H et al. (2020). ERA5 Reanalysis via Open-Meteo Historical Weather API (San Francisco 2023 hourly).",
+      "sampling": "Hourly weather fields (8,760 rows), tested both as-parsed decimal and float32-promoted-to-float64 (*_f32)."
+    },
+    "Binance Trades": {
+      "source": "Binance Public Data Vision (BTCUSDT-trades-2024-01-01)",
+      "source_url": "https://data.binance.vision/",
+      "license": "Binance Public Market Data",
+      "citation": "Binance Public Data Vision, Spot Daily Trades BTCUSDT (2024-01-01).",
+      "sampling": "1.11M high-frequency exchange trades with irregular millisecond arrival timestamps, decimal prices, and quantities."
+    },
+    "Smartphone IMU": {
+      "source": "AZI350 Smartphone IMU Three Positions Dataset (walking & running)",
+      "source_url": "https://github.com/AZI350/Smartphone-IMU-Three-Positions-Dataset",
+      "license": "MIT",
+      "citation": "AZI350. Smartphone IMU Three Positions Dataset (participant_001, hand walking/running trial_01).",
+      "sampling": "3-axis accelerometer & gyroscope on a real jittered ~50 Hz millisecond smartphone clock (dt 16-177 ms)."
+    },
+    "Elf Corpus": {
+      "source": "Spatio-Temporal-Lab/Elf (ElfTestData)",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776.",
+      "sampling": "18 standard VLDB/SIGMOD float-compression benchmark columns (weather, air sensors, GPS/POI, stocks, crypto, dust)."
+    }
+  },
+  "files": [
+    {
+      "path": "cwru/1730_Normal.npz",
+      "url": "https://raw.githubusercontent.com/srigas/CWRU_Bearing_NumPy/main/Data/1730%20RPM/1730_Normal.npz",
+      "extract": null,
+      "size_bytes": 7770782,
+      "sha256": "e71083ee7e4971575b3deb99325b2eee058d1010a69652e3f0347673c45092b6",
+      "group": "CWRU Vibration",
+      "license": "Public academic research (CWRU); NumPy mirror MIT",
+      "source_url": "https://engineering.case.edu/bearingdatacenter",
+      "citation": "Case Western Reserve University Bearing Data Center (1730 RPM, 48 kHz Normal); packaged by srigas/CWRU_Bearing_NumPy."
+    },
+    {
+      "path": "cwru/1730_IR_7_DE48.npz",
+      "url": "https://raw.githubusercontent.com/srigas/CWRU_Bearing_NumPy/main/Data/1730%20RPM/1730_IR_7_DE48.npz",
+      "extract": null,
+      "size_bytes": 7770782,
+      "sha256": "fbd45bcc76b0bf4210989945b9348bbb1065086b959687c4b40a8afe8c43f74f",
+      "group": "CWRU Vibration",
+      "license": "Public academic research (CWRU); NumPy mirror MIT",
+      "source_url": "https://engineering.case.edu/bearingdatacenter",
+      "citation": "Case Western Reserve University Bearing Data Center (1730 RPM, 48 kHz Inner-Race Fault); packaged by srigas/CWRU_Bearing_NumPy."
+    },
+    {
+      "path": "cwru/1730_B_7_DE12.npz",
+      "url": "https://raw.githubusercontent.com/srigas/CWRU_Bearing_NumPy/main/Data/1730%20RPM/1730_B_7_DE12.npz",
+      "extract": null,
+      "size_bytes": 2918074,
+      "sha256": "52f3c0676df6da0f9127e50f90c446b61624220ef8d73f69099937eb8c70b2a2",
+      "group": "CWRU Vibration",
+      "license": "Public academic research (CWRU); NumPy mirror MIT",
+      "source_url": "https://engineering.case.edu/bearingdatacenter",
+      "citation": "Case Western Reserve University Bearing Data Center (1730 RPM, 12 kHz Ball Fault); packaged by srigas/CWRU_Bearing_NumPy."
+    },
+    {
+      "path": "mitdb/100.dat",
+      "url": "https://physionet.org/files/mitdb/1.0.0/100.dat",
+      "extract": null,
+      "size_bytes": 1950000,
+      "sha256": "b2ea3c250e56e48f4b7b90697832b8ecd1afa1e0bb31f2dcfea4ed6e1075a639",
+      "group": "MIT-BIH ECG",
+      "license": "ODC-By 1.0",
+      "source_url": "https://physionet.org/content/mitdb/1.0.0/",
+      "citation": "Moody GB, Mark RG (2001). MIT-BIH Arrhythmia Database (record 100). PhysioNet."
+    },
+    {
+      "path": "mitdb/100.hea",
+      "url": "https://physionet.org/files/mitdb/1.0.0/100.hea",
+      "extract": null,
+      "size_bytes": 143,
+      "sha256": "60ebc904c7bf3e04d142638d3fd5c903e8dc9f10f1ea3264e07926aa089ee75e",
+      "group": "MIT-BIH ECG",
+      "license": "ODC-By 1.0",
+      "source_url": "https://physionet.org/content/mitdb/1.0.0/",
+      "citation": "Moody GB, Mark RG (2001). MIT-BIH Arrhythmia Database (record 100 header). PhysioNet."
+    },
+    {
+      "path": "mitdb/101.dat",
+      "url": "https://physionet.org/files/mitdb/1.0.0/101.dat",
+      "extract": null,
+      "size_bytes": 1950000,
+      "sha256": "698d1ea6f472d23ca50317c72c96cda2698badd8578220ed0380cdf241e39006",
+      "group": "MIT-BIH ECG",
+      "license": "ODC-By 1.0",
+      "source_url": "https://physionet.org/content/mitdb/1.0.0/",
+      "citation": "Moody GB, Mark RG (2001). MIT-BIH Arrhythmia Database (record 101). PhysioNet."
+    },
+    {
+      "path": "mitdb/101.hea",
+      "url": "https://physionet.org/files/mitdb/1.0.0/101.hea",
+      "extract": null,
+      "size_bytes": 131,
+      "sha256": "d5f02fbe8673fa05465442191b98ca0d28a1670e7ef0e83fb9ef8723113a311c",
+      "group": "MIT-BIH ECG",
+      "license": "ODC-By 1.0",
+      "source_url": "https://physionet.org/content/mitdb/1.0.0/",
+      "citation": "Moody GB, Mark RG (2001). MIT-BIH Arrhythmia Database (record 101 header). PhysioNet."
+    },
+    {
+      "path": "uci/household_power.zip",
+      "url": "https://archive.ics.uci.edu/static/public/235/individual+household+electric+power+consumption.zip",
+      "extract": "zip",
+      "size_bytes": 20640916,
+      "sha256": "9f84b46ade8a2d8e1286ec4b2b6c2987a45a755c59f263be3b3b3d10dfbda3ff",
+      "group": "UCI Power",
+      "license": "CC BY 4.0",
+      "source_url": "https://archive.ics.uci.edu/dataset/235",
+      "citation": "Hebrail G, Berard A (2006). Individual Household Electric Power Consumption. UCI Machine Learning Repository."
+    },
+    {
+      "path": "uci/air_quality.zip",
+      "url": "https://archive.ics.uci.edu/static/public/360/air+quality.zip",
+      "extract": "zip",
+      "size_bytes": 1543989,
+      "sha256": "d4a64013fb385288a8a48d9d193ca7079b2e1bbddf6f8d458feb8c08ab2b8a2a",
+      "group": "UCI AirQuality",
+      "license": "CC BY 4.0",
+      "source_url": "https://archive.ics.uci.edu/dataset/360",
+      "citation": "Vito S (2008). Air Quality. UCI Machine Learning Repository."
+    },
+    {
+      "path": "uci/appliances_energy.zip",
+      "url": "https://archive.ics.uci.edu/static/public/374/appliances+energy+prediction.zip",
+      "extract": "zip",
+      "size_bytes": 11979507,
+      "sha256": "2fccf354445d886e7917620b0195db1f3e3e34d5a067a93b844694a4c561255a",
+      "group": "UCI Appliances",
+      "license": "CC BY 4.0",
+      "source_url": "https://archive.ics.uci.edu/dataset/374",
+      "citation": "Candanedo L (2017). Appliances Energy Prediction. UCI Machine Learning Repository."
+    },
+    {
+      "path": "noaa/46026h2023.txt",
+      "url": "https://www.ndbc.noaa.gov/view_text_file.php?filename=46026h2023.txt.gz&dir=data/historical/stdmet/",
+      "extract": null,
+      "size_bytes": 4727248,
+      "sha256": "a582593377ad569da44846655420b759713f54655dbc9e76caf690468ca7a5e5",
+      "group": "NOAA Buoy",
+      "license": "Public Domain (U.S. Government / NOAA)",
+      "source_url": "https://www.ndbc.noaa.gov/station_page.php?station=46026",
+      "citation": "NOAA National Data Buoy Center (NDBC), Station 46026 (San Francisco, CA), 2023 Standard Meteorological Data."
+    },
+    {
+      "path": "elf/Air-pressure.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Air-pressure.csv",
+      "extract": null,
+      "size_bytes": 875571,
+      "sha256": "8d509ad428e72ccbc72acc9ca0a66022d7fad1c67d8de8eaddf1c05cb5afcbda",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Air-sensor.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Air-sensor.csv",
+      "extract": null,
+      "size_bytes": 159287,
+      "sha256": "5d15c0a50b7553f4ba5bc5f8deefec513e29bd9d5ca9bfa0f4379c0e01101f66",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Basel-temp.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Basel-temp.csv",
+      "extract": null,
+      "size_bytes": 984997,
+      "sha256": "52adbe9e78f55e2dbeaec2d69be48ea052abaac8cac4942f0d436b3c87088709",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Basel-wind.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Basel-wind.csv",
+      "extract": null,
+      "size_bytes": 933467,
+      "sha256": "ed4d2bcd0bd95d2d4f55d4307728152ddd3d4c81bf64c968fe9d719321d4560f",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Bird-migration.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Bird-migration.csv",
+      "extract": null,
+      "size_bytes": 758215,
+      "sha256": "abba924b11eecf2da663d2977950e1496af76efed6c4e399637ec518853a43e1",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Bitcoin-price.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Bitcoin-price.csv",
+      "extract": null,
+      "size_bytes": 77485,
+      "sha256": "770bba34c6190f2aa7f402e22feb5ced4effce95a1acc63a00c5e61c11d9fc34",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Blockchain-tr.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Blockchain-tr.csv",
+      "extract": null,
+      "size_bytes": 690656,
+      "sha256": "badb4ad743fdf3dedfba0d43dbea535b570b15c1feb72462486ac0ce2457499c",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/City-temp.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/City-temp.csv",
+      "extract": null,
+      "size_bytes": 468393,
+      "sha256": "8e070ea3120dda9ca10fa9aa320224fd105c14f4872f5998e83b91a815267448",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Dew-point-temp.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Dew-point-temp.csv",
+      "extract": null,
+      "size_bytes": 600006,
+      "sha256": "ee2dc6b8a8c888f205cb0c39842de7bdc4467cb6e3904b1cd26c3fe02513070a",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Food-price.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Food-price.csv",
+      "extract": null,
+      "size_bytes": 579912,
+      "sha256": "08c4229038b31273191f744768b3a7abbd6d786f8f51a5059cfd1bc66e020d3f",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/IR-bio-temp.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/IR-bio-temp.csv",
+      "extract": null,
+      "size_bytes": 587587,
+      "sha256": "d85fab8277e0d8336ac5f18418125a960b602a1cf9be9d027440f5916105e694",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/PM10-dust.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/PM10-dust.csv",
+      "extract": null,
+      "size_bytes": 591410,
+      "sha256": "a0e2c21141a190fce601d80b89d08218a2a32da986c6486fd1371acfa1bfb06f",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/POI-lat.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/POI-lat.csv",
+      "extract": null,
+      "size_bytes": 1905939,
+      "sha256": "f745e23e55b65379963552b5fce763a1f412f100a4d46e2fa775db9d4221da51",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/POI-lon.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/POI-lon.csv",
+      "extract": null,
+      "size_bytes": 1942088,
+      "sha256": "61213d0e47074ead8966858edd496906c0d2ab377d9d9fd990426974a36b586c",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Stocks-DE.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Stocks-DE.csv",
+      "extract": null,
+      "size_bytes": 632283,
+      "sha256": "dda43ca9847f1d28afe6dce60b191fe463711925b6a1696afe3d6ef44fa7efbf",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Stocks-UK.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Stocks-UK.csv",
+      "extract": null,
+      "size_bytes": 620317,
+      "sha256": "40e0e8f2d81a32123187e644bb86cb2cfd9c706f12970d3ab652249d8ed005be",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Stocks-USA.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Stocks-USA.csv",
+      "extract": null,
+      "size_bytes": 608701,
+      "sha256": "2fcfa5604063c2b2a0c40341deaf0bb823bc8f33123249e6a5c317f9e34cd9ce",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "elf/Wind-Speed.csv",
+      "url": "https://raw.githubusercontent.com/Spatio-Temporal-Lab/Elf/master/src/test/resources/ElfTestData/Wind-Speed.csv",
+      "extract": null,
+      "size_bytes": 487650,
+      "sha256": "124137c4f356d50671762732733422365e9359bbf6d1f01e560246ddcb7c6b10",
+      "group": "Elf Corpus",
+      "license": "Apache-2.0 (repository); public benchmark corpus",
+      "source_url": "https://github.com/Spatio-Temporal-Lab/Elf",
+      "citation": "Li R et al. (2023). Elf: Erasing-based Lossless Floating-Point Compression. PVLDB 16(7):1763-1776."
+    },
+    {
+      "path": "iris/IU_ANMO_00_BHZ.mseed",
+      "url": "https://service.iris.edu/fdsnws/dataselect/1/query?net=IU&sta=ANMO&loc=00&cha=BHZ&start=2023-02-06T01:00:00&end=2023-02-06T03:00:00",
+      "extract": null,
+      "size_bytes": 417792,
+      "sha256": "6c341142b8327f97c36cd4fcdb7062921bccf02f1524193c35271b85a63937cf",
+      "group": "IRIS Seismic",
+      "license": "CC0 1.0 / Public Domain (GSN/USGS/EarthScope)",
+      "source_url": "https://service.iris.edu/fdsnws/dataselect/1/",
+      "citation": "Albuquerque Seismological Laboratory (ASL)/USGS (1988). Global Seismograph Network (GSN - IRIS/USGS), IU.ANMO.00.BHZ, 2023-02-06."
+    },
+    {
+      "path": "iris/IU_ANMO_00_BH1.mseed",
+      "url": "https://service.iris.edu/fdsnws/dataselect/1/query?net=IU&sta=ANMO&loc=00&cha=BH1&start=2023-02-06T01:00:00&end=2023-02-06T03:00:00",
+      "extract": null,
+      "size_bytes": 408576,
+      "sha256": "2e83fdcdd298c65e51e9fc8defbdf017fe526468d3d740248b66d08012512ae8",
+      "group": "IRIS Seismic",
+      "license": "CC0 1.0 / Public Domain (GSN/USGS/EarthScope)",
+      "source_url": "https://service.iris.edu/fdsnws/dataselect/1/",
+      "citation": "Albuquerque Seismological Laboratory (ASL)/USGS (1988). Global Seismograph Network (GSN - IRIS/USGS), IU.ANMO.00.BH1, 2023-02-06."
+    },
+    {
+      "path": "binance/BTCUSDT-trades-2024-01-01.zip",
+      "url": "https://data.binance.vision/data/spot/daily/trades/BTCUSDT/BTCUSDT-trades-2024-01-01.zip",
+      "extract": "zip",
+      "size_bytes": 14585540,
+      "sha256": "a312617d895cdae43a58551f05fc9bc6b97285fab2e5d0daf774b4fb61e0a0c0",
+      "group": "Binance Trades",
+      "license": "Binance Public Market Data",
+      "source_url": "https://data.binance.vision/",
+      "citation": "Binance Public Data Vision, Spot Daily Trades BTCUSDT (2024-01-01)."
+    },
+    {
+      "path": "imu/p001_hand_walking.csv",
+      "url": "https://raw.githubusercontent.com/AZI350/Smartphone-IMU-Three-Positions-Dataset/main/participant_001/hand/walking/trial_01.csv",
+      "extract": null,
+      "size_bytes": 252944,
+      "sha256": "a9e89ae85092fe81c5c3d0929b104487d76a248fe70464a40e6e1683834ec17c",
+      "group": "Smartphone IMU",
+      "license": "MIT",
+      "source_url": "https://github.com/AZI350/Smartphone-IMU-Three-Positions-Dataset",
+      "citation": "AZI350. Smartphone IMU Three Positions Dataset (participant_001, hand walking trial_01)."
+    },
+    {
+      "path": "imu/p001_hand_running.csv",
+      "url": "https://raw.githubusercontent.com/AZI350/Smartphone-IMU-Three-Positions-Dataset/main/participant_001/hand/running/trial_01.csv",
+      "extract": null,
+      "size_bytes": 193071,
+      "sha256": "e59ee1699539001708c5ab9f033d655c1bfbbdb95927b315345b4a0f837ac61e",
+      "group": "Smartphone IMU",
+      "license": "MIT",
+      "source_url": "https://github.com/AZI350/Smartphone-IMU-Three-Positions-Dataset",
+      "citation": "AZI350. Smartphone IMU Three Positions Dataset (participant_001, hand running trial_01)."
+    },
+    {
+      "path": "uci/hydraulic_systems.zip",
+      "url": "https://archive.ics.uci.edu/static/public/447/condition+monitoring+of+hydraulic+systems.zip",
+      "extract": "zip",
+      "size_bytes": 76601704,
+      "sha256": "24128aad2ee45eea7e6b63ebbd9992cdf25d0483a2cebefbfc13bc69079af1f2",
+      "group": "UCI Hydraulic",
+      "license": "CC BY 4.0",
+      "source_url": "https://archive.ics.uci.edu/dataset/447",
+      "citation": "Helwig N, Pignanelli E, Schütze A (2018). Condition Monitoring of Hydraulic Systems. UCI Machine Learning Repository."
+    },
+    {
+      "path": "skab/anomaly-free.csv",
+      "url": "https://raw.githubusercontent.com/waico/SKAB/master/data/anomaly-free/anomaly-free.csv",
+      "extract": null,
+      "size_bytes": 814703,
+      "sha256": "7641a8742957100ef424dd97adfb3eeab27d4d180645fe2b3c49b7f7146ae9a6",
+      "group": "SKAB Industrial",
+      "license": "CC BY-SA 4.0 (data) / GPL-3.0 (code)",
+      "source_url": "https://github.com/waico/SKAB",
+      "citation": "Katser ID, Kozitsin VO (2020). Skoltech Anomaly Benchmark (SKAB), anomaly-free.csv."
+    },
+    {
+      "path": "era5/sf_2023_hourly.csv",
+      "url": "https://archive-api.open-meteo.com/v1/archive?latitude=37.7749&longitude=-122.4194&start_date=2023-01-01&end_date=2023-12-31&hourly=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,shortwave_radiation,soil_temperature_0_to_7cm&format=csv",
+      "extract": null,
+      "size_bytes": 405476,
+      "sha256": "c138629a06c1da472660261bb78b98f0e1cbedad67f5be80d7cb1bacaa578d9a",
+      "group": "ERA5 Weather",
+      "license": "CC BY 4.0 (Open-Meteo) / Copernicus C3S License (ERA5)",
+      "source_url": "https://open-meteo.com/en/docs/historical-weather-api",
+      "citation": "Hersbach H et al. (2020). ERA5 Reanalysis via Open-Meteo Historical Weather API (San Francisco 2023 hourly)."
+    },
+    {
+      "path": "bidmc/bidmc_01_Signals.csv",
+      "url": "https://physionet.org/files/bidmc/1.0.0/bidmc_csv/bidmc_01_Signals.csv",
+      "extract": null,
+      "size_bytes": 2678552,
+      "sha256": "21495169cc36e82352d8e12cc6430927946d02d240b030715088d02396ea2d5c",
+      "group": "BIDMC Clinical",
+      "license": "ODC-By 1.0",
+      "source_url": "https://physionet.org/content/bidmc/1.0.0/",
+      "citation": "Pimentel MAF et al. (2016). PhysioNet BIDMC PPG and Respiration Dataset v1.0.0 (record 01)."
+    }
+  ]
+}

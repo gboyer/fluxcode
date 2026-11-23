@@ -56,6 +56,10 @@ only-include = ["fluxcode", "fluxprune", "tests", "bench", "docs", "rust", "READ
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not public_data'"
+markers = [
+    "public_data: opt-in tests against downloaded real-world public datasets (skips if data dir is absent)",
+]
 
 [tool.ruff]
 extend-exclude = ["experimental"]
