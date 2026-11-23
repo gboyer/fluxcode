@@ -5,11 +5,11 @@ encode() with its per-block-group index lists joined into flat per-block arrays,
 
 from contextlib import contextmanager
 
-import _oracle
 import numpy as np
 
 import fluxcode
 from fluxcode import Params, _api, _args, _bitpacking, _compress, _group
+from tests import _oracle
 
 PER_GROUP = _api.DEFAULT_BLOCKS_PER_GROUP  # the helpers assume the default block group size
 

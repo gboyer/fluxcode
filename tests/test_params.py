@@ -4,11 +4,11 @@
 
 import numpy as np
 import pytest
-from _series import decode_series, encode_series, encode_unchecked, group_rows
-from _signals import KINDS, minute
 
 import fluxcode
 from fluxcode import Params, _grids, verify
+from tests._series import decode_series, encode_series, encode_unchecked, group_rows
+from tests._signals import KINDS, minute
 
 
 @pytest.mark.parametrize("kw", [{"min_quantize_bits": 0}, {"max_quantize_bits": 17},

@@ -5,16 +5,16 @@ zstd level. The frame stays an ordinary one (content size recorded, one-shot dec
 blocks end where the planes do, the heuristic picks a layout from the residuals' high byte, and
 no effort changes the decoded values."""
 
-import _oracle
 import numpy as np
 import pytest
 import zstandard
-from _series import group_rows, planes
-from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format, _group
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
+from tests import _oracle
+from tests._series import group_rows, planes
+from tests._signals import minute
 
 EFFORTS = range(MIN_EFFORT, MAX_EFFORT + 1)
 

@@ -5,12 +5,12 @@ without them."""
 
 import numpy as np
 import pytest
-from _series import decode_series, encode_series, gated, group_rows, planes
-from _signals import KINDS, minute
 
 import fluxcode
 from fluxcode import Params, _format, verify
 from fluxcode._format import BLOCK_FLAG_SAMPLE_CODES
+from tests._series import decode_series, encode_series, gated, group_rows, planes
+from tests._signals import KINDS, minute
 
 L = 1000
 OFF = Params(noise_floor_sigma=0)

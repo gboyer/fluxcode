@@ -10,11 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 import zstandard
-from _signals import KINDS, discrete_minute, minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
+from tests._signals import KINDS, discrete_minute, minute
 
 fluxcode_rs = pytest.importorskip("fluxcode_rs", reason="the fluxcode[rust] extra isn't installed")
 pytestmark = pytest.mark.skipif(_compress._rust is None, reason="FLUXCODE_RUST=0")

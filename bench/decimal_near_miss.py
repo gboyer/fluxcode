@@ -13,18 +13,15 @@ last sample of every block. Prints a markdown table.
     uv run python bench/decimal_near_miss.py
 """
 
-import sys
 import time
-from pathlib import Path
 
-import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+import tests._fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 
-from _signals import minute
-
+# isort: split
 from fluxcode import Params, encode_group
+from tests._signals import minute
 
 BLOCK = 1000
 REPS, ROUNDS, WARMUP = 200, 5, 20

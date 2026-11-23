@@ -6,15 +6,15 @@ the rational search; their decoding (one rounding), validation, fixed points and
 import math
 from fractions import Fraction
 
-import _oracle
 import numpy as np
 import pytest
 import zstandard
-from _series import group_rows
 
 import fluxcode
 from fluxcode import Params, _format, _rational
 from fluxcode._format import BLOCK_FLAG_DECIMAL, BLOCK_FLAG_SCALED, SCALE_SHIFT
+from tests import _oracle
+from tests._series import group_rows
 
 L = 1000
 RNG = np.random.default_rng(11)

@@ -3,16 +3,16 @@
 """docs/SPEC.md time axis: exact round trips, regular and irregular blocks, the layout, the
 encoder's input checks, the decoder's corrupt-group checks, and update with times."""
 
-import _oracle
 import numpy as np
 import pytest
 import zstandard
-from _series import group_rows, planes
-from _signals import minute
 
 import fluxcode
 from fluxcode import Params, _compress, _format, _group
 from fluxcode._format import BLOCK_FLAG_IRREGULAR_TIME, BLOCK_FLAG_WIDE_TIME
+from tests import _oracle
+from tests._series import group_rows, planes
+from tests._signals import minute
 
 INT64_MAX = np.iinfo(np.int64).max
 INT64_MIN = np.iinfo(np.int64).min

@@ -5,11 +5,11 @@ ties to even, and e the finest step whose snapped grid fits (ENCODER §5.1, §5.
 
 import numpy as np
 import pytest
-from _series import group_rows
 
 import fluxcode
 from fluxcode import Params, _grids
 from fluxcode._format import BLOCK_FLAG_DECIMAL
+from tests._series import group_rows
 
 RAW = Params(noise_floor_sigma=0, grids="binary")
 """Just the power-of-two grid: no noise floor, no decimal grids."""

@@ -17,24 +17,20 @@ import argparse
 import os
 import platform
 import subprocess
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 
-import _fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 import numpy as np
 
-HERE = Path(__file__).resolve()
-sys.path.insert(0, str(HERE.parents[1] / "tests"))
+import tests._fresh_numba_cache  # noqa: F401  (before fluxcode: a cache keyed on its sources)
 
-from _series import decode_series, encode_series
-from _signals import HIDDEN_GRIDS, KINDS, MINUTE, discrete_minute, minute
-
+# isort: split
 import fluxcode
 from fluxcode import Params
+from tests._series import decode_series, encode_series
+from tests._signals import HIDDEN_GRIDS, KINDS, MINUTE, discrete_minute, minute
 
 SIGNALS = KINDS + ["sensor-0.1", "random-walk q0.01", "noisy-sine q0.1", "noisy-sine q0.01 via float32"]
 EXTRA_SIGNALS = HIDDEN_GRIDS
