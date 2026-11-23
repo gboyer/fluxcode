@@ -371,7 +371,9 @@ One or three harmonics never pay on the realistic signals (their 5th and 7th har
 changes within a block); seven do, about as well as the period predictor on motor current and
 better on line voltage. Its decode has no dependency between samples (order 0, each fit value
 from n alone), but needs a deterministic integer evaluation of up to 30 terms per sample and a
-variable-size per-block parameter field. Not built.
+variable-size per-block parameter field. Dropped by the owner (2026-11-22): SIMD is the
+parallelism wanted, which the period predictor allows (lag of a period), and its +20–30% decode
+time on period blocks is acceptable.
 
 ## Appendix: final fuzz run
 
