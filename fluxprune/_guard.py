@@ -13,17 +13,17 @@ from numba import njit
 
 
 @njit(cache=True, inline="always")
-def _deviation(tau, y, a, b, ya, yb, j):
+def _deviation(tau: np.ndarray, y: np.ndarray, a: int, b: int, ya: float, yb: float, j: int) -> float:
     """Distance of point j from the line (tau[a], ya) -> (tau[b], yb)."""
     du = tau[b] - tau[a]
     if du <= 0.0:
         lo, hi = min(ya, yb), max(ya, yb)
-        return max(0.0, y[j] - hi, lo - y[j])
-    return abs(y[j] - (ya + (yb - ya) * ((tau[j] - tau[a]) / du)))
+        return float(max(0.0, y[j] - hi, lo - y[j]))
+    return float(abs(y[j] - (ya + (yb - ya) * ((tau[j] - tau[a]) / du))))
 
 
 @njit(cache=True)
-def _worst(tau, y, a, b):
+def _worst(tau: np.ndarray, y: np.ndarray, a: int, b: int) -> float:
     """The largest deviation of an input point between kept points a and b from their chord."""
     best = 0.0
     for j in range(a + 1, b):
@@ -32,7 +32,7 @@ def _worst(tau, y, a, b):
 
 
 @njit(cache=True)
-def errors_kernel(tau, y, keep, c):
+def errors_kernel(tau: np.ndarray, y: np.ndarray, keep: np.ndarray, c: np.ndarray) -> tuple[float, float]:
     """(time-weighted mean squared error, largest deviation of any point) of the lines through the kept
     points at values c (y[keep], or refit ones) against the input's, tau running from 0 to 1. O(n)."""
     sq = 0.0
@@ -52,11 +52,11 @@ def errors_kernel(tau, y, keep, c):
             if a < j < b:
                 worst = max(worst, _deviation(tau, y, a, b, ya, yb, j))
             d0 = d1
-    return max(sq, 0.0), worst
+    return float(max(sq, 0.0)), float(worst)
 
 
 @njit(cache=True)
-def _reach(tau, y, a, b, tol, out, m):
+def _reach(tau: np.ndarray, y: np.ndarray, a: int, b: int, tol: float, out: np.ndarray, m: int) -> int:
     """Farthest reach between kept points a and b: from each anchor, scan on while some line from the
     anchor could still pass within tol of every point so far (the slope bounds each point sets, as in
     swinging door, still overlap), remember the last point whose own chord is such a line, and make it
@@ -87,7 +87,7 @@ def _reach(tau, y, a, b, tol, out, m):
 
 
 @njit(cache=True)
-def max_error_kernel(tau, y, keep, tol):
+def max_error_kernel(tau: np.ndarray, y: np.ndarray, keep: np.ndarray, tol: float) -> np.ndarray:
     """The max_error pass: keep (sorted) with every segment that strays more than tol from the input
     split by farthest reach (_reach), so that no input point does. On slow process data it keeps 4%
     more points than the fewest that would (up to 20% on noisy signals; report/prune.html, "The

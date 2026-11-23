@@ -427,7 +427,7 @@ def _blocks_with_end_tick(
         if edge > start and (edge - start) % duration == 0
     ]
     candidates.append(np.array([idx for idx in edge_ids if idx < num_blocks], np.int64))
-    blocks = np.unique(np.concatenate(candidates))
+    blocks: np.ndarray = np.unique(np.concatenate(candidates))
     blocks = blocks[(blocks >= 0) & (blocks < num_blocks)]
     blocks = blocks[parsed.block_sizes[blocks] > 0]
     if not blocks.shape[0]:
@@ -437,7 +437,7 @@ def _blocks_with_end_tick(
     reached = np.where(covered[blocks], ~deleted, deleted | np.isin(ends, ticks))
     blocks, ends = blocks[reached], ends[reached]
     last_ticks, _ = _group.stored_tails(parsed, time_columns, blocks)
-    return blocks[last_ticks == ends]
+    return np.asarray(blocks[last_ticks == ends])
 
 
 def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
@@ -445,14 +445,14 @@ def _in_ranges(ticks: np.ndarray, ranges: np.ndarray) -> np.ndarray:
     if not ranges.shape[0]:
         return np.zeros(ticks.shape[0], np.bool_)
     idx = np.searchsorted(ranges[:, 0], ticks, side="right") - 1
-    return (idx >= 0) & (ticks < ranges[np.maximum(idx, 0), 1])
+    return np.asarray((idx >= 0) & (ticks < ranges[np.maximum(idx, 0), 1]))
 
 
 def _new_blocks_mask(new_ids: np.ndarray, num_old_blocks: int, covered: np.ndarray) -> np.ndarray:
     """Returns a boolean mask of existing blocks receiving new samples, excluding fully covered ones."""
     mask = np.zeros(num_old_blocks, np.bool_)
     mask[new_ids[new_ids < num_old_blocks]] = True
-    return mask & ~covered
+    return np.asarray(mask & ~covered)
 
 
 def _gather(

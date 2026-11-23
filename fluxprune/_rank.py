@@ -23,7 +23,7 @@ from numba import njit
 
 
 @njit(cache=True, inline="always")
-def _chord_error(L, Suu, Sww, Suw, du, dw):
+def _chord_error(L: float, Suu: float, Sww: float, Suw: float, du: float, dw: float) -> float:
     """∫(w - s u)² over a span whose chord rises dw over du; 0 for a span of no duration."""
     if du <= 0.0:
         return 0.0
@@ -38,13 +38,13 @@ _D = 4  # the heap's arity
 
 
 @njit(cache=True, inline="always")
-def _less(ka, ia, kb, ib):
+def _less(ka: float, ia: int, kb: float, ib: int) -> bool:
     """(key, index) order: the lower key, then the lower index."""
     return ka < kb or (ka == kb and ia < ib)
 
 
 @njit(cache=True, inline="always")
-def _sift_up(hk, hi, pos, k, ck, ci):
+def _sift_up(hk: np.ndarray, hi: np.ndarray, pos: np.ndarray, k: int, ck: float, ci: int) -> None:
     """Place the entry (ck, ci) at or above slot k."""
     while k > 0:
         par = (k - 1) // _D
@@ -60,7 +60,7 @@ def _sift_up(hk, hi, pos, k, ck, ci):
 
 
 @njit(cache=True, inline="always")
-def _sift_down(hk, hi, pos, k, ck, ci, size):
+def _sift_down(hk: np.ndarray, hi: np.ndarray, pos: np.ndarray, k: int, ck: float, ci: int, size: int) -> None:
     """Place the entry (ck, ci) at or below slot k."""
     while True:
         c = _D * k + 1
@@ -82,7 +82,7 @@ def _sift_down(hk, hi, pos, k, ck, ci, size):
 
 
 @njit(cache=True, inline="always")
-def _merged_error(tau, y, M, p, i, q):
+def _merged_error(tau: np.ndarray, y: np.ndarray, M: np.ndarray, p: int, i: int, q: int) -> float:
     """Error of the chord p -> q over the segments p -> i and i -> q merged (without merging them)."""
     a = tau[i] - tau[p]
     b = y[i] - y[p]
@@ -93,7 +93,7 @@ def _merged_error(tau, y, M, p, i, q):
 
 
 @njit(cache=True)
-def rank_kernel(tau, y, removable):
+def rank_kernel(tau: np.ndarray, y: np.ndarray, removable: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Remove the removable points one at a time, always the one whose removal adds the least
     error (ties: the lower index). Returns the points in removal order and what each removal
     added to the integrated squared error (it can be negative: a chord can fit better than the
@@ -165,7 +165,7 @@ def rank_kernel(tau, y, removable):
 
 
 @njit(cache=True)
-def chord_errors(tau, y, a, b, out, forward):
+def chord_errors(tau: np.ndarray, y: np.ndarray, a: int, b: int, out: np.ndarray, forward: bool) -> None:
     """out[m - a] = error of the chord a -> m for every m in (a, b] (forward), or of m -> b for every
     m in [a, b) (backward), accumulating the moments one input segment at a time."""
     L = Su = Sw = Suu = Sww = Suw = 0.0
@@ -189,7 +189,7 @@ def chord_errors(tau, y, a, b, out, forward):
 
 
 @njit(cache=True)
-def refine_kernel(tau, y, keep, fixed, passes):
+def refine_kernel(tau: np.ndarray, y: np.ndarray, keep: np.ndarray, fixed: np.ndarray, passes: int) -> int:
     """Move each kept point that isn't fixed to the position between its kept neighbours where the two
     chords fit best, in order, for up to `passes` passes (fewer if nothing moves). Each move can only
     lower the error. keep is sorted and modified in place; returns the number of passes made."""

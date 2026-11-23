@@ -6,13 +6,17 @@ optional guards. rank() and Ranking are its steps, for experimental/; not part o
 import datetime
 import warnings
 from dataclasses import dataclass, field
+from typing import overload
 
 import numpy as np
+import numpy.typing as npt
 
 from ._guard import errors_kernel, max_error_kernel
 from ._noise import noise
 from ._rank import rank_kernel, refine_kernel
 from ._refit import refit_kernel
+
+IntervalLike = float | np.timedelta64 | datetime.timedelta
 
 ERROR_AT_A_TENTH = 0.001
 """The default exchange rate of error for points, error_per_point = ERROR_AT_A_TENTH / (n / 10) for n input
@@ -24,7 +28,7 @@ sampling rate (an hour of 10 s scans: 0.1-0.6x as many as of 1 s scans). Better:
 error_per_point = (the RMSE you'd accept) / (at how many points)."""
 
 
-def default_error_per_point(n):
+def default_error_per_point(n: int) -> float:
     """error_per_point when none is given, for n input points: ERROR_AT_A_TENTH at a tenth of them."""
     return ERROR_AT_A_TENTH / (max(int(n), 1) / 10)
 
@@ -55,7 +59,7 @@ class Pruned:
     max_points_met: bool
     """At most max_points were kept: False only when the points around gaps alone exceed it."""
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.times)
 
 
@@ -103,30 +107,36 @@ class Ranking:
         return len(self._required)
 
     @property
-    def required(self):
+    def required(self) -> np.ndarray:
         """Indices always kept, sorted."""
-        return self._live[self._required]
+        return np.asarray(self._live[self._required])
 
     @property
-    def removed(self):
+    def removed(self) -> np.ndarray:
         """The other keepable indices in removal order: least significant first."""
-        return self._live[self._removed]
+        return np.asarray(self._live[self._removed])
 
-    def relative_rmse(self, k=None):
+    @overload
+    def relative_rmse(self, k: None = None) -> np.ndarray: ...
+
+    @overload
+    def relative_rmse(self, k: int) -> float: ...
+
+    def relative_rmse(self, k: int | None = None) -> float | np.ndarray:
         """Relative RMSE of keeping k points (min_points <= k <= n), or of every count as an array
         indexed by k (nan below min_points)."""
         if k is not None:
-            return float(np.sqrt(max(self._sq_error[self.n - self._clip(k)], 0.0)))
+            return float(np.sqrt(max(float(self._sq_error[self.n - self._clip(k)]), 0.0)))
         e = np.sqrt(np.maximum(self._sq_error, 0.0))
         out = np.full(self.n + 1, np.nan)
         out[self.min_points:] = e[::-1]
         return out
 
-    def top(self, k):
+    def top(self, k: int) -> np.ndarray:
         """Sorted indices of the k most significant points (k is clipped to [min_points, n])."""
-        return self._live[self._top(k)]
+        return np.asarray(self._live[self._top(k)])
 
-    def count(self, error_per_point=None, noise_floor=True):
+    def count(self, error_per_point: float | None = None, noise_floor: bool = True) -> int:
         """The first count k where the relative RMSE falls below error_per_point times the points added
         beyond the required ones: where the error left and the points spent, at that exchange rate,
         meet. More points for a complex block, fewer for a simple one, sublinearly; a fixed rate hardly
@@ -148,62 +158,74 @@ class Ranking:
         ok = np.flatnonzero(e < error_per_point * np.arange(1, len(e) + 1))
         return self.min_points + int(ok[0]) if len(ok) else self.n
 
-    def refine(self, keep, passes=2):
+    def refine(self, keep: npt.ArrayLike, passes: int = 2) -> np.ndarray:
         """keep (sorted indices of at least the required points) with each other point moved to where
         it fits best between its neighbours, `passes` times over: about 10-30% lower error, no longer
         nested. O(n) per pass."""
-        return self._live[self._refine(self._local(keep), passes)]
+        return np.asarray(self._live[self._refine(self._local(keep), passes)])
 
-    def relative_error(self, keep):
+    def relative_error(self, keep: npt.ArrayLike) -> float:
         """Relative time-weighted RMSE of any sorted subset that includes the required points."""
         return self.errors(keep)[0]
 
-    def errors(self, keep, values=None):
+    def errors(self, keep: npt.ArrayLike, values: np.ndarray | None = None) -> tuple[float, float]:
         """(time-weighted RMSE, largest deviation of any point) of the kept points' lines, at `values`
         (from refit()) or their samples, relative to the range."""
-        keep = self._local(keep)
+        local = self._local(keep)
         if not len(self._tau):
             return 0.0, 0.0
-        sq, worst = errors_kernel(self._tau, self._y, keep, self._y[keep] if values is None else values)
+        sq, worst = errors_kernel(self._tau, self._y, local, self._y[local] if values is None else values)
         return float(np.sqrt(sq)), float(worst)
 
-    def select(self, error_per_point=None, max_points=None, max_error=None, noise_floor=True):
+    def select(
+        self,
+        error_per_point: float | None = None,
+        max_points: int | None = None,
+        max_error: float | None = None,
+        noise_floor: bool = True,
+    ) -> tuple[np.ndarray, bool]:
         """(the sorted indices prune() keeps, whether the rmse pass kept all it asked for)."""
         keep, rmse_met = self._select(error_per_point, max_points, max_error, noise_floor)
-        return self._live[keep], rmse_met
+        return np.asarray(self._live[keep]), rmse_met
 
-    def refit(self, keep):
+    def refit(self, keep: npt.ArrayLike) -> np.ndarray:
         """Values (relative to the range, from the minimum) at the kept points whose lines fit the
         input best in time-weighted L2, the required points keeping their samples. O(n)."""
-        keep = self._local(keep)
+        local = self._local(keep)
         if not len(self._tau):
-            return self._y[keep]
+            return np.asarray(self._y[local])
         fixed = np.zeros(self.n, np.bool_)
         fixed[self._required] = True
-        return refit_kernel(self._tau, self._y, keep, fixed)
+        return refit_kernel(self._tau, self._y, local, fixed)
 
     # the same in indices into the keepable points
 
-    def _local(self, keep):
-        return np.searchsorted(self._live, np.asarray(keep, np.int64))
+    def _local(self, keep: npt.ArrayLike) -> np.ndarray:
+        return np.asarray(np.searchsorted(self._live, np.asarray(keep, np.int64)))
 
-    def _clip(self, k):
+    def _clip(self, k: int) -> int:
         return int(min(max(int(k), self.min_points), self.n))
 
-    def _top(self, k):
+    def _top(self, k: int) -> np.ndarray:
         mask = np.ones(self.n, bool)
         mask[self._removed[: self.n - self._clip(k)]] = False
         return np.flatnonzero(mask)
 
-    def _refine(self, keep, passes=2):
-        keep = np.array(keep, dtype=np.int64)
+    def _refine(self, keep: npt.ArrayLike, passes: int = 2) -> np.ndarray:
+        out = np.array(keep, dtype=np.int64)
         if len(self._tau):
             fixed = np.zeros(self.n, np.bool_)
             fixed[self._required] = True
-            refine_kernel(self._tau, self._y, keep, fixed, passes)
-        return keep
+            refine_kernel(self._tau, self._y, out, fixed, passes)
+        return out
 
-    def _select(self, error_per_point, max_points, max_error, noise_floor=True):
+    def _select(
+        self,
+        error_per_point: float | None,
+        max_points: int | None,
+        max_error: float | None,
+        noise_floor: bool = True,
+    ) -> tuple[np.ndarray, bool]:
         cap = self.n if max_points is None else int(max_points)
         wanted = self.count(error_per_point, noise_floor)
         if self.min_points > cap:  # the gaps alone exceed it: they win, and nothing is added
@@ -213,7 +235,7 @@ class Ranking:
             return self._refine(self._top(k)), k == wanted
         tol = max_error / self._span
 
-        def build(k):
+        def build(k: int) -> np.ndarray:
             return max_error_kernel(self._tau, self._y, self._refine(self._top(k)), tol)
 
         # 1. can max_error be met within the cap at all, from the required points alone?
@@ -234,7 +256,7 @@ class Ranking:
                 hi = mid
         return keep, False
 
-    def _relax(self, tol, cap):
+    def _relax(self, tol: float, cap: int) -> np.ndarray:
         """The max_error pass from the required points at about the smallest tolerance above tol that
         fits in cap points (a bisection to 0.1%; its count isn't quite monotone in the tolerance): about
         the tightest bound on every point's error the cap allows."""
@@ -243,7 +265,7 @@ class Ranking:
         best = base
         lo = tol if tol > 0 else hi * 1e-12
         while hi > lo * 1.001:
-            mid = np.sqrt(lo * hi)
+            mid = float(np.sqrt(lo * hi))
             keep = max_error_kernel(self._tau, self._y, base, mid)
             if len(keep) <= cap:
                 hi, best = mid, keep
@@ -252,7 +274,7 @@ class Ranking:
         return best
 
 
-def _offsets(times, n):
+def _offsets(times: npt.ArrayLike, n: int) -> np.ndarray:
     """Times as float64 offsets from the first, validated."""
     t = np.asarray(times)
     if t.shape != (n,):
@@ -267,10 +289,10 @@ def _offsets(times, n):
     tau = np.asarray(t, dtype=np.float64)
     if n and (not np.all(np.isfinite(tau)) or np.any(np.diff(tau) < 0)):
         raise ValueError("times must be finite and non-decreasing")
-    return tau - tau[0] if n else tau
+    return np.asarray(tau - tau[0]) if n else tau
 
 
-def _interval_ids(t, interval):
+def _interval_ids(t: np.ndarray, interval: IntervalLike) -> np.ndarray:
     """Which regular interval each time falls in: floor(t / interval), counted from 0 (the Unix epoch
     for datetime64). interval: a timedelta64 (or datetime.timedelta) for datetime64 or timedelta64
     times, a number in the times' units otherwise."""
@@ -283,25 +305,25 @@ def _interval_ids(t, interval):
         if not step > np.timedelta64(0, "s"):
             raise ValueError("include_regular_intervals must be positive")
         if t.dtype.kind == "M":
-            t = t - np.datetime64(0, np.datetime_data(t.dtype)[0])
-        return t // step
+            t = t - np.datetime64("1970-01-01").astype(t.dtype)
+        return np.asarray(t // step)
     if isinstance(interval, (np.timedelta64, datetime.timedelta)):
         raise TypeError("include_regular_intervals must be a number, in the times' units, for numeric times")
     if not (np.isfinite(interval) and interval > 0):
         raise ValueError("include_regular_intervals must be finite and positive")
     if t.dtype.kind in "iu" and float(interval).is_integer():
         interval = int(interval)  # exact: float64 can't tell nanoseconds apart at epoch scale (3.6e12 for an hour)
-    return np.floor_divide(t, interval)
+    return np.asarray(np.floor_divide(t, interval))
 
 
-def _first(groups):
+def _first(groups: np.ndarray) -> np.ndarray:
     """Positions where a run of equal values in groups starts."""
     if not len(groups):
         return np.empty(0, np.int64)
     return np.flatnonzero(np.concatenate(([True], groups[1:] != groups[:-1])))
 
 
-def _interval_points(t, x, live, interval):
+def _interval_points(t: np.ndarray, x: np.ndarray, live: np.ndarray, interval: IntervalLike) -> np.ndarray:
     """Indices into the input of each regular interval's first keepable point and first minimum and
     maximum of its finite values. O(n)."""
     ids = _interval_ids(t, interval)
@@ -317,7 +339,9 @@ def _interval_points(t, x, live, interval):
     return np.concatenate(out)
 
 
-def rank(times, values, include_regular_intervals=None):
+def rank(
+    times: npt.ArrayLike, values: npt.ArrayLike, include_regular_intervals: IntervalLike | None = None
+) -> Ranking:
     """Rank the points (times[i], values[i]) of a series read as straight lines between them.
 
     times: non-decreasing, datetime64 or numbers (repeated times are allowed: a vertical step).
@@ -343,7 +367,7 @@ def rank(times, values, include_regular_intervals=None):
         if n:
             low, high = int(np.argmin(x)), int(np.argmax(x))
             base[low] = base[high] = True
-            lo, hi = x[low], x[high]
+            lo, hi = float(x[low]), float(x[high])
     else:
         kind = np.where(finite, 0, np.where(np.isnan(x), 1, np.where(x > 0, 2, 3)))
         start = ~finite
@@ -354,7 +378,7 @@ def rank(times, values, include_regular_intervals=None):
         if finite.any():
             fi = np.flatnonzero(finite)
             base[fi[np.argmin(x[fi])]] = base[fi[np.argmax(x[fi])]] = True
-            lo, hi = x[fi].min(), x[fi].max()
+            lo, hi = float(x[fi].min()), float(x[fi].max())
         live = np.flatnonzero(finite | start)  # the inside of a gap is never kept
 
     intervals = 0
@@ -384,8 +408,16 @@ def rank(times, values, include_regular_intervals=None):
                    float(hi - lo), noise(tau, (x - lo) / (hi - lo)), n)
 
 
-def prune(times, values, error_per_point=None, max_points=None, max_error=None, refit=False,
-          noise_floor=True, include_regular_intervals=None):
+def prune(
+    times: npt.ArrayLike,
+    values: npt.ArrayLike,
+    error_per_point: float | None = None,
+    max_points: int | None = None,
+    max_error: float | None = None,
+    refit: bool = False,
+    noise_floor: bool = True,
+    include_regular_intervals: IntervalLike | None = None,
+) -> Pruned:
     """The points to keep of a series read as straight lines between them: a Pruned with their times and
     values, the RMS and largest error they leave, and which of the asks were met.
 

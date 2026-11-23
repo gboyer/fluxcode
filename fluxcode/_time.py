@@ -427,7 +427,7 @@ def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
     Returns:
         Median of the sampled intervals.
     """
-    return sampled_intervals(ticks, scratch_pivots)[CADENCE_SAMPLES // 2]
+    return int(sampled_intervals(ticks, scratch_pivots)[CADENCE_SAMPLES // 2])
 
 
 @njit(inline="always")

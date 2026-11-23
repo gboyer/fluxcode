@@ -586,7 +586,7 @@ def _last_ticks(
     if not block_ids.shape[0]:
         return np.zeros(0, np.int64)
     out_ticks = _block_ticks(parsed, time_columns, block_ids)
-    return out_ticks[parsed.layout.sample_offsets[block_ids + 1] - 1]
+    return np.asarray(out_ticks[parsed.layout.sample_offsets[block_ids + 1] - 1])
 
 
 def _check_spliced_order(

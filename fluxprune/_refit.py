@@ -13,7 +13,7 @@ from numba import njit
 
 
 @njit(cache=True)
-def refit_kernel(tau, y, keep, fixed):
+def refit_kernel(tau: np.ndarray, y: np.ndarray, keep: np.ndarray, fixed: np.ndarray) -> np.ndarray:
     """Values at the kept points (sorted indices; fixed[i] pins point i to y[i]) whose lines fit the
     input best in time-weighted L2. O(n)."""
     k = len(keep)
