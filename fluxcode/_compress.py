@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Compression policy: how a block group's body becomes its zstd frame.
+"""Compression policy: turning an uncompressed block group body into a zstd-framed group.
 
-Which residual layout to use, where zstd blocks end, which zstd levels to try and which
-candidate frame to keep are encoder choices, not format: any frame of the body decodes.
-The optional Rust extension (rust/src/compress.rs) makes the same choices without
-holding the GIL; the constants here are checked against its in tests/test_rust.py.
+Selects between byte-plane and bit-plane residual layouts, optionally inserts zstd block
+flushes between metadata columns and dense residual planes so each plane gets its own
+Huffman table, tries configured zstd compression levels, and keeps the smallest valid frame.
+When installed, the optional Rust extension (``fluxcode_rs``) runs the same policy without
+holding the Python GIL.
 """
 
 import importlib
@@ -18,22 +19,18 @@ from typing import NamedTuple
 import numpy as np
 import zstandard
 
-from . import _bitpacking, _escapes, _format
+from . import _bitpacking, _body, _escapes, _format
 
 RUST_INTERFACE_VERSION: int = 6
-"""Version of the extension interface this code calls (compress_group, pack_group and the
-policy constants).
-
-rust/src/lib.rs exports the same INTERFACE_VERSION; the two are raised together when the
-interface changes.
-"""
+"""Expected ``fluxcode_rs.INTERFACE_VERSION`` matching the positional call signatures below."""
 
 
 def _load_rust() -> ModuleType | None:
-    """Loads the optional Rust accelerator extension module if available.
+    """Loads the optional ``fluxcode_rs`` accelerator if installed and interface-compatible.
 
     Returns:
-        The loaded fluxcode_rs module, or None if unavailable or disabled.
+        The imported ``fluxcode_rs`` module, or None if disabled (``FLUXCODE_RUST=0``),
+        not installed, or built against a different interface version.
     """
     if os.environ.get("FLUXCODE_RUST") == "0":
         return None
@@ -41,7 +38,6 @@ def _load_rust() -> ModuleType | None:
         module = importlib.import_module("fluxcode_rs")
     except ImportError:
         return None
-    # An extension built before this interface (or after it changed) falls back to Python
     if getattr(module, "INTERFACE_VERSION", None) != RUST_INTERFACE_VERSION:
         warnings.warn(
             "the installed fluxcode_rs doesn't match this fluxcode (interface version "
@@ -55,22 +51,17 @@ def _load_rust() -> ModuleType | None:
 
 
 _rust: ModuleType | None = _load_rust()
-"""The optional Rust accelerator (the fluxcode[rust] extra), or None.
-
-It builds a block group's bytes from its rows or from a body without holding the GIL, which
-python-zstandard does inside a block flush. It is None if the extension isn't installed
-or FLUXCODE_RUST=0; block groups are the same either way (rust/README.md).
-"""
+"""Optional Rust accelerator module (``fluxcode[rust]``), or None if unavailable."""
 
 
 class Effort(NamedTuple):
-    """How a block group is compressed at one Params.effort.
+    """Compression policy for a single ``Params.effort`` level.
 
     Attributes:
-        layout: "heuristic" (byte planes when few residuals reach 128, else bit planes, one
-            compression), "best" (both, the smaller kept).
-        flush: Whether a zstd block ends after the columns and each dense residual plane.
-        zstd_levels: The zstd compression levels tried, the smallest frame kept.
+        layout: ``"heuristic"`` (choose byte vs. bit planes from residual width and compress once)
+            or ``"best"`` (compress both layouts and keep the smaller frame).
+        flush: Whether to end a zstd block after the metadata columns and each dense residual plane.
+        zstd_levels: Tuple of zstd compression levels to try, keeping the smallest output.
     """
 
     layout: str
@@ -82,106 +73,94 @@ EFFORTS: dict[int, Effort] = {
     1: Effort("heuristic", False, (1,)),
     2: Effort("heuristic", False, (3,)),
     **dict.fromkeys(range(3, 5), Effort("best", False, (3,))),
-    # Block flushes gain 1.5-2% but hold the GIL inside python-zstandard's flush(): 4 threads
-    # encode 40% slower, so they start above the default (TUNING.md, Effort)
+    # Zstd block flushes hold the GIL in python-zstandard, so they begin above the default effort (4).
     **dict.fromkeys(range(5, 9), Effort("best", True, (3,))),
-    # zstd 9 alone is larger than zstd 3 on about a fifth of block groups (up to 9%): keep both
+    # Level 9 occasionally expands relative to level 3; try both and keep the smaller frame.
     9: Effort("best", True, (3, 9)),
 }
-"""Params.effort to Effort (ENCODER.md §1; the measured size and speed of each are in TUNING.md)."""
+"""Mapping from ``Params.effort`` (1..9) to its ``Effort`` policy."""
 
 BYTE_PLANES_BIT: int = 7
 BYTE_PLANES_MAX_SHARE: float = 0.01
-"""Threshold of the heuristic layout.
-
-It picks byte planes when fewer than BYTE_PLANES_MAX_SHARE of the (zigzagged) residuals
-reach 2^BYTE_PLANES_BIT: narrow residuals, whose high byte is constant and whose low byte
-byte-wise literals model well. Wider ones, even within a byte, compress better as bit
-planes with a zstd block (and Huffman table) per plane (experimental/plane_layout, What
-was adopted).
-"""
+"""Heuristic layout threshold: pick byte planes when fewer than 1% of zigzagged residuals reach 2^7."""
 
 FLUSH_MIN_DENSITY: int = 16
-"""Density threshold for ending a zstd block after a residual plane.
-
-A plane ends a block only if more than 1 / FLUSH_MIN_DENSITY of its bytes are non-zero: a
-block costs tens of bytes of header and table, which a plane that is mostly zero (the
-high planes of small residuals) doesn't repay, and which also slows encoding.
-"""
+"""Minimum non-zero byte fraction (``> 1 / 16``) for a residual plane to earn its own zstd block."""
 
 _local = threading.local()
 
 
-def zstd(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecompressor]:
-    """Retrieves thread-local zstandard compressor and decompressor instances.
+def get_zstd_codecs(level: int = 3) -> tuple[zstandard.ZstdCompressor, zstandard.ZstdDecompressor]:
+    """Returns thread-local ``(compressor, decompressor)`` instances for ``level``.
 
     Args:
-        level: Zstandard compression level for the compressor.
+        level: Zstandard compression level for the returned compressor.
 
     Returns:
-        A tuple of (compressor, decompressor) dedicated to the current thread.
+        Tuple ``(ZstdCompressor, ZstdDecompressor)`` private to the calling thread.
     """
     if not hasattr(_local, "decompressor"):
-        # Separate compressors and decompressor per thread for thread-safety
         _local.decompressor = zstandard.ZstdDecompressor()
         _local.compressors = {}
     if level not in _local.compressors:
-        _local.compressors[level] = zstandard.ZstdCompressor(level=level, write_checksum=False, write_content_size=True)
+        _local.compressors[level] = zstandard.ZstdCompressor(
+            level=level, write_checksum=False, write_content_size=True
+        )
     return _local.compressors[level], _local.decompressor
 
 
-def flush_points(
-    raw_group: np.ndarray, num_blocks: int, offsets: _format.Layout, has_time: bool, byte_planes: bool
+def find_flush_points(
+    body: np.ndarray, num_blocks: int, offsets: _format.BodyLayout, has_time: bool, byte_planes: bool
 ) -> list[int]:
-    """Finds the body offsets where the encoder ends a zstd block.
+    """Computes uncompressed body offsets where zstd blocks should be flushed.
 
-    A block ends after the per-block columns, and after each residual plane (16 bit planes
-    or 2 byte planes) that is dense enough to have statistics of its own. Every zstd block
-    carries its own literal Huffman table, so such a plane is coded with the statistics of
-    its own bytes (about 3% smaller than one block run for typical block groups); the result is
-    still one zstd frame, which any decoder reads unchanged.
+    Flushing after the metadata columns and after each dense residual plane gives each plane
+    its own Huffman table inside a single standard zstd frame.
 
     Args:
-        raw_group: 1D uint8 array of the uncompressed body.
-        num_blocks: Number of blocks.
-        offsets: The blocks' Layout.
-        has_time: Whether the block group has a time axis.
-        byte_planes: Whether the residuals are stored as byte planes.
+        body: 1D uint8 array of uncompressed body bytes.
+        num_blocks: Number of blocks in the group.
+        offsets: The group's ``BodyLayout``.
+        has_time: Whether the group has a time axis.
+        byte_planes: True for 2 byte planes, False for 16 bit planes.
 
     Returns:
-        Strictly increasing offsets, empty for a block group with no residual plane bytes.
+        Strictly increasing list of byte offsets, or an empty list if there are no residuals.
     """
-    start = _format.residual_start(num_blocks, has_time)
-    octets = int(offsets.octet_offsets[-1])
-    plane_bytes, planes = (8 * octets, 2) if byte_planes else (octets, 16)
-    if not octets:
+    # Always cut at the boundary between metadata columns and residual planes, then cut after
+    # each residual plane whose non-zero byte density exceeds 1 / FLUSH_MIN_DENSITY.
+    start = _format.residual_planes_start(num_blocks, has_time)
+    num_plane_bytes = int(offsets.plane_byte_offsets[-1])
+    if not num_plane_bytes:
         return []
+    plane_len, num_planes = (
+        (_format.SAMPLES_PER_PLANE_BYTE * num_plane_bytes, 2) if byte_planes else (num_plane_bytes, 16)
+    )
     points = [start]
-    for plane_idx in range(planes):
-        plane_start = start + plane_idx * plane_bytes
-        if np.count_nonzero(raw_group[plane_start:plane_start + plane_bytes]) * FLUSH_MIN_DENSITY > plane_bytes:
-            points.append(plane_start + plane_bytes)
+    for plane_idx in range(num_planes):
+        plane_start = start + plane_idx * plane_len
+        if np.count_nonzero(body[plane_start : plane_start + plane_len]) * FLUSH_MIN_DENSITY > plane_len:
+            points.append(plane_start + plane_len)
     return points
 
 
-def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int, limit: int | None = None) -> bytes | None:
-    """Compresses a block group body into one zstd frame, ending a block at each cut.
-
-    Every zstd block has its own literal Huffman table, so cutting the body between its
-    columns and planes codes each with its own statistics. The frame is an ordinary one that
-    records the content size.
+def compress_body_with_flushes(
+    body: np.ndarray, cuts: list[int], zstd_level: int, limit: int | None = None
+) -> bytes | None:
+    """Compresses ``body`` into a single zstd frame, flushing a zstd block at each cut offset.
 
     Args:
-        body: 1D uint8 array of the uncompressed body.
-        cuts: Strictly increasing body offsets where a block ends.
-        zstd_level: The zstd compression level.
-        limit: Gives up (None) as soon as the blocks written so far are longer than this: the
-            frame can only grow.
+        body: 1D uint8 array of uncompressed body bytes.
+        cuts: Strictly increasing byte offsets at which to flush zstd blocks.
+        zstd_level: Zstandard compression level.
+        limit: Optional byte budget; aborts early and returns None once emitted bytes exceed this.
 
     Returns:
-        The frame, or None if it would be longer than limit.
+        Compressed zstd frame bytes, or None if the output exceeds ``limit`` before completion.
     """
-    compressor = zstd(zstd_level)[0].compressobj(size=body.shape[0])
+    # Stream slices between consecutive cut offsets into a single zstd frame with explicit
+    # block flushes, checking the running size against `limit` to prune losing candidates early.
+    compressor = get_zstd_codecs(zstd_level)[0].compressobj(size=body.shape[0])
     view = body.data
     parts = []
     written = 0
@@ -199,62 +178,82 @@ def compress_body(body: np.ndarray, cuts: list[int], zstd_level: int, limit: int
     return b"".join(parts)
 
 
-def _smallest_group(
+def select_smallest_group(
     candidates: list[tuple[bool, np.ndarray]],
     num_blocks: int,
     num_samples: int,
-    offsets: _format.Layout,
+    offsets: _format.BodyLayout,
     time_unit: int,
     effort: Effort,
     group_time_step: bool = False,
 ) -> bytes:
-    """Compresses each candidate body at each zstd level and builds the smallest block group.
+    """Compresses all candidate body layouts across ``effort.zstd_levels`` and returns the smallest group.
 
-    Ties favor byte planes (which decode faster without bit transposing), and
-    then lower compression levels.
+    Ties prefer byte planes (faster to decode without bit transposing), then lower zstd levels.
+
+    Args:
+        candidates: List of ``(is_byte_planes, body)`` pairs to evaluate.
+        num_blocks: Number of blocks in the group.
+        num_samples: Total sample count in the group.
+        offsets: The group's ``BodyLayout``.
+        time_unit: ``TimeUnitCode`` integer (0 for no time axis).
+        effort: Active ``Effort`` compression policy.
+        group_time_step: Whether a ``group_time_step`` trailer is appended to each candidate body.
+
+    Returns:
+        Complete compressed block group bytes (8-byte header + winning zstd frame).
     """
+    # Precompute flush cuts if enabled, then evaluate cheaper zstd levels first so any later
+    # flushed candidate can abort early as soon as it exceeds the best frame found so far.
     has_time = time_unit != 0
     levels = effort.zstd_levels
-    # Precompute flush points for candidates if block flushes are enabled
     cuts = {
-        byte_planes: flush_points(body, num_blocks, offsets, has_time, byte_planes) if effort.flush else []
+        byte_planes: find_flush_points(body, num_blocks, offsets, has_time, byte_planes) if effort.flush else []
         for byte_planes, body in candidates
     }
     best: tuple[bytes, int, bool] | None = None
-    # Try cheap compression levels first to establish early-termination limits
     for level_idx, level in enumerate(levels):
         for byte_planes, body in candidates:
+            # Lower rank wins ties: all byte-plane levels outrank all bit-plane levels.
             rank = level_idx if byte_planes else len(levels) + level_idx
             frame: bytes | None
             if effort.flush:
-                # Early cutoff: abort if partial compressed output exceeds best frame so far
                 limit = None if best is None else len(best[0]) - (0 if rank < best[1] else 1)
-                frame = compress_body(body, cuts[byte_planes], level, limit)
+                frame = compress_body_with_flushes(body, cuts[byte_planes], level, limit)
             else:
-                frame = zstd(level)[0].compress(body.data)
-            # Track best frame by size, breaking ties with candidate rank
-            if frame is not None and (best is None or len(frame) < len(best[0])
-                                      or (len(frame) == len(best[0]) and rank < best[1])):
+                frame = get_zstd_codecs(level)[0].compress(body.data)
+            if frame is not None and (
+                best is None or len(frame) < len(best[0]) or (len(frame) == len(best[0]) and rank < best[1])
+            ):
                 best = (frame, rank, byte_planes)
     assert best is not None
-    # Prepend 8-byte block group header to the winning compressed zstd frame
     return _format.pack_header(num_blocks, num_samples, best[2], time_unit, group_time_step) + best[0]
 
 
-def pack(
+def pack_body(
     body: np.ndarray,
-    offsets: _format.Layout,
+    offsets: _format.BodyLayout,
     num_blocks: int,
     num_samples: int,
     effort: Effort,
     time_unit: int,
 ) -> bytes:
-    """Compresses an uncompressed byte-plane body into complete block group bytes.
+    """Factors out any common ``group_time_step`` and compresses a byte-plane body into a block group.
 
-    If the block group has a time axis and its time_start increases and per-block time_step
-    values share a GCD > 1, divides them by that `group_time_step` and appends it as an 8-byte
-    uint64 trailer (header flag bit 4).
+    Args:
+        body: 1D uint8 array of an uncompressed byte-plane body (including escaped-value trailer).
+        offsets: The group's ``BodyLayout``.
+        num_blocks: Number of blocks in the group.
+        num_samples: Total sample count across all blocks.
+        effort: Active ``Effort`` compression policy.
+        time_unit: ``TimeUnitCode`` integer (0 for no time axis).
+
+    Returns:
+        Complete compressed block group bytes (8-byte header + zstd frame).
     """
+    # If timed and all time_start increases and time_steps share a GCD > 1, divide them in a
+    # copy of the body and append the 8-byte uint64 group_time_step trailer. Then dispatch to
+    # Rust if available, or run the Python layout selection and zstd compression.
     has_time = time_unit != 0
     has_group_time_step = False
     if has_time:
@@ -264,57 +263,77 @@ def pack(
             _format.scale_time_columns(body, offsets.sample_offsets, step, True)
             body = np.concatenate([body, np.array([step], np.uint64).view(np.uint8)])
             has_group_time_step = True
-    num_octets = int(offsets.octet_offsets[-1])
-    # Fast path: delegate to Rust extension if available
+    num_plane_bytes = int(offsets.plane_byte_offsets[-1])
     if _rust is not None:
         return _rust.pack_group(  # type: ignore[no-any-return]
-            body, num_blocks, num_samples, num_octets, time_unit, effort.layout, effort.flush,
-            list(effort.zstd_levels), has_group_time_step,
+            body,
+            num_blocks,
+            num_samples,
+            num_plane_bytes,
+            time_unit,
+            effort.layout,
+            effort.flush,
+            list(effort.zstd_levels),
+            has_group_time_step,
         )
 
-    def byte_planes_predicted() -> bool:
-        """Predicts whether byte planes compress better than bit planes."""
-        share = _bitpacking.wide_share(body, num_blocks, num_octets, has_time, BYTE_PLANES_BIT)
+    def predict_byte_planes() -> bool:
+        """Predicts whether byte planes will compress smaller than bit planes."""
+        share = _bitpacking.wide_residual_fraction(body, num_blocks, num_plane_bytes, has_time, BYTE_PLANES_BIT)
         return bool(share < BYTE_PLANES_MAX_SHARE)
 
-    def bit_planes() -> np.ndarray:
-        """Returns the body with its residual region as bit planes."""
-        return _bitpacking.to_bit_planes(body, num_blocks, num_octets, has_time)
+    def as_bit_planes() -> np.ndarray:
+        """Returns a copy of the body with its residual region transposed to 16 bit planes."""
+        return _bitpacking.to_bit_planes(body, num_blocks, num_plane_bytes, has_time)
 
-    # Build candidate layouts according to effort policy
     if effort.layout == "heuristic":
-        candidates = [(True, body)] if byte_planes_predicted() else [(False, bit_planes())]
+        candidates = [(True, body)] if predict_byte_planes() else [(False, as_bit_planes())]
     else:
-        # Order candidates so the predicted winner runs first when flushes allow early cutoff
-        bit_first = effort.flush and not byte_planes_predicted()
-        candidates = [(False, bit_planes()), (True, body)] if bit_first else [(True, body), (False, bit_planes())]
-    return _smallest_group(candidates, num_blocks, num_samples, offsets, time_unit, effort, has_group_time_step)
+        # Run the predicted winner first when block flushes are enabled so early cutoff triggers sooner.
+        bit_first = effort.flush and not predict_byte_planes()
+        candidates = [(False, as_bit_planes()), (True, body)] if bit_first else [(True, body), (False, as_bit_planes())]
+    return select_smallest_group(candidates, num_blocks, num_samples, offsets, time_unit, effort, has_group_time_step)
 
 
-def compress(rows: _format.GroupRows, num_samples: int, effort: Effort, time_unit: int) -> bytes:
-    """Serializes block group rows and builds the block group: header plus zstd frame of the body.
+def compress_columns(columns: _format.EncodedBlockColumns, num_samples: int, effort: Effort, time_unit: int) -> bytes:
+    """Serializes ``EncodedBlockColumns`` into a body and compresses it into a block group.
 
     Args:
-        rows: The block group's rows (time_rows None for a block group without a time axis).
-        num_samples: Sample count recorded in the header (the sum of the block sizes).
-        effort: How to compress (Params.effort).
-        time_unit: Time unit code recorded in the header (0 without a time axis).
+        columns: In-memory encoded block columns (``time_columns`` is None when untimed).
+        num_samples: Total sample count recorded in the header.
+        effort: Active ``Effort`` compression policy.
+        time_unit: ``TimeUnitCode`` integer (0 for no time axis).
 
     Returns:
-        The block group bytes.
+        Complete compressed block group bytes (8-byte header + zstd frame).
     """
-    if _rust is not None and rows.time_rows is None:
+    # Untimed groups can take the zero-copy Rust fast path directly from columnar arrays.
+    if _rust is not None and columns.time_columns is None:
         return _rust.compress_group(  # type: ignore[no-any-return]
-            rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
-            rows.codes, rows.escapes, effort.layout, effort.flush, list(effort.zstd_levels),
+            columns.block_flags,
+            columns.block_sizes,
+            columns.grid_exponents,
+            columns.grid_scales,
+            columns.block_anchors,
+            columns.residuals,
+            columns.sample_codes,
+            columns.escaped_values,
+            effort.layout,
+            effort.flush,
+            list(effort.zstd_levels),
         )
-    offsets = _format.layout(rows.block_flags, rows.block_sizes)
-
-    # Separate from the encode kernel; fusing measured no gain (PERFORMANCE.md).
-    body = _bitpacking.write_group(
-        rows.block_flags, rows.block_sizes, rows.grid_params, rows.grid_scales, rows.value_anchors, rows.residuals,
-        rows.codes, rows.time_rows, offsets,
+    offsets = _format.compute_body_layout(columns.block_flags, columns.block_sizes)
+    body = _body.write_body(
+        columns.block_flags,
+        columns.block_sizes,
+        columns.grid_exponents,
+        columns.grid_scales,
+        columns.block_anchors,
+        columns.residuals,
+        columns.sample_codes,
+        columns.time_columns,
+        offsets,
     )
-    if rows.escapes.shape[0]:
-        body = np.concatenate([body, _escapes.escape_bytes(rows.escapes)])
-    return pack(body, offsets, rows.block_flags.shape[0], num_samples, effort, time_unit)
+    if columns.escaped_values.shape[0]:
+        body = np.concatenate([body, _escapes.escape_bytes(columns.escaped_values)])
+    return pack_body(body, offsets, columns.block_flags.shape[0], num_samples, effort, time_unit)

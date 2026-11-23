@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Decoding kernels and validation of an uncompressed block group body.
+"""Validation and decoding kernels for an uncompressed block group body.
 
-Decodes a block in a single pass: unshuffling the planes, reversing the zigzag,
-integrating the residuals (modular prefix sums) and dequantizing on the power-of-two or
-decimal grid. Restores non-finite values (canonical quiet NaN and signed infinities)
-when flagged.
+Validates per-block metadata columns (flags, exponents, scales, anchors) and decodes
+requested blocks by unshuffling residual planes, reversing zigzag encoding, integrating
+modular differences, dequantizing onto the block's grid (power-of-two, decimal, or scaled),
+and restoring NaN and escaped samples when flagged.
 """
 
 import math
@@ -15,355 +15,353 @@ from numba import njit
 
 from . import _extreme_magnitudes as xm
 from ._bitpacking import (
-    byte_planes_view,
-    code_planes_view,
-    planes_view,
-    unshuffle_block,
-    unzigzag16,
+    residual_bit_planes_view,
+    residual_byte_planes_view,
+    sample_code_planes_view,
+    unshuffle_residual_block,
+    unzigzag_sample,
 )
 from ._escapes import restore_coded
 from ._format import (
-    BLOCK_FLAG_CODED,
     BLOCK_FLAG_DECIMAL,
     BLOCK_FLAG_IRREGULAR_TIME,
-    BLOCK_FLAG_LONG_TIME,
     BLOCK_FLAG_ORDER,
     BLOCK_FLAG_RESERVED,
+    BLOCK_FLAG_SAMPLE_CODES,
     BLOCK_FLAG_SCALED,
+    BLOCK_FLAG_WIDE_TIME,
     E_MAX,
     E_MIN,
     INDEX_LIMIT,
     P_MAX,
     P_MIN,
+    SAMPLES_PER_PLANE_BYTE,
     SCALE_MASK,
     SCALE_SHIFT,
+    block_anchors_start,
     get_int16,
     get_int64,
     get_uint32,
-    grid_params_start,
-    grid_scale_start,
+    grid_exponents_start,
+    grid_scales_start,
     scale_valid,
-    value_anchor_start,
 )
 
-# Validation statuses of uncompressed block groups (plain ints: numba kernels use them)
-OK: int = 0
-"""Validation status indicating block group headers and parameters are valid."""
+# Validation status codes returned by validate_body_columns (plain ints for Numba).
+VALID_OK: int = 0
+"""All per-block flags, exponents, scales, and anchors are valid."""
 
-BAD_FLAGS: int = 1
-"""Validation status indicating reserved or unsupported bits in a block header."""
+INVALID_FLAGS: int = 1
+"""A block sets reserved or incompatible flag bits."""
 
-BAD_PARAM: int = 2
-"""Validation status indicating an out-of-range exponent or parameter."""
+INVALID_EXPONENT: int = 2
+"""A block's quantization exponent is outside the valid range for its grid type."""
 
-BAD_ANCHOR: int = 3
-"""Validation status indicating a non-finite float anchor or an out-of-range decimal grid index."""
+INVALID_ANCHOR: int = 3
+"""A block's anchor is non-finite (power-of-two) or outside ``(-2^52, 2^52)`` (decimal/scaled)."""
 
-BAD_SCALE: int = 4
-"""Validation status indicating a grid scale on an unscaled block, or a scaled grid's N or D of 0 or
-a D * 10^-p that isn't an exact double."""
-
-
+INVALID_SCALE: int = 4
+"""An unscaled block has a non-zero scale, or a scaled block's ``(exponent, N, D)`` is invalid."""
 
 
 @njit(nogil=True, cache=True)
-def unzigzag(low_bytes: np.ndarray, high_bytes: np.ndarray, out_residuals: np.ndarray) -> None:
-    """Decodes signed residuals (int32 storage) from low and high zigzag byte arrays.
+def unzigzag_bytes(low_bytes: np.ndarray, high_bytes: np.ndarray, out_residuals: np.ndarray) -> None:
+    """Decodes signed residuals (stored in int32) from zigzagged low and high byte arrays.
 
     Args:
-        low_bytes: 1D uint8 array of lower zigzag bytes.
-        high_bytes: 1D uint8 array of upper zigzag bytes.
-        out_residuals: Output 1D int32 array receiving decoded signed residuals.
+        low_bytes: 1D uint8 array of low zigzag bytes.
+        high_bytes: 1D uint8 array of high zigzag bytes.
+        out_residuals: Preallocated 1D int32 array receiving decoded signed 16-bit residuals.
     """
     for sample_idx in range(out_residuals.shape[0]):
-        # Unzigzag little-endian byte pair into signed 16-bit integer
-        out_residuals[sample_idx] = unzigzag16(low_bytes, high_bytes, sample_idx)
+        out_residuals[sample_idx] = unzigzag_sample(low_bytes, high_bytes, sample_idx)
 
 
 @njit(nogil=True, cache=True)
-def integrate(residuals_in_out: np.ndarray, order: int) -> None:
-    """Reconstructs quantized indices by integrating residuals mod 2^16 in-place.
+def integrate_residuals(residuals_in_out: np.ndarray, order: int) -> None:
+    """Reconstructs signed int16 grid indices by integrating residuals mod 2^16 in place.
 
-    Computes `order` successive prefix sums modulo 65536, read as signed 16-bit (SPEC §4).
+    Applies ``order`` successive modular prefix sums and sign-extends the final result into
+    ``[-32768, 32767]``.
 
     Args:
-        residuals_in_out: In-out 1D int32 array containing residuals, modified in-place to hold
-            quantized grid offsets q in [-32768, 32767].
-        order: Difference order (0, 1, 2, or 3).
+        residuals_in_out: 1D int32 array of residuals, overwritten in place with grid indices ``q``.
+        order: Predictor difference order in ``0..3``.
     """
+    # Order 0 residuals are already signed grid indices; orders 1-3 accumulate 1..3 running
+    # sums mod 65536 and map [0..65535] back to signed [-32768..32767].
     num_samples = residuals_in_out.shape[0]
     if order == 0:
-        # Unzigzagged residuals are already signed 16-bit: q = v
         return
     elif order == 1:
-        sum_order1 = np.int32(0)
+        sum1 = np.int32(0)
         for sample_idx in range(num_samples):
-            # First-order prefix sum, mod 2^16
-            sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
-            residuals_in_out[sample_idx] = ((sum_order1 + 32768) & 0xFFFF) - 32768
+            sum1 = (sum1 + residuals_in_out[sample_idx]) & 0xFFFF
+            residuals_in_out[sample_idx] = ((sum1 + 32768) & 0xFFFF) - 32768
     elif order == 2:
-        sum_order1 = np.int32(0)
-        sum_order2 = np.int32(0)
+        sum1 = np.int32(0)
+        sum2 = np.int32(0)
         for sample_idx in range(num_samples):
-            # Second-order double prefix sum mod 2^16
-            sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
-            sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
-            residuals_in_out[sample_idx] = ((sum_order2 + 32768) & 0xFFFF) - 32768
+            sum1 = (sum1 + residuals_in_out[sample_idx]) & 0xFFFF
+            sum2 = (sum2 + sum1) & 0xFFFF
+            residuals_in_out[sample_idx] = ((sum2 + 32768) & 0xFFFF) - 32768
     else:
-        sum_order1 = np.int32(0)
-        sum_order2 = np.int32(0)
-        sum_order3 = np.int32(0)
+        sum1 = np.int32(0)
+        sum2 = np.int32(0)
+        sum3 = np.int32(0)
         for sample_idx in range(num_samples):
-            # Third-order triple prefix sum mod 2^16
-            sum_order1 = (sum_order1 + residuals_in_out[sample_idx]) & 0xFFFF
-            sum_order2 = (sum_order2 + sum_order1) & 0xFFFF
-            sum_order3 = (sum_order3 + sum_order2) & 0xFFFF
-            residuals_in_out[sample_idx] = ((sum_order3 + 32768) & 0xFFFF) - 32768
+            sum1 = (sum1 + residuals_in_out[sample_idx]) & 0xFFFF
+            sum2 = (sum2 + sum1) & 0xFFFF
+            sum3 = (sum3 + sum2) & 0xFFFF
+            residuals_in_out[sample_idx] = ((sum3 + 32768) & 0xFFFF) - 32768
 
 
 @njit(nogil=True, cache=True)
 def dequantize_pow2(
-    quantized_samples: np.ndarray, lower_bound: float, quant_exp: int, out_samples: np.ndarray
+    quantized_samples: np.ndarray, anchor: float, quant_exp: int, out_samples: np.ndarray
 ) -> None:
-    """Reconstructs float64 samples on a power-of-two grid: lower_bound + q * 2^quant_exp.
+    """Reconstructs float64 samples on a power-of-two grid: ``anchor + q * 2^quant_exp``.
 
-    For exponents at or above E_WIDE (971), delegates to an overflow-safe routine that
-    evaluates at half-scale and clamps to DBL_MAX.
+    Delegates to ``dequantize_pow2_wide_exponent`` when ``quant_exp >= E_WIDE`` to avoid
+    intermediate overflow near ``DBL_MAX``.
 
     Args:
-        quantized_samples: 1D int32 array of quantized grid offsets.
-        lower_bound: Anchor of the block: the grid point nearest its minimum (the minimum itself
-            for a constant block or a non-finite snapped anchor); the value for q = 0.
-        quant_exp: Power-of-two quantization exponent.
-        out_samples: Output 1D float64 array receiving reconstructed samples.
+        quantized_samples: 1D int32 array of signed grid indices ``q``.
+        anchor: Block anchor value (the reconstructed value for ``q == 0``).
+        quant_exp: Power-of-two quantization exponent in ``[E_MIN, E_MAX]``.
+        out_samples: Preallocated 1D float64 array receiving reconstructed samples.
     """
-    # Evaluate at half-scale for extreme ranges near DBL_MAX
     if quant_exp >= xm.E_WIDE:
-        xm.dequantize_pow2_wide(quantized_samples, lower_bound, quant_exp, out_samples)
+        xm.dequantize_pow2_wide_exponent(quantized_samples, anchor, quant_exp, out_samples)
         return
-    # Compute power-of-two step size: 2^e
     step_size = math.ldexp(1.0, quant_exp)
     for sample_idx in range(quantized_samples.shape[0]):
-        # Reconstruct the sample: lower_bound + q * step
-        out_samples[sample_idx] = lower_bound + quantized_samples[sample_idx] * step_size
+        out_samples[sample_idx] = anchor + quantized_samples[sample_idx] * step_size
 
 
 @njit(nogil=True, cache=True)
 def dequantize_decimal(
-    quantized_samples: np.ndarray, base_grid_offset: int, decimal_exp: int, out_samples: np.ndarray
+    quantized_samples: np.ndarray, anchor_index: int, decimal_exp: int, out_samples: np.ndarray
 ) -> None:
-    """Reconstructs float64 samples on an exact decimal grid: (base_grid_offset + q) * 10^decimal_exp.
+    """Reconstructs float64 samples on an exact decimal grid: ``(anchor_index + q) * 10^decimal_exp``.
 
-    The result is the double nearest the decimal value, as decimal string parsing gives:
-    the integer is divided by 10^-decimal_exp when the exponent is negative and multiplied
-    by 10^decimal_exp otherwise (both powers of ten are exact doubles).
+    Uses a single IEEE-754 division by ``10^-decimal_exp`` (for negative exponents) or
+    multiplication by ``10^decimal_exp`` (for non-negative exponents) so every result is the
+    nearest float64 to the exact decimal value.
 
     Args:
-        quantized_samples: 1D int32 array of quantized grid offsets.
-        base_grid_offset: Grid index of the block minimum (the block's anchor).
-        decimal_exp: Decimal exponent in [-22, 22].
-        out_samples: Output 1D float64 array receiving reconstructed samples.
+        quantized_samples: 1D int32 array of signed grid indices ``q``.
+        anchor_index: Signed int64 anchor index ``K0`` on the ``10^decimal_exp`` grid.
+        decimal_exp: Decimal exponent in ``[P_MIN, P_MAX]``.
+        out_samples: Preallocated 1D float64 array receiving reconstructed samples.
     """
     if decimal_exp < 0:
-        # Exact integer power of 10 for negative exponents: divide directly
         divisor = 10.0 ** -decimal_exp
         for sample_idx in range(quantized_samples.shape[0]):
-            out_samples[sample_idx] = float(base_grid_offset + quantized_samples[sample_idx]) / divisor
+            out_samples[sample_idx] = float(anchor_index + quantized_samples[sample_idx]) / divisor
     else:
-        # Positive decimal exponent: multiply by exact power of 10
-        multiplier = 10.0 ** decimal_exp
+        multiplier = 10.0**decimal_exp
         for sample_idx in range(quantized_samples.shape[0]):
-            out_samples[sample_idx] = float(base_grid_offset + quantized_samples[sample_idx]) * multiplier
+            out_samples[sample_idx] = float(anchor_index + quantized_samples[sample_idx]) * multiplier
 
 
 @njit(nogil=True, cache=True)
 def dequantize_scaled(
-    quantized_samples: np.ndarray, base_index: int | np.integer, num: int | np.integer, den: int | np.integer,
-    param: int, decimal: bool,
+    quantized_samples: np.ndarray,
+    anchor_index: int | np.integer,
+    scale_num: int | np.integer,
+    scale_den: int | np.integer,
+    exponent: int,
+    decimal: bool,
     out_samples: np.ndarray,
 ) -> None:
-    """Reconstructs float64 samples on a scaled grid: (base_index + num q) * B^param / den.
+    """Reconstructs float64 samples on a scaled rational grid: ``(anchor_index + scale_num * q) * B^exponent / scale_den``.
 
-    The result is the double nearest the rational value, with one rounding: base_index + num q is
-    an exact integer below 2^53; on a decimal grid (param <= 0) it is divided by den * 10^-param,
-    an exact double (check_group); on a power-of-two grid it is scaled by 2^param (exact: param
-    is in [-1022, 970], so the product is a normal double) and divided by den.
+    Evaluates each sample with a single rounding: ``anchor_index + scale_num * q`` is an exact
+    integer below ``2^53``; for decimal grids (``exponent <= 0``) it divides by exact double
+    ``scale_den * 10^-exponent``; for binary grids it scales by exact ``2^exponent`` and divides
+    by ``scale_den``.
 
     Args:
-        quantized_samples: 1D int32 array of quantized grid offsets q.
-        base_index: The anchor K0: the minimum's index on the fine grid B^param / den.
-        num: N, the step in fine grid points.
-        den: D.
-        param: The grid parameter: the decimal power p or the power-of-two exponent e.
-        decimal: Whether B is 10 (block flag bit 2) rather than 2.
-        out_samples: Output 1D float64 array receiving reconstructed samples.
+        quantized_samples: 1D int32 array of signed grid indices ``q``.
+        anchor_index: Signed int64 anchor index ``K0`` on the fine grid ``B^exponent / scale_den``.
+        scale_num: Numerator ``N`` (step in fine grid points).
+        scale_den: Denominator ``D``.
+        exponent: Decimal power ``p`` or power-of-two exponent ``e``.
+        decimal: True for base-10 grid, False for base-2 grid.
+        out_samples: Preallocated 1D float64 array receiving reconstructed samples.
     """
     if decimal:
-        divisor = den * 10.0 ** -param
-        for sample_idx in range(quantized_samples.shape[0]):
-            out_samples[sample_idx] = float(base_index + num * np.int64(quantized_samples[sample_idx])) / divisor
-    else:
-        scale = math.ldexp(1.0, param)
+        divisor = scale_den * 10.0 ** -exponent
         for sample_idx in range(quantized_samples.shape[0]):
             out_samples[sample_idx] = (
-                float(base_index + num * np.int64(quantized_samples[sample_idx])) * scale
-            ) / den
+                float(anchor_index + scale_num * np.int64(quantized_samples[sample_idx])) / divisor
+            )
+    else:
+        scale = math.ldexp(1.0, exponent)
+        for sample_idx in range(quantized_samples.shape[0]):
+            out_samples[sample_idx] = (
+                float(anchor_index + scale_num * np.int64(quantized_samples[sample_idx])) * scale
+            ) / scale_den
 
 
 @njit(nogil=True, cache=True)
-def check_group(raw_group: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
-    """Validates block flags, grid parameters and value anchors across all blocks in a block group.
-
-    Checks, block by block, that the reserved flag bit (7) is zero, that the irregular
-    time bit (4) is set only in block groups with a time axis and the long time bit (5) only with
-    bit 4, that grid parameters fall within the format's limits, and that value anchors
-    are finite floats (power-of-two blocks) or grid indices below 2^52 (decimal or scaled), and
-    that the grid scale is 0 on an unscaled block and valid on a scaled one. An empty block's
-    flags, grid parameter, grid scale and anchor must be 0.
+def validate_body_columns(body: np.ndarray, sample_offsets: np.ndarray, has_time: bool) -> tuple[int, int]:
+    """Validates per-block flags, exponents, scales, and anchors across all blocks in a body.
 
     Args:
-        raw_group: 1D uint8 array containing uncompressed block group bytes.
-        sample_offsets: 1D int64 array of the blocks' sample offsets (num_blocks + 1).
+        body: 1D uint8 array of uncompressed body bytes.
+        sample_offsets: 1D int64 array of cumulative sample offsets (length ``num_blocks + 1``).
         has_time: Whether the block group has a time axis.
 
     Returns:
-        A tuple of (status, failing_block_idx):
-            status: Validation outcome (OK, BAD_FLAGS, BAD_PARAM, BAD_ANCHOR or BAD_SCALE).
-            failing_block_idx: Zero-based index of the first failing block (0 if OK).
+        Tuple ``(status, failing_block_idx)`` where ``status`` is ``VALID_OK`` (with index 0)
+        or one of ``INVALID_FLAGS``, ``INVALID_EXPONENT``, ``INVALID_ANCHOR``, ``INVALID_SCALE``
+        with the first failing block index.
     """
+    # Inspect each block's metadata columns in order: enforce all-zero columns on empty blocks,
+    # reject reserved or inconsistent time flags, then verify scale, exponent, and anchor bounds
+    # according to whether the block uses a scaled, decimal, or power-of-two grid.
     num_blocks = sample_offsets.shape[0] - 1
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
     for block_idx in range(num_blocks):
-        flags = raw_group[block_idx]
-        param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
-        anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
-        scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+        flags = body[block_idx]
+        exponent = int(get_int16(body, grid_exponents_start(num_blocks), num_blocks, block_idx))
+        anchor_bits[0] = get_int64(body, block_anchors_start(num_blocks), num_blocks, block_idx)
+        scale = get_uint32(body, grid_scales_start(num_blocks), num_blocks, block_idx)
         if sample_offsets[block_idx + 1] == sample_offsets[block_idx]:
-            # An empty block stores nothing: its columns are 0
+            # Empty blocks must store zero in all metadata columns.
             if flags:
-                return BAD_FLAGS, block_idx
-            if param_val:
-                return BAD_PARAM, block_idx
+                return INVALID_FLAGS, block_idx
+            if exponent:
+                return INVALID_EXPONENT, block_idx
             if scale:
-                return BAD_SCALE, block_idx
+                return INVALID_SCALE, block_idx
             if anchor_bits[0]:
-                return BAD_ANCHOR, block_idx
+                return INVALID_ANCHOR, block_idx
             continue
-        # Reserved bit 7 must be zero, bit 4 needs a time axis and bit 5 needs bit 4
+        # Reserved bit 7 must be 0; irregular time requires a time axis; wide time requires irregular time.
         irregular_time = flags & BLOCK_FLAG_IRREGULAR_TIME
         if flags & BLOCK_FLAG_RESERVED or (irregular_time and not has_time):
-            return BAD_FLAGS, block_idx
-        if flags & BLOCK_FLAG_LONG_TIME and not irregular_time:
-            return BAD_FLAGS, block_idx
+            return INVALID_FLAGS, block_idx
+        if flags & BLOCK_FLAG_WIDE_TIME and not irregular_time:
+            return INVALID_FLAGS, block_idx
         if flags & BLOCK_FLAG_SCALED:
-            if not scale_valid(flags & BLOCK_FLAG_DECIMAL != 0, param_val, scale & SCALE_MASK, scale >> SCALE_SHIFT):
-                return BAD_SCALE, block_idx
+            if not scale_valid(flags & BLOCK_FLAG_DECIMAL != 0, exponent, scale & SCALE_MASK, scale >> SCALE_SHIFT):
+                return INVALID_SCALE, block_idx
             if not -INDEX_LIMIT < anchor_bits[0] < INDEX_LIMIT:
-                return BAD_ANCHOR, block_idx
+                return INVALID_ANCHOR, block_idx
             continue
         if scale:
-            return BAD_SCALE, block_idx
+            return INVALID_SCALE, block_idx
         if flags & BLOCK_FLAG_DECIMAL:
-            # Check decimal exponent range [-22, 22]
-            if param_val < P_MIN or param_val > P_MAX:
-                return BAD_PARAM, block_idx
+            if exponent < P_MIN or exponent > P_MAX:
+                return INVALID_EXPONENT, block_idx
             if not -INDEX_LIMIT < anchor_bits[0] < INDEX_LIMIT:
-                return BAD_ANCHOR, block_idx
-        # Check power-of-two exponent range [-1074, 1023]
-        elif param_val < E_MIN or param_val > E_MAX:
-            return BAD_PARAM, block_idx
+                return INVALID_ANCHOR, block_idx
+        elif exponent < E_MIN or exponent > E_MAX:
+            return INVALID_EXPONENT, block_idx
         elif not math.isfinite(anchor_float[0]):
-            return BAD_ANCHOR, block_idx
-    return OK, 0
+            return INVALID_ANCHOR, block_idx
+    return VALID_OK, 0
 
 
 @njit(nogil=True, cache=True)
-def decode_group(
-    raw_group: np.ndarray,
+def decode_blocks(
+    body: np.ndarray,
     sample_offsets: np.ndarray,
-    octet_offsets: np.ndarray,
-    code_offsets: np.ndarray,
+    plane_byte_offsets: np.ndarray,
+    code_plane_offsets: np.ndarray,
     block_ids: np.ndarray,
     out_samples: np.ndarray,
     byte_planes: bool,
     has_time: bool,
-    escapes: np.ndarray,
+    escaped_values: np.ndarray,
     escape_offsets: np.ndarray,
 ) -> None:
-    """Decodes the given blocks of an uncompressed body into the output array.
-
-    Each block is unshuffled, unzigzagged, integrated, dequantized and has its non-finite
-    samples restored.
+    """Decodes the requested blocks of an uncompressed body into ``out_samples``.
 
     Args:
-        raw_group: 1D uint8 array of uncompressed body bytes (must pass check_group).
-        sample_offsets: 1D int64 array of sample offsets for each block.
-        octet_offsets: 1D int64 array of 8-sample octet offsets for each block.
-        code_offsets: 1D int64 array of non-finite code plane byte offsets for each block.
-        block_ids: 1D int64 array of the blocks to decode.
-        out_samples: Output 1D float64 array of every sample of the block group: each decoded
-            block's samples are written at its sample offsets (others are left unmodified).
-        byte_planes: Whether the residuals are stored as byte planes (group flags bit 0).
-        has_time: Whether the block group has a time axis (time columns before the residuals).
+        body: 1D uint8 array of uncompressed body bytes (must pass ``validate_body_columns``).
+        sample_offsets: ``BodyLayout.sample_offsets``.
+        plane_byte_offsets: ``BodyLayout.plane_byte_offsets``.
+        code_plane_offsets: ``BodyLayout.code_plane_offsets``.
+        block_ids: 1D int64 array of block indices to decode.
+        out_samples: Preallocated 1D float64 array sized for all samples in the group; only
+            slices belonging to ``block_ids`` are written.
+        byte_planes: True if residual planes are stored as 2 byte planes; False for 16 bit planes.
+        has_time: Whether the body includes time metadata columns before the residuals.
+        escaped_values: 1D float64 array of escaped values from the body trailer.
+        escape_offsets: 1D int64 cumulative offset array into ``escaped_values`` per block.
     """
+    # Preallocate reusable per-block scratch buffers sized to the largest requested block, then
+    # decode each block: unshuffle (if bit-planed) -> unzigzag -> integrate -> dequantize ->
+    # restore NaN and escaped samples.
     num_blocks = sample_offsets.shape[0] - 1
-    num_octets = int(octet_offsets[num_blocks])
-    max_octets = 0
+    num_plane_bytes = int(plane_byte_offsets[num_blocks])
+    max_plane_bytes = 0
     for block_idx in block_ids:
-        max_octets = max(max_octets, octet_offsets[block_idx + 1] - octet_offsets[block_idx])
-    scratch_low_bytes = np.empty(8 * max_octets, np.uint8)
-    scratch_high_bytes = np.empty(8 * max_octets, np.uint8)
-    scratch_residuals = np.empty(8 * max_octets, np.int32)
+        max_plane_bytes = max(max_plane_bytes, plane_byte_offsets[block_idx + 1] - plane_byte_offsets[block_idx])
+    scratch_low_bytes = np.empty(SAMPLES_PER_PLANE_BYTE * max_plane_bytes, np.uint8)
+    scratch_high_bytes = np.empty(SAMPLES_PER_PLANE_BYTE * max_plane_bytes, np.uint8)
+    scratch_residuals = np.empty(SAMPLES_PER_PLANE_BYTE * max_plane_bytes, np.int32)
+    # 1-element int64/float64 view pair to reinterpret raw anchor bits without copying.
     anchor_bits = np.empty(1, np.int64)
     anchor_float = anchor_bits.view(np.float64)
-    # Obtain views into residual and code bit planes
-    bit_planes = planes_view(raw_group, num_blocks, num_octets, has_time)
-    byte_planes_2d = byte_planes_view(raw_group, num_blocks, num_octets, has_time)
-    code_planes = code_planes_view(raw_group, num_blocks, num_octets, int(code_offsets[num_blocks]), has_time)
+    bit_planes = residual_bit_planes_view(body, num_blocks, num_plane_bytes, has_time)
+    byte_planes_2d = residual_byte_planes_view(body, num_blocks, num_plane_bytes, has_time)
+    code_planes = sample_code_planes_view(
+        body, num_blocks, num_plane_bytes, int(code_plane_offsets[num_blocks]), has_time
+    )
     for block_idx in block_ids:
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         if block_len == 0:
             continue
-        flags = raw_group[block_idx]
-        param_val = int(get_int16(raw_group, grid_params_start(num_blocks), num_blocks, block_idx))
-        # Anchor: float64 bits of the grid point nearest the minimum (power-of-two blocks) or the decimal grid index
-        anchor_bits[0] = get_int64(raw_group, value_anchor_start(num_blocks), num_blocks, block_idx)
+        flags = body[block_idx]
+        exponent = int(get_int16(body, grid_exponents_start(num_blocks), num_blocks, block_idx))
+        anchor_bits[0] = get_int64(body, block_anchors_start(num_blocks), num_blocks, block_idx)
         block_residuals = scratch_residuals[:block_len]
-        block_out = out_samples[first_sample:first_sample + block_len]
+        block_out = out_samples[first_sample : first_sample + block_len]
         if byte_planes:
-            # Byte planes: the block's low and high zigzag bytes are contiguous
-            sample_start = 8 * octet_offsets[block_idx]
-            unzigzag(
-                byte_planes_2d[0, sample_start:sample_start + block_len],
-                byte_planes_2d[1, sample_start:sample_start + block_len],
+            # Byte-plane mode: low and high zigzag bytes are already contiguous per block.
+            sample_start = SAMPLES_PER_PLANE_BYTE * plane_byte_offsets[block_idx]
+            unzigzag_bytes(
+                byte_planes_2d[0, sample_start : sample_start + block_len],
+                byte_planes_2d[1, sample_start : sample_start + block_len],
                 block_residuals,
             )
         else:
-            # Gather bit planes into low and high zigzag bytes
-            unshuffle_block(
-                bit_planes, octet_offsets[block_idx], octet_offsets[block_idx + 1] - octet_offsets[block_idx],
-                scratch_low_bytes, scratch_high_bytes,
+            # Bit-plane mode: transpose 16 bit planes back into low/high bytes before unzigzagging.
+            unshuffle_residual_block(
+                bit_planes,
+                plane_byte_offsets[block_idx],
+                plane_byte_offsets[block_idx + 1] - plane_byte_offsets[block_idx],
+                scratch_low_bytes,
+                scratch_high_bytes,
             )
-            # Unzigzag into signed differences
-            unzigzag(scratch_low_bytes, scratch_high_bytes, block_residuals)
-        # Integrate mod 2^16 by predictor order (bits 0-1)
-        integrate(block_residuals, flags & BLOCK_FLAG_ORDER)
-        # Dequantize according to grid type (scaled, decimal or power-of-two)
+            unzigzag_bytes(scratch_low_bytes, scratch_high_bytes, block_residuals)
+        integrate_residuals(block_residuals, flags & BLOCK_FLAG_ORDER)
         if flags & BLOCK_FLAG_SCALED:
-            scale = get_uint32(raw_group, grid_scale_start(num_blocks), num_blocks, block_idx)
+            scale = get_uint32(body, grid_scales_start(num_blocks), num_blocks, block_idx)
             dequantize_scaled(
-                block_residuals, anchor_bits[0], scale & SCALE_MASK, scale >> SCALE_SHIFT, param_val,
-                flags & BLOCK_FLAG_DECIMAL != 0, block_out,
+                block_residuals,
+                anchor_bits[0],
+                scale & SCALE_MASK,
+                scale >> SCALE_SHIFT,
+                exponent,
+                flags & BLOCK_FLAG_DECIMAL != 0,
+                block_out,
             )
         elif flags & BLOCK_FLAG_DECIMAL:
-            dequantize_decimal(block_residuals, anchor_bits[0], param_val, block_out)
+            dequantize_decimal(block_residuals, anchor_bits[0], exponent, block_out)
         else:
-            dequantize_pow2(block_residuals, anchor_float[0], param_val, block_out)
-        # Restore coded samples (NaN and escaped values) from code planes
-        if flags & BLOCK_FLAG_CODED:
+            dequantize_pow2(block_residuals, anchor_float[0], exponent, block_out)
+        if flags & BLOCK_FLAG_SAMPLE_CODES:
             restore_coded(
-                code_planes, code_offsets[block_idx], escapes[escape_offsets[block_idx]:escape_offsets[block_idx + 1]],
+                code_planes,
+                code_plane_offsets[block_idx],
+                escaped_values[escape_offsets[block_idx] : escape_offsets[block_idx + 1]],
                 block_out,
             )

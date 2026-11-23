@@ -87,6 +87,8 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
             missing for integer ticks or given for datetime64, the time unit doesn't match
             stored_unit, or an unsigned tick exceeds int64.
     """
+    # Dispatch on NumPy dtype kind: datetime64 carries its own unit, whereas integer (or empty
+    # float64 from an empty Python list) inputs resolve their unit via time_unit / stored_unit.
     times_array = np.asarray(times)
     if times_array.dtype.kind == "M":
         if time_unit is not None:
@@ -97,7 +99,7 @@ def as_ticks(times: npt.ArrayLike, time_unit: str | None, stored_unit: int = 0) 
         unit_code = _format.TIME_UNIT_CODES[dtype_unit]
         ticks = times_array.view(np.int64)
     elif times_array.dtype.kind in "iu" or (times_array.size == 0 and times_array.dtype.kind == "f"):
-        # An empty list converts to float64: take it as integer ticks
+        # An empty list converts to float64: treat it as empty integer ticks.
         unit_code = time_unit_code(time_unit, stored_unit)
         if times_array.dtype.kind == "u" and times_array.size and int(times_array.max()) > _time.INT64_MAX:
             raise ValueError("integer times must fit in int64")
@@ -268,7 +270,9 @@ def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -
         ValueError: If value has the wrong type, is NaT or time zone aware, isn't a whole
             number of ticks, or doesn't fit int64.
     """
-    # timedelta64 subclasses numpy's signed integer: it isn't a tick count
+    # Accept plain integers directly, or normalize datetime/timedelta/pandas scalars to NumPy
+    # datetime64/timedelta64 and convert to the target unit using exact rational arithmetic.
+    # timedelta64 subclasses np.signedinteger, so exclude it explicitly from the integer path.
     if isinstance(value, (int, np.integer)) and is_int(value) and not isinstance(value, np.timedelta64):
         ticks = int(value)
     else:
@@ -285,15 +289,21 @@ def to_ticks(value: object, time_unit: int, name: str, duration: bool = False) -
         elif isinstance(value, datetime.timedelta) and duration:
             value = np.timedelta64(value, "us")
         if not isinstance(value, np.timedelta64 if duration else np.datetime64):
-            raise ValueError(f"{name} must be a {kind}, a {'timedelta' if duration else 'datetime'} or integer ticks, "
-                             f"got {value!r}")
+            raise ValueError(
+                f"{name} must be a {kind}, a {'timedelta' if duration else 'datetime'} or integer ticks, "
+                f"got {value!r}"
+            )
         if np.isnat(value):
             raise ValueError(f"{name} is NaT")
         source_unit, unit_count = np.datetime_data(value.dtype)
         if source_unit not in _UNIT_NANOSECONDS:
             raise ValueError(f"{name} is in {source_unit}, which isn't a fixed length of time")
-        exact = int(value.view(np.int64)) * unit_count * _UNIT_NANOSECONDS[source_unit] / _UNIT_NANOSECONDS[
-            _format.TIME_UNIT_NAMES[time_unit]]
+        exact = (
+            int(value.view(np.int64))
+            * unit_count
+            * _UNIT_NANOSECONDS[source_unit]
+            / _UNIT_NANOSECONDS[_format.TIME_UNIT_NAMES[time_unit]]
+        )
         if exact.denominator != 1:
             raise ValueError(f"{name} {value} isn't a whole number of {_format.TIME_UNIT_NAMES[time_unit]}")
         ticks = int(exact)
@@ -318,6 +328,8 @@ def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
     Raises:
         ValueError: If the ranges aren't pairs of times, or a range ends before it starts.
     """
+    # Normalize single-pair, iterable-of-pairs, or 2D array input into integer tick pairs,
+    # reject reversed ranges, drop empty ranges, and merge overlapping or adjacent intervals.
     if isinstance(delete_ranges, np.ndarray) and delete_ranges.ndim == 0:
         raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}")
     if isinstance(delete_ranges, np.ndarray):
@@ -327,7 +339,7 @@ def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
             items = list(delete_ranges)
         except TypeError:
             raise ValueError(f"delete_ranges must be (start, end) pairs, got {delete_ranges!r}") from None
-        # One pair of times rather than a sequence of pairs
+        # Distinguish a single (start, end) pair from a sequence of pairs.
         if len(items) == 2 and not any(isinstance(item, (tuple, list, np.ndarray)) for item in items):
             items = [items]
     else:
@@ -342,7 +354,7 @@ def to_ranges(delete_ranges: RangesLike, time_unit: int) -> np.ndarray:
     backwards = np.flatnonzero(ticks[:, 1] < ticks[:, 0])
     if backwards.shape[0]:
         raise ValueError(f"delete range {int(backwards[0])} ends before it starts")
-    # Merge into disjoint ranges: sorted by start, each absorbing those that start inside it
+    # Sort non-empty ranges by start and coalesce any that overlap or touch.
     merged: list[list[int]] = []
     for range_start, range_end in sorted(ticks[ticks[:, 1] > ticks[:, 0]].tolist()):
         if merged and range_start <= merged[-1][1]:

@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Garry Boyer
-"""Overflow-safe operations for subnormal and extreme float64 magnitudes.
+"""Overflow-safe numerical routines for subnormal and extreme IEEE-754 float64 magnitudes.
 
-Provides specialized numerical routines for blocks spanning subnormal ranges,
-ranges near or exceeding 2^1023 (where maximum - minimum overflows float64), and sums
-whose accumulated values exceed float64 capacity. Each routine gives the same
-result as the plain float64 formula wherever that formula doesn't overflow
-(the mean fallback approximately: it sums each sample divided by the count).
+Handles blocks whose dynamic range approaches or exceeds ``2^1023`` (where ``max - min`` or
+``sample - anchor`` overflows float64), whose quantization step is subnormal (where ``2^-e``
+overflows float64), or whose sample sum overflows float64. Each routine matches the standard
+float64 formula wherever that formula does not overflow.
 """
 
 import math
@@ -14,153 +13,141 @@ import math
 import numpy as np
 from numba import njit
 
-WIDE_RANGE: float = 2.0 ** 1023
-"""Range at or above which maximum - minimum may overflow float64 (measured by halves instead)."""
+WIDE_RANGE: float = 2.0**1023
+"""Value span at or above which ``upper_bound - lower_bound`` may overflow float64."""
 
 E_TINY: int = -1023
-"""Exponent below which the inverse quantization step 2^-e overflows float64 (the encoder
-scales in two steps there)."""
+"""Power-of-two exponent below which ``2^-e`` overflows float64 (requires two-stage scaling)."""
 
 E_HUGE: int = 1008
-"""Exponent at or above which sample - minimum can overflow float64."""
+"""Power-of-two exponent at or above which ``sample - anchor`` may overflow float64."""
 
 E_WIDE: int = 971
-"""Decoder exponent at or above which minimum + q * 2^exponent can exceed DBL_MAX."""
+"""Power-of-two exponent at or above which ``anchor + q * 2^e`` may exceed ``DBL_MAX``."""
 
 SCALE_LIMIT: int = 1000
-"""Maximum exponent magnitude for single-step power-of-two scaling."""
+"""Maximum power-of-two exponent magnitude applied in a single scaling pass."""
 
 DBL_MAX: float = float(np.finfo(np.float64).max)
-"""Maximum finite IEEE-754 double-precision floating-point value."""
+"""Largest finite IEEE-754 double-precision value."""
 
 
 @njit(nogil=True, cache=True)
 def half_range(lower_bound: float, upper_bound: float) -> float:
-    """Computes (upper_bound - lower_bound) / 2 without intermediate overflow.
-
-    Halving is exact for any double that isn't subnormal. In a range this wide
-    (used only at or above 2^1023), a subnormal bound is far below the other
-    bound's ulp, so the result is the exact half-range rounded once.
+    """Computes ``(upper_bound - lower_bound) / 2`` without intermediate overflow.
 
     Args:
-        lower_bound: Lower bound of the range.
-        upper_bound: Upper bound of the range.
+        lower_bound: Minimum finite value in the range.
+        upper_bound: Maximum finite value in the range.
 
     Returns:
-        Half of the range as a finite float64.
+        Half of the span as a finite float64.
     """
-    # 0.5 * upper_bound - 0.5 * lower_bound never overflows
+    # Halving each endpoint before subtracting keeps the difference finite even near +/-DBL_MAX.
     return 0.5 * upper_bound - 0.5 * lower_bound
 
 
 @njit(nogil=True, cache=True)
 def mean_by_division(samples: np.ndarray, finite_count: int) -> float:
-    """Computes the arithmetic mean by dividing each finite sample before summing.
+    """Computes the arithmetic mean of finite samples by dividing each term before summing.
 
-    Used when direct summation of samples overflows float64 to +/-inf.
+    Fallback used when direct summation overflows float64 to ``+/-inf``.
 
     Args:
         samples: 1D float64 array of samples.
-        finite_count: Number of finite samples present in samples (must be > 0).
+        finite_count: Number of finite values in ``samples`` (must be > 0).
 
     Returns:
-        Arithmetic mean of the finite samples as a finite float64.
+        Finite float64 arithmetic mean of the finite samples.
     """
     accum_mean = 0.0
     for sample_idx in range(samples.shape[0]):
         if math.isfinite(samples[sample_idx]):
-            # Accumulate pre-divided terms to prevent overflow
             accum_mean += samples[sample_idx] / finite_count
     return accum_mean
 
 
 @njit(nogil=True, cache=True)
 def _scaled(samples: np.ndarray, scale_factor: float) -> np.ndarray:
-    """Multiplies an array by a scalar factor outside fastmath optimizations.
-
-    Compiled without fastmath to prevent LLVM from reassociating multi-step
-    scaling factors into a single overflowing multiplier.
+    """Multiplies ``samples`` by ``scale_factor`` in a separate non-fastmath kernel.
 
     Args:
         samples: 1D float64 array.
-        scale_factor: Finite float64 scale factor.
+        scale_factor: Finite float64 power-of-two multiplier.
 
     Returns:
-        Element-wise product samples * scale_factor.
+        Element-wise product ``samples * scale_factor``.
     """
-    # Preserves separate scaling pass so LLVM does not fold factors
+    # Compiled without fastmath so LLVM cannot reassociate two-stage scaling factors into one
+    # overflowing or subnormal multiplier.
     return samples * scale_factor
 
 
 @njit(nogil=True, cache=True)
 def prescale(samples: np.ndarray, scale_exp: int) -> tuple[np.ndarray, float]:
-    """Splits extreme power-of-two scaling into two safe normal factors.
+    """Splits scaling by ``2^-scale_exp`` into two normal power-of-two factors.
 
-    Used when |scale_exp| > SCALE_LIMIT, where direct evaluation of
-    2^-scale_exp would overflow to infinity or underflow to a subnormal.
+    Used when ``|scale_exp| > SCALE_LIMIT``, where ``2^-scale_exp`` would overflow to infinity
+    or underflow to a subnormal.
 
     Args:
         samples: 1D float64 array.
-        scale_exp: Total power-of-two exponent to scale by.
+        scale_exp: Target exponent such that the desired total factor is ``2^-scale_exp``.
 
     Returns:
-        A tuple (scaled_samples, second_factor) such that
-        scaled_samples * second_factor == samples * 2^-scale_exp.
+        Tuple ``(scaled_samples, second_factor)`` satisfying
+        ``scaled_samples * second_factor == samples * 2^-scale_exp``.
     """
-    # Clamp first stage to +/-1000 to keep scale factor normal
+    # Apply +/-SCALE_LIMIT first so both stages use normal powers of two with exact rounding.
     first_exponent = -SCALE_LIMIT if scale_exp > 0 else SCALE_LIMIT
     second_factor = math.ldexp(1.0, -scale_exp - first_exponent)
-    # Apply first scale factor outside fastmath
     scaled_samples = _scaled(samples, math.ldexp(1.0, first_exponent))
     return scaled_samples, second_factor
 
 
 @njit(nogil=True, cache=True)
-def quantize_huge(
-    samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
+def quantize_huge_exponent(
+    samples: np.ndarray, anchor: float, quant_exp: int, out_quantized: np.ndarray
 ) -> None:
-    """Quantizes samples for wide exponents where sample - lower_bound can overflow float64.
+    """Quantizes samples for large exponents where ``sample - anchor`` may overflow float64.
 
-    Evaluates the quantization formula at half-scale:
-    (sample / 2 - lower_bound / 2) * 2^(1 - quant_exp), which rounds exactly as
-    (sample - lower_bound) * 2^-quant_exp does.
+    Evaluates ``floor((sample / 2 - anchor / 2) * 2^(1 - quant_exp) + 0.5)``, which produces
+    the same rounded grid indices as ``(sample - anchor) * 2^-quant_exp`` without overflow.
 
     Args:
         samples: 1D float64 array of samples to quantize.
-        lower_bound: Minimum sample value in the block.
-        quant_exp: Quantization exponent at or above E_HUGE (1008).
-        out_quantized: Output 1D int32 array receiving quantized values.
+        anchor: Block anchor value.
+        quant_exp: Power-of-two quantization exponent (at or above ``E_HUGE``).
+        out_quantized: Preallocated 1D int32 array receiving quantized grid indices.
     """
-    # Step at half-scale: 2^(1 - e) = 2 * 2^-e
+    # Compute the difference at half scale where it cannot overflow, then multiply by 2^(1 - e).
     half_scale_factor = math.ldexp(1.0, 1 - quant_exp)
-    half_lower_bound = 0.5 * lower_bound
+    half_anchor = 0.5 * anchor
     for sample_idx in range(samples.shape[0]):
-        # Evaluate the difference at half scale, where it can't overflow
-        scaled_diff = 0.5 * samples[sample_idx] - half_lower_bound
-        out_quantized[sample_idx] = np.int32(math.floor(scaled_diff * half_scale_factor + 0.5))
+        half_diff = 0.5 * samples[sample_idx] - half_anchor
+        out_quantized[sample_idx] = np.int32(math.floor(half_diff * half_scale_factor + 0.5))
 
 
 @njit(nogil=True, cache=True)
-def dequantize_pow2_wide(
-    quantized_samples: np.ndarray, lower_bound: float, quant_exp: int, out_samples: np.ndarray
+def dequantize_pow2_wide_exponent(
+    quantized_samples: np.ndarray, anchor: float, quant_exp: int, out_samples: np.ndarray
 ) -> None:
-    """Dequantizes samples for wide exponents where lower_bound + q * 2^quant_exp can exceed DBL_MAX.
+    """Dequantizes power-of-two samples when ``anchor + q * 2^quant_exp`` could exceed ``DBL_MAX``.
 
-    Evaluates the reconstruction at half-scale and clamps to DBL_MAX to prevent
-    rounding to infinity. Preserves lower_bound exactly when q is zero.
+    Evaluates the reconstruction at half scale and clamps to ``[-DBL_MAX, DBL_MAX]``, while
+    preserving ``anchor`` verbatim when ``q == 0``.
 
     Args:
-        quantized_samples: 1D int32 array of quantized integers.
-        lower_bound: Anchor of the block (grid point nearest its minimum; the minimum for exempt blocks).
-        quant_exp: Quantization exponent at or above E_WIDE (971).
-        out_samples: Output 1D float64 array receiving reconstructed samples.
+        quantized_samples: 1D int32 array of quantized grid indices ``q``.
+        anchor: Block anchor value (the reconstructed value for ``q == 0``).
+        quant_exp: Power-of-two quantization exponent (at or above ``E_WIDE``).
+        out_samples: Preallocated 1D float64 array receiving reconstructed samples.
     """
-    # Half-step 2^(e - 1) avoids intermediate overflow of q * 2^e
+    # Use half-step 2^(e - 1) and half-anchor so intermediate products stay finite, then double
+    # and clamp to +/-DBL_MAX. Preserve anchor directly at q == 0 in case anchor is subnormal.
     half_step_size = math.ldexp(1.0, quant_exp - 1)
-    half_lower_bound = 0.5 * lower_bound
+    half_anchor = 0.5 * anchor
     for sample_idx in range(quantized_samples.shape[0]):
         grid_offset = quantized_samples[sample_idx]
-        # Reconstruct at half-scale and clamp to maximum finite double
-        reconstructed_val = max(min(2.0 * (half_lower_bound + grid_offset * half_step_size), DBL_MAX), -DBL_MAX)
-        # Keep the lower bound exact when q == 0 (halving may round a subnormal)
-        out_samples[sample_idx] = lower_bound if grid_offset == 0 else reconstructed_val
+        reconstructed = max(min(2.0 * (half_anchor + grid_offset * half_step_size), DBL_MAX), -DBL_MAX)
+        out_samples[sample_idx] = anchor if grid_offset == 0 else reconstructed
