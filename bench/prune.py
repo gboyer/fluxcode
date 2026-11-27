@@ -34,9 +34,15 @@ def signals(n, rng):
     walk = np.cumsum(rng.normal(0, 0.01, n))
     period = 60 + 20 * np.sin(2 * np.pi * s / 7200)
     return {
-        "smooth + noise": np.round(20 + 3 * np.sin(2 * np.pi * s / 86_400) + walk + rng.normal(0, 0.03, n), 2),
+        "smooth + noise": np.round(
+            20 + 3 * np.sin(2 * np.pi * s / 86_400) + walk + rng.normal(0, 0.03, n), 2
+        ),
         "random walk + noise": np.cumsum(rng.normal(0, 0.1, n)) + rng.normal(0, 1, n),
-        "steps": np.round(np.repeat(rng.uniform(0, 100, n // 600 + 1), 600)[:n] + rng.normal(0, 0.05, n), 1),
+        "steps": np.round(
+            np.repeat(rng.uniform(0, 100, n // 600 + 1), 600)[:n]
+            + rng.normal(0, 0.05, n),
+            1,
+        ),
         "white noise": rng.normal(0, 1, n),
         "vibration": 6 * np.sin(np.cumsum(2 * np.pi / period)) + rng.normal(0, 0.3, n),
     }
@@ -49,7 +55,9 @@ def calls(t, x):
         "rank": lambda: rank(t, x),
         "prune": lambda: fluxprune.prune(t, x),
         "max_error": lambda: fluxprune.prune(t, x, max_error=tol),
-        "max_error + cap": lambda: fluxprune.prune(t, x, max_error=tol, max_points=n // 100),
+        "max_error + cap": lambda: fluxprune.prune(
+            t, x, max_error=tol, max_points=n // 100
+        ),
         "refit": lambda: fluxprune.prune(t, x, refit=True),
     }
 
@@ -68,7 +76,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=5)
     args = ap.parse_args()
-    warnings.filterwarnings("ignore", message="prune: max_error")  # white noise: max_error is below it on purpose
+    warnings.filterwarnings(
+        "ignore", message="prune: max_error"
+    )  # white noise: max_error is below it on purpose
     rng = np.random.default_rng(0)
     start = time.time()
     rows = []
@@ -77,13 +87,20 @@ def main():
         for name, x in signals(n, rng).items():
             todo = calls(t, x)
             times = {key: best(call, args.reps) for key, call in todo.items()}
-            kept = {key: len(todo[key]()) for key in ("prune", "max_error", "max_error + cap")}
+            kept = {
+                key: len(todo[key]())
+                for key in ("prune", "max_error", "max_error + cap")
+            }
             rows.append((n, name, times, kept))
-            print(n, name, {k: f"{1e3 * v:.2f} ms" for k, v in times.items()}, flush=True)
+            print(
+                n, name, {k: f"{1e3 * v:.2f} ms" for k, v in times.items()}, flush=True
+            )
 
     power = ""
     if sys.platform == "darwin":
-        power = subprocess.run(["pmset", "-g", "ps"], capture_output=True, text=True, check=False).stdout
+        power = subprocess.run(
+            ["pmset", "-g", "ps"], capture_output=True, text=True, check=False
+        ).stdout
     source = "AC power" if "AC Power" in power else "power source unknown or battery"
     lines = [
         f"# fluxprune speed (bench/prune.py, {time.strftime('%Y-%m-%d')}, {source})",

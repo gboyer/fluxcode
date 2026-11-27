@@ -33,7 +33,7 @@ def main():
     values = X.ravel()
     ticks = np.arange(values.size, dtype=np.int64) * 1_000_000
     ticks[2500:] += 7_000_000  # one gap: one irregular block
-    plain = fluxcode.encode_group(values).group
+    plain = fluxcode.encode_group(values, block_len=1000).payload
     row = make_time_report.measure(values, ticks, plain, 0, (0.0, 0.0))
     assert row["irregular"].tolist() == [False, False, True, False], row
     x = np.cumsum(rng.normal(size=200))

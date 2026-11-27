@@ -32,7 +32,12 @@ from fluxcode import Params
 from tests._series import decode_series, encode_series
 from tests._signals import HIDDEN_GRIDS, KINDS, MINUTE, discrete_minute, minute
 
-SIGNALS = KINDS + ["sensor-0.1", "random-walk q0.01", "noisy-sine q0.1", "noisy-sine q0.01 via float32"]
+SIGNALS = KINDS + [
+    "sensor-0.1",
+    "random-walk q0.01",
+    "noisy-sine q0.1",
+    "noisy-sine q0.01 via float32",
+]
 EXTRA_SIGNALS = HIDDEN_GRIDS
 """Reported after each table's total, outside it (it stays comparable with earlier runs)."""
 CONFIGS = {
@@ -67,13 +72,14 @@ def best(f, reps):
 def machine():
     try:
         cpu = subprocess.run(
-            ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=False
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True,
+            text=True,
+            check=False,
         ).stdout.strip()
     except OSError:
         cpu = platform.processor()
-    return (
-        f"{cpu}, {platform.system()} {platform.release()}, Python {platform.python_version()}, numpy {np.__version__}"
-    )
+    return f"{cpu}, {platform.system()} {platform.release()}, Python {platform.python_version()}, numpy {np.__version__}"
 
 
 def main():
@@ -118,7 +124,11 @@ def main():
             td, ys = best(
                 lambda groups=groups: fluxcode.decode(groups), a.reps
             )  # one DecodedGroup per block group, as rows are read
-            err = np.abs(np.concatenate([decoded.values for decoded in ys]) - x).reshape(-1, 1000).max(1)
+            err = (
+                np.abs(np.concatenate([decoded.values for decoded in ys]) - x)
+                .reshape(-1, 1000)
+                .max(1)
+            )
             worst = 100 * (err / np.where(hi > lo, hi - lo, 1.0)).max()
             nb = len(lo)
             b = 8 * sum(map(len, groups))
@@ -134,7 +144,9 @@ def main():
 
     threads = [int(t) for t in a.threads.split(",") if t]
     if threads and threads != [1]:
-        print("## Threads (default params; one signal type per task; the kernels release the GIL)\n")
+        print(
+            "## Threads (default params; one signal type per task; the kernels release the GIL)\n"
+        )
         print("| threads | encode MB/s | decode MB/s | encode speedup |")
         print("|---|---|---|---|")
         p = CONFIGS["default"]
@@ -142,10 +154,22 @@ def main():
         base = None
         for t in threads:
             with ThreadPoolExecutor(t) as pool:
-                te, _ = best(lambda: list(pool.map(lambda x: encode_series(x, p), data.values())), a.reps)
-                td, _ = best(lambda: list(pool.map(lambda e: fluxcode.decode(e), encoded.values())), a.reps)
+                te, _ = best(
+                    lambda: list(
+                        pool.map(lambda x: encode_series(x, p), data.values())
+                    ),
+                    a.reps,
+                )
+                td, _ = best(
+                    lambda: list(
+                        pool.map(lambda e: fluxcode.decode(e), encoded.values())
+                    ),
+                    a.reps,
+                )
             base = base or te
-            print(f"| {t} | {total_bytes / 1e6 / te:.0f} | {total_bytes / 1e6 / td:.0f} | {base / te:.1f}x |")
+            print(
+                f"| {t} | {total_bytes / 1e6 / te:.0f} | {total_bytes / 1e6 / td:.0f} | {base / te:.1f}x |"
+            )
 
 
 if __name__ == "__main__":

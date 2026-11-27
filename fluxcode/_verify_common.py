@@ -7,7 +7,9 @@ from typing import NamedTuple
 import numpy as np
 
 TIME_SLACK: float = 1.02
-"""Maximum relative slack above ``time_error * mean_interval`` allowed for rounded timestamps."""
+"""Maximum relative slack above ``time_error * mean_interval`` allowed for rounded
+timestamps.
+"""
 
 NOISE_FLOOR_MIN_SAMPLES: int = 128
 """Blocks with fewer samples than this never have the noise floor applied."""
@@ -20,7 +22,8 @@ class Violation(NamedTuple):
     """A single guarantee violation detected during verification.
 
     Attributes:
-        check: Name of the violated guarantee (see ``fluxcode.verify`` module docstring).
+        check: Name of the violated guarantee (see ``fluxcode.verify`` module
+            docstring).
         block: Zero-based block index, or ``-1`` for group-level violations.
         message: Human-readable explanation of the observed mismatch and bound.
     """
@@ -41,7 +44,9 @@ def same_doubles_mask(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def same_doubles(a: np.ndarray, b: np.ndarray) -> bool:
-    """Returns True if ``a`` and ``b`` have the same shape and match element-wise (NaN == NaN)."""
+    """Returns True if ``a`` and ``b`` have the same shape and match element-wise (NaN
+    == NaN).
+    """
     return a.shape == b.shape and bool(same_doubles_mask(a, b).all())
 
 
@@ -58,13 +63,25 @@ def report_blocks(
     firsts: np.ndarray,
     what: str,
 ) -> None:
-    """Appends up to ``MAX_REPORTED`` block-level violations from precomputed per-block counts."""
+    """Appends up to ``MAX_REPORTED`` block-level violations from precomputed per-block
+    counts.
+    """
     for block_idx in np.flatnonzero(which & (counts > 0))[:MAX_REPORTED].tolist():
-        found.append(Violation(check, block_idx, f"{what}: {counts[block_idx]}, first sample {firsts[block_idx]}"))
+        found.append(
+            Violation(
+                check,
+                block_idx,
+                f"{what}: {counts[block_idx]}, first sample {firsts[block_idx]}",
+            )
+        )
 
 
-def report_samples(found: list[Violation], check: str, bad: np.ndarray, offsets: np.ndarray, what: str) -> None:
-    """Appends up to ``MAX_REPORTED`` block-level violations from a per-sample boolean failure mask."""
+def report_samples(
+    found: list[Violation], check: str, bad: np.ndarray, offsets: np.ndarray, what: str
+) -> None:
+    """Appends up to ``MAX_REPORTED`` block-level violations from a per-sample boolean
+    failure mask.
+    """
     if not bad.any():
         return
     samples = np.flatnonzero(bad)
@@ -72,9 +89,16 @@ def report_samples(found: list[Violation], check: str, bad: np.ndarray, offsets:
     unique_blocks, first = np.unique(blocks, return_index=True)
     counts = np.bincount(blocks - blocks.min())[unique_blocks - blocks.min()]
     for block_idx, sample_idx, count in list(
-        zip(unique_blocks.tolist(), samples[first].tolist(), counts.tolist(), strict=True)
+        zip(
+            unique_blocks.tolist(),
+            samples[first].tolist(),
+            counts.tolist(),
+            strict=True,
+        )
     )[:MAX_REPORTED]:
-        found.append(Violation(check, block_idx, f"{what}: {count}, first sample {sample_idx}"))
+        found.append(
+            Violation(check, block_idx, f"{what}: {count}, first sample {sample_idx}")
+        )
 
 
 def summary(array: np.ndarray, limit: int = 8) -> str:

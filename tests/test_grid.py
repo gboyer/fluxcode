@@ -19,9 +19,13 @@ DBL_MAX = float(np.finfo(np.float64).max)
 
 def encode_block(x, params=RAW):
     """(group, e, anchor) of x as one block."""
-    group = fluxcode.encode_blocks(x, [len(x)], params).group
+    group = fluxcode.encode_blocks(x, [len(x)], params).payload
     rows = group_rows(group)
-    return group, int(rows.grid_exponents[0]), float(rows.block_anchors.view(np.float64)[0])
+    return (
+        group,
+        int(rows.grid_exponents[0]),
+        float(rows.block_anchors.view(np.float64)[0]),
+    )
 
 
 def decode(group):
@@ -39,7 +43,9 @@ def test_minimum_halfway_between_grid_points(e, base):
     x[[0, -1]] = lo, lo + 40_000 * step
     group, got_e, anchor = encode_block(x)
     assert got_e == e
-    assert anchor == np.rint(anchor / step) * step  # a grid point (centered on the block, SPEC §4)
+    assert (
+        anchor == np.rint(anchor / step) * step
+    )  # a grid point (centered on the block, SPEC §4)
     assert decode(group).min() == np.rint(lo / step) * step  # ties to even
     q = np.empty(1000, np.int32)
     _grids.quantize_snapped(x, e, np.rint(lo / step), q)
@@ -58,7 +64,9 @@ def test_fencepost_power_of_two_range():
     k = np.random.default_rng(0).integers(0, 4097, 1000)
     k[:2] = 0, 4096
     x = 1 + k / 4096
-    group, e, _ = encode_block(x, Params(max_quantize_bits=12, noise_floor_sigma=0, grids="binary"))
+    group, e, _ = encode_block(
+        x, Params(max_quantize_bits=12, noise_floor_sigma=0, grids="binary")
+    )
     assert e == -12
     np.testing.assert_array_equal(decode(group), x)
 
@@ -71,7 +79,9 @@ def test_storage_edge_at_16_bits():
     assert _grids.min_exponent_for_span(hi - lo, 16) == -10  # the unsnapped rule fits
     assert _grids.snapped_exponent_for_range(lo, hi, 16) == -9
     x = np.linspace(lo, hi, 1000)
-    group, e, _ = encode_block(x, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=16))
+    group, e, _ = encode_block(
+        x, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=16)
+    )
     assert e == -9
     assert np.abs(decode(group) - x).max() <= 2.0**-10
     rng = np.random.default_rng(1)
@@ -80,7 +90,10 @@ def test_storage_edge_at_16_bits():
         lo = rng.uniform(-3, 3) * step
         hi = lo + (65_535 + rng.uniform(-1, 1)) * step
         e = _grids.snapped_exponent_for_range(lo, hi, 16)
-        assert _grids.quantize_power_of_two(np.array([lo, hi]), lo, hi, e, q) == np.rint(lo / 2.0**e) * 2.0**e
+        assert (
+            _grids.quantize_power_of_two(np.array([lo, hi]), lo, hi, e, q)
+            == np.rint(lo / 2.0**e) * 2.0**e
+        )
         assert q[0] == 0 and q[1] <= 65_535
 
 
@@ -92,14 +105,19 @@ def test_range_exponent_is_never_coarser_than_unsnapped(bits):
     for _ in range(5_000):
         lo = rng.normal() * 10.0 ** rng.integers(-5, 5)
         hi = lo + rng.uniform(0, 1) * 10.0 ** rng.integers(-5, 5)
-        old, new = _grids._unsnapped_exponent_for_range(lo, hi, bits), _grids.snapped_exponent_for_range(lo, hi, bits)
+        old, new = (
+            _grids._unsnapped_exponent_for_range(lo, hi, bits),
+            _grids.snapped_exponent_for_range(lo, hi, bits),
+        )
         assert old - (bits < 16) <= new <= old + (bits == 16)
         limit = 2**bits if bits < 16 else 2**16 - 1
         assert np.rint(hi / 2.0**new) - np.rint(lo / 2.0**new) <= limit
         assert np.rint(hi / 2.0 ** (new - 1)) - np.rint(lo / 2.0 ** (new - 1)) > limit
 
 
-@pytest.mark.parametrize("value", [0.3, -0.3, 1e-310, 5e-324, 1e300, -DBL_MAX, DBL_MAX, 123456.789])
+@pytest.mark.parametrize(
+    "value", [0.3, -0.3, 1e-310, 5e-324, 1e300, -DBL_MAX, DBL_MAX, 123456.789]
+)
 @pytest.mark.parametrize("size", [1, 5, 1000])
 def test_constant_blocks_decode_exactly(value, size):
     """Range 0: e is only a placeholder, so the anchor is the value itself."""
@@ -123,7 +141,9 @@ def _blocks(rng):
 
 
 @pytest.mark.parametrize(
-    "params", [RAW, Params(), Params(max_quantize_bits=9, grids="binary")], ids=["raw", "default", "9 bits"]
+    "params",
+    [RAW, Params(), Params(max_quantize_bits=9, grids="binary")],
+    ids=["raw", "default", "9 bits"],
 )
 def test_decoded_values_are_fixed_points(params):
     """decode(encode(y)) == y bit for bit for y = decode(encode(x)), wherever the re-encode
@@ -176,7 +196,13 @@ def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
         for bits in range(15, 4, -1):
             previous_e = e
             group, e, _ = encode_block(
-                y, Params(noise_floor_sigma=0, grids="binary", min_quantize_bits=1, max_quantize_bits=bits)
+                y,
+                Params(
+                    noise_floor_sigma=0,
+                    grids="binary",
+                    min_quantize_bits=1,
+                    max_quantize_bits=bits,
+                ),
             )
             halvings_only &= e - previous_e <= 1
             y = decode(group)
@@ -186,7 +212,9 @@ def test_successive_halvings_stay_within_two_thirds_of_the_final_step():
             if e - first_e <= 2:
                 np.testing.assert_array_equal(y, np.rint(first / step) * step)
             worst = max(worst, moved if halvings_only else 0.0)
-    assert worst > 0.6  # the compounding is real: once from the first decode would be at most 1/2
+    assert (
+        worst > 0.6
+    )  # the compounding is real: once from the first decode would be at most 1/2
 
 
 START = np.datetime64("2026-03-01T12:00", "ms")
@@ -198,10 +226,17 @@ def test_straddling_updates_keep_a_bounded_error():
     min and max (range 1-4x): the kept samples' error stays under one step of the coarsest grid
     the block used, and doesn't change at all while the step doesn't."""
     rng = np.random.default_rng(9)
-    t = START + np.arange(1000) * np.timedelta64(10, "ms")  # 100 samples per one-second block
+    t = START + np.arange(1000) * np.timedelta64(
+        10, "ms"
+    )  # 100 samples per one-second block
     x = np.cumsum(rng.normal(size=1000))
-    group = fluxcode.encode_time_blocks(x, t, RAW, start_time=START, block_duration=SECOND).group
-    lo, hi = START + 5 * SECOND + np.timedelta64(500, "ms"), START + 6 * SECOND  # second half of block 5
+    group = fluxcode.encode_time_blocks(
+        x, t, RAW, start_time=START, block_duration=SECOND
+    ).payload
+    lo, hi = (
+        START + 5 * SECOND + np.timedelta64(500, "ms"),
+        START + 6 * SECOND,
+    )  # second half of block 5
     kept = (t >= START + 5 * SECOND) & (t < lo)
     replaced = (t >= lo) & (t < hi)
     original = x[kept]
@@ -211,8 +246,14 @@ def test_straddling_updates_keep_a_bounded_error():
         center, spread = x[kept].mean(), np.ptp(x[kept])
         new = center + rng.uniform(-2, 2) * spread * rng.uniform(0.5, 2, replaced.sum())
         group = fluxcode.update_time_blocks(
-            group, new, t[replaced], RAW, delete_ranges=[(lo, hi)], start_time=START, block_duration=SECOND
-        ).group
+            group,
+            new,
+            t[replaced],
+            RAW,
+            delete_ranges=[(lo, hi)],
+            start_time=START,
+            block_duration=SECOND,
+        ).payload
         e = int(group_rows(group).grid_exponents[5])
         y = decode(group)[kept]
         steps.append(2.0**e)
@@ -234,7 +275,9 @@ def test_a_coarse_binary_grid_beats_a_finer_decimal_one(step, target):
     x[0] = 3 * step  # an odd multiple: the coarsest grid is the step itself
     group, e, anchor = encode_block(x, Params(target_bits_per_sample=target))
     assert not group_rows(group).block_flags[0] & BLOCK_FLAG_DECIMAL
-    assert e == int(np.log2(step)) and anchor == np.rint(anchor / step) * step  # a grid point
+    assert (
+        e == int(np.log2(step)) and anchor == np.rint(anchor / step) * step
+    )  # a grid point
     np.testing.assert_array_equal(decode(group), x)
 
 
@@ -249,7 +292,9 @@ def test_the_coarse_binary_grid_can_be_coarser_than_the_data_step():
 @pytest.mark.parametrize(("den", "p"), [(5, -1), (1, 0), (100, -2)])
 def test_decimal_grids_that_are_not_binary_stay_decimal(den, p):
     """0.2, odd integers and cents: no power-of-two grid coarser than 10^p holds them."""
-    k = np.cumsum(np.random.default_rng(4).integers(-9, 10, 1000)) * 2 + 1  # odd: not on 2
+    k = (
+        np.cumsum(np.random.default_rng(4).integers(-9, 10, 1000)) * 2 + 1
+    )  # odd: not on 2
     x = k / den if den > 1 else k.astype(np.float64)
     # Steps of up to 18 integers: the floor (ENCODER §5.2) would take the integers' own grid; off here
     group, _, _ = encode_block(x, Params(noise_floor_sigma=0))
@@ -262,7 +307,11 @@ def test_the_target_coarsens_past_a_coarse_binary_grid():
     """A 0.25-grid walk of about 11 bits/sample, capped at 6: stored at -2, the target coarsens it past
     that (counting from the planned exponent, so decoded data re-encodes to itself) within half a step."""
     x = np.round(np.cumsum(np.random.default_rng(6).normal(0, 300, 1000)) * 4) / 4
-    exact, e0, _ = encode_block(x, Params(noise_floor_sigma=0))  # a walk this wide is floored first
-    capped, e1, _ = encode_block(x, Params(noise_floor_sigma=0, target_bits_per_sample=6))
+    exact, e0, _ = encode_block(
+        x, Params(noise_floor_sigma=0)
+    )  # a walk this wide is floored first
+    capped, e1, _ = encode_block(
+        x, Params(noise_floor_sigma=0, target_bits_per_sample=6)
+    )
     assert e0 == -2 and e1 > e0 and len(capped) < len(exact)
     assert np.max(np.abs(decode(capped) - x)) <= 2.0 ** (e1 - 1)

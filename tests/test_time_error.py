@@ -28,15 +28,21 @@ def jittered(num_samples, period=MS, jitter=0.01, seed=0, start=START):
     return np.maximum.accumulate(ticks)
 
 
-def encoded_ticks(values, ticks, time_error, **kwargs):
+def encoded_ticks(values, ticks, time_error, block_len=1000, **kwargs):
     group = fluxcode.encode_group(
-        values, Params(noise_floor_sigma=0, time_error=time_error), times=ticks.view("datetime64[ns]"), **kwargs
-    ).group
+        values,
+        Params(noise_floor_sigma=0, time_error=time_error),
+        block_len=block_len,
+        times=ticks.view("datetime64[ns]"),
+        **kwargs,
+    ).payload
     return group, fluxcode.decode_group(group).times.view(np.int64)
 
 
 def irregular_blocks(group):
-    return int(np.count_nonzero(group_rows(group).block_flags & BLOCK_FLAG_IRREGULAR_TIME))
+    return int(
+        np.count_nonzero(group_rows(group).block_flags & BLOCK_FLAG_IRREGULAR_TIME)
+    )
 
 
 def assert_keeps_to_the_time_error(given, decoded, block_sizes, time_error):
@@ -50,13 +56,17 @@ def assert_keeps_to_the_time_error(given, decoded, block_sizes, time_error):
             continue
         moves = np.abs(got - raw)
         mean = (raw[-1] - raw[0]) / (raw.size - 1)
-        assert moves.max() <= time_error * _time_rounding.TIME_ERROR_SLACK * mean + 1e-6, (first, moves.max(), mean)
+        assert (
+            moves.max() <= time_error * _time_rounding.TIME_ERROR_SLACK * mean + 1e-6
+        ), (first, moves.max(), mean)
         gaps = np.diff(raw).astype(np.float64)
         own = np.minimum(np.append(np.inf, gaps), np.append(gaps, np.inf))
         assert np.count_nonzero(moves > time_error * own) <= raw.size // 20, first
 
 
-@pytest.mark.parametrize("time_error", [-0.01, 0.51, float("nan"), float("inf"), True, "0.1"])
+@pytest.mark.parametrize(
+    "time_error", [-0.01, 0.51, float("nan"), float("inf"), True, "0.1"]
+)
 def test_invalid_time_error_is_rejected(time_error):
     with pytest.raises(ValueError, match="time_error"):
         Params(time_error=time_error)
@@ -67,7 +77,11 @@ def test_invalid_time_error_is_rejected(time_error):
     [
         (MS, 0.05, 100_000),
         (MS, 0.1, 200_000),
-        (999_990, 0.1, 200_000),  # the slack: a slightly fast clock keeps the round step
+        (
+            999_990,
+            0.1,
+            200_000,
+        ),  # the slack: a slightly fast clock keeps the round step
         (16_666_667, 0.02, 500_000),
         (MS, 0.5, MS),
         (10, 0.01, 1),
@@ -85,7 +99,9 @@ def test_times_move_by_at_most_the_time_error(jitter, time_error, period):
     ticks = jittered(5000, period, jitter, seed=int(jitter * 1000))
     group, decoded = encoded_ticks(np.zeros(ticks.size), ticks, time_error)
     assert (np.diff(decoded) >= 0).all()
-    assert_keeps_to_the_time_error(ticks, decoded, fluxcode.decode_group(group).block_sizes, time_error)
+    assert_keeps_to_the_time_error(
+        ticks, decoded, fluxcode.decode_group(group).block_sizes, time_error
+    )
 
 
 def test_a_jittered_clock_rounds_onto_its_grid():
@@ -136,7 +152,9 @@ def rate_change():
 def test_blocks_with_different_quanta_stay_in_order():
     ticks, sizes = rate_change()
     params = Params(noise_floor_sigma=0, time_error=0.05)
-    group = fluxcode.encode_blocks(np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")).group
+    group = fluxcode.encode_blocks(
+        np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")
+    ).payload
     decoded = fluxcode.decode_group(group).times.view(np.int64)
     assert (np.diff(decoded) >= 0).all()
     # The fast block is regular, so it keeps its times; the slower block's last is lowered to it
@@ -149,9 +167,15 @@ def test_bulk_encode_keeps_block_groups_in_order():
     ticks, _ = rate_change()
     params = Params(noise_floor_sigma=0, time_error=0.05)
     groups = fluxcode.encode(
-        np.zeros(ticks.size), params, block_len=200, blocks_per_group=1, times=ticks.view("datetime64[ns]")
-    ).groups
-    decoded = np.concatenate([fluxcode.decode_group(g).times.view(np.int64) for g in groups])
+        np.zeros(ticks.size),
+        params,
+        block_len=200,
+        blocks_per_group=1,
+        times=ticks.view("datetime64[ns]"),
+    ).payloads
+    decoded = np.concatenate(
+        [fluxcode.decode_group(g).times.view(np.int64) for g in groups]
+    )
     assert (np.diff(decoded) >= 0).all() and np.abs(decoded - ticks).max() <= 50_000
 
 
@@ -159,14 +183,20 @@ def test_update_resending_a_block_is_clamped_to_its_stored_neighbour():
     ticks, sizes = rate_change()
     params = Params(noise_floor_sigma=0, time_error=0.05)
     values = np.arange(ticks.size, dtype=np.float64)
-    group = fluxcode.encode_blocks(values, sizes, params, times=ticks.view("datetime64[ns]")).group
+    group = fluxcode.encode_blocks(
+        values, sizes, params, times=ticks.view("datetime64[ns]")
+    ).payload
     fresh = fluxcode.decode_group(group)
-    updated = fluxcode.update(group, {1: values[200:]}, params, times={1: ticks[200:].view("datetime64[ns]")}).group
+    updated = fluxcode.update(
+        group, {1: values[200:]}, params, times={1: ticks[200:].view("datetime64[ns]")}
+    ).payload
     decoded = fluxcode.decode_group(updated)
     np.testing.assert_array_equal(decoded.times, fresh.times)
     np.testing.assert_array_equal(decoded.values, fresh.values)
     # And the other way: block 0 again, ending above the stored block 1's start
-    updated = fluxcode.update(group, {0: values[:200]}, params, times={0: ticks[:200].view("datetime64[ns]")}).group
+    updated = fluxcode.update(
+        group, {0: values[:200]}, params, times={0: ticks[:200].view("datetime64[ns]")}
+    ).payload
     decoded = fluxcode.decode_group(updated).times.view(np.int64)
     assert (np.diff(decoded) >= 0).all() and np.abs(decoded - ticks).max() <= 50_000
 
@@ -174,10 +204,16 @@ def test_update_resending_a_block_is_clamped_to_its_stored_neighbour():
 def test_update_still_rejects_a_real_overlap():
     ticks, sizes = rate_change()
     params = Params(noise_floor_sigma=0, time_error=0.05)
-    group = fluxcode.encode_blocks(np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")).group
-    earlier = ticks[200:] - 200_000  # 200 us before block 0's last time: more than either block's move
+    group = fluxcode.encode_blocks(
+        np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")
+    ).payload
+    earlier = (
+        ticks[200:] - 200_000
+    )  # 200 us before block 0's last time: more than either block's move
     with pytest.raises(ValueError, match="non-decreasing"):
-        fluxcode.update(group, {1: np.zeros(200)}, params, times={1: earlier.view("datetime64[ns]")})
+        fluxcode.update(
+            group, {1: np.zeros(200)}, params, times={1: earlier.view("datetime64[ns]")}
+        )
 
 
 SECOND = 1000 * MS
@@ -214,18 +250,26 @@ def check_time_blocks(group, start=START):
     """Every block's times lie in its second, its end included (a time rounded up to it)."""
     decoded = fluxcode.decode_group(group)
     ticks = decoded.times.view(np.int64)
-    lows = start + SECOND * np.repeat(np.arange(decoded.block_sizes.size), decoded.block_sizes)
+    lows = start + SECOND * np.repeat(
+        np.arange(decoded.block_sizes.size), decoded.block_sizes
+    )
     assert ((lows <= ticks) & (ticks <= lows + SECOND)).all()
     return decoded, ticks
 
 
 def test_bulk_encode_rejects_a_decrease_between_block_groups_it_doesnt_round():
     """The order check between block groups runs whether or not any block is rounded."""
-    ticks = START + np.arange(40, dtype=np.int64) * SECOND  # on a 1 s grid: nothing to round
+    ticks = (
+        START + np.arange(40, dtype=np.int64) * SECOND
+    )  # on a 1 s grid: nothing to round
     ticks[20:] -= 21 * SECOND  # the second block group starts before the first ends
     with pytest.raises(ValueError, match="non-decreasing"):
         fluxcode.encode(
-            np.zeros(40), Params(time_error=0.05), block_len=20, blocks_per_group=1, times=ticks.view("datetime64[ns]")
+            np.zeros(40),
+            Params(time_error=0.05),
+            block_len=20,
+            blocks_per_group=1,
+            times=ticks.view("datetime64[ns]"),
         )
 
 
@@ -243,10 +287,14 @@ def test_the_block_with_the_larger_quantum_gives_way():
     to the fast block's first time, rather than the fast block's first scans raised to it."""
     ticks, sizes = slow_then_fast()
     params = Params(noise_floor_sigma=0, time_error=0.05)
-    group = fluxcode.encode_blocks(np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")).group
+    group = fluxcode.encode_blocks(
+        np.zeros(ticks.size), sizes, params, times=ticks.view("datetime64[ns]")
+    ).payload
     decoded = fluxcode.decode_group(group).times.view(np.int64)
     assert (np.diff(decoded) >= 0).all()
-    np.testing.assert_array_equal(decoded[20:], ticks[20:])  # the fast block is on its 100 us grid already
+    np.testing.assert_array_equal(
+        decoded[20:], ticks[20:]
+    )  # the fast block is on its 100 us grid already
     assert decoded[19] == ticks[20] and abs(decoded[19] - ticks[19]) <= 50 * MS
 
 
@@ -254,18 +302,23 @@ def test_update_resends_a_fast_block_after_a_regular_stored_one():
     ticks, sizes = slow_then_fast()
     params = Params(noise_floor_sigma=0, time_error=0.05)
     values = np.arange(ticks.size, dtype=np.float64)
-    group = fluxcode.encode_blocks(values, sizes, params, times=ticks.view("datetime64[ns]")).group
+    group = fluxcode.encode_blocks(
+        values, sizes, params, times=ticks.view("datetime64[ns]")
+    ).payload
     for block, part in [(1, np.s_[20:]), (0, np.s_[:20])]:
         updated = fluxcode.update(
-            group, {block: values[part]}, params, times={block: ticks[part].view("datetime64[ns]")}
+            group,
+            {block: values[part]},
+            params,
+            times={block: ticks[part].view("datetime64[ns]")},
         )
-        assert updated.group == group
+        assert updated.payload == group
 
 
 def test_time_blocks_round_whatever_the_start():
     start = START + 123_457  # not a multiple of any quantum
     ticks = at_or_after(jittered(5000, jitter=0.01, seed=9, start=START), start)
-    group = encode_seconds(np.zeros(ticks.size), ticks, start=start).group
+    group = encode_seconds(np.zeros(ticks.size), ticks, start=start).payload
     _, decoded = check_time_blocks(group, start)
     # On the 100 us grid, but for a time that would round below the start (raised to it) or past
     # its block's end (lowered to it): neither is on the grid
@@ -305,12 +358,22 @@ def non_decimal_clock(num_samples, hz, jitter, seed=0):
     period = 1e9 / hz
     rng = np.random.default_rng(seed)
     noise = rng.normal(0, jitter * period, num_samples) if jitter else 0
-    return np.maximum.accumulate(START + 777_777 + np.round(np.arange(num_samples) * period + noise).astype(np.int64))
+    return np.maximum.accumulate(
+        START
+        + 777_777
+        + np.round(np.arange(num_samples) * period + noise).astype(np.int64)
+    )
 
 
 @pytest.mark.parametrize(
     "hz,jitter,time_error",
-    [(1024, 0, 0.05), (1024, 0.005, 0.05), (60, 0.005, 0.1), (30, 0.005, 0.1), (1024, 0.005, 0.1)],
+    [
+        (1024, 0, 0.05),
+        (1024, 0.005, 0.05),
+        (60, 0.005, 0.1),
+        (30, 0.005, 0.1),
+        (1024, 0.005, 0.1),
+    ],
 )
 def test_a_non_decimal_clock_goes_onto_its_own_lattice(hz, jitter, time_error):
     """No 1-2-5 grid divides the period, so on one the intervals alternate; each block fits a lattice
@@ -319,7 +382,9 @@ def test_a_non_decimal_clock_goes_onto_its_own_lattice(hz, jitter, time_error):
     group, decoded = encoded_ticks(np.zeros(ticks.size), ticks, time_error)
     assert irregular_blocks(group) == 0
     assert (np.diff(decoded) >= 0).all()
-    assert_keeps_to_the_time_error(ticks, decoded, fluxcode.decode_group(group).block_sizes, time_error)
+    assert_keeps_to_the_time_error(
+        ticks, decoded, fluxcode.decode_group(group).block_sizes, time_error
+    )
     if jitter:
         exact, _ = encoded_ticks(np.zeros(ticks.size), ticks, 0)
         assert len(group) < len(exact) / 10
@@ -329,22 +394,35 @@ def test_fit_lattice_puts_a_clock_on_its_own_period():
     ticks = non_decimal_clock(1000, 1024, 0)
     max_move = 0.05 * 1e9 / 1024
     out = np.empty_like(ticks)
-    origin, period = _time_rounding.fit_clock_lattice(ticks, 1e9 / 1024, np.int64(50_000), max_move)
-    assert _time_rounding.snap_to_lattice_exact(ticks, origin, period, np.int64(_time.INT64_MIN), out)
-    assert (np.diff(out) == np.diff(out)[0]).all() and _time_rounding.check_within_time_error(
-        ticks, out, 0.05, max_move
-    ) >= 0
+    origin, period = _time_rounding.fit_clock_lattice(
+        ticks, 1e9 / 1024, np.int64(50_000), max_move
+    )
+    assert _time_rounding.snap_to_lattice_exact(
+        ticks, origin, period, np.int64(_time.INT64_MIN), out
+    )
+    assert (
+        np.diff(out) == np.diff(out)[0]
+    ).all() and _time_rounding.check_within_time_error(ticks, out, 0.05, max_move) >= 0
     # A tick further than the largest move fails the check
     late = ticks.copy()
     late[500] += int(2 * max_move)
-    origin, period = _time_rounding.fit_clock_lattice(late, 1e9 / 1024, np.int64(50_000), max_move)
-    assert _time_rounding.snap_to_lattice_exact(late, origin, period, np.int64(_time.INT64_MIN), out)
+    origin, period = _time_rounding.fit_clock_lattice(
+        late, 1e9 / 1024, np.int64(50_000), max_move
+    )
+    assert _time_rounding.snap_to_lattice_exact(
+        late, origin, period, np.int64(_time.INT64_MIN), out
+    )
     assert _time_rounding.check_within_time_error(late, out, 0.05, max_move) == -1
 
 
 def test_a_regular_block_keeps_its_times():
-    ticks = START + 12_345 + np.arange(5000, dtype=np.int64) * MS  # regular, off every grid
-    assert encoded_ticks(np.zeros(ticks.size), ticks, 0.1)[0] == encoded_ticks(np.zeros(ticks.size), ticks, 0)[0]
+    ticks = (
+        START + 12_345 + np.arange(5000, dtype=np.int64) * MS
+    )  # regular, off every grid
+    assert (
+        encoded_ticks(np.zeros(ticks.size), ticks, 0.1)[0]
+        == encoded_ticks(np.zeros(ticks.size), ticks, 0)[0]
+    )
 
 
 def test_update_keeps_the_stored_phase():
@@ -352,13 +430,18 @@ def test_update_keeps_the_stored_phase():
     ticks = jittered(10_000, jitter=0.01, seed=13, start=START + 25_000)
     params = Params(noise_floor_sigma=0, time_error=0.05)
     values = np.arange(ticks.size, dtype=np.float64)
-    group = fluxcode.encode_group(values, params, times=ticks.view("datetime64[ns]")).group
+    group = fluxcode.encode_group(
+        values, params, times=ticks.view("datetime64[ns]"), block_len=1000
+    ).payload
     for block in (1, 5, 9):
         part = np.s_[block * 1000 : (block + 1) * 1000]
         updated = fluxcode.update(
-            group, {block: values[part]}, params, times={block: ticks[part].view("datetime64[ns]")}
+            group,
+            {block: values[part]},
+            params,
+            times={block: ticks[part].view("datetime64[ns]")},
         )
-        assert updated.group == group
+        assert updated.payload == group
 
 
 # Time blocks: a time stays in its block, at the block's end if it rounds up to (or past) it
@@ -366,12 +449,14 @@ def test_update_keeps_the_stored_phase():
 
 def test_a_time_rounding_up_to_its_block_end_stays_in_its_block():
     ticks = at_or_after(jittered(10_000, jitter=0.01, seed=4))
-    group = encode_seconds(np.arange(ticks.size, dtype=np.float64), ticks).group
+    group = encode_seconds(np.arange(ticks.size, dtype=np.float64), ticks).payload
     decoded, decoded_ticks = check_time_blocks(group)
     assert irregular_blocks(group) == 0
     # Blocks hold the samples given in their second; one given just before a second's start is
     # stored at that start, in the earlier block (its last time)
-    np.testing.assert_array_equal(decoded.block_sizes, np.bincount((ticks - START) // SECOND))
+    np.testing.assert_array_equal(
+        decoded.block_sizes, np.bincount((ticks - START) // SECOND)
+    )
     early = (ticks - START) % SECOND > SECOND - 50_000
     assert early.any()
     assert ((decoded_ticks[early] - START) % SECOND == 0).all()
@@ -382,11 +467,14 @@ def test_a_time_rounding_up_to_its_block_end_stays_in_its_block():
 def _block_end_case():
     """A block group whose block holds a time at its end, the next block's start: (group, block, end, kwargs)."""
     ticks = at_or_after(jittered(3000, jitter=0.01, seed=4))
-    group = encode_seconds(np.arange(ticks.size, dtype=np.float64), ticks).group
+    group = encode_seconds(np.arange(ticks.size, dtype=np.float64), ticks).payload
     decoded, decoded_ticks = check_time_blocks(group)
     last = decoded_ticks[np.cumsum(decoded.block_sizes) - 1]
     block = int(np.flatnonzero((last - START) % SECOND == 0)[0])
-    kwargs = {"start_time": np.datetime64(START, "ns"), "block_duration": np.timedelta64(SECOND, "ns")}
+    kwargs = {
+        "start_time": np.datetime64(START, "ns"),
+        "block_duration": np.timedelta64(SECOND, "ns"),
+    }
     return group, block, START + (block + 1) * SECOND, kwargs
 
 
@@ -401,15 +489,24 @@ def _times_and_values(group):
         (None, True),  # an upsert at the end time replaces the stored sample there
         ([(0, 1)], False),  # a range starting at the end time deletes it
         ([(0, SECOND)], False),  # ... and the whole next block
-        ([(-SECOND, 0)], False),  # a range covering the block but not its end keeps the end time
+        (
+            [(-SECOND, 0)],
+            False,
+        ),  # a range covering the block but not its end keeps the end time
         ([(-SECOND // 2, 0)], False),
         ([(-SECOND, 0)], True),  # and an upsert there still replaces it
     ],
 )
-def test_update_time_blocks_reaches_a_time_stored_at_its_block_end(delete_ranges, new_time):
+def test_update_time_blocks_reaches_a_time_stored_at_its_block_end(
+    delete_ranges, new_time
+):
     group, block, end, kwargs = _block_end_case()
     old_ticks, old_values, _ = _times_and_values(group)
-    ranges = None if delete_ranges is None else [(end + a, end + b) for a, b in delete_ranges]
+    ranges = (
+        None
+        if delete_ranges is None
+        else [(end + a, end + b) for a, b in delete_ranges]
+    )
     new_ticks = np.array([end] if new_time else [], np.int64)
     result = fluxcode.update_time_blocks(
         group,
@@ -428,7 +525,7 @@ def test_update_time_blocks_reaches_a_time_stored_at_its_block_end(delete_ranges
         delete_ranges=ranges,
         **kwargs,
     )
-    ticks, values, sizes = _times_and_values(result.group)
+    ticks, values, sizes = _times_and_values(result.payload)
     # Expected by time alone: deleted if a range holds it, replaced if a new sample has its time
     kept = np.ones(old_ticks.size, bool)
     for a, b in ranges or []:
@@ -437,27 +534,41 @@ def test_update_time_blocks_reaches_a_time_stored_at_its_block_end(delete_ranges
     expected = np.concatenate([old_ticks[kept], new_ticks])
     order = np.argsort(expected, kind="stable")
     np.testing.assert_array_equal(ticks, expected[order])
-    np.testing.assert_array_equal(values, np.concatenate([old_values[kept], -np.ones(new_ticks.size)])[order])
+    np.testing.assert_array_equal(
+        values, np.concatenate([old_values[kept], -np.ones(new_ticks.size)])[order]
+    )
     # A new sample at the end time goes to the block its time is in, the next one
     if new_time:
-        assert sizes[block + 1] == np.sum(kept & (old_ticks >= end) & (old_ticks < end + SECOND)) + 1
+        assert (
+            sizes[block + 1]
+            == np.sum(kept & (old_ticks >= end) & (old_ticks < end + SECOND)) + 1
+        )
         assert ticks[np.cumsum(sizes)[block] - 1] < end
 
 
 def test_update_time_blocks_stores_new_times_exactly():
     ticks = at_or_after(jittered(3000, jitter=0.01, seed=8))
     lossy = Params(noise_floor_sigma=0, time_error=0.05)
-    kwargs = {"start_time": np.datetime64(START, "ns"), "block_duration": np.timedelta64(SECOND, "ns")}
-    group = encode_seconds(np.zeros(ticks.size), ticks).group
+    kwargs = {
+        "start_time": np.datetime64(START, "ns"),
+        "block_duration": np.timedelta64(SECOND, "ns"),
+    }
+    group = encode_seconds(np.zeros(ticks.size), ticks).payload
     _, stored = check_time_blocks(group)
     new = np.array([START + SECOND + 500 * MS + 512_345])
     with pytest.raises(ValueError, match="replace_time_blocks"):
-        fluxcode.update_time_blocks(group, np.ones(1), new.view("datetime64[ns]"), lossy, **kwargs)
+        fluxcode.update_time_blocks(
+            group, np.ones(1), new.view("datetime64[ns]"), lossy, **kwargs
+        )
     # Exact params: the new time is kept as given, the stored ones stay
     updated = fluxcode.update_time_blocks(
-        group, np.ones(1), new.view("datetime64[ns]"), Params(noise_floor_sigma=0), **kwargs
+        group,
+        np.ones(1),
+        new.view("datetime64[ns]"),
+        Params(noise_floor_sigma=0),
+        **kwargs,
     )
-    _, after = check_time_blocks(updated.group)
+    _, after = check_time_blocks(updated.payload)
     np.testing.assert_array_equal(np.setdiff1d(after, stored), new)
     # A deletion alone takes any params
     deleted = fluxcode.update_time_blocks(
@@ -468,31 +579,47 @@ def test_update_time_blocks_stores_new_times_exactly():
         delete_ranges=(np.datetime64(START, "ns"), np.datetime64(START + SECOND, "ns")),
         **kwargs,
     )
-    assert deleted.indices.tolist() == [0] and fluxcode.decode_group(deleted.group).block_sizes[0] == 0
+    assert (
+        deleted.indices.tolist() == [0]
+        and fluxcode.decode_group(deleted.payload).block_sizes[0] == 0
+    )
 
 
 def test_replacing_blocks_with_their_source_data_gives_the_block_group_back():
     """Each replaced block continues the clock of the stored block before it, as in the encode."""
     ticks = at_or_after(jittered(10_000, jitter=0.01, seed=21, start=START + 25_000))
     values = np.arange(ticks.size, dtype=np.float64)
-    group = encode_seconds(values, ticks).group
+    group = encode_seconds(values, ticks).payload
     blocks = (ticks - START) // SECOND
     for chosen in ([3], [0, 1], [2, 5, 9], range(10)):
         part = np.isin(blocks, list(chosen))
-        assert replace_seconds(group, chosen, values[part], ticks[part]).group == group
+        assert (
+            replace_seconds(group, chosen, values[part], ticks[part]).payload == group
+        )
 
 
 def test_replace_time_blocks_replaces_only_the_declared_blocks():
     ticks = START + np.arange(5000, dtype=np.int64) * MS
     values = np.arange(ticks.size, dtype=np.float64)
-    group = encode_seconds(values, ticks).group
-    new_ticks = at_or_after(jittered(1000, jitter=0.01, seed=22, start=START + 2 * SECOND), START + 2 * SECOND)
+    group = encode_seconds(values, ticks).payload
+    new_ticks = at_or_after(
+        jittered(1000, jitter=0.01, seed=22, start=START + 2 * SECOND),
+        START + 2 * SECOND,
+    )
     new_ticks = np.minimum(new_ticks, START + 3 * SECOND - 1)
     updated = replace_seconds(group, [2, 4], -np.ones(1000), new_ticks)
     assert updated.indices.tolist() == [2, 4]
-    after, after_ticks = check_time_blocks(updated.group)
-    assert after.block_sizes.tolist() == [1000, 1000, 1000, 1000, 0]  # block 4 got no samples: emptied
-    assert (after.values[2000:3000] == -1).all() and (after.values[:2000] == values[:2000]).all()
+    after, after_ticks = check_time_blocks(updated.payload)
+    assert after.block_sizes.tolist() == [
+        1000,
+        1000,
+        1000,
+        1000,
+        0,
+    ]  # block 4 got no samples: emptied
+    assert (after.values[2000:3000] == -1).all() and (
+        after.values[:2000] == values[:2000]
+    ).all()
     assert (after.values[3000:] == values[3000:4000]).all()
     np.testing.assert_array_equal(after_ticks[:2000], ticks[:2000])
     assert np.abs(after_ticks[2000:3000] - new_ticks).max() <= 51_000
@@ -500,16 +627,22 @@ def test_replace_time_blocks_replaces_only_the_declared_blocks():
 
 def test_replace_time_blocks_appends_and_fills_a_gap():
     ticks = START + np.arange(2000, dtype=np.int64) * MS
-    group = encode_seconds(np.zeros(ticks.size), ticks).group
+    group = encode_seconds(np.zeros(ticks.size), ticks).payload
     later = START + 4 * SECOND + np.arange(1000, dtype=np.int64) * MS
     updated = replace_seconds(group, [4], np.ones(1000), later)
     assert updated.indices.tolist() == [2, 3, 4]
-    assert fluxcode.decode_group(updated.group).block_sizes.tolist() == [1000, 1000, 0, 0, 1000]
+    assert fluxcode.decode_group(updated.payload).block_sizes.tolist() == [
+        1000,
+        1000,
+        0,
+        0,
+        1000,
+    ]
 
 
 def test_replace_time_blocks_rejects_a_time_outside_the_declared_blocks():
     ticks = START + np.arange(3000, dtype=np.int64) * MS
-    group = encode_seconds(np.zeros(ticks.size), ticks).group
+    group = encode_seconds(np.zeros(ticks.size), ticks).payload
     with pytest.raises(ValueError, match="block 2, which blocks doesn't declare"):
         replace_seconds(group, [1], np.zeros(1001), ticks[1000:2001])
     with pytest.raises(ValueError, match="doesn't declare"):
@@ -520,17 +653,17 @@ def test_replace_time_blocks_rejects_a_time_outside_the_declared_blocks():
         replace_seconds(group, [-1], np.zeros(0), ticks[:0])
     with pytest.raises(ValueError, match="non-decreasing"):
         replace_seconds(group, [1], np.zeros(2), ticks[[1001, 1000]])
-    assert replace_seconds(group, [], np.zeros(0), ticks[:0]).group == group
-    untimed = fluxcode.encode_group(np.zeros(10)).group
+    assert replace_seconds(group, [], np.zeros(0), ticks[:0]).payload == group
+    untimed = fluxcode.encode_group(np.zeros(10), block_len=1000).payload
     with pytest.raises(ValueError, match="no time axis"):
         replace_seconds(untimed, [0], np.zeros(0), ticks[:0])
 
 
 def test_replace_time_blocks_fills_an_empty_block_group():
-    group = encode_seconds(np.zeros(0), np.zeros(0, np.int64)).group
+    group = encode_seconds(np.zeros(0), np.zeros(0, np.int64)).payload
     ticks = at_or_after(jittered(2500, jitter=0.01, seed=23))
     updated = replace_seconds(group, range(3), np.zeros(ticks.size), ticks)
-    assert updated.group == encode_seconds(np.zeros(ticks.size), ticks).group
+    assert updated.payload == encode_seconds(np.zeros(ticks.size), ticks).payload
 
 
 def test_a_minute_clock_streamed_by_replacing_the_open_block_equals_the_batch():
@@ -539,14 +672,22 @@ def test_a_minute_clock_streamed_by_replacing_the_open_block_equals_the_batch():
     n = 6000
     clock = (100 + np.arange(n) * 1000 + np.round(rng.normal(0, 5, n))).astype(np.int64)
     for unit, scale in [("us", 1), ("ns", 1000)]:
-        kwargs = {"start_time": 0, "block_duration": 1_000_000 * scale, "time_unit": unit}
+        kwargs = {
+            "start_time": 0,
+            "block_duration": 1_000_000 * scale,
+            "time_unit": unit,
+        }
         ticks, values = clock * scale, np.arange(n, dtype=np.float64)
-        batch = fluxcode.encode_time_blocks(values, ticks, E01, **kwargs).group
-        group = fluxcode.encode_time_blocks(values[:0], ticks[:0], E01, **kwargs).group
+        batch = fluxcode.encode_time_blocks(values, ticks, E01, **kwargs).payload
+        group = fluxcode.encode_time_blocks(
+            values[:0], ticks[:0], E01, **kwargs
+        ).payload
         for end in range(250, n + 1, 250):
             block = int(ticks[end - 1] // (1_000_000 * scale))
             part = np.flatnonzero(ticks[:end] // (1_000_000 * scale) == block)
-            group = fluxcode.replace_time_blocks(group, [block], values[part], ticks[part], E01, **kwargs).group
+            group = fluxcode.replace_time_blocks(
+                group, [block], values[part], ticks[part], E01, **kwargs
+            ).payload
         assert group == batch and not irregular_blocks(group)
 
 
@@ -555,10 +696,16 @@ def test_a_block_continues_the_regular_clock_before_it():
     rng = np.random.default_rng(7)
     second = 1001 * (500 + np.arange(499)) + rng.integers(-20, 21, 499)
     kwargs = {"start_time": 0, "block_duration": 500_500, "time_unit": "us"}
-    first_group = fluxcode.encode_time_blocks(np.zeros(500), ticks, E01, **kwargs).group
+    first_group = fluxcode.encode_time_blocks(
+        np.zeros(500), ticks, E01, **kwargs
+    ).payload
     both = np.concatenate([ticks, second])
-    at_once = fluxcode.encode_time_blocks(np.zeros(both.size), both, E01, **kwargs).group
-    replaced = fluxcode.replace_time_blocks(first_group, [1], np.zeros(499), second, E01, **kwargs).group
+    at_once = fluxcode.encode_time_blocks(
+        np.zeros(both.size), both, E01, **kwargs
+    ).payload
+    replaced = fluxcode.replace_time_blocks(
+        first_group, [1], np.zeros(499), second, E01, **kwargs
+    ).payload
     assert at_once == replaced
     after = us_times(at_once)[500:]
     assert (np.diff(after) == 1001).all() and (after[0] - ticks[-1]) % 1001 == 0
@@ -580,8 +727,11 @@ def us_group(blocks, time_error=0.05):
     ticks = np.concatenate(blocks).astype(np.int64)
     params = Params(noise_floor_sigma=0, time_error=time_error)
     group = fluxcode.encode_blocks(
-        np.zeros(ticks.size), [len(b) for b in blocks], params, times=ticks.view("datetime64[us]")
-    ).group
+        np.zeros(ticks.size),
+        [len(b) for b in blocks],
+        params,
+        times=ticks.view("datetime64[us]"),
+    ).payload
     return ticks, us_times(group), group
 
 
@@ -595,7 +745,9 @@ def test_a_lattice_block_before_an_exact_one_is_put_in_order():
     third = second[-1] + 10 + np.arange(20)  # exactly regular, 1 us
     ticks, decoded, _ = us_group([first, second, third])
     assert (np.diff(decoded) >= 0).all()
-    np.testing.assert_array_equal(decoded[40:], third)  # the exact block keeps its times
+    np.testing.assert_array_equal(
+        decoded[40:], third
+    )  # the exact block keeps its times
     assert_keeps_to_the_time_error(ticks, decoded, [20, 20, 20], 0.05)
 
 
@@ -628,10 +780,16 @@ def test_a_slow_block_after_a_fast_regular_one_still_rounds():
     slow = 19 + 60 * np.arange(1, 21) + rng.integers(-2, 3, 20)
     ticks = np.concatenate([fast, slow])
     params = Params(noise_floor_sigma=0, time_error=0.05)
-    group = fluxcode.encode_blocks(np.zeros(40), [20, 20], params, times=ticks.view("datetime64[s]")).group
+    group = fluxcode.encode_blocks(
+        np.zeros(40), [20, 20], params, times=ticks.view("datetime64[s]")
+    ).payload
     decoded = fluxcode.decode_group(group).times.view(np.int64)
-    alone = fluxcode.encode_blocks(np.zeros(20), [20], params, times=slow.view("datetime64[s]")).group
-    np.testing.assert_array_equal(decoded[20:], fluxcode.decode_group(alone).times.view(np.int64))
+    alone = fluxcode.encode_blocks(
+        np.zeros(20), [20], params, times=slow.view("datetime64[s]")
+    ).payload
+    np.testing.assert_array_equal(
+        decoded[20:], fluxcode.decode_group(alone).times.view(np.int64)
+    )
     assert not np.array_equal(decoded[20:], slow)
 
 
@@ -644,7 +802,9 @@ def test_clamp_boundaries_never_moves_a_tick_further():
         rounded = ticks + rng.integers(-20, 21, ticks.size)
         for first, end in pairwise(offsets):
             rounded[first:end] = np.sort(rounded[first:end])
-        moves = np.array([np.abs(rounded[f:e] - ticks[f:e]).max() for f, e in pairwise(offsets)])
+        moves = np.array(
+            [np.abs(rounded[f:e] - ticks[f:e]).max() for f, e in pairwise(offsets)]
+        )
         before = np.abs(rounded - ticks)
         out = rounded.copy()
         _time_rounding.clamp_block_boundaries(ticks, offsets, moves, out)
@@ -664,7 +824,9 @@ def test_grid_fails_only_on_grids_no_phase_keeps_to_the_error():
             gaps = np.maximum(0, np.round(rng.normal(d, 0.05 * d, block_len)))
         elif kind == "deadband":
             gaps = d * np.where(
-                rng.random(block_len) < 0.05, rng.integers(1, 1000, block_len), rng.integers(1, 20, block_len)
+                rng.random(block_len) < 0.05,
+                rng.integers(1, 1000, block_len),
+                rng.integers(1, 20, block_len),
             )
         else:
             gaps = d * rng.integers(0, 3, block_len)
@@ -677,12 +839,21 @@ def test_grid_fails_only_on_grids_no_phase_keeps_to_the_error():
         quantum = np.int64(_time_rounding.choose_125_step(mean, time_error))
         out = np.empty_like(ticks)
         while quantum > 1:
-            if _time_rounding.grid_cannot_meet_error(ticks, block_len, quantum, time_error):
+            if _time_rounding.grid_cannot_meet_error(
+                ticks, block_len, quantum, time_error
+            ):
                 ruled_out += 1
                 step = max(quantum // _time_rounding.PHASE_STEPS, 1)
                 for phase in range(0, quantum, step):
-                    _time_rounding.snap_to_grid_exact(ticks, quantum, np.int64(phase), out)
-                    assert _time_rounding.check_within_time_error(ticks, out, time_error, max_move) == -1
+                    _time_rounding.snap_to_grid_exact(
+                        ticks, quantum, np.int64(phase), out
+                    )
+                    assert (
+                        _time_rounding.check_within_time_error(
+                            ticks, out, time_error, max_move
+                        )
+                        == -1
+                    )
             quantum = _time_rounding._finer_step(quantum)
     assert ruled_out > 100
 
@@ -707,33 +878,55 @@ def test_lattice_error_matches_rounding_then_checking():
     for _ in range(600):
         block_len = int(rng.integers(3, 300))
         start = int(rng.choice([START, 0, -big + 10**9, big - 10**9]))
-        step = np.int64(rng.choice([2, 5, 100, 2000, 10**4, 5 * 10**4, 976_563, 16_666_667]))
+        step = np.int64(
+            rng.choice([2, 5, 100, 2000, 10**4, 5 * 10**4, 976_563, 16_666_667])
+        )
         # Half steps make ties
         unit = int(step // 2) if rng.random() < 0.3 and step % 2 == 0 else 1
-        ticks = start + unit * np.sort(rng.integers(0, 2 * block_len * max(10**4 // unit, 4), block_len)).astype(
-            np.int64
-        )
+        ticks = start + unit * np.sort(
+            rng.integers(0, 2 * block_len * max(10**4 // unit, 4), block_len)
+        ).astype(np.int64)
         time_error = float(rng.choice([0.01, 0.05, 0.2, 0.5]))
-        low = ticks[0] - np.int64(rng.integers(0, 2 * step)) if rng.random() < 0.5 else np.int64(_time.INT64_MIN)
-        high = ticks[-1] + np.int64(rng.integers(0, 2 * step)) if rng.random() < 0.5 else np.int64(big)
+        low = (
+            ticks[0] - np.int64(rng.integers(0, 2 * step))
+            if rng.random() < 0.5
+            else np.int64(_time.INT64_MIN)
+        )
+        high = (
+            ticks[-1] + np.int64(rng.integers(0, 2 * step))
+            if rng.random() < 0.5
+            else np.int64(big)
+        )
         max_move = time_error * float(ticks[-1] - ticks[0]) / (block_len - 1)
         expected = np.empty_like(ticks)
         if rng.random() < 0.5:  # a grid: the lattice through the rounded first tick
             phase = np.int64(rng.integers(0, step))
-            origin, min_multiple = _time_rounding._round_tick(ticks[0], step, phase), np.int64(_time.INT64_MIN)
+            origin, min_multiple = (
+                _time_rounding._round_tick(ticks[0], step, phase),
+                np.int64(_time.INT64_MIN),
+            )
             _time_rounding.snap_to_grid_exact(ticks, step, phase, expected)
         else:  # a lattice continuing a block that ended before these ticks
-            origin, min_multiple = ticks[0] - np.int64(rng.integers(0, 3 * step)), np.int64(1)
-            assert _time_rounding.snap_to_lattice_exact(ticks, origin, step, min_multiple, expected)
+            origin, min_multiple = (
+                ticks[0] - np.int64(rng.integers(0, 3 * step)),
+                np.int64(1),
+            )
+            assert _time_rounding.snap_to_lattice_exact(
+                ticks, origin, step, min_multiple, expected
+            )
         _time_rounding._clamp(expected, low, high)
-        expected_move = _time_rounding.check_within_time_error(ticks, expected, time_error, max_move)
+        expected_move = _time_rounding.check_within_time_error(
+            ticks, expected, time_error, max_move
+        )
         allowed = np.empty(block_len)
         _time_rounding.compute_tick_allowances(ticks, time_error, allowed)
         out = np.empty_like(ticks)
         move = _time_rounding.snap_and_check_lattice(
             ticks, origin, step, min_multiple, low, high, allowed, max_move, out
         )
-        if move == -2:  # outside the float64 range: the caller rounds in integers and checks
+        if (
+            move == -2
+        ):  # outside the float64 range: the caller rounds in integers and checks
             continue
         checked += 1
         assert move == expected_move
@@ -754,26 +947,35 @@ def test_block_phase_scores_residues_exactly():
     for _ in range(500):
         block_len = int(rng.integers(1, 2000))
         start = int(rng.choice([START, 0, -big + 10**16, big - 10**16]))
-        ticks = start + np.sort(rng.integers(0, int(rng.choice([10, 10**6, 10**12])) * block_len, block_len)).astype(
-            np.int64
+        ticks = start + np.sort(
+            rng.integers(0, int(rng.choice([10, 10**6, 10**12])) * block_len, block_len)
+        ).astype(np.int64)
+        quantum = np.int64(
+            rng.choice([2, 5, 10, 20, 100, 5000, 10**5, 2 * 10**6, 10**9])
         )
-        quantum = np.int64(rng.choice([2, 5, 10, 20, 100, 5000, 10**5, 2 * 10**6, 10**9]))
         previous = (
-            np.int64(_time.INT64_MIN) if rng.random() < 0.3 else np.int64(ticks[0] - rng.integers(0, 10 * quantum))
+            np.int64(_time.INT64_MIN)
+            if rng.random() < 0.3
+            else np.int64(ticks[0] - rng.integers(0, 10 * quantum))
         )
         samples = _time_rounding.sample_phase_ticks(ticks, sampled)
         # The oracle: integer residues, every candidate scored, ties to the first
         residues = [int(t) % int(quantum) for t in samples]
         step = max(int(quantum) // _time_rounding.PHASE_STEPS, 1)
         costs = {
-            phase: sum(min(abs(r - phase), int(quantum) - abs(r - phase)) for r in residues)
+            phase: sum(
+                min(abs(r - phase), int(quantum) - abs(r - phase)) for r in residues
+            )
             for phase in range(0, int(quantum) // step * step, step)
         }
         best = min(costs, key=lambda phase: (costs[phase], phase))
         kept = 0 if previous == _time.INT64_MIN else int(previous) % int(quantum)
         if kept in costs and costs[kept] <= costs[best] + len(residues) * step // 2:
             best = kept
-        assert _time_rounding.choose_grid_phase(samples, quantum, previous, scratch) == best
+        assert (
+            _time_rounding.choose_grid_phase(samples, quantum, previous, scratch)
+            == best
+        )
 
 
 def multi_rate_blocks(rng, block_len):
@@ -785,14 +987,23 @@ def multi_rate_blocks(rng, block_len):
         if kind == "regular":
             gaps = np.full(block_len, d)
         elif kind == "jitter":
-            gaps = np.maximum(0, np.round(rng.normal(d, rng.choice([0.002, 0.01, 0.05]) * d, block_len)))
+            gaps = np.maximum(
+                0,
+                np.round(rng.normal(d, rng.choice([0.002, 0.01, 0.05]) * d, block_len)),
+            )
         elif kind == "poisson":
             gaps = rng.exponential(d, block_len)
         elif kind == "burst":
             gaps = rng.integers(0, 3, block_len)
         else:
             gaps = np.maximum(
-                0, np.diff(np.round(np.arange(block_len + 1) * 976.5625 + rng.normal(0, 3, block_len + 1)))
+                0,
+                np.diff(
+                    np.round(
+                        np.arange(block_len + 1) * 976.5625
+                        + rng.normal(0, 3, block_len + 1)
+                    )
+                ),
             )
         part = t + int(rng.integers(0, 2 * d)) + np.cumsum(gaps.astype(np.int64))
         parts.append(part)
@@ -810,11 +1021,16 @@ def test_multi_rate_blocks_keep_to_the_time_error(seed):
         ticks = multi_rate_blocks(rng, block_len)
         params = Params(noise_floor_sigma=0, time_error=time_error)
         group = fluxcode.encode_group(
-            np.zeros(ticks.size), params, block_len=block_len, times=ticks.view("datetime64[us]")
-        ).group
+            np.zeros(ticks.size),
+            params,
+            block_len=block_len,
+            times=ticks.view("datetime64[us]"),
+        ).payload
         decoded = us_times(group)
         assert (np.diff(decoded) >= 0).all()
-        assert_keeps_to_the_time_error(ticks, decoded, fluxcode.decode_group(group).block_sizes, time_error)
+        assert_keeps_to_the_time_error(
+            ticks, decoded, fluxcode.decode_group(group).block_sizes, time_error
+        )
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -831,29 +1047,43 @@ def test_replaced_time_blocks_keep_to_the_time_error(seed):
     def source_block(block):
         period = int(periods[block])
         ticks = block * duration + np.arange(rng.integers(0, period), duration, period)
-        ticks = ticks + np.round(rng.normal(0, 0.01 * period, ticks.size)).astype(np.int64)
-        return np.maximum.accumulate(np.clip(ticks, block * duration, (block + 1) * duration - 1))
+        ticks = ticks + np.round(rng.normal(0, 0.01 * period, ticks.size)).astype(
+            np.int64
+        )
+        return np.maximum.accumulate(
+            np.clip(ticks, block * duration, (block + 1) * duration - 1)
+        )
 
     source = {block: source_block(block) for block in range(6)}
-    group = fluxcode.encode_time_blocks(np.zeros(0), np.zeros(0, np.int64), params, **kwargs).group
+    group = fluxcode.encode_time_blocks(
+        np.zeros(0), np.zeros(0, np.int64), params, **kwargs
+    ).payload
     for _ in range(25):
         chosen = sorted(set(rng.integers(0, 12, int(rng.integers(1, 4))).tolist()))
         for block in chosen:
-            if block in source and rng.random() < 0.3:  # some samples dropped at the source
+            if (
+                block in source and rng.random() < 0.3
+            ):  # some samples dropped at the source
                 source[block] = source[block][rng.random(source[block].size) < 0.8]
             else:
                 source[block] = source_block(block)
         ticks = np.concatenate([source[block] for block in chosen])
-        group = fluxcode.replace_time_blocks(group, chosen, ticks.astype(np.float64), ticks, params, **kwargs).group
+        group = fluxcode.replace_time_blocks(
+            group, chosen, ticks.astype(np.float64), ticks, params, **kwargs
+        ).payload
     all_ticks = np.concatenate([source[block] for block in sorted(source)])
     decoded = fluxcode.decode_group(group)
     np.testing.assert_array_equal(decoded.values.astype(np.int64), all_ticks)
     sizes = decoded.block_sizes
-    assert_keeps_to_the_time_error(all_ticks, decoded.times.view(np.int64), sizes, time_error)
+    assert_keeps_to_the_time_error(
+        all_ticks, decoded.times.view(np.int64), sizes, time_error
+    )
     # A replaced block continues the stored block before it as it was then: replaced in order,
     # the blocks round as one encode does
-    batch = fluxcode.encode_time_blocks(all_ticks.astype(np.float64), all_ticks, params, **kwargs).group
+    batch = fluxcode.encode_time_blocks(
+        all_ticks.astype(np.float64), all_ticks, params, **kwargs
+    ).payload
     in_order = fluxcode.replace_time_blocks(
         group, sorted(source), all_ticks.astype(np.float64), all_ticks, params, **kwargs
     )
-    assert in_order.group == batch
+    assert in_order.payload == batch

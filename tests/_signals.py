@@ -34,7 +34,11 @@ def minute(kind, seed):
     if kind == "quadratic":
         return (t - t[0]) ** 2 / 1000
     if kind.startswith("sin-"):
-        f = {"sin-4.12hz": np.sqrt(17), "sin-9.87hz": np.pi**2, "sin-50.3hz": 16 * np.pi}[kind]
+        f = {
+            "sin-4.12hz": np.sqrt(17),
+            "sin-9.87hz": np.pi**2,
+            "sin-50.3hz": 16 * np.pi,
+        }[kind]
         return 100 * np.sin(2 * np.pi * f * t / 1000 + ph)
     if kind == "gauss-spikes":
         x = rng.uniform(-10, 10, MINUTE)
@@ -46,18 +50,27 @@ def minute(kind, seed):
         x[rng.integers(0, MINUTE, 180)] += 500
         return x
     if kind == "square-2.24hz":
-        return np.where(np.sin(2 * np.pi * np.sqrt(5) * t / 1000 + ph) >= 0, 100.0, -100.0)
+        return np.where(
+            np.sin(2 * np.pi * np.sqrt(5) * t / 1000 + ph) >= 0, 100.0, -100.0
+        )
     if kind == "random-walk":
         return np.cumsum(rng.normal(0, 1, MINUTE))
-    if kind == "chirp":  # repeating 1-second sweep sqrt(2) -> 32 pi Hz, phase continuous
+    if (
+        kind == "chirp"
+    ):  # repeating 1-second sweep sqrt(2) -> 32 pi Hz, phase continuous
         frac = (np.arange(MINUTE) % 1000) / 1000
         f = np.sqrt(2) + (32 * np.pi - np.sqrt(2)) * frac
         return 100 * np.sin(np.cumsum(2 * np.pi * f / 1000) + ph)
     if kind == "noisy-sine":
-        return 100 * np.sin(2 * np.pi * np.pi**2 * t / 1000 + ph) + rng.normal(0, 5, MINUTE)
+        return 100 * np.sin(2 * np.pi * np.pi**2 * t / 1000 + ph) + rng.normal(
+            0, 5, MINUTE
+        )
     if kind == "sensor-0.1":  # slow drift rounded to 0.1
         return np.round(
-            50 + 5 * np.sin(2 * np.pi * np.sqrt(2) * t / 1000 + ph) + np.cumsum(rng.normal(0, 0.05, MINUTE)), 1
+            50
+            + 5 * np.sin(2 * np.pi * np.sqrt(2) * t / 1000 + ph)
+            + np.cumsum(rng.normal(0, 0.05, MINUTE)),
+            1,
         )
     raise ValueError(kind)
 
@@ -69,14 +82,26 @@ DISCRETE = [
     ("random-walk q0.1", "random-walk", 0.1),
     ("random-walk q2^-4", "random-walk", 2.0**-4),
     ("noisy-sine q0.1", "noisy-sine", 0.1),
-    ("noisy-sine adc12", "noisy-sine", 400 / 4096),  # 12-bit ADC over +-200 engineering units
+    (
+        "noisy-sine adc12",
+        "noisy-sine",
+        400 / 4096,
+    ),  # 12-bit ADC over +-200 engineering units
     ("sin-4.12hz q0.01", "sin-4.12hz", 0.01),
     ("sensor-0.1", "sensor-0.1", 0.1),
-    ("noisy-sine q0.01 via float32", "noisy-sine", 0.01),  # decimal values stored as float32 upstream
+    (
+        "noisy-sine q0.01 via float32",
+        "noisy-sine",
+        0.01,
+    ),  # decimal values stored as float32 upstream
     # Grids a writer doesn't know (scaled grids, ENCODER §5.4)
     ("random-walk q0.05", "random-walk", 0.05),
     ("random-walk q1/3", "random-walk", 1 / 3),
-    ("random-walk adc 10/4095", "random-walk", 10 / 4095),  # ADC counts times a float gain
+    (
+        "random-walk adc 10/4095",
+        "random-walk",
+        10 / 4095,
+    ),  # ADC counts times a float gain
 ]
 
 HIDDEN_GRIDS = [d[0] for d in DISCRETE[-3:]]

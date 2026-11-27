@@ -8,15 +8,18 @@ from contextlib import contextmanager
 import numpy as np
 
 import fluxcode
-from fluxcode import Params, _api, _args, _bitpacking, _compress, _group
+from fluxcode import Params, _args, _bitpacking, _compress, _group
 from tests import _oracle
 
-PER_GROUP = _api.DEFAULT_BLOCKS_PER_GROUP  # the helpers assume the default block group size
+BLOCK_LEN = 1000
+PER_GROUP = 60  # the helpers assume 60 blocks of 1000 samples per group
 
 
 def encode_series(x, params=Params()):
-    groups, mins, maxs, means = fluxcode.encode(x, params)
-    return groups, np.concatenate(mins), np.concatenate(maxs), np.concatenate(means)
+    encoded = fluxcode.encode(
+        x, params, block_len=BLOCK_LEN, blocks_per_group=PER_GROUP
+    )
+    return encoded.payloads, encoded.block_min, encoded.block_max, encoded.block_mean
 
 
 def decode_series(groups):
@@ -38,7 +41,12 @@ def planes(layout, flush=True, zstd_levels=(3,)):
             candidates = [
                 (
                     False,
-                    _bitpacking.to_bit_planes(body, num_blocks, int(offsets.plane_byte_offsets[-1]), time_unit != 0),
+                    _bitpacking.to_bit_planes(
+                        body,
+                        num_blocks,
+                        int(offsets.plane_byte_offsets[-1]),
+                        time_unit != 0,
+                    ),
                 )
             ]
         return _compress.select_smallest_group(
@@ -71,8 +79,12 @@ def gated(x, f=0.25):
     """Per block: did the noise floor coarsen the step? Against the same encode without it: an exact
     coarse power-of-two grid coarsens it too (the index gcd). Decimal detection off: p isn't an
     exponent."""
-    _, param = flags_params(encode_series(x, Params(noise_floor_sigma=f, grids="binary"))[0])
-    _, plain = flags_params(encode_series(x, Params(noise_floor_sigma=0, grids="binary"))[0])
+    _, param = flags_params(
+        encode_series(x, Params(noise_floor_sigma=f, grids="binary"))[0]
+    )
+    _, plain = flags_params(
+        encode_series(x, Params(noise_floor_sigma=0, grids="binary"))[0]
+    )
     return param > plain
 
 
@@ -87,4 +99,6 @@ def unchecked_params(**kw):
 def encode_unchecked(x, **kw):
     """encode_group's bytes for one block group under unchecked_params(**kw)."""
     x = np.asarray(x, np.float64)
-    return _group.encode(x, _args.fixed_sizes(x.shape[0], _api.DEFAULT_BLOCK_LEN), unchecked_params(**kw)).group
+    return _group.encode(
+        x, _args.fixed_sizes(x.shape[0], BLOCK_LEN), unchecked_params(**kw)
+    ).payload

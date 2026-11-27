@@ -26,7 +26,8 @@ GOLDEN = Path(__file__).with_name("golden.json")
 
 def _gaps(x):
     y = x.copy()
-    y[np.random.default_rng(0).integers(0, len(y), 300)] = np.nan  # scattered, most blocks flagged
+    # Scattered NaNs so most blocks are flagged.
+    y[np.random.default_rng(0).integers(0, len(y), 300)] = np.nan
     y[5_000:7_500] = np.inf
     y[20_000:21_000] = -np.inf  # a whole block
     return y
@@ -58,7 +59,9 @@ def _encode_variable(x, params):
 def _encode_time_blocks(x, params):
     """One-second blocks of jittered 1 kHz times (µs) with a missing stretch and a gap mid-block."""
     rng = np.random.default_rng(7)
-    ticks = 1_790_000_000_000_000 + np.arange(x.size) * 1000 + rng.integers(-20, 21, x.size)
+    ticks = (
+        1_790_000_000_000_000 + np.arange(x.size) * 1000 + rng.integers(-20, 21, x.size)
+    )
     keep = (np.arange(x.size) < 12_000) | (np.arange(x.size) >= 19_500)
     keep &= (np.arange(x.size) < 40_200) | (np.arange(x.size) >= 40_350)
     return fluxcode.encode_time_blocks(
@@ -76,26 +79,62 @@ CASES = {
     "sin-50.3hz default": (lambda: minute("sin-50.3hz", 1), Params(), _encode_fixed()),
     "chirp default": (lambda: minute("chirp", 1), Params(), _encode_fixed()),
     "noisy-sine default": (lambda: minute("noisy-sine", 1), Params(), _encode_fixed()),
-    "gauss-spikes default": (lambda: minute("gauss-spikes", 1), Params(), _encode_fixed()),
-    "random-walk default": (lambda: minute("random-walk", 1), Params(), _encode_fixed()),
-    "noisy-sine noise off": (lambda: minute("noisy-sine", 2), Params(noise_floor_sigma=0), _encode_fixed()),
-    "chirp target 6": (lambda: minute("chirp", 2), Params(target_bits_per_sample=6.0), _encode_fixed()),
-    "random-walk target 8": (lambda: minute("random-walk", 2), Params(target_bits_per_sample=8.0), _encode_fixed()),
-    "square orders {2}": (lambda: minute("square-2.24hz", 1), Params(diff_orders={2}), _encode_fixed()),
+    "gauss-spikes default": (
+        lambda: minute("gauss-spikes", 1),
+        Params(),
+        _encode_fixed(),
+    ),
+    "random-walk default": (
+        lambda: minute("random-walk", 1),
+        Params(),
+        _encode_fixed(),
+    ),
+    "noisy-sine noise off": (
+        lambda: minute("noisy-sine", 2),
+        Params(noise_floor_sigma=0),
+        _encode_fixed(),
+    ),
+    "chirp target 6": (
+        lambda: minute("chirp", 2),
+        Params(target_bits_per_sample=6.0),
+        _encode_fixed(),
+    ),
+    "random-walk target 8": (
+        lambda: minute("random-walk", 2),
+        Params(target_bits_per_sample=8.0),
+        _encode_fixed(),
+    ),
+    "square orders {2}": (
+        lambda: minute("square-2.24hz", 1),
+        Params(diff_orders={2}),
+        _encode_fixed(),
+    ),
     "sin-9.87hz 9 bits": (
         lambda: minute("sin-9.87hz", 1),
         Params(min_quantize_bits=4, max_quantize_bits=9),
         _encode_fixed(),
     ),
-    "random-walk q0.01": (lambda: discrete_minute("random-walk q0.01", 1), Params(), _encode_fixed()),
+    "random-walk q0.01": (
+        lambda: discrete_minute("random-walk q0.01", 1),
+        Params(),
+        _encode_fixed(),
+    ),
     "sensor-0.1": (lambda: discrete_minute("sensor-0.1", 1), Params(), _encode_fixed()),
-    "0.01-grid walk via float32": (lambda: _decimal_walk_f32(), Params(), _encode_fixed()),
+    "0.01-grid walk via float32": (
+        lambda: _decimal_walk_f32(),
+        Params(),
+        _encode_fixed(),
+    ),
     "noisy-sine adc12 decimal off": (
         lambda: discrete_minute("noisy-sine adc12", 1),
         Params(grids="binary"),
         _encode_fixed(),
     ),
-    "noisy-sine with gaps": (lambda: _gaps(minute("noisy-sine", 3)), Params(), _encode_fixed()),
+    "noisy-sine with gaps": (
+        lambda: _gaps(minute("noisy-sine", 3)),
+        Params(),
+        _encode_fixed(),
+    ),
     "random-walk with gaps target 6": (
         lambda: _gaps(minute("random-walk", 3)),
         Params(target_bits_per_sample=6.0),
@@ -111,21 +150,41 @@ CASES = {
         Params(),
         _encode_fixed(),
     ),
-    "short last block": (lambda: minute("sin-4.12hz", 4)[:59_321], Params(), _encode_fixed()),
-    "block_len 64, 7 blocks": (lambda: minute("random-walk", 5)[: 7 * 64], Params(), _encode_fixed(64)),
+    "short last block": (
+        lambda: minute("sin-4.12hz", 4)[:59_321],
+        Params(),
+        _encode_fixed(),
+    ),
+    "block_len 64, 7 blocks": (
+        lambda: minute("random-walk", 5)[: 7 * 64],
+        Params(),
+        _encode_fixed(64),
+    ),
     "block_len 1001": (lambda: minute("noisy-sine", 5), Params(), _encode_fixed(1001)),
     "variable blocks": (lambda: minute("random-walk", 6), Params(), _encode_variable),
-    "variable blocks q0.01": (lambda: discrete_minute("random-walk q0.01", 6), Params(), _encode_variable),
-    "variable blocks target 6": (lambda: minute("chirp", 6), Params(target_bits_per_sample=6.0), _encode_variable),
-    "time blocks": (lambda: discrete_minute("sensor-0.1", 7), Params(), _encode_time_blocks),
+    "variable blocks q0.01": (
+        lambda: discrete_minute("random-walk q0.01", 6),
+        Params(),
+        _encode_variable,
+    ),
+    "variable blocks target 6": (
+        lambda: minute("chirp", 6),
+        Params(target_bits_per_sample=6.0),
+        _encode_variable,
+    ),
+    "time blocks": (
+        lambda: discrete_minute("sensor-0.1", 7),
+        Params(),
+        _encode_time_blocks,
+    ),
 }
 
 
 def digest(name):
     make, params, encoder = CASES[name]
-    group, lo, hi, mean = encoder(make(), params)
-    h = hashlib.sha256(group)
-    for col in (lo, hi, mean):
+    enc = encoder(make(), params)
+    h = hashlib.sha256(enc.payload)
+    for col in (enc.block_min, enc.block_max, enc.block_mean):
         h.update(np.ascontiguousarray(col, np.float64).tobytes())
     return h.hexdigest()
 
@@ -138,5 +197,7 @@ def test_golden(name):
 
 
 if __name__ == "__main__" and sys.argv[1:] == ["--update"]:
-    GOLDEN.write_text(json.dumps({name: digest(name) for name in CASES}, indent=1) + "\n")
+    GOLDEN.write_text(
+        json.dumps({name: digest(name) for name in CASES}, indent=1) + "\n"
+    )
     print(f"wrote {len(CASES)} hashes to {GOLDEN}")

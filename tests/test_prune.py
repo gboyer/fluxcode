@@ -82,7 +82,10 @@ def test_rmse_matches_brute_force(seed):
 def test_required_and_nested():
     t, x = series(9)
     r = rank(t, x)
-    assert set(r.required) == {0, len(x) - 1, int(np.argmin(x)), int(np.argmax(x))} and r.gaps == 0
+    assert (
+        set(r.required) == {0, len(x) - 1, int(np.argmin(x)), int(np.argmax(x))}
+        and r.gaps == 0
+    )
     prev = set(r.top(r.min_points))
     assert prev == set(r.required)
     for k in range(r.min_points + 1, len(x) + 1, 7):
@@ -104,7 +107,9 @@ def test_datetime_and_float_times_agree():
     a = fluxprune.prune(t.view("datetime64[ns]"), x)
     b = fluxprune.prune((t - t[0]) / 1e9, x)
     assert a.times.dtype == np.dtype("datetime64[ns]")
-    assert np.array_equal(a.times.view(np.int64), t[index(t, a)]) and np.array_equal(a.values, b.values)
+    assert np.array_equal(a.times.view(np.int64), t[index(t, a)]) and np.array_equal(
+        a.values, b.values
+    )
 
 
 def test_repeated_times_and_degenerate_inputs():
@@ -112,7 +117,9 @@ def test_repeated_times_and_degenerate_inputs():
     x = np.array([0, 0, 5, 5, 1, 0, 0.0])
     r = rank(t, x)
     for k in range(r.min_points, 8):
-        assert r.relative_rmse(k) == pytest.approx(np.sqrt(exact_mse(t, x, r.top(k))) / 5, abs=1e-12)
+        assert r.relative_rmse(k) == pytest.approx(
+            np.sqrt(exact_mse(t, x, r.top(k))) / 5, abs=1e-12
+        )
     for t, x in [
         ([], []),
         ([0], [1.0]),
@@ -122,7 +129,13 @@ def test_repeated_times_and_degenerate_inputs():
     ]:
         p = fluxprune.prune(np.array(t, np.int64), np.array(x))
         assert len(p) == min(len(x), 2) or (len(x) == 4 and len(p) >= 2)
-        assert p.rmse == 0 and p.max_error == 0 and p.rmse_met and p.max_error_met and p.max_points_met
+        assert (
+            p.rmse == 0
+            and p.max_error == 0
+            and p.rmse_met
+            and p.max_error_met
+            and p.max_points_met
+        )
     with pytest.raises(ValueError):
         fluxprune.prune(np.array([0, 2, 1]), np.zeros(3))
 
@@ -135,10 +148,18 @@ def test_refine_lowers_error_and_keeps_required(seed):
     for k in (10, 40, 120):
         keep = r.top(k)
         better = r.refine(keep)
-        assert len(better) == k and np.all(np.diff(better) > 0) and set(r.required) <= set(better)
-        assert r.relative_error(keep) == pytest.approx(r.relative_rmse(k), rel=1e-9, abs=1e-12)
+        assert (
+            len(better) == k
+            and np.all(np.diff(better) > 0)
+            and set(r.required) <= set(better)
+        )
+        assert r.relative_error(keep) == pytest.approx(
+            r.relative_rmse(k), rel=1e-9, abs=1e-12
+        )
         assert r.relative_error(better) <= r.relative_error(keep) + 1e-12
-        assert r.relative_error(better) == pytest.approx(np.sqrt(exact_mse(t - t[0], x, better)) / span, rel=1e-9)
+        assert r.relative_error(better) == pytest.approx(
+            np.sqrt(exact_mse(t - t[0], x, better)) / span, rel=1e-9
+        )
     assert np.array_equal(index(t, fluxprune.prune(t, x)), r.refine(r.top(r.count())))
 
 
@@ -153,9 +174,14 @@ def test_error_per_point():
         for theta in (1e-4, 1e-3, 1e-2):
             k = r.count(error_per_point=theta, noise_floor=floor)
             assert e[k] < theta * (k - r.min_points + 1)
-            assert all(e[j] >= theta * (j - r.min_points + 1) for j in range(r.min_points, k))
+            assert all(
+                e[j] >= theta * (j - r.min_points + 1) for j in range(r.min_points, k)
+            )
     assert r.count(error_per_point=1e-3) > r.count(error_per_point=1e-2)
-    assert r.count(error_per_point=0) == r.n and r.count(error_per_point=np.inf) == r.min_points
+    assert (
+        r.count(error_per_point=0) == r.n
+        and r.count(error_per_point=np.inf) == r.min_points
+    )
     for bad in (-1e-3, np.nan):
         with pytest.raises(ValueError):
             r.count(error_per_point=bad)
@@ -163,7 +189,11 @@ def test_error_per_point():
     best = fluxprune.prune(t, x, error_per_point=0, max_points=30)
     assert np.array_equal(index(t, best), r.refine(r.top(30))) and not best.rmse_met
     alone = fluxprune.prune(t, x, error_per_point=np.inf, max_error=2.0)
-    assert set(index(t, alone)) >= set(r.required) and alone.max_error <= 2.0 and alone.rmse_met
+    assert (
+        set(index(t, alone)) >= set(r.required)
+        and alone.max_error <= 2.0
+        and alone.rmse_met
+    )
     assert len(alone) < len(fluxprune.prune(t, x, max_error=2.0))
 
 
@@ -175,11 +205,20 @@ def test_prune_reports_its_errors(seed):
     t, x = series(seed)
     p = fluxprune.prune(t, x)
     keep = index(t, p)
-    assert isinstance(p, fluxprune.Pruned) and p.rmse_met and p.max_error_met and p.max_points_met
+    assert (
+        isinstance(p, fluxprune.Pruned)
+        and p.rmse_met
+        and p.max_error_met
+        and p.max_points_met
+    )
     assert np.array_equal(p.values, x[keep])
     assert p.rmse == pytest.approx(np.sqrt(exact_mse(t - t[0], x, keep)), rel=1e-9)
     assert p.max_error == pytest.approx(max_deviation(t, x, keep), rel=1e-9)
-    assert len(fluxprune.prune(t, x, error_per_point=0)) > len(p) > len(fluxprune.prune(t, x, error_per_point=1e-3))
+    assert (
+        len(fluxprune.prune(t, x, error_per_point=0))
+        > len(p)
+        > len(fluxprune.prune(t, x, error_per_point=1e-3))
+    )
 
 
 def test_default_error_per_point():
@@ -188,7 +227,10 @@ def test_default_error_per_point():
     r = rank(t, x)
     assert fluxprune._api.default_error_per_point(400) == pytest.approx(0.001 / 40)
     assert r.count() == r.count(error_per_point=0.001 / 40)
-    assert np.array_equal(fluxprune.prune(t, x).times, fluxprune.prune(t, x, error_per_point=0.001 / 40).times)
+    assert np.array_equal(
+        fluxprune.prune(t, x).times,
+        fluxprune.prune(t, x, error_per_point=0.001 / 40).times,
+    )
     gap = x.copy()
     gap[50:60] = np.nan  # the input's length, not the keepable points'
     assert rank(t, gap).count() == rank(t, gap).count(error_per_point=0.001 / 40)
@@ -203,36 +245,63 @@ def test_max_error(seed):
     for tol in (0.5, 1.0, 2.0, 4.0):
         p = fluxprune.prune(t, x, max_error=tol)
         assert p.max_error_met and p.rmse_met
-        assert p.max_error <= tol and max_deviation(t, x, index(t, p)) <= tol * (1 + 1e-9)
+        assert p.max_error <= tol and max_deviation(t, x, index(t, p)) <= tol * (
+            1 + 1e-9
+        )
         assert set(auto.times) <= set(p.times)  # it only adds points
         assert len(p) >= len(auto) and len(p) <= previous
         previous = len(p)
-    assert len(fluxprune.prune(t, x, max_error=0)) == len(x)  # a random walk has no straight stretch
+    assert len(fluxprune.prune(t, x, max_error=0)) == len(
+        x
+    )  # a random walk has no straight stretch
     assert np.array_equal(fluxprune.prune(t, x, max_error=1e9).times, auto.times)
 
 
 def test_max_points():
     t, x = series(7)
     want = fluxprune.prune(t, x, max_error=1.0)
-    alone = fluxprune.prune(t, x, error_per_point=np.inf, max_error=1.0)  # max_error with no rmse pass
+    alone = fluxprune.prune(
+        t, x, error_per_point=np.inf, max_error=1.0
+    )  # max_error with no rmse pass
     worse = []
     for cap in (6, 10, 25, 50, len(alone) - 1):
         p = fluxprune.prune(t, x, max_error=1.0, max_points=cap)
-        assert len(p) <= cap and not p.rmse_met and not p.max_error_met and p.max_error > 1.0 and p.max_points_met
+        assert (
+            len(p) <= cap
+            and not p.rmse_met
+            and not p.max_error_met
+            and p.max_error > 1.0
+            and p.max_points_met
+        )
         # relaxed to about the tightest bound that fits (the pass's count isn't quite monotone in the bound)
-        assert len(fluxprune.prune(t, x, error_per_point=np.inf, max_error=0.9 * p.max_error)) > cap
+        assert (
+            len(
+                fluxprune.prune(
+                    t, x, error_per_point=np.inf, max_error=0.9 * p.max_error
+                )
+            )
+            > cap
+        )
         worse.append(worst_first(t, x, rank(t, x).required, cap) / p.max_error)
-    assert np.mean(worse) > 1  # tighter than splitting the worst segment at its worst point
+    assert (
+        np.mean(worse) > 1
+    )  # tighter than splitting the worst segment at its worst point
     p = fluxprune.prune(t, x, max_error=1.0, max_points=len(want) - 1)
-    assert len(p) < len(want) and not p.rmse_met and p.max_error_met  # the rmse pass gave way
-    assert np.array_equal(fluxprune.prune(t, x, max_error=1.0, max_points=len(want)).times, want.times)
+    assert (
+        len(p) < len(want) and not p.rmse_met and p.max_error_met
+    )  # the rmse pass gave way
+    assert np.array_equal(
+        fluxprune.prune(t, x, max_error=1.0, max_points=len(want)).times, want.times
+    )
     auto = fluxprune.prune(t, x)
     p = fluxprune.prune(t, x, max_points=len(auto) - 3)
     assert len(p) == len(auto) - 3 and not p.rmse_met and p.max_error_met
     assert fluxprune.prune(t, x, max_points=len(auto)).rmse_met
     # when the cap is reached, the rmse pass gives way to max_error first
     loose = fluxprune.prune(t, x, max_error=8.0)
-    p = fluxprune.prune(t, x, error_per_point=1e-4, max_error=8.0, max_points=len(loose) + 5)
+    p = fluxprune.prune(
+        t, x, error_per_point=1e-4, max_error=8.0, max_points=len(loose) + 5
+    )
     assert p.max_error <= 8.0 and len(p) <= len(loose) + 5
     with pytest.raises(ValueError):
         fluxprune.prune(t, x, max_points=3)
@@ -277,10 +346,16 @@ def noise_estimate(t, x):
     r = []
     for i in range(1, len(x) - 1):
         d0, d1 = t[i] - t[i - 1], t[i + 1] - t[i]
-        if not (c / 2 < d0 < 1.5 * c and c / 2 < d1 < 1.5 * c) or not np.isfinite(x[i - 1 : i + 2]).all():
+        if (
+            not (c / 2 < d0 < 1.5 * c and c / 2 < d1 < 1.5 * c)
+            or not np.isfinite(x[i - 1 : i + 2]).all()
+        ):
             continue
         w = d0 / (d0 + d1)
-        r.append(abs(x[i] - x[i - 1] - w * (x[i + 1] - x[i - 1])) / np.sqrt(1 + w * w + (1 - w) ** 2))
+        r.append(
+            abs(x[i] - x[i - 1] - w * (x[i + 1] - x[i - 1]))
+            / np.sqrt(1 + w * w + (1 - w) ** 2)
+        )
     return 1.4826 * np.median(r)
 
 
@@ -297,9 +372,15 @@ def test_noise_estimate(times):
     r = rank(t, x)
     assert r.noise == pytest.approx(noise_estimate(t, x), rel=1e-9)
     assert r.noise == pytest.approx(2.0, rel=0.05)
-    spikes = x + sum(800 / (1 + ((t - c) / 2) ** 2) for c in np.arange(100.0, t[-1], 180))
-    assert rank(t, spikes).noise == pytest.approx(2.0, rel=0.15)  # the median ignores the spikes
-    assert rank(t, np.round(np.sin(t / 300), 1)).noise == 0.0  # quantized steps: no noise
+    spikes = x + sum(
+        800 / (1 + ((t - c) / 2) ** 2) for c in np.arange(100.0, t[-1], 180)
+    )
+    assert rank(t, spikes).noise == pytest.approx(
+        2.0, rel=0.15
+    )  # the median ignores the spikes
+    assert (
+        rank(t, np.round(np.sin(t / 300), 1)).noise == 0.0
+    )  # quantized steps: no noise
     with_gap = x.copy()
     with_gap[100:110] = np.nan
     assert rank(t, with_gap).noise == pytest.approx(r.noise, rel=0.02)
@@ -312,16 +393,23 @@ def test_no_noise_floor_without_a_cadence():
     rng = np.random.default_rng(8)
     t = np.arange(36_000.0)
     x = np.cumsum(rng.normal(0, 0.05, 36_000)) + rng.normal(0, 0.1, 36_000)
-    keep = [0]  # a deadband archive: a point whenever the value moved 0.3 from the last one kept
+    keep = [
+        0
+    ]  # a deadband archive: a point whenever the value moved 0.3 from the last one kept
     for i in range(1, len(x)):
         if abs(x[i] - x[keep[-1]]) > 0.3:
             keep.append(i)
     keep = np.array(keep)
     assert rank(t, x).noise > 0 and rank(t[keep], x[keep]).noise == 0.0
-    heavy = np.cumsum(rng.uniform(0.2, 1.8, 3600))  # most intervals not one scan: no floor either
+    heavy = np.cumsum(
+        rng.uniform(0.2, 1.8, 3600)
+    )  # most intervals not one scan: no floor either
     noisy = rng.normal(0, 1, 3600)
     assert rank(heavy, noisy).noise == 0.0
-    assert np.array_equal(fluxprune.prune(heavy, noisy).times, fluxprune.prune(heavy, noisy, noise_floor=False).times)
+    assert np.array_equal(
+        fluxprune.prune(heavy, noisy).times,
+        fluxprune.prune(heavy, noisy, noise_floor=False).times,
+    )
 
 
 def test_noise_floor():
@@ -329,22 +417,37 @@ def test_noise_floor():
     t = np.arange(3600.0)
     quiet = 50 + rng.normal(0, 2, 3600)
     theta = 0.0015  # a coarse rate: at the default, without the floor, the noise keeps most of the points
-    on, off = fluxprune.prune(t, quiet, theta), fluxprune.prune(t, quiet, theta, noise_floor=False)
+    on, off = (
+        fluxprune.prune(t, quiet, theta),
+        fluxprune.prune(t, quiet, theta, noise_floor=False),
+    )
     assert on.noise == pytest.approx(2.0, rel=0.05) and off.noise == on.noise
     assert len(on) * 4 < len(off)  # a tenth or so: it doesn't trace the noise
-    assert on.rmse < 1.2 * off.rmse  # against the samples, what's left is mostly the noise either way
-    under = np.zeros(2)  # against the signal under the noise, fewer points are closer on average
+    assert (
+        on.rmse < 1.2 * off.rmse
+    )  # against the samples, what's left is mostly the noise either way
+    under = np.zeros(
+        2
+    )  # against the signal under the noise, fewer points are closer on average
     for seed in range(10):
         q = 50 + np.random.default_rng(seed).normal(0, 2, 3600)
         for j, floor in enumerate((True, False)):
             p = fluxprune.prune(t, q, theta, noise_floor=floor)
             under[j] += np.sqrt(np.mean((np.interp(t, p.times, p.values) - 50) ** 2))
     assert under[0] < 0.9 * under[1]
-    assert len(fluxprune.prune(t, quiet)) < 40 and len(fluxprune.prune(t, quiet, noise_floor=False)) > 2000
+    assert (
+        len(fluxprune.prune(t, quiet)) < 40
+        and len(fluxprune.prune(t, quiet, noise_floor=False)) > 2000
+    )
     sine = np.sin(2 * np.pi * t / 1200)  # smooth: no noise, no change
-    assert np.array_equal(fluxprune.prune(t, sine).times, fluxprune.prune(t, sine, noise_floor=False).times)
+    assert np.array_equal(
+        fluxprune.prune(t, sine).times,
+        fluxprune.prune(t, sine, noise_floor=False).times,
+    )
     # narrow spikes on the noise: cheap in the rmse, kept by a max_error of a few σ
-    truth = 50 + sum(800 / (1 + ((t - c) / 2) ** 2) for c in np.arange(300.0, 3600, 600))
+    truth = 50 + sum(
+        800 / (1 + ((t - c) / 2) ** 2) for c in np.arange(300.0, 3600, 600)
+    )
     x = truth + rng.normal(0, 2, 3600)
     p = fluxprune.prune(t, x, max_error=20)
     line = np.interp(t, p.times, p.values)
@@ -365,14 +468,22 @@ def test_gaps_hold_forward():
     x[29] = np.nan  # the last point
     r = rank(t, x)
     assert set(r.required) >= {4, 5, 9, 11, 12, 13, 15, 28, 29}
-    assert not {6, 7, 8, 14} & set(r.removed) and not {6, 7, 8, 14} & set(r.required)  # the inside is never kept
+    assert not {6, 7, 8, 14} & set(r.removed) and not {6, 7, 8, 14} & set(
+        r.required
+    )  # the inside is never kept
     p = fluxprune.prune(t, x)
     kept = np.searchsorted(t, p.times)
     assert not {6, 7, 8, 14} & set(kept) and {5, 12, 13, 29} <= set(kept)
     assert np.array_equal(p.values, x[kept], equal_nan=True)
     assert np.isfinite(p.rmse) and np.isfinite(p.max_error)
-    every = fluxprune.prune(t, x, error_per_point=0)  # every keepable point: no error, and the holds have none
-    assert len(every) == 30 - 4 and every.rmse == pytest.approx(0, abs=1e-12) and every.max_error == 0
+    every = fluxprune.prune(
+        t, x, error_per_point=0
+    )  # every keepable point: no error, and the holds have none
+    assert (
+        len(every) == 30 - 4
+        and every.rmse == pytest.approx(0, abs=1e-12)
+        and every.max_error == 0
+    )
 
 
 def test_gaps_beat_the_cap():
@@ -399,7 +510,13 @@ def keepable(x):
     def kind(v):
         return "finite" if np.isfinite(v) else "nan" if np.isnan(v) else str(v)
 
-    return np.array([not i or kind(v) == "finite" or kind(v) != kind(x[i - 1]) for i, v in enumerate(x)], bool)
+    return np.array(
+        [
+            not i or kind(v) == "finite" or kind(v) != kind(x[i - 1])
+            for i, v in enumerate(x)
+        ],
+        bool,
+    )
 
 
 def interval_oracle(t, x, origin, step):
@@ -443,7 +560,11 @@ def test_regular_intervals(seed):
     r = rank(t, x, step)
     base = {0, len(x) - 1, int(np.argmin(x)), int(np.argmax(x))}
     want = interval_oracle(t, x, np.datetime64(0, "ns"), step)
-    assert set(r.required) == base | want and r.intervals == len(want - base) and r.gaps == 0
+    assert (
+        set(r.required) == base | want
+        and r.intervals == len(want - base)
+        and r.gaps == 0
+    )
     for kw in ({}, {"error_per_point": np.inf}, {"max_error": 0.5}, {"max_points": 60}):
         p = fluxprune.prune(t, x, include_regular_intervals=step, **kw)
         assert set(index(t, p)) >= set(r.required)
@@ -454,8 +575,12 @@ def test_regular_intervals(seed):
     secs = (t - np.datetime64(0, "ns")) // np.timedelta64(1, "s")
     for tt, st in ((secs, 300), (secs.astype(float), 300.0)):
         assert np.array_equal(rank(tt, x, st).required, r.required)
-    assert np.array_equal(rank(t, x, datetime.timedelta(minutes=5)).required, r.required)
-    ns = t.view(np.int64)  # epoch nanoseconds: a float interval must still divide exactly
+    assert np.array_equal(
+        rank(t, x, datetime.timedelta(minutes=5)).required, r.required
+    )
+    ns = t.view(
+        np.int64
+    )  # epoch nanoseconds: a float interval must still divide exactly
     assert np.array_equal(rank(ns, x, 3e11).required, r.required)
     # an interval longer than the block only adds its first point if the block starts inside one
     assert set(rank(t, x, np.timedelta64(1000, "D")).required) == base
@@ -468,7 +593,9 @@ def test_regular_intervals_are_aligned_to_zero():
     assert {30.0, 40.0, 50.0, 60.0, 70.0} <= set(p.times)  # each interval's first point
     check_intervals(t, x, p, 0.0, 10.0)
     p = fluxprune.prune(t, x, error_per_point=np.inf, include_regular_intervals=7.5)
-    assert {30.0, 38.0, 45.0, 53.0, 60.0, 68.0} <= set(p.times)  # boundaries at 37.5, 52.5, 67.5
+    assert {30.0, 38.0, 45.0, 53.0, 60.0, 68.0} <= set(
+        p.times
+    )  # boundaries at 37.5, 52.5, 67.5
 
 
 def test_regular_intervals_with_gaps():
@@ -481,7 +608,12 @@ def test_regular_intervals_with_gaps():
     r = rank(t, x, 10)
     want = interval_oracle(t, x, 0.0, 10.0)
     assert want <= set(r.required)
-    assert not set(r.required) & set(np.flatnonzero(~np.isfinite(x))) - {40, 130, 150, 200}
+    assert not set(r.required) & set(np.flatnonzero(~np.isfinite(x))) - {
+        40,
+        130,
+        150,
+        200,
+    }
     p = fluxprune.prune(t, x, include_regular_intervals=10)
     check_intervals(t, x, p, 0.0, 10.0)
 
@@ -500,7 +632,9 @@ def test_regular_intervals_beat_the_cap():
 def test_regular_intervals_integer_times_at_the_boundary():
     hour = 1_790_035_200 * 10**9  # an hour boundary in epoch nanoseconds
     t = hour + np.arange(-3, 4)
-    x = np.array([5.0, 1, 3, 2, 3, 4, 0])  # [hour - 3, hour): min 1; [hour, ...): first 2, max 4
+    x = np.array(
+        [5.0, 1, 3, 2, 3, 4, 0]
+    )  # [hour - 3, hour): min 1; [hour, ...): first 2, max 4
     for step in (3600 * 10**9, 3.6e12, np.float64(3.6e12)):
         assert set(rank(t, x, step).required) == {0, 1, 3, 5, 6}
 
@@ -509,11 +643,15 @@ def test_regular_intervals_arguments():
     t, x = series(0)
     t = t.astype("datetime64[ns]")
     with pytest.raises(ValueError, match="refit"):
-        fluxprune.prune(t, x, refit=True, include_regular_intervals=np.timedelta64(1, "h"))
+        fluxprune.prune(
+            t, x, refit=True, include_regular_intervals=np.timedelta64(1, "h")
+        )
     with pytest.raises(TypeError, match="timedelta64"):
         fluxprune.prune(t, x, include_regular_intervals=3600)
     with pytest.raises(TypeError, match="number"):
-        fluxprune.prune(np.arange(400.0), x, include_regular_intervals=np.timedelta64(1, "h"))
+        fluxprune.prune(
+            np.arange(400.0), x, include_regular_intervals=np.timedelta64(1, "h")
+        )
     for bad in (0, -1, np.inf, np.nan):
         with pytest.raises(ValueError, match="positive"):
             fluxprune.prune(np.arange(400.0), x, include_regular_intervals=bad)
@@ -524,7 +662,9 @@ def test_regular_intervals_arguments():
     with pytest.raises(TypeError, match="timedelta64 times"):
         fluxprune.prune(t - t[0], x, include_regular_intervals=3600)
     for n in (0, 1, 3):  # degenerate inputs
-        p = fluxprune.prune(np.arange(float(n)), np.ones(n), include_regular_intervals=1)
+        p = fluxprune.prune(
+            np.arange(float(n)), np.ones(n), include_regular_intervals=1
+        )
         assert len(p) == n
 
 
@@ -563,7 +703,9 @@ def test_refit(seed):
     assert np.array_equal(p.times, plain.times) and p.rmse <= plain.rmse
     pinned = rank(t, x).required
     assert np.array_equal(p.values[np.isin(keep, pinned)], x[pinned])
-    assert p.values == pytest.approx(refit_oracle(t, x, keep, pinned), rel=1e-8, abs=1e-10)
+    assert p.values == pytest.approx(
+        refit_oracle(t, x, keep, pinned), rel=1e-8, abs=1e-10
+    )
     assert p.rmse == pytest.approx(np.sqrt(exact_mse(t, x, keep, p.values)), rel=1e-9)
     assert p.max_error == pytest.approx(max_deviation(t, x, keep, p.values), rel=1e-9)
     q = fluxprune.prune(t, x, max_error=1.0, refit=True)
@@ -576,7 +718,9 @@ def test_refit_with_gaps():
     x[40:45] = np.nan
     p = fluxprune.prune(t, x, refit=True)
     keep = np.searchsorted(t, p.times)
-    assert np.isnan(p.values[keep == 40]).all() and np.isfinite(p.values[keep != 40]).all()
+    assert (
+        np.isnan(p.values[keep == 40]).all() and np.isfinite(p.values[keep != 40]).all()
+    )
     assert np.isfinite(p.rmse) and p.rmse <= fluxprune.prune(t, x).rmse
 
 
@@ -626,8 +770,12 @@ def test_max_error_pass_reaches_far(seed):
     t = np.cumsum(rng.integers(1, 4, 300)).astype(np.float64)
     x = np.sin(t / 40) * 5 + rng.normal(0, 0.5, 300)
     for tol in (0.5, 1.0, 2.0):
-        got = fluxprune.prune(t, x, error_per_point=np.inf, max_error=tol)  # the required points and the pass
-        assert got.max_error <= tol and max_deviation(t, x, np.searchsorted(t, got.times)) <= tol * (1 + 1e-9)
+        got = fluxprune.prune(
+            t, x, error_per_point=np.inf, max_error=tol
+        )  # the required points and the pass
+        assert got.max_error <= tol and max_deviation(
+            t, x, np.searchsorted(t, got.times)
+        ) <= tol * (1 + 1e-9)
         assert len(got) >= fewest_count(t, x, tol)
         assert len(got) <= door_count(t, x, tol) + 2  # the min and max are kept as well
 
@@ -645,7 +793,10 @@ def test_max_error_pass_with_repeated_times():
 def test_a_gap_at_the_start_next_to_the_maximum():
     t = np.arange(20.0)
     x = np.sin(t / 3)
-    x[0], x[1] = np.nan, 5.0  # the gap's finite neighbour is the maximum: no gap point beyond the four
+    x[0], x[1] = (
+        np.nan,
+        5.0,
+    )  # the gap's finite neighbour is the maximum: no gap point beyond the four
     r = rank(t, x)
     assert r.gaps == 0 and set(r.required) == {0, 1, 19, int(np.nanargmin(x))}
     p = fluxprune.prune(t, x)

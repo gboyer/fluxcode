@@ -2,8 +2,9 @@
 
 Compression for float64 time series, geared towards scientific and engineering usage.
 
-Guarantees a maximum error using a quantization, and is exact for decimal series up
-to 4 significant figures, or more when the range is narrow.
+Guarantees a maximum error using quantization, and automatically preserves values
+that lie on exact binary, decimal, or rational-step grids (such as 0.01, 0.05, thirds,
+or ADC/calibration steps) when the bit range allows.
 
 High level properties:
 
@@ -23,8 +24,8 @@ High level properties:
 * **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
   difference, whichever has the lowest variance.
 * **Group-Compressed zstd**: Blocks are assembled into block groups; for example, a minute might
-  be a single block group with 60 blocks, each with 1000 samples (the defaults of `encode`; the
-  block group records every block's size). Their bit planes are
+  be a single block group with 60 blocks, each with 1000 samples (the block group records every
+  block's size). Their bit planes are
   interleaved and compressed with zstd to separate high and low entropy signals.
 * **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
   subnormal ranges, +/- Infinity, and NaN.
@@ -93,70 +94,91 @@ t = np.arange(30_000) / 1000  # 30 s at 1 kHz: 30 blocks of 1000
 x = 100 * np.sin(2 * np.pi * 3.3 * t) + rng.normal(0, 1, t.size)
 
 # One block group = one storage row, here 30 blocks of 1000 samples. Block groups are self-describing.
-group, block_min, block_max, block_mean = fluxcode.encode_group(x)
-y, _, sizes = fluxcode.decode_group(group)  # (values, times, block_sizes); no times here
-print(f"{8 * len(group) / x.size:.2f} bits/sample, max error {np.abs(y - x).max():.3f}")
+encoded = fluxcode.encode_group(x, block_len=1000)
+decoded = fluxcode.decode_group(
+    encoded.payload
+)  # DecodedGroup(values, times, block_sizes)
+print(
+    f"{8 * len(encoded.payload) / x.size:.2f} bits/sample, "
+    f"max error {np.abs(decoded.values - x).max():.3f}"
+)
 
-# Decimal data (here a price rounded to cents) decodes to the identical float64.
+# Decimal / rational-step data (here a price rounded to cents) decodes to the identical float64.
 price = np.round(20 + np.cumsum(rng.normal(0, 0.05, 5_000)), 2)
-assert np.array_equal(fluxcode.decode_group(fluxcode.encode_group(price).group).values, price)
+assert np.array_equal(
+    fluxcode.decode_group(fluxcode.encode_group(price, block_len=1000).payload).values,
+    price,
+)
 
 # Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly
 # (or, with Params(time_error=...), rounded within that share of their interval).
-stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(1, "ms")
+stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(
+    1, "ms"
+)
 stamps[12_345:] += np.timedelta64(2, "s")  # a gap: only its block pays for it
-values, times, _ = fluxcode.decode_group(fluxcode.encode_group(x, times=stamps).group)
-assert np.array_equal(times, stamps)
+timed = fluxcode.encode_group(x, block_len=1000, times=stamps)
+assert np.array_equal(fluxcode.decode_group(timed.payload).times, stamps)
+# Per-block start timestamps align 1:1 with block_min / block_max / block_mean.
+assert timed.block_start_times.shape == timed.block_min.shape
 
 # Replace block 3 and append block 30 as more of the stream arrives: blocks by index, any size.
-new_blocks = 100 * np.sin(2 * np.pi * 3.3 * (np.arange(2000).reshape(2, 1000) / 1000 + 30))
-group, indices, mins, maxs, means = fluxcode.update(group, {3: new_blocks[0], 30: new_blocks[1][:700]})
-assert fluxcode.decode_group(group).values.size == 30_700
+new_blocks = 100 * np.sin(
+    2 * np.pi * 3.3 * (np.arange(2000).reshape(2, 1000) / 1000 + 30)
+)
+updated = fluxcode.update(encoded.payload, {3: new_blocks[0], 30: new_blocks[1][:700]})
+assert fluxcode.decode_group(updated.payload).values.size == 30_700
 
 # Blocks of a fixed duration (here one second): blocks with no data are empty, and the block group
 # grows as data arrives. update_time_blocks upserts samples and deletes time ranges.
 ms = np.datetime64("2026-09-27T00:00", "ms") + np.arange(x.size)
 hour = {"start_time": ms[0], "block_duration": np.timedelta64(1, "s")}
-first, late = slice(0, 10_000), slice(10_000, 20_000)  # 20 s of 30; seconds 10-19 come later
-group, *_ = fluxcode.encode_time_blocks(x[first], ms[first], **hour)
+first, late = (
+    slice(0, 10_000),
+    slice(10_000, 20_000),
+)  # 20 s of 30; seconds 10-19 come later
+enc_tb = fluxcode.encode_time_blocks(x[first], ms[first], **hour)
 gap = (ms[10_000], ms[20_000])  # [start, end)
-group, *_ = fluxcode.update_time_blocks(group, x[late], ms[late], delete_ranges=gap, **hour)
-assert fluxcode.decode_group(group).block_sizes.tolist() == [1000] * 20
+upd_tb = fluxcode.update_time_blocks(
+    enc_tb.payload, x[late], ms[late], delete_ranges=gap, **hour
+)
+assert fluxcode.decode_group(upd_tb.payload).block_sizes.tolist() == [1000] * 20
 
-# Long series: encode() splits into block groups; decode() returns one (values, times) per block group.
-groups, mins, maxs, means = fluxcode.encode(np.tile(x, 5))
-assert sum(len(decoded.values) for decoded in fluxcode.decode(groups)) == 5 * x.size
+# Long series: encode() splits into block groups; decode() accepts EncodedSeries or payloads.
+series = fluxcode.encode(np.tile(x, 5), block_len=1000, blocks_per_group=60)
+assert sum(len(decoded.values) for decoded in fluxcode.decode(series)) == 5 * x.size
 ```
 
 This prints `5.77 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
 which set the step to 0.25σ.
 
-- `encode_group(x, params, *, block_len=1000, times=None, time_unit=None)`: one block group (an
+- `encode_group(x, params, *, block_len, times=None, time_unit=None)`: one block group (an
   8-byte header and a zstd frame) of blocks of `block_len` samples (1 to 65,535; the last block
-  holds the rest). It also returns per-block min, max and mean (over finite samples) as summary
-  statistics: they come free with encoding, and decoding doesn't need them. `times` optionally
-  stores one timestamp per sample, exactly (or within `time_error`): `datetime64[s|ms|us|ns]`, or integer ticks with
-  `time_unit="s" | "ms" | "us" | "ns"`. They must be naive (store UTC) and non-decreasing; equal
-  timestamps are fine. A regular grid costs about 65 bytes per block group.
+  holds the rest). Returns a frozen `EncodedGroup(payload, block_min, block_max, block_mean,
+  block_start_times)`: the summary statistics come free with encoding, and decoding doesn't need
+  them. `times` optionally stores one timestamp per sample, exactly (or within `time_error`):
+  `datetime64[s|ms|us|ns]`, or integer ticks with `time_unit="s" | "ms" | "us" | "ns"`. They must
+  be naive (store UTC) and non-decreasing; equal timestamps are fine. A regular grid costs about
+  65 bytes per block group.
 - `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one block group of blocks
   of the given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list
-  arrays. An empty block stores nothing (NaN statistics). Blocks of at most 8 samples skip the
-  analysis: they are stored at the finest step, without differences (decimal data still stays
-  exact).
+  arrays. An empty block stores nothing (NaN statistics, NaT start time if timed). Blocks of at most
+  8 samples skip the analysis: they are stored at the finest step, without differences (decimal
+  data still stays exact).
 - `encode_time_blocks(x, times, params, *, start_time, block_duration, time_unit=None)`: one block
   group in which block b holds the samples timed in `[start_time + b·block_duration, start_time +
   (b+1)·block_duration)`; blocks without samples are empty. `start_time` (`datetime64`, naive
   `datetime` or ticks) and `block_duration` (`timedelta64`, `timedelta` or ticks) aren't stored:
   keep them with the block group, e.g. the start in its storage key.
-- `encode(x, params, *, block_len=1000, blocks_per_group=60, times=None, time_unit=None)` /
+- `encode(x, params, *, block_len, blocks_per_group, times=None, time_unit=None)` /
   `decode(groups)`: bulk versions. `encode` splits a long series (and its times, non-decreasing
   across block group boundaries too) into block groups of `blocks_per_group` blocks and returns
-  `(groups, block_mins, block_maxs, block_means)`, one entry per block group; `decode` returns one
-  `DecodedGroup` per block group. A block group holds at most 65,535 blocks and 2^26 = 67,108,864
-  samples (the bound decoders accept).
-- `decode_group(group)`: returns `DecodedGroup(values, times, block_sizes)`. `times` is `datetime64`
-  in the encoded block group, or `None` for a block group encoded without times. The block group
-  records everything needed.
+  `EncodedSeries(groups: list[EncodedGroup])`, with flattening properties `payloads`, `block_min`,
+  `block_max`, `block_mean`, and `block_start_times`; `decode` accepts an `EncodedSeries` or a
+  sequence of payload bytes and returns one `DecodedGroup` per block group. A block group holds at
+  most 65,535 blocks and 2^26 = 67,108,864 samples (the bound decoders accept).
+- `decode_group(payload)`: returns `DecodedGroup(values, times, block_sizes)`. `times` is
+  `datetime64` in the encoded block group, or `None` for a block group encoded without times. The
+  block group records everything needed.
 - `update(group, blocks, params, *, times=None)`: replace or append whole blocks, given as a dict
   `{index: samples}` of any sizes (skipped indices past the end are appended empty); untouched
   blocks decode to identical values. `times` (a dict with the same keys) is required exactly when

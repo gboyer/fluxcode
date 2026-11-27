@@ -71,7 +71,9 @@ def make_case(seed: int, case: int) -> tuple[np.ndarray, int]:
             x = rng.normal(size=n) * mag
         elif kind == 1:  # a scaled grid at any magnitude
             x = k * num / den * mag
-        elif kind == 2:  # a rational step over a power of ten: decimal or scaled grids, or near misses
+        elif (
+            kind == 2
+        ):  # a rational step over a power of ten: decimal or scaled grids, or near misses
             x = (k * num) / (den * 10.0 ** int(rng.integers(0, 15)))
         elif kind == 3:  # a fine grid on a large offset
             x = rng.uniform(-1, 1) * mag + k * (num / den) * mag * 1e-6
@@ -103,12 +105,14 @@ def check_case(x: np.ndarray, params: Params) -> str | None:
     try:
         with np.errstate(all="ignore"):
             result = fluxcode.encode_group(x, params, block_len=BLOCK_LEN)
-            found = verify.encode_group(result, x, params, block_len=BLOCK_LEN) or verify.fixed_point(
-                result.group, params
-            )
+            found = verify.encode_group(
+                result, x, params, block_len=BLOCK_LEN
+            ) or verify.fixed_point(result.payload, params)
             if found:
                 return failure(found)
-            if params.target_bits_per_sample is None and not encodes_alone(x, result.group, params):
+            if params.target_bits_per_sample is None and not encodes_alone(
+                x, result.payload, params
+            ):
                 return "not alone"  # the target caps the whole group
     except Exception:
         return "crash"
@@ -125,11 +129,20 @@ def encodes_alone(x: np.ndarray, group: bytes, params: Params) -> bool:
         return True
     together = group_rows(group)
     for block, start in enumerate(range(0, x.size, BLOCK_LEN)):
-        alone = group_rows(fluxcode.encode_group(x[start : start + BLOCK_LEN], params, block_len=BLOCK_LEN).group)
+        alone = group_rows(
+            fluxcode.encode_group(
+                x[start : start + BLOCK_LEN], params, block_len=BLOCK_LEN
+            ).payload
+        )
         for field in ("block_flags", "grid_exponents", "grid_scales", "block_anchors"):
-            if getattr(alone, field)[0].tobytes() != getattr(together, field)[block].tobytes():
+            if (
+                getattr(alone, field)[0].tobytes()
+                != getattr(together, field)[block].tobytes()
+            ):
                 return False
-        if not np.array_equal(alone.residuals, together.residuals[start : start + alone.residuals.size]):
+        if not np.array_equal(
+            alone.residuals, together.residuals[start : start + alone.residuals.size]
+        ):
             return False
     return True
 
@@ -137,8 +150,16 @@ def encodes_alone(x: np.ndarray, group: bytes, params: Params) -> bool:
 def target_fixed(x: np.ndarray, params: Params) -> bool:
     """Whether decoded data re-encode to themselves under a target (not guaranteed: §5.8)."""
     with np.errstate(all="ignore"):
-        y = fluxcode.decode_group(fluxcode.encode_group(x, params).group).values
-        return np.array_equal(fluxcode.decode_group(fluxcode.encode_group(y, params).group).values, y, equal_nan=True)
+        y = fluxcode.decode_group(
+            fluxcode.encode_group(x, params, block_len=1000).payload
+        ).values
+        return np.array_equal(
+            fluxcode.decode_group(
+                fluxcode.encode_group(y, params, block_len=1000).payload
+            ).values,
+            y,
+            equal_nan=True,
+        )
 
 
 # Timed series and updates
@@ -162,7 +183,9 @@ def make_ticks(rng: np.random.Generator, n: int) -> tuple[np.ndarray, int]:
         steps = np.full(n, period)
     elif clock == "jittered":
         steps = np.full(n, period)
-        offsets = np.round(rng.normal(0, rng.uniform(0.001, 0.05) * period, n)).astype(np.int64)
+        offsets = np.round(rng.normal(0, rng.uniform(0.001, 0.05) * period, n)).astype(
+            np.int64
+        )
     elif clock == "gaps":
         steps = np.where(rng.random(n) < 0.02, period * rng.integers(2, 100, n), period)
     elif clock == "events":
@@ -188,11 +211,15 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
         with np.errstate(all="ignore"):
             if rng.random() < 0.5:
                 block_len = int(rng.choice([1, 7, 64, BLOCK_LEN]))
-                result = fluxcode.encode_group(x, params, block_len=block_len, times=ticks, time_unit=unit)
-                found = verify.encode_group(result, x, params, block_len=block_len, times=ticks, time_unit=unit)
+                result = fluxcode.encode_group(
+                    x, params, block_len=block_len, times=ticks, time_unit=unit
+                )
+                found = verify.encode_group(
+                    result, x, params, block_len=block_len, times=ticks, time_unit=unit
+                )
                 if found:
                     return step, cast(str, failure(found))
-                group = result.group
+                group = result.payload
                 for update_idx in range(int(rng.integers(1, 4))):
                     step = f"update {update_idx + 1}"
                     group, found = random_update(rng, group, params)
@@ -200,7 +227,9 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
                         return step, cast(str, failure(found))
             else:
                 span = int(ticks[-1]) - int(ticks[0])
-                duration = max(period * int(rng.choice([1, 10, 100, 1000])), span // 60_000 + 1)
+                duration = max(
+                    period * int(rng.choice([1, 10, 100, 1000])), span // 60_000 + 1
+                )
                 hour: TimeBlocks = {
                     "start_time": int(ticks[0]) - int(rng.integers(0, duration)),
                     "block_duration": duration,
@@ -210,11 +239,15 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
                 found = verify.encode_time_blocks(result, x, ticks, params, **hour)
                 if found:
                     return step, cast(str, failure(found))
-                group = result.group
-                edges = np.random.default_rng([seed, case, 2])  # its own stream: the cases above stay as they were
+                group = result.payload
+                edges = np.random.default_rng(
+                    [seed, case, 2]
+                )  # its own stream: the cases above stay as they were
                 for update_idx in range(int(rng.integers(1, 4))):
                     step = f"update {update_idx + 1}"
-                    group, found = random_time_update(rng, edges, group, x, ticks, params, hour)
+                    group, found = random_time_update(
+                        rng, edges, group, x, ticks, params, hour
+                    )
                     if found:
                         return step, cast(str, failure(found))
     except Exception:
@@ -222,7 +255,9 @@ def check_timed_case(seed: int, case: int) -> tuple[str, str] | None:
     return None
 
 
-def random_update(rng: np.random.Generator, group: bytes, params: Params) -> tuple[bytes, list[verify.Violation]]:
+def random_update(
+    rng: np.random.Generator, group: bytes, params: Params
+) -> tuple[bytes, list[verify.Violation]]:
     """update of a group with times: a block replaced by new values at its times, or one appended."""
     decoded = fluxcode.decode_group(group)
     assert decoded.times is not None
@@ -233,7 +268,10 @@ def random_update(rng: np.random.Generator, group: bytes, params: Params) -> tup
     if rng.random() < 0.7 and nonempty.size:
         block = int(rng.choice(nonempty))
         block_ticks = ticks[offsets[block] : offsets[block + 1]]
-        values = decoded.values[offsets[block] : offsets[block + 1]] * rng.uniform(0.5, 2) + rng.normal()
+        values = (
+            decoded.values[offsets[block] : offsets[block + 1]] * rng.uniform(0.5, 2)
+            + rng.normal()
+        )
     else:
         block = sizes.size + int(rng.integers(0, 3))
         n = int(rng.integers(0, 20))
@@ -242,7 +280,7 @@ def random_update(rng: np.random.Generator, group: bytes, params: Params) -> tup
         values = rng.normal(size=n) * 10.0 ** rng.uniform(-10, 10)
     blocks, times = {block: values}, {block: block_ticks.view(decoded.times.dtype)}
     result = fluxcode.update(group, blocks, params, times=times)
-    return result.group, verify.update(result, group, blocks, params, times=times)
+    return result.payload, verify.update(result, group, blocks, params, times=times)
 
 
 def random_time_update(
@@ -264,14 +302,20 @@ def random_time_update(
     stored = decoded.times.view(np.int64)
     start, duration = hour["start_time"], hour["block_duration"]
     if rng.random() < 0.6:
-        exact = replace(params, time_error=0.0)  # update_time_blocks stores new times exactly
+        exact = replace(
+            params, time_error=0.0
+        )  # update_time_blocks stores new times exactly
         n = int(rng.integers(0, 50))
         if stored.size and rng.random() < 0.5:  # replace stored times
             new_ticks = np.sort(rng.choice(stored, n))
         else:  # new times anywhere from the start to past the end
             last = int(stored[-1]) if stored.size else start
-            new_ticks = np.sort(rng.integers(start, last + 3 * duration, n)).astype(np.int64)
-        values = rng.normal(size=n) * (np.nanmax(np.abs(np.nan_to_num(x, posinf=0, neginf=0))) + 1)
+            new_ticks = np.sort(rng.integers(start, last + 3 * duration, n)).astype(
+                np.int64
+            )
+        values = rng.normal(size=n) * (
+            np.nanmax(np.abs(np.nan_to_num(x, posinf=0, neginf=0))) + 1
+        )
         ranges = None
         if rng.random() < 0.5 and stored.size:
             a, b = np.sort(rng.choice(stored, 2))
@@ -281,16 +325,24 @@ def random_time_update(
         # Boundaries holding a stored time if there are any (it may be the block before's end), else any
         bounds = stored[(stored > start) & ((stored - start) % duration == 0)]
         if not bounds.size or edges.random() < 0.2:
-            bounds = start + duration * np.arange(1, decoded.block_sizes.size + 2, dtype=np.int64)
+            bounds = start + duration * np.arange(
+                1, decoded.block_sizes.size + 2, dtype=np.int64
+            )
         if edges.random() < 0.3 and new_ticks.size:
             moved = edges.random(new_ticks.size) < 0.5
-            new_ticks = np.sort(np.where(moved, edges.choice(bounds, new_ticks.size), new_ticks))
+            new_ticks = np.sort(
+                np.where(moved, edges.choice(bounds, new_ticks.size), new_ticks)
+            )
         if ranges is not None and edges.random() < 0.5:
-            a, b = (int(edges.choice(bounds)) if edges.random() < 0.6 else r for r in ranges)
+            a, b = (
+                int(edges.choice(bounds)) if edges.random() < 0.6 else r for r in ranges
+            )
             a, b = min(a, b), max(a, b)
             ranges = (a, b if b > a else a + duration)
-        result = fluxcode.update_time_blocks(group, values, new_ticks, exact, delete_ranges=ranges, **hour)
-        return result.group, verify.update_time_blocks(
+        result = fluxcode.update_time_blocks(
+            group, values, new_ticks, exact, delete_ranges=ranges, **hour
+        )
+        return result.payload, verify.update_time_blocks(
             result, group, values, new_ticks, exact, delete_ranges=ranges, **hour
         )
     # Whole blocks from the source data, perhaps scaled, perhaps one past the end
@@ -301,8 +353,12 @@ def random_time_update(
         declared.append(int(decoded.block_sizes.size) + int(rng.integers(0, 3)))
     mask = np.isin(ids, declared)
     values = x[mask] * float(rng.choice([1.0, 1.0, 0.5, 3.0]))
-    result = fluxcode.replace_time_blocks(group, declared, values, ticks[mask], params, **hour)
-    return result.group, verify.replace_time_blocks(result, group, declared, values, ticks[mask], params, **hour)
+    result = fluxcode.replace_time_blocks(
+        group, declared, values, ticks[mask], params, **hour
+    )
+    return result.payload, verify.replace_time_blocks(
+        result, group, declared, values, ticks[mask], params, **hour
+    )
 
 
 DECIMAL_PARAMS = [
@@ -331,11 +387,17 @@ def check_decimal_case(seed: int, case: int) -> str | None:
     n = int(rng.choice(LENGTHS))
     unit = 10.0**-decimals
 
-    def draw(count: int) -> np.ndarray:  # noise, a walk, or a few levels, 1 to ~300,000 steps wide
+    def draw(
+        count: int,
+    ) -> np.ndarray:  # noise, a walk, or a few levels, 1 to ~300,000 steps wide
         spread = 10 ** rng.uniform(0, 5.5) * unit
         offset = rng.integers(-(10**9), 10**9) * unit
         shape = int(rng.integers(0, 3))
-        y = rng.normal(size=count) if shape == 0 else np.cumsum(rng.normal(size=count)) / max(1, count) ** 0.5
+        y = (
+            rng.normal(size=count)
+            if shape == 0
+            else np.cumsum(rng.normal(size=count)) / max(1, count) ** 0.5
+        )
         if shape == 2:
             y = rng.integers(0, 4, count).astype(np.float64)
         return to_decimals(offset + spread * y / 6, decimals)
@@ -345,28 +407,50 @@ def check_decimal_case(seed: int, case: int) -> str | None:
     try:
         if rng.random() < 0.5:
             result = fluxcode.encode_group(x, params, block_len=BLOCK_LEN)
-            found = verify.encode_group(result, x, params, block_len=BLOCK_LEN, decimals=decimals)
+            found = verify.encode_group(
+                result, x, params, block_len=BLOCK_LEN, decimals=decimals
+            )
             if not found:
                 step = "update"
                 block = int(rng.integers(0, -(-n // BLOCK_LEN) + 1))
                 blocks = {block: draw(int(rng.choice(LENGTHS)))}
-                updated = fluxcode.update(result.group, blocks, params)
-                found = verify.update(updated, result.group, blocks, params, decimals=decimals)
+                updated = fluxcode.update(result.payload, blocks, params)
+                found = verify.update(
+                    updated, result.payload, blocks, params, decimals=decimals
+                )
         else:
-            hour: TimeBlocks = {"start_time": 0, "block_duration": 1000, "time_unit": "s"}
+            hour: TimeBlocks = {
+                "start_time": 0,
+                "block_duration": 1000,
+                "time_unit": "s",
+            }
             ticks = np.arange(n, dtype=np.int64)
             result = fluxcode.encode_time_blocks(x, ticks, params, **hour)
-            found = verify.encode_time_blocks(result, x, ticks, params, decimals=decimals, **hour)
+            found = verify.encode_time_blocks(
+                result, x, ticks, params, decimals=decimals, **hour
+            )
             if not found:
                 step = "update_time_blocks"
-                new_ticks = np.sort(rng.integers(0, n + 1000, int(rng.choice(LENGTHS)))).astype(np.int64)
+                new_ticks = np.sort(
+                    rng.integers(0, n + 1000, int(rng.choice(LENGTHS)))
+                ).astype(np.int64)
                 new = draw(new_ticks.size)
-                updated = fluxcode.update_time_blocks(result.group, new, new_ticks, params, **hour)
+                updated = fluxcode.update_time_blocks(
+                    result.payload, new, new_ticks, params, **hour
+                )
                 found = verify.update_time_blocks(
-                    updated, result.group, new, new_ticks, params, decimals=decimals, **hour
+                    updated,
+                    result.payload,
+                    new,
+                    new_ticks,
+                    params,
+                    decimals=decimals,
+                    **hour,
                 )
     except Exception:
-        return f"{step}: crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
+        return (
+            f"{step}: crash: " + traceback.format_exc(limit=-1).strip().splitlines()[-1]
+        )
     return f"{step}: {failure(found)} (DECIMAL_PARAMS[{params_idx}])" if found else None
 
 
@@ -393,20 +477,39 @@ def test_fuzz_timed(seed):
 
 @pytest.mark.parametrize("seed", range(4))
 def test_fuzz_decimal(seed):
-    failures = [(what, seed, case) for case in range(250) if (what := check_decimal_case(seed, case))]
+    failures = [
+        (what, seed, case)
+        for case in range(250)
+        if (what := check_decimal_case(seed, case))
+    ]
     assert not failures, failures[:5]
 
 
 # Cases the fuzz found, pinned: (seed, case) of make_case
 REGRESSIONS = [
-    (6, 119),  # a scaled grid on 2^-1016 / 512: D * 2^-e overflowed, and the anchor was written as -2^63
-    (0, 600),  # 2 samples decoded from 2^-e, within a quarter step of a decimal grid: snapped again
+    (
+        6,
+        119,
+    ),  # a scaled grid on 2^-1016 / 512: D * 2^-e overflowed, and the anchor was written as -2^63
+    (
+        0,
+        600,
+    ),  # 2 samples decoded from 2^-e, within a quarter step of a decimal grid: snapped again
     (1, 332),  # 7 samples (a short block), the same
     (8, 1189),  # three blocks at 4 bits: the same with few levels
-    (2, 285),  # glitches after NaNs at 1e-30: the NaNs held a glitch's value, and the real Euclid cycled (hang)
+    (
+        2,
+        285,
+    ),  # glitches after NaNs at 1e-30: the NaNs held a glitch's value, and the real Euclid cycled (hang)
     (4, 494),  # absolute_tolerance, glitches: the same hang on re-encode
-    (1, 821),  # glitches left in a floored block: preserve_finer_grid went one finer than 16 bits hold (wrapped)
-    (8, 320),  # absolute_tolerance's step found again as a decimal grid on re-encode (not a fixed point)
+    (
+        1,
+        821,
+    ),  # glitches left in a floored block: preserve_finer_grid went one finer than 16 bits hold (wrapped)
+    (
+        8,
+        320,
+    ),  # absolute_tolerance's step found again as a decimal grid on re-encode (not a fixed point)
     (2, 256),  # the same on a block of 9
 ]
 
@@ -419,7 +522,10 @@ def test_fuzz_regressions(seed, case):
 
 # Timed cases the fuzz found, pinned: (seed, case) of check_timed_case
 TIMED_REGRESSIONS = [
-    (28, 178),  # update_time_blocks: an upsert at a time stored at its block's end (rounded up to it) kept both
+    (
+        28,
+        178,
+    ),  # update_time_blocks: an upsert at a time stored at its block's end (rounded up to it) kept both
 ]
 
 
@@ -430,7 +536,10 @@ def test_fuzz_timed_regressions(seed, case):
 
 # Decimal cases the fuzz found, pinned: (seed, case) of check_decimal_case
 DECIMAL_REGRESSIONS = [
-    (0, 295),  # 672.594568 and .594567 at 4 bits: the range came out under 1e-6, so 1e-6 wasn't tried
+    (
+        0,
+        295,
+    ),  # 672.594568 and .594567 at 4 bits: the range came out under 1e-6, so 1e-6 wasn't tried
     (6, 81),  # the same over a block of 7
 ]
 
@@ -442,7 +551,9 @@ def test_fuzz_decimal_regressions(seed, case):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--fuzzer", choices=["values", "timed", "decimal"], default="values")
+    ap.add_argument(
+        "--fuzzer", choices=["values", "timed", "decimal"], default="values"
+    )
     ap.add_argument("--seeds", default="0-9", help="a range like 0-9, or a single seed")
     ap.add_argument("--cases", type=int, default=1500, help="cases per seed")
     a = ap.parse_args()
@@ -459,17 +570,27 @@ def main() -> None:
             else:
                 params = PARAMS[params_idx]
                 what = check_case(x, params)
-                if what is None and params.target_bits_per_sample is not None and not target_fixed(x, params):
+                if (
+                    what is None
+                    and params.target_bits_per_sample is not None
+                    and not target_fixed(x, params)
+                ):
                     what = "target moved"  # the soft cap (ENCODER §5.8): counted, not a failure
             if what:
                 failures[what, params_idx] += 1
                 if len(examples[what, params_idx]) < 3:
                     examples[what, params_idx].append((seed, case, x.size))
     total = (int(last or first) - int(first) + 1) * a.cases
-    moved = sum(count for (what, _), count in failures.items() if what == "target moved")
-    print(f"{total} cases, {sum(failures.values()) - moved} failures, {moved} moved by the target")
+    moved = sum(
+        count for (what, _), count in failures.items() if what == "target moved"
+    )
+    print(
+        f"{total} cases, {sum(failures.values()) - moved} failures, {moved} moved by the target"
+    )
     for (what, params_idx), count in sorted(failures.items()):
-        print(f"  {what:18s} PARAMS[{params_idx}]: {count}, e.g. (seed, case, n) {examples[what, params_idx]}")
+        print(
+            f"  {what:18s} PARAMS[{params_idx}]: {count}, e.g. (seed, case, n) {examples[what, params_idx]}"
+        )
 
 
 if __name__ == "__main__":

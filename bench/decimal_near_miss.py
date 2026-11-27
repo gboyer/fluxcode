@@ -38,12 +38,12 @@ def off_grid(x, step):
 
 def us_per_block(x, params):
     for _ in range(WARMUP):
-        encode_group(x, params)
+        encode_group(x, params, block_len=BLOCK)
     best = float("inf")
     for _ in range(ROUNDS):
         t0 = time.perf_counter()
         for _ in range(REPS):
-            encode_group(x, params)
+            encode_group(x, params, block_len=BLOCK)
         best = min(best, (time.perf_counter() - t0) / REPS)
     return best / (x.size // BLOCK) * 1e6
 

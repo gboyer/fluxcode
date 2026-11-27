@@ -2,17 +2,19 @@
 # Copyright (c) 2026 Garry Boyer
 """Unified 2-bit sample exception codes and escaped-value handling.
 
-Every block flagged with ``BLOCK_FLAG_SAMPLE_CODES`` carries two bit planes assigning each
-sample one of four 2-bit codes:
+Every block flagged with ``BLOCK_FLAG_SAMPLE_CODES`` carries two bit planes assigning
+each sample one of four 2-bit codes:
 
 - ``00`` (``CODE_ON_GRID``): quantized on the block's grid;
 - ``01`` (``CODE_NAN``): canonical quiet NaN;
 - ``10`` (``CODE_ESCAPE``): next float64 in the group's byte-planed ``escaped_values``
-  trailer (``+/-inf`` or a finite outlier stored separately so the bulk retains precision);
+  trailer (``+/-inf`` or a finite outlier stored separately so the bulk retains
+  precision);
 - ``11`` (``CODE_REPEAT_ESCAPE``): repeats the block's previous escaped float64 value.
 
-Provides non-finite imputation, benefit-gated outlier escaping, escape collection, byte-plane
-packing/unpacking, group splicing, and decode-time exception restoration.
+Provides non-finite value replacement, outlier escaping (when it meaningfully refines
+the bulk step), escape collection, byte-plane packing/unpacking, group splicing, and
+decode-time exception restoration.
 """
 
 import math
@@ -21,6 +23,7 @@ import numpy as np
 from numba import njit
 
 from . import _extreme_magnitudes as xm
+from ._basic_stats import sum_squares
 from ._bitpacking import sample_code_planes_view, unpack_sample_code
 from ._format import (
     BLOCK_FLAG_SAMPLE_CODES,
@@ -42,41 +45,53 @@ ESCAPE_MIN_LEN: int = 16
 """Minimum block length eligible for finite-outlier escaping."""
 
 ESCAPE_TRIGGER: float = 0.05
-"""Mean proximity to either range endpoint (as a fraction of span) that triggers outlier inspection."""
+"""Mean proximity to either range endpoint (as a fraction of span) that triggers outlier
+inspection.
+"""
 
 ESCAPE_RANGE_SPREAD: float = 16.0
-"""Range-to-standard-deviation ratio that also triggers outlier inspection (two-sided outliers)."""
+"""Range-to-standard-deviation ratio that also triggers outlier inspection (two-sided
+outliers).
+"""
 
 ESCAPE_DEVIATIONS: float = 16.0
-"""Cutoff in robust standard deviations from the trimmed center beyond which samples are outliers."""
+"""Cutoff in robust standard deviations from the trimmed center beyond which samples are
+outliers.
+"""
 
 ESCAPE_MAX_SHARE: int = 16
-"""Maximum fraction denominator: at most ``1 / ESCAPE_MAX_SHARE`` of a block may be escaped."""
+"""Maximum fraction denominator: at most ``1 / ESCAPE_MAX_SHARE`` of a block may be
+escaped.
+"""
 
 ESCAPE_MIN_GAIN: int = 2
-"""Minimum bit-precision gain (``2^ESCAPE_MIN_GAIN`` finer bulk step) required to escape outliers."""
+"""Minimum bit-precision gain (``2^ESCAPE_MIN_GAIN`` finer bulk step) required to escape
+outliers.
+"""
 
 
 @njit(nogil=True, cache=True)
-def impute_nonfinite(
+def replace_nonfinite(
     samples: np.ndarray, out_held_samples: np.ndarray, out_codes: np.ndarray
 ) -> tuple[float, float, float, int]:
-    """Classifies non-finite samples and imputes them via sample-and-hold.
+    """Classifies non-finite samples and replaces them via sample-and-hold.
 
-    Each non-finite sample is replaced in ``out_held_samples`` by the preceding finite sample
-    (or the block's first finite sample for leading runs; ``0.0`` if none are finite).
+    Each non-finite sample is substituted in ``out_held_samples`` by the preceding
+    finite sample (or the block's first finite sample for leading runs; ``0.0`` if
+    none are finite).
 
     Args:
         samples: 1D float64 array of raw block samples.
-        out_held_samples: Output 1D float64 array receiving imputed samples.
-        out_codes: Output 1D uint8 array receiving ``CODE_ON_GRID``, ``CODE_NAN``, or ``CODE_ESCAPE``.
+        out_held_samples: Output 1D float64 array receiving cleaned samples.
+        out_codes: Output 1D uint8 array receiving ``CODE_ON_GRID``, ``CODE_NAN``, or
+            ``CODE_ESCAPE``.
 
     Returns:
-        Tuple ``(min_val, max_val, mean_val, finite_count)`` computed over finite samples only
-        (all NaN with count 0 when no sample is finite).
+        Tuple ``(min_val, max_val, mean_val, finite_count)`` computed over finite
+        samples only (all NaN with count 0 when no sample is finite).
     """
-    # Find the first finite sample to seed leading non-finite runs, then make one pass to
-    # classify codes, hold values, and accumulate finite summary statistics.
+    # Find the first finite sample to seed leading non-finite runs, then make one pass
+    # to classify codes, hold values, and accumulate finite summary statistics.
     num_samples = samples.shape[0]
     first_finite_idx = -1
     for sample_idx in range(num_samples):
@@ -108,10 +123,13 @@ def impute_nonfinite(
 
 
 @njit(nogil=True, cache=True)
-def hold_exception_samples(samples: np.ndarray, codes: np.ndarray, out_held: np.ndarray) -> None:
+def hold_exception_samples(
+    samples: np.ndarray, codes: np.ndarray, out_held: np.ndarray
+) -> None:
     """Replaces every non-on-grid sample with the nearest preceding on-grid sample.
 
-    Leading exception runs take the block's first on-grid sample (or ``0.0`` if none exist).
+    Leading exception runs take the block's first on-grid sample (or ``0.0`` if none
+    exist).
 
     Args:
         samples: 1D float64 array of block samples.
@@ -130,32 +148,17 @@ def hold_exception_samples(samples: np.ndarray, codes: np.ndarray, out_held: np.
         out_held[sample_idx] = previous
 
 
-@njit(nogil=True, cache=True, fastmath=True)
-def _sum_squares(samples: np.ndarray, mean: float) -> float:
-    """Computes the sum of squared deviations from ``mean`` over all samples.
-
-    Args:
-        samples: 1D float64 array of finite samples.
-        mean: Reference mean value.
-
-    Returns:
-        Sum of ``(samples[i] - mean)^2``.
-    """
-    # Separate fastmath kernel so LLVM vectorizes the clean-block variance trigger check.
-    total = 0.0
-    for sample_idx in range(samples.shape[0]):
-        dev = samples[sample_idx] - mean
-        total += dev * dev
-    return total
-
-
 @njit(inline="always")
-def _on_decimal_grid(samples: np.ndarray, codes: np.ndarray, has_codes: bool, decimal_exp: int) -> bool:
-    """Checks whether every on-grid sample equals the float64 nearest ``k * 10^decimal_exp``.
+def _on_decimal_grid(
+    samples: np.ndarray, codes: np.ndarray, has_codes: bool, decimal_exp: int
+) -> bool:
+    """Checks whether every on-grid sample equals the float64 nearest ``k *
+    10^decimal_exp``.
 
     Args:
         samples: 1D float64 array of block samples.
-        codes: 1D uint8 array of sample codes (consulted only when ``has_codes`` is True).
+        codes: 1D uint8 array of sample codes (consulted only when ``has_codes`` is
+            True).
         has_codes: Whether ``codes`` contains active exception markers.
         decimal_exp: Candidate decimal exponent ``p``.
 
@@ -178,12 +181,15 @@ def _on_decimal_grid(samples: np.ndarray, codes: np.ndarray, has_codes: bool, de
 
 
 @njit(inline="always")
-def _on_binary_grid(samples: np.ndarray, codes: np.ndarray, has_codes: bool, quant_exp: int) -> bool:
+def _on_binary_grid(
+    samples: np.ndarray, codes: np.ndarray, has_codes: bool, quant_exp: int
+) -> bool:
     """Checks whether every on-grid sample is an exact multiple of ``2^quant_exp``.
 
     Args:
         samples: 1D float64 array of block samples.
-        codes: 1D uint8 array of sample codes (consulted only when ``has_codes`` is True).
+        codes: 1D uint8 array of sample codes (consulted only when ``has_codes`` is
+            True).
         has_codes: Whether ``codes`` contains active exception markers.
         quant_exp: Candidate power-of-two exponent.
 
@@ -209,7 +215,8 @@ def _triggers_outlier_check(
     upper_bound: float,
     span: float,
 ) -> bool:
-    """Checks whether a block's mean skew or range-to-SD ratio warrants full outlier inspection.
+    """Checks whether a block's mean skew or range-to-SD ratio warrants full outlier
+    inspection.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -223,10 +230,15 @@ def _triggers_outlier_check(
     Returns:
         True if the block should proceed to trimmed-center outlier detection.
     """
-    # Fast O(1) trigger: one-sided outliers pull the mean within ESCAPE_TRIGGER of one end.
-    if mean - lower_bound < ESCAPE_TRIGGER * span or upper_bound - mean < ESCAPE_TRIGGER * span:
+    # Fast O(1) trigger: one-sided outliers pull the mean within ESCAPE_TRIGGER of one
+    # end.
+    if (
+        mean - lower_bound < ESCAPE_TRIGGER * span
+        or upper_bound - mean < ESCAPE_TRIGGER * span
+    ):
         return True
-    # Secondary trigger for symmetric/two-sided outliers: range exceeds ESCAPE_RANGE_SPREAD * SD.
+    # Secondary trigger for symmetric/two-sided outliers: range exceeds
+    # ESCAPE_RANGE_SPREAD * SD.
     squares = 0.0
     count = samples.shape[0]
     if has_codes:
@@ -237,15 +249,19 @@ def _triggers_outlier_check(
                 squares += dev * dev
                 count += 1
     else:
-        squares = _sum_squares(samples, mean)
-    return bool(span * span > ESCAPE_RANGE_SPREAD * ESCAPE_RANGE_SPREAD * squares / max(count, 1))
+        squares = sum_squares(samples, mean)
+    return bool(
+        span * span
+        > ESCAPE_RANGE_SPREAD * ESCAPE_RANGE_SPREAD * squares / max(count, 1)
+    )
 
 
 @njit(inline="always")
 def _trimmed_center_and_mad(
     samples: np.ndarray, codes: np.ndarray, has_codes: bool, initial_center: float
 ) -> tuple[bool, float, float]:
-    """Estimates a robust center and MAD of on-grid samples via three iterative trimming passes.
+    """Estimates a robust center and MAD of on-grid samples via three iterative trimming
+    passes.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -300,14 +316,17 @@ def escape_outliers(
     grids: int,
     scratch_quantized: np.ndarray,
 ) -> tuple[bool, float, float]:
-    """Escapes finite outliers in a block when doing so meaningfully refines the bulk step.
+    """Escapes finite outliers in a block when doing so meaningfully refines the bulk
+    step.
 
-    Escaped samples are tagged ``CODE_ESCAPE`` in ``codes`` and sample-and-held into ``held``
-    so the block can be quantized over the narrower bulk range ``[bulk_min, bulk_max]``.
+    Escaped samples are tagged ``CODE_ESCAPE`` in ``codes`` and sample-and-held into
+    ``held`` so the block can be quantized over the narrower bulk range ``[bulk_min,
+    bulk_max]``.
 
     Args:
         samples: 1D float64 array of block samples.
-        held: Output 1D float64 array receiving sample-and-held values when escaping triggers.
+        held: Output 1D float64 array receiving sample-and-held values when escaping
+            triggers.
         codes: In-out 1D uint8 array of sample exception codes.
         has_codes: Whether ``codes`` is already initialized with non-finite markers.
         mean: Arithmetic mean of finite samples.
@@ -315,18 +334,24 @@ def escape_outliers(
         upper_bound: Maximum finite sample value.
         floor_exp: Coarsest active floor exponent (noise floor or absolute tolerance).
         max_bits: Maximum quantization bit budget.
-        grids: Active grid mode (``GRIDS_BINARY``, ``GRIDS_DECIMAL``, or ``GRIDS_RATIONAL``).
-        scratch_quantized: Preallocated 1D int32 scratch buffer for decimal-grid checking.
+        grids: Active grid mode (``GRIDS_BINARY``, ``GRIDS_DECIMAL``, or
+            ``GRIDS_RATIONAL``).
+        scratch_quantized: Preallocated 1D int32 scratch buffer for decimal-grid
+            checking.
 
     Returns:
         Tuple ``(escaped, bulk_min, bulk_max)``. When ``escaped`` is False, returns
-        ``(False, lower_bound, upper_bound)`` and leaves ``codes`` and ``held`` unchanged.
+        ``(False, lower_bound, upper_bound)`` and leaves ``codes`` and ``held``
+        unchanged.
     """
-    # 1. Check cheap prerequisites (length, finite positive span, floor headroom, skew/spread trigger).
-    # 2. Estimate trimmed center and MAD, count samples beyond ESCAPE_DEVIATIONS robust sigmas,
-    #    and verify both outlier share <= 1 / ESCAPE_MAX_SHARE and >= ESCAPE_MIN_GAIN bit refinement.
-    # 3. Skip blocks already exact on their full-range binary or decimal grid; otherwise mark
-    #    outliers as CODE_ESCAPE and re-hold all coded samples strictly inside the bulk range.
+    # 1. Check cheap prerequisites (length, finite positive span, floor headroom,
+    #    skew/spread trigger).
+    # 2. Estimate trimmed center and MAD, count samples beyond ESCAPE_DEVIATIONS robust
+    #    sigmas, and verify both outlier share <= 1 / ESCAPE_MAX_SHARE and >=
+    #    ESCAPE_MIN_GAIN bit refinement.
+    # 3. Skip blocks already exact on their full-range binary or decimal grid; otherwise
+    #    mark outliers as CODE_ESCAPE and re-hold all coded samples strictly inside the
+    #    bulk range.
     num_samples = samples.shape[0]
     span = upper_bound - lower_bound
     if num_samples < ESCAPE_MIN_LEN or not span > 0 or not math.isfinite(span):
@@ -334,7 +359,9 @@ def escape_outliers(
     old_exp = snapped_exponent_for_range(lower_bound, upper_bound, max_bits)
     if old_exp - floor_exp < ESCAPE_MIN_GAIN:
         return False, lower_bound, upper_bound
-    if not _triggers_outlier_check(samples, codes, has_codes, mean, lower_bound, upper_bound, span):
+    if not _triggers_outlier_check(
+        samples, codes, has_codes, mean, lower_bound, upper_bound, span
+    ):
         return False, lower_bound, upper_bound
     ok, center_val, deviation = _trimmed_center_and_mad(samples, codes, has_codes, mean)
     if not ok:
@@ -354,26 +381,40 @@ def escape_outliers(
         else:
             bulk_min = min(bulk_min, value)
             bulk_max = max(bulk_max, value)
-    if num_escaped == 0 or num_escaped * ESCAPE_MAX_SHARE > num_samples or not bulk_max >= bulk_min:
+    if (
+        num_escaped == 0
+        or num_escaped * ESCAPE_MAX_SHARE > num_samples
+        or not bulk_max >= bulk_min
+    ):
         return False, lower_bound, upper_bound
     new_exp = (
-        snapped_exponent_for_range(bulk_min, bulk_max, max_bits) if bulk_max > bulk_min else old_exp - ESCAPE_MIN_GAIN
+        snapped_exponent_for_range(bulk_min, bulk_max, max_bits)
+        if bulk_max > bulk_min
+        else old_exp - ESCAPE_MIN_GAIN
     )
     if old_exp - max(new_exp, floor_exp) < ESCAPE_MIN_GAIN:
         return False, lower_bound, upper_bound
-    # Do not escape samples when the full-range grid already represents the entire block exactly.
+    # Do not escape samples when the full-range grid already represents the entire block
+    # exactly.
     if _on_binary_grid(samples, codes, has_codes, old_exp):
         return False, lower_bound, upper_bound
     if grids >= GRIDS_DECIMAL and span < xm.WIDE_RANGE:
-        decimal_exp, _, _ = choose_decimal_or_binary_grid(samples, lower_bound, upper_bound, old_exp, scratch_quantized)
-        if decimal_exp != NO_DECIMAL and _on_decimal_grid(samples, codes, has_codes, decimal_exp):
+        decimal_exp, _, _ = choose_decimal_or_binary_grid(
+            samples, lower_bound, upper_bound, old_exp, scratch_quantized
+        )
+        if decimal_exp != NO_DECIMAL and _on_decimal_grid(
+            samples, codes, has_codes, decimal_exp
+        ):
             return False, lower_bound, upper_bound
-    # Commit outlier codes and re-hold every exception sample from the bulk so leading outliers
-    # and non-finite runs after an outlier stay within [bulk_min, bulk_max].
+    # Commit outlier codes and re-hold every exception sample from the bulk so leading
+    # outliers and non-finite runs after an outlier stay within [bulk_min, bulk_max].
     if not has_codes:
         codes[:] = CODE_ON_GRID
     for sample_idx in range(num_samples):
-        if codes[sample_idx] == CODE_ON_GRID and abs(samples[sample_idx] - center_val) > threshold:
+        if (
+            codes[sample_idx] == CODE_ON_GRID
+            and abs(samples[sample_idx] - center_val) > threshold
+        ):
             codes[sample_idx] = CODE_ESCAPE
     hold_exception_samples(samples, codes, held)
     return True, bulk_min, bulk_max
@@ -388,12 +429,13 @@ def collect_escaped_values(
     block_max: np.ndarray,
     max_bits: int,
 ) -> np.ndarray:
-    """Collects escaped float64 values in block/sample order and collapses consecutive repeats.
+    """Collects escaped float64 values in block/sample order and collapses consecutive
+    repeats.
 
-    Values exact in float32 (such as ``+/-inf`` and common sentinel codes) are stored verbatim;
-    other finite values are rounded to the block's full-range ``max_bits`` step. Consecutive
-    identical escaped values within the same block are rewritten to ``CODE_REPEAT_ESCAPE`` in
-    ``in_out_codes``.
+    Values exact in float32 (such as ``+/-inf`` and common sentinel codes) are stored
+    verbatim; other finite values are rounded to the block's full-range ``max_bits``
+    step. Consecutive identical escaped values within the same block are rewritten to
+    ``CODE_REPEAT_ESCAPE`` in ``in_out_codes``.
 
     Args:
         samples: 1D float64 array of all raw samples in the block group.
@@ -402,7 +444,8 @@ def collect_escaped_values(
         in_out_codes: In-out 1D uint8 array of per-sample exception codes.
         block_min: 1D float64 array of per-block finite minima.
         block_max: 1D float64 array of per-block finite maxima.
-        max_bits: Maximum quantization bit budget used for rounding non-float32 outliers.
+        max_bits: Maximum quantization bit budget used for rounding non-float32
+            outliers.
 
     Returns:
         1D float64 array of escaped values to store in the group trailer.
@@ -420,9 +463,12 @@ def collect_escaped_values(
     previous_block, previous_value = -1, math.nan
     for position, block in zip(positions.tolist(), blocks.tolist(), strict=True):
         value = float(samples[position])
-        # Round non-float32 finite outliers to the full-range max_bits grid so low mantissa bytes zero out.
+        # Round non-float32 finite outliers to the full-range max_bits grid so low
+        # mantissa bytes zero out.
         if math.isfinite(value) and float(np.float32(value)) != value:
-            exp = snapped_exponent_for_range(float(block_min[block]), float(block_max[block]), max_bits)
+            exp = snapped_exponent_for_range(
+                float(block_min[block]), float(block_max[block]), max_bits
+            )
             rounded = math.ldexp(round(math.ldexp(value, -exp)), exp)
             value = rounded if math.isfinite(rounded) else value
         if block == previous_block and value == previous_value:
@@ -434,7 +480,8 @@ def collect_escaped_values(
 
 
 def pack_escaped_values(escaped_values: np.ndarray) -> np.ndarray:
-    """Serializes escaped float64 values into 8 byte planes (all byte 0s, then byte 1s, ...).
+    """Serializes escaped float64 values into 8 byte planes (all byte 0s, then byte 1s,
+    ...).
 
     Args:
         escaped_values: 1D float64 array of escaped sample values.
@@ -443,12 +490,16 @@ def pack_escaped_values(escaped_values: np.ndarray) -> np.ndarray:
         1D uint8 array of length ``8 * len(escaped_values)``.
     """
     return np.ascontiguousarray(
-        np.asarray(escaped_values, np.float64).view(np.uint8).reshape(-1, BYTES_PER_ESCAPED_VALUE).T
+        np.asarray(escaped_values, np.float64)
+        .view(np.uint8)
+        .reshape(-1, BYTES_PER_ESCAPED_VALUE)
+        .T
     ).ravel()
 
 
 def unpack_escaped_values(body: np.ndarray, start: int, num_escapes: int) -> np.ndarray:
-    """Deserializes ``num_escapes`` byte-planed float64 values from an uncompressed body.
+    """Deserializes ``num_escapes`` byte-planed float64 values from an uncompressed
+    body.
 
     Args:
         body: 1D uint8 array of uncompressed body bytes.
@@ -462,7 +513,11 @@ def unpack_escaped_values(body: np.ndarray, start: int, num_escapes: int) -> np.
         return np.zeros(0)
     end = start + BYTES_PER_ESCAPED_VALUE * num_escapes
     return (
-        np.ascontiguousarray(body[start:end].reshape(BYTES_PER_ESCAPED_VALUE, num_escapes).T).view(np.float64).ravel()
+        np.ascontiguousarray(
+            body[start:end].reshape(BYTES_PER_ESCAPED_VALUE, num_escapes).T
+        )
+        .view(np.float64)
+        .ravel()
     )
 
 
@@ -477,7 +532,8 @@ def splice_escaped_values(
     new_escapes: np.ndarray,
     new_sample_offsets: np.ndarray,
 ) -> np.ndarray:
-    """Merges carried-over old block escapes with newly encoded block escapes in block order.
+    """Merges carried-over old block escapes with newly encoded block escapes in block
+    order.
 
     Args:
         old_escapes: 1D float64 array of escaped values from the existing group.
@@ -488,20 +544,27 @@ def splice_escaped_values(
         new_flags: 1D uint8 array of block flags for the newly encoded blocks.
         new_codes: 1D uint8 array of sample codes for the newly encoded blocks.
         new_escapes: 1D float64 array of escaped values for the newly encoded blocks.
-        new_sample_offsets: 1D int64 cumulative sample offsets for the newly encoded blocks.
+        new_sample_offsets: 1D int64 cumulative sample offsets for the newly encoded
+            blocks.
 
     Returns:
         1D float64 array of merged escaped values in final block order.
     """
-    # Count CODE_ESCAPE entries per newly encoded block to slice new_escapes, then assemble
-    # each block's slice from either new_escapes (for updated indices) or old_escapes.
+    # Count CODE_ESCAPE entries per newly encoded block to slice new_escapes, then
+    # assemble each block's slice from either new_escapes (for updated indices) or
+    # old_escapes.
     if not old_escapes.shape[0] and not new_escapes.shape[0]:
         return np.zeros(0)
     new_counts = np.zeros(indices.shape[0], np.int64)
     for rank in range(indices.shape[0]):
         if new_flags[rank] & BLOCK_FLAG_SAMPLE_CODES:
-            first, end = int(new_sample_offsets[rank]), int(new_sample_offsets[rank + 1])
-            new_counts[rank] = int(np.count_nonzero(new_codes[first:end] == CODE_ESCAPE))
+            first, end = (
+                int(new_sample_offsets[rank]),
+                int(new_sample_offsets[rank + 1]),
+            )
+            new_counts[rank] = int(
+                np.count_nonzero(new_codes[first:end] == CODE_ESCAPE)
+            )
     new_esc_offsets = np.zeros(indices.shape[0] + 1, np.int64)
     np.cumsum(new_counts, out=new_esc_offsets[1:])
     rank_of = np.full(num_blocks, -1, np.int64)
@@ -512,7 +575,9 @@ def splice_escaped_values(
         if rank >= 0:
             part = new_escapes[new_esc_offsets[rank] : new_esc_offsets[rank + 1]]
         elif block_idx < num_old_blocks:
-            part = old_escapes[old_escape_offsets[block_idx] : old_escape_offsets[block_idx + 1]]
+            part = old_escapes[
+                old_escape_offsets[block_idx] : old_escape_offsets[block_idx + 1]
+            ]
         else:
             continue
         if part.shape[0]:
@@ -529,7 +594,8 @@ def count_block_escapes(
     has_time: bool,
     out_offsets: np.ndarray,
 ) -> bool:
-    """Computes each block's starting offset in the ``escaped_values`` trailer and validates repeats.
+    """Computes each block's starting offset in the ``escaped_values`` trailer and
+    validates repeats.
 
     Args:
         body: 1D uint8 array of uncompressed body bytes.
@@ -537,8 +603,8 @@ def count_block_escapes(
         plane_byte_offsets: 1D int64 cumulative residual plane-byte counts.
         code_plane_offsets: 1D int64 cumulative sample-code plane-byte counts.
         has_time: Whether the body includes a time axis.
-        out_offsets: Output 1D int64 array of length ``num_blocks + 1`` receiving cumulative
-            escape counts.
+        out_offsets: Output 1D int64 array of length ``num_blocks + 1`` receiving
+            cumulative escape counts.
 
     Returns:
         True if all sample code planes are valid, or False if any block uses
@@ -555,7 +621,9 @@ def count_block_escapes(
         if code_plane_offsets[block_idx + 1] > code_plane_offsets[block_idx]:
             seen = False
             block_len = sample_offsets[block_idx + 1] - sample_offsets[block_idx]
-            for byte_idx in range(code_plane_offsets[block_idx + 1] - code_plane_offsets[block_idx]):
+            for byte_idx in range(
+                code_plane_offsets[block_idx + 1] - code_plane_offsets[block_idx]
+            ):
                 plane0_byte = code_planes[0, code_plane_offsets[block_idx] + byte_idx]
                 plane1_byte = code_planes[1, code_plane_offsets[block_idx] + byte_idx]
                 # Skip 8-sample groups whose codes are all CODE_ON_GRID (00b).
@@ -574,9 +642,13 @@ def count_block_escapes(
 
 @njit(nogil=True, cache=True)
 def restore_exception_samples(
-    code_planes: np.ndarray, plane_byte_offset: int, escaped_values: np.ndarray, in_out_samples: np.ndarray
+    code_planes: np.ndarray,
+    plane_byte_offset: int,
+    escaped_values: np.ndarray,
+    in_out_samples: np.ndarray,
 ) -> None:
-    """Overwrites a flagged block's decoded samples with NaNs and escaped float64 values.
+    """Overwrites a flagged block's decoded samples with NaNs and escaped float64
+    values.
 
     Args:
         code_planes: 2D uint8 view of shape ``(2, total_code_plane_bytes)``.

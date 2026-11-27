@@ -73,13 +73,13 @@ def best_us(func, reps):
 def measure(values, ticks, plain_group, reps, plain_times):
     """Bytes, irregular blocks and µs the timestamps add to the values' block group."""
     times = ticks.view("datetime64[ns]")
-    group = fluxcode.encode_group(values, times=times).group
+    group = fluxcode.encode_group(values, block_len=BLOCK, times=times).payload
     decoded = fluxcode.decode_group(group)
     assert decoded.times is not None and np.array_equal(decoded.times, times)
     irregular = (_group.decompress(group).block_flags & _format.BLOCK_FLAG_IRREGULAR_TIME) != 0
     row = {"bytes": len(group) - len(plain_group), "irregular": irregular}
     if reps:
-        row["encode_us"] = best_us(lambda: fluxcode.encode_group(values, times=times), reps) - plain_times[0]
+        row["encode_us"] = best_us(lambda: fluxcode.encode_group(values, block_len=BLOCK, times=times), reps) - plain_times[0]
         row["decode_us"] = best_us(lambda: fluxcode.decode_group(group), reps) - plain_times[1]
     return row
 
@@ -160,7 +160,7 @@ def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
     rounded to the time error."""
     times = ticks.view("datetime64[ns]")
     params = fluxcode.Params(time_error=time_error)
-    group = fluxcode.encode_group(values, params, times=times).group
+    group = fluxcode.encode_group(values, params, block_len=BLOCK, times=times).payload
     decoded = fluxcode.decode_group(group)
     rounded = decoded.times.view(np.int64)
     assert np.all(np.diff(rounded) >= 0), "rounded times out of order"
@@ -168,7 +168,7 @@ def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
     row = {"bytes": len(group) - len(plain_group), "irregular": irregular,
            "moved": float(np.abs(rounded - ticks).max() / np.mean(np.diff(ticks)))}
     if reps:
-        row["encode_us"] = best_us(lambda: fluxcode.encode_group(values, params, times=times), reps) - plain_times[0]
+        row["encode_us"] = best_us(lambda: fluxcode.encode_group(values, params, block_len=BLOCK, times=times), reps) - plain_times[0]
         row["decode_us"] = best_us(lambda: fluxcode.decode_group(group), reps) - plain_times[1]
     return row
 
@@ -194,8 +194,8 @@ def main():
     parser.add_argument("--reps", type=int, default=30)
     args = parser.parse_args()
     values = minute("sin-4.12hz", 1)
-    plain_group = fluxcode.encode_group(values).group
-    plain_times = (best_us(lambda: fluxcode.encode_group(values), args.reps),
+    plain_group = fluxcode.encode_group(values, block_len=BLOCK).payload
+    plain_times = (best_us(lambda: fluxcode.encode_group(values, block_len=BLOCK), args.reps),
                    best_us(lambda: fluxcode.decode_group(plain_group), args.reps))
 
     examples = []

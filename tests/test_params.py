@@ -49,7 +49,9 @@ def test_valid_and_normalized():
     hash(p)
 
 
-@pytest.mark.parametrize("x,msg", [(np.array([]), "non-empty"), (np.zeros((2, 3)), "1-D")])
+@pytest.mark.parametrize(
+    "x,msg", [(np.array([]), "non-empty"), (np.zeros((2, 3)), "1-D")]
+)
 def test_bad_input(x, msg):
     with pytest.raises(ValueError, match=msg):
         encode_series(x)
@@ -73,7 +75,11 @@ def exponents(x, params):
 @pytest.mark.parametrize("target", [None, 6.0, 8.0])
 def test_min_max_bits_never_violated(kind, target):
     p = Params(
-        min_quantize_bits=8, max_quantize_bits=12, noise_floor_sigma=4.0, target_bits_per_sample=target, grids="binary"
+        min_quantize_bits=8,
+        max_quantize_bits=12,
+        noise_floor_sigma=4.0,
+        target_bits_per_sample=target,
+        grids="binary",
     )
     x = minute(kind, 3)
     _, e, rng = exponents(x, p)
@@ -100,7 +106,9 @@ def test_target_caps_expensive_signals(kind):
 
 def test_target_leaves_cheap_groups_alone():
     x = minute("sin-4.12hz", 6)
-    assert encode_series(x, Params(target_bits_per_sample=8.0))[0] == encode_series(x)[0]
+    assert (
+        encode_series(x, Params(target_bits_per_sample=8.0))[0] == encode_series(x)[0]
+    )
 
 
 def test_target_equalizes_expensive_blocks():
@@ -129,7 +137,9 @@ def test_small_targets_can_grow_repeat_heavy_groups():
     starts failing, the target got smarter; revisit MIN_TARGET_BITS and the TODO in encode_group."""
     x = minute("quadratic", 9)
     assert len(kernel_groups(x, 2.0)) > len(kernel_groups(x, 0.0))
-    assert kernel_groups(x, 6.0) == kernel_groups(x, 0.0)  # under budget at the minimum target
+    assert kernel_groups(x, 6.0) == kernel_groups(
+        x, 0.0
+    )  # under budget at the minimum target
 
 
 @pytest.mark.parametrize("grids", ["binary", "decimal", "rational"])
@@ -140,46 +150,53 @@ def test_absolute_tolerance_coarsens_and_is_fixed_point(grids):
     # 1) Moderate range: 0..100, absolute_tolerance=0.3 (step <= 0.6)
     x = 50.0 + 50.0 * np.sin(np.arange(2000) / 150.0) + rng.normal(0, 0.01, 2000)
     params = Params(noise_floor_sigma=0, grids=grids, absolute_tolerance=0.3)
-    res = fluxcode.encode_group(x, params)
-    y = fluxcode.decode_group(res.group).values
+    res = fluxcode.encode_group(x, params, block_len=1000)
+    y = fluxcode.decode_group(res.payload).values
     assert np.abs(y - x).max() <= 0.3 + 1e-12
-    assert verify.encode_group(res, x, params) == []
-    assert verify.fixed_point(res.group, params) == []
+    assert verify.encode_group(res, x, params, block_len=1000) == []
+    assert verify.fixed_point(res.payload, params) == []
 
     # 2) Quiet block spanning 0.1 °C with absolute_tolerance=0.5: coarsens past min_quantize_bits (6)
     quiet = 20.0 + 0.1 * np.sin(np.arange(1000) / 80.0)
-    p_quiet = Params(min_quantize_bits=6, noise_floor_sigma=0, grids=grids, absolute_tolerance=0.5)
-    res_q = fluxcode.encode_group(quiet, p_quiet)
-    y_q = fluxcode.decode_group(res_q.group).values
+    p_quiet = Params(
+        min_quantize_bits=6, noise_floor_sigma=0, grids=grids, absolute_tolerance=0.5
+    )
+    res_q = fluxcode.encode_group(quiet, p_quiet, block_len=1000)
+    y_q = fluxcode.decode_group(res_q.payload).values
     assert np.abs(y_q - quiet).max() <= 0.5 + 1e-12
     assert np.unique(y_q).size <= 2  # NOT forced to 64 levels!
-    assert verify.encode_group(res_q, quiet, p_quiet) == []
-    assert verify.fixed_point(res_q.group, p_quiet) == []
+    assert verify.encode_group(res_q, quiet, p_quiet, block_len=1000) == []
+    assert verify.fixed_point(res_q.payload, p_quiet) == []
 
     # 3) Quiet block straddling a midpoint [20.45, 20.55] with absolute_tolerance=0.6 (scaled under rational)
     straddle = np.linspace(20.45, 20.55, 1000)
-    p_straddle = Params(min_quantize_bits=6, noise_floor_sigma=0, grids=grids, absolute_tolerance=0.6)
-    res_s = fluxcode.encode_group(straddle, p_straddle)
-    y_s = fluxcode.decode_group(res_s.group).values
+    p_straddle = Params(
+        min_quantize_bits=6, noise_floor_sigma=0, grids=grids, absolute_tolerance=0.6
+    )
+    res_s = fluxcode.encode_group(straddle, p_straddle, block_len=1000)
+    y_s = fluxcode.decode_group(res_s.payload).values
     assert np.abs(y_s - straddle).max() <= 0.6 + 1e-12
-    assert verify.encode_group(res_s, straddle, p_straddle) == []
-    assert verify.fixed_point(res_s.group, p_straddle) == []
+    assert verify.encode_group(res_s, straddle, p_straddle, block_len=1000) == []
+    assert verify.fixed_point(res_s.payload, p_straddle) == []
 
     # 4) Short block (<= 8 samples) honours absolute_tolerance
     short = np.array([10.0, 10.03, 10.07, 10.09])
     res_short = fluxcode.encode_blocks(short, [4], p_quiet)
-    assert np.abs(fluxcode.decode_group(res_short.group).values - short).max() <= 0.5 + 1e-12
+    assert (
+        np.abs(fluxcode.decode_group(res_short.payload).values - short).max()
+        <= 0.5 + 1e-12
+    )
     assert verify.encode_blocks(res_short, short, [4], p_quiet) == []
-    assert verify.fixed_point(res_short.group, p_quiet) == []
+    assert verify.fixed_point(res_short.payload, p_quiet) == []
 
 
 def test_absolute_tolerance_huge_value_is_safe():
     """Huge absolute_tolerance (near DBL_MAX) does not overflow and remains a fixed point."""
     x = np.linspace(1.0, 2.0, 1000)
     params = Params(noise_floor_sigma=0, absolute_tolerance=1e308)
-    res = fluxcode.encode_group(x, params)
-    assert verify.encode_group(res, x, params) == []
-    assert verify.fixed_point(res.group, params) == []
+    res = fluxcode.encode_group(x, params, block_len=1000)
+    assert verify.encode_group(res, x, params, block_len=1000) == []
+    assert verify.fixed_point(res.payload, params) == []
 
 
 def test_absolute_tolerance_scaled_grid_fixed_point_even_gcd():
@@ -188,9 +205,9 @@ def test_absolute_tolerance_scaled_grid_fixed_point_even_gcd():
     x = rng.normal(10.0, 0.02, 1000)
     for nf in (0.0, 0.25):
         params = Params(grids="rational", absolute_tolerance=0.05, noise_floor_sigma=nf)
-        res = fluxcode.encode_group(x, params)
-        assert verify.encode_group(res, x, params) == []
-        assert verify.fixed_point(res.group, params) == []
+        res = fluxcode.encode_group(x, params, block_len=1000)
+        assert verify.encode_group(res, x, params, block_len=1000) == []
+        assert verify.fixed_point(res.payload, params) == []
 
 
 def test_constant_bulk_with_glitches_escapes_and_fixed_point():
@@ -201,11 +218,11 @@ def test_constant_bulk_with_glitches_escapes_and_fixed_point():
         for grids in ("binary", "decimal", "rational"):
             for tol in (0.0, 0.05, 0.5):
                 params = Params(grids=grids, absolute_tolerance=tol)
-                res = fluxcode.encode_group(x, params)
-                y = fluxcode.decode_group(res.group).values
+                res = fluxcode.encode_group(x, params, block_len=1000)
+                y = fluxcode.decode_group(res.payload).values
                 assert np.abs(y[:995] - bulk).max() <= max(0.01, tol) + 1e-12
-                assert verify.encode_group(res, x, params) == []
-                assert verify.fixed_point(res.group, params) == []
+                assert verify.encode_group(res, x, params, block_len=1000) == []
+                assert verify.fixed_point(res.payload, params) == []
 
 
 def test_decayed_masked_rejects_zero_energy():

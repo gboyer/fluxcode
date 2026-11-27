@@ -29,7 +29,9 @@ from ._format import (
 )
 
 NO_DECIMAL: int = 99
-"""Sentinel exponent indicating that no decimal grid coarser than the baseline step matched."""
+"""Sentinel exponent indicating that no decimal grid coarser than the baseline step
+matched.
+"""
 
 GRIDS_BINARY: int = 0
 """Grid mode ``"binary"``: power-of-two grids only."""
@@ -48,25 +50,38 @@ GRIDS_LEVELS: dict[str, int] = {
 """Mapping from ``Params.grids`` string names to ordered grid-capability levels."""
 
 NOISE_GATE: float = _noise_mod.NOISE_GATE
-"""Whiteness gate threshold: lag-1 autocorrelation share above this value enables the noise floor."""
+"""Whiteness gate threshold: lag-1 autocorrelation share above this value enables the
+noise floor.
+"""
 
 NO_FLOOR_EXP: int = E_MIN - 64
-"""Sentinel exponent representing an inactive noise or tolerance floor (finer than any valid step)."""
+"""Sentinel exponent representing an inactive noise or tolerance floor (finer than any
+valid step).
+"""
 
 FLOOR_MARGIN: float = 1.02
-"""Hysteresis ratio past a power of two within which a block already on the finer grid keeps it."""
+"""Hysteresis ratio past a power of two within which a block already on the finer grid
+keeps it.
+"""
 
 TOLERANCE_STEP_BITS: int = 4
-"""Subdivision bits for tolerance scaled steps: ``N * 2^(e - 4)`` with ``N`` in ``[17, 31]``."""
+"""Subdivision bits for tolerance scaled steps: ``N * 2^(e - 4)`` with ``N`` in ``[17,
+31]``.
+"""
 
 FLOAT64_EXACT_INT_LIMIT: float = 2.0**52
-"""Magnitude bound below which float64 spacing is at most 0.5, keeping integer rounding exact."""
+"""Magnitude bound below which float64 spacing is at most 0.5, keeping integer rounding
+exact.
+"""
 
 TRIM_STRIDE: int = 4
-"""Subsampling stride used when estimating the trimmed mean anchor for order-0 blocks."""
+"""Subsampling stride used when estimating the trimmed mean anchor for order-0 blocks.
+"""
 
 TRIM_DEVIATIONS: float = 3.0
-"""Inlier cutoff in mean absolute deviations around the mean for order-0 anchor centering."""
+"""Inlier cutoff in mean absolute deviations around the mean for order-0 anchor
+centering.
+"""
 
 INT16_MAX: int = 32767
 """Maximum signed 16-bit quantized grid index."""
@@ -76,7 +91,8 @@ INT16_MIN: int = -32768
 
 
 def tolerance_exponent(abs_tol: float) -> int:
-    """Computes the coarsest power-of-two exponent whose half-step does not exceed ``abs_tol``.
+    """Computes the coarsest power-of-two exponent whose half-step does not exceed
+    ``abs_tol``.
 
     Args:
         abs_tol: Non-negative maximum allowed quantization error (0 disables the bound).
@@ -97,8 +113,8 @@ def tolerance_step(abs_tol: float) -> float:
         abs_tol: Non-negative maximum allowed quantization error.
 
     Returns:
-        Finite positive ``2.0 * abs_tol``, or ``0.0`` when ``abs_tol <= 0`` or ``2 * abs_tol``
-        overflows float64.
+        Finite positive ``2.0 * abs_tol``, or ``0.0`` when ``abs_tol <= 0`` or ``2 *
+        abs_tol`` overflows float64.
     """
     if not abs_tol > 0:
         return 0.0
@@ -108,21 +124,25 @@ def tolerance_step(abs_tol: float) -> float:
 
 @njit(nogil=True, cache=True)
 def min_exponent_for_span(range_span: float, bits: int) -> int:
-    """Computes the finest power-of-two exponent whose step fits ``range_span`` in ``bits`` bits.
+    """Computes the finest power-of-two exponent whose step fits ``range_span`` in
+    ``bits`` bits.
 
-    Guarantees ``round(range_span * 2^-exponent) < 2^bits`` for any positive ``range_span``.
+    Guarantees ``round(range_span * 2^-exponent) < 2^bits`` for any positive
+    ``range_span``.
 
     Args:
         range_span: Span of the finite values (``upper_bound - lower_bound``).
         bits: Maximum bit width permitted across the span.
 
     Returns:
-        The finest power-of-two exponent fitting the span, or ``0`` for a non-positive span.
+        The finest power-of-two exponent fitting the span, or ``0`` for a non-positive
+        span.
     """
     if not range_span > 0:
         return 0
-    # Decompose span = mantissa * 2^scale_exp with mantissa in [0.5, 1.0); scale_exp - bits
-    # puts the scaled span in [2^(bits - 1), 2^bits), bumping by 1 if rounding reaches 2^bits.
+    # Decompose span = mantissa * 2^scale_exp with mantissa in [0.5, 1.0); scale_exp -
+    # bits puts the scaled span in [2^(bits - 1), 2^bits), bumping by 1 if rounding
+    # reaches 2^bits.
     _, scale_exp = math.frexp(range_span)
     target_exp = scale_exp - bits
     if math.floor(math.ldexp(range_span, -target_exp) + 0.5) >= (1 << bits):
@@ -131,8 +151,11 @@ def min_exponent_for_span(range_span: float, bits: int) -> int:
 
 
 @njit(nogil=True, cache=True)
-def _unsnapped_exponent_for_range(lower_bound: float, upper_bound: float, bits: int) -> int:
-    """Computes the finest unsnapped exponent fitting ``[lower_bound, upper_bound]`` in ``bits`` bits.
+def _unsnapped_exponent_for_range(
+    lower_bound: float, upper_bound: float, bits: int
+) -> int:
+    """Computes the finest unsnapped exponent fitting ``[lower_bound, upper_bound]`` in
+    ``bits`` bits.
 
     Args:
         lower_bound: Minimum finite sample value in the block.
@@ -142,16 +165,20 @@ def _unsnapped_exponent_for_range(lower_bound: float, upper_bound: float, bits: 
     Returns:
         Power-of-two exponent clamped to ``[E_MIN, E_MAX]``.
     """
-    # Compute the span directly for normal ranges; halve endpoints when subtraction could overflow.
+    # Compute the span directly for normal ranges; halve endpoints when subtraction
+    # could overflow.
     range_span = upper_bound - lower_bound
     if range_span < xm.WIDE_RANGE:
         return max(min_exponent_for_span(range_span, bits), E_MIN)
-    return min(min_exponent_for_span(xm.half_range(lower_bound, upper_bound), bits) + 1, E_MAX)
+    return min(
+        min_exponent_for_span(xm.half_range(lower_bound, upper_bound), bits) + 1, E_MAX
+    )
 
 
 @njit(inline="always")
 def grid_index(value: float, quant_exp: int) -> float:
-    """Maps a float64 value to its nearest integer index on the absolute grid ``k * 2^quant_exp``.
+    """Maps a float64 value to its nearest integer index on the absolute grid ``k *
+    2^quant_exp``.
 
     Uses round-to-nearest-even (``np.rint``) and returns the integer index as a float64.
 
@@ -164,16 +191,24 @@ def grid_index(value: float, quant_exp: int) -> float:
     """
     if quant_exp >= xm.E_TINY:
         return float(np.rint(value * math.ldexp(1.0, -quant_exp)))
-    # When quant_exp < E_TINY, 2^-quant_exp overflows float64; apply two exact power-of-two factors.
-    return float(np.rint(value * math.ldexp(1.0, -xm.E_TINY) * math.ldexp(1.0, xm.E_TINY - quant_exp)))
+    # When quant_exp < E_TINY, 2^-quant_exp overflows float64; apply two exact
+    # power-of-two factors.
+    return float(
+        np.rint(
+            value * math.ldexp(1.0, -xm.E_TINY) * math.ldexp(1.0, xm.E_TINY - quant_exp)
+        )
+    )
 
 
 @njit(nogil=True, cache=True)
-def snapped_exponent_for_range(lower_bound: float, upper_bound: float, bits: int) -> int:
-    """Computes the finest exponent whose absolute power-of-two grid fits the range in ``bits`` bits.
+def snapped_exponent_for_range(
+    lower_bound: float, upper_bound: float, bits: int
+) -> int:
+    """Computes the finest exponent whose absolute power-of-two grid fits the range in
+    ``bits`` bits.
 
-    The snapped grid fits when ``grid_index(upper_bound, e) - grid_index(lower_bound, e) <= L``,
-    where ``L = 2^bits`` for ``bits < 16`` and ``65535`` for ``bits == 16``.
+    The snapped grid fits when ``grid_index(upper_bound, e) - grid_index(lower_bound, e)
+    <= L``, where ``L = 2^bits`` for ``bits < 16`` and ``65535`` for ``bits == 16``.
 
     Args:
         lower_bound: Minimum sample value in the block.
@@ -184,22 +219,28 @@ def snapped_exponent_for_range(lower_bound: float, upper_bound: float, bits: int
         Quantization exponent in ``[E_MIN, E_MAX]``, or ``0`` for a constant block.
     """
     # Snapping both endpoints to an absolute grid can widen the span by up to one step.
-    # Start one level coarser than the unsnapped exponent (guaranteed to fit) and step finer
-    # while the snapped index span stays within the bit budget.
+    # Start one level coarser than the unsnapped exponent (guaranteed to fit) and step
+    # finer while the snapped index span stays within the bit budget.
     if not upper_bound > lower_bound:
         return 0
     max_index = (1 << bits) if bits < 16 else (1 << 16) - 1
-    quant_exp = min(_unsnapped_exponent_for_range(lower_bound, upper_bound, bits) + 1, E_MAX)
+    quant_exp = min(
+        _unsnapped_exponent_for_range(lower_bound, upper_bound, bits) + 1, E_MAX
+    )
     while quant_exp > E_MIN and (
-        grid_index(upper_bound, quant_exp - 1) - grid_index(lower_bound, quant_exp - 1) <= max_index
+        grid_index(upper_bound, quant_exp - 1) - grid_index(lower_bound, quant_exp - 1)
+        <= max_index
     ):
         quant_exp -= 1
     return quant_exp
 
 
 @njit(nogil=True, cache=True)
-def snap_anchor(lower_bound: float, upper_bound: float, quant_exp: int) -> tuple[float, float]:
-    """Computes the snapped grid anchor nearest ``lower_bound`` for a power-of-two block.
+def snap_anchor(
+    lower_bound: float, upper_bound: float, quant_exp: int
+) -> tuple[float, float]:
+    """Computes the snapped grid anchor nearest ``lower_bound`` for a power-of-two
+    block.
 
     Args:
         lower_bound: Minimum sample value in the block.
@@ -207,10 +248,10 @@ def snap_anchor(lower_bound: float, upper_bound: float, quant_exp: int) -> tuple
         quant_exp: Power-of-two quantization exponent.
 
     Returns:
-        Tuple ``(anchor, anchor_index)`` where ``anchor = anchor_index * 2^quant_exp`` and
-        ``anchor_index = grid_index(lower_bound, quant_exp)``. For constant blocks or when the
-        snapped anchor overflows float64, returns ``(lower_bound, NaN)`` to signal relative
-        quantization.
+        Tuple ``(anchor, anchor_index)`` where ``anchor = anchor_index * 2^quant_exp``
+        and ``anchor_index = grid_index(lower_bound, quant_exp)``. For constant blocks
+        or when the snapped anchor overflows float64, returns ``(lower_bound, NaN)`` to
+        signal relative quantization.
     """
     if not upper_bound > lower_bound:
         return lower_bound, math.nan
@@ -224,7 +265,8 @@ def snap_anchor(lower_bound: float, upper_bound: float, quant_exp: int) -> tuple
 
 @njit(nogil=True, cache=True)
 def span_binary_exponent(lower_bound: float, upper_bound: float) -> int:
-    """Computes the binary scale exponent ``k`` such that ``upper_bound - lower_bound`` lies in ``[2^(k-1), 2^k)``.
+    """Computes the binary scale exponent ``k`` such that ``upper_bound - lower_bound``
+    lies in ``[2^(k-1), 2^k)``.
 
     Args:
         lower_bound: Minimum sample value in the block.
@@ -250,8 +292,8 @@ def floor_exponent(noise_factor: float, noise_sigma: float, noise_rho: float) ->
         noise_rho: Whiteness gate statistic (values above ``NOISE_GATE`` pass).
 
     Returns:
-        ``floor(log2(noise_factor * noise_sigma))`` when the noise floor is active and the
-        whiteness gate passes, else ``NO_FLOOR_EXP``.
+        ``floor(log2(noise_factor * noise_sigma))`` when the noise floor is active and
+        the whiteness gate passes, else ``NO_FLOOR_EXP``.
     """
     if noise_factor > 0 and noise_rho > NOISE_GATE and noise_sigma > 0:
         return math.floor(math.log2(noise_factor * noise_sigma))
@@ -259,8 +301,11 @@ def floor_exponent(noise_factor: float, noise_sigma: float, noise_rho: float) ->
 
 
 @njit(nogil=True, cache=True)
-def preserve_finer_grid(samples: np.ndarray, planned_exp: int, floor_step: float) -> int:
-    """Applies boundary hysteresis so already-quantized blocks stay a fixed point on re-encoding.
+def preserve_finer_grid(
+    samples: np.ndarray, planned_exp: int, floor_step: float
+) -> int:
+    """Applies boundary hysteresis so already-quantized blocks stay a fixed point on
+    re-encoding.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -268,13 +313,14 @@ def preserve_finer_grid(samples: np.ndarray, planned_exp: int, floor_step: float
         floor_step: Unrounded noise-floor step ``noise_factor * noise_sigma``.
 
     Returns:
-        ``planned_exp - 1`` if ``floor_step`` lies within ``FLOOR_MARGIN`` above ``2^planned_exp``
-        and every sample is already an exact multiple of ``2^(planned_exp - 1)``; otherwise
-        ``planned_exp``.
+        ``planned_exp - 1`` if ``floor_step`` lies within ``FLOOR_MARGIN`` above
+        ``2^planned_exp`` and every sample is already an exact multiple of
+        ``2^(planned_exp - 1)``; otherwise ``planned_exp``.
     """
-    # Quantizing onto a grid raises noise sigma slightly (~0.26%), which can push a marginal floor
-    # just over a power-of-two boundary on re-encode. Keep the finer exponent when the block is
-    # already exact on it and the floor only barely crossed the boundary.
+    # Quantizing onto a grid raises noise sigma slightly (~0.26%), which can push a
+    # marginal floor just over a power-of-two boundary on re-encode. Keep the finer
+    # exponent when the block is already exact on it and the floor only barely crossed
+    # the boundary.
     if not floor_step > 0 or math.floor(math.log2(floor_step)) != planned_exp:
         return planned_exp
     if floor_step >= math.ldexp(1.0, planned_exp) * FLOOR_MARGIN:
@@ -297,7 +343,8 @@ def plan_base_exponent(
     min_bits: int,
     max_bits: int,
 ) -> int:
-    """Plans a block's power-of-two quantization exponent from bit bounds and noise floor.
+    """Plans a block's power-of-two quantization exponent from bit bounds and noise
+    floor.
 
     Args:
         lower_bound: Minimum sample value in the block.
@@ -311,13 +358,15 @@ def plan_base_exponent(
     Returns:
         Planned power-of-two exponent, or ``0`` for a constant block.
     """
-    # Start at the finest exponent allowed by max_bits, coarsen to the noise floor if the
-    # whiteness gate passes, and clamp to the coarsest exponent allowed by min_bits.
+    # Start at the finest exponent allowed by max_bits, coarsen to the noise floor if
+    # the whiteness gate passes, and clamp to the coarsest exponent allowed by min_bits.
     if not upper_bound > lower_bound:
         return 0
     planned_exp = snapped_exponent_for_range(lower_bound, upper_bound, max_bits)
     planned_exp = max(planned_exp, floor_exponent(noise_factor, noise_sigma, noise_rho))
-    return min(planned_exp, snapped_exponent_for_range(lower_bound, upper_bound, min_bits))
+    return min(
+        planned_exp, snapped_exponent_for_range(lower_bound, upper_bound, min_bits)
+    )
 
 
 @njit(nogil=True, cache=True)
@@ -344,21 +393,35 @@ def plan_block_step(
         noise_factor: Noise floor multiplier (0.0 disables the noise floor).
         min_bits: Hard minimum precision bits.
         max_bits: Hard maximum precision bits.
-        tolerance_exp: Power-of-two exponent from ``tolerance_exponent`` (or ``NO_FLOOR_EXP``).
+        tolerance_exp: Power-of-two exponent from ``tolerance_exponent`` (or
+            ``NO_FLOOR_EXP``).
         tol_step: Maximum step ``2 * abs_tol`` from ``tolerance_step`` (or ``0.0``).
 
     Returns:
-        Tuple ``(planned_exp, block_tol_step)`` where ``block_tol_step`` is non-zero only when
-        ``tolerance_exp`` actively coarsened the step beyond the base plan.
+        Tuple ``(planned_exp, block_tol_step)`` where ``block_tol_step`` is non-zero
+        only when ``tolerance_exp`` actively coarsened the step beyond the base plan.
     """
-    # Compute the base exponent from bit bounds and noise floor. If absolute_tolerance is coarser,
-    # override even min_bits; otherwise apply floor hysteresis when the noise floor set the step.
-    planned_exp = plan_base_exponent(lower_bound, upper_bound, noise_sigma, noise_rho, noise_factor, min_bits, max_bits)
+    # Compute the base exponent from bit bounds and noise floor. If absolute_tolerance
+    # is coarser, override even min_bits; otherwise apply floor hysteresis when the
+    # noise floor set the step.
+    planned_exp = plan_base_exponent(
+        lower_bound,
+        upper_bound,
+        noise_sigma,
+        noise_rho,
+        noise_factor,
+        min_bits,
+        max_bits,
+    )
     block_tol_step = 0.0
     if upper_bound > lower_bound and tolerance_exp > planned_exp:
         planned_exp = min(tolerance_exp, E_MAX)
         block_tol_step = tol_step
-    if noise_rho > NOISE_GATE and upper_bound > lower_bound and planned_exp > tolerance_exp:
+    if (
+        noise_rho > NOISE_GATE
+        and upper_bound > lower_bound
+        and planned_exp > tolerance_exp
+    ):
         planned_exp = max(
             preserve_finer_grid(samples, planned_exp, noise_factor * noise_sigma),
             snapped_exponent_for_range(lower_bound, upper_bound, max_bits),
@@ -367,11 +430,14 @@ def plan_block_step(
 
 
 @njit(nogil=True, cache=True)
-def tolerance_scaled_grid(lower_bound: float, quant_exp: int, tol_step: float) -> tuple[np.int64, int, float]:
-    """Computes a scaled binary grid closely matching an absolute-tolerance step ``tol_step``.
+def tolerance_scaled_grid(
+    lower_bound: float, quant_exp: int, tol_step: float
+) -> tuple[np.int64, int, float]:
+    """Computes a scaled binary grid closely matching an absolute-tolerance step
+    ``tol_step``.
 
-    Represented as ``N * 2^(quant_exp - TOLERANCE_STEP_BITS)`` with ``N`` in ``[17, 31]``,
-    anchored on multiples of the step so decoded blocks re-encode identically.
+    Represented as ``N * 2^(quant_exp - TOLERANCE_STEP_BITS)`` with ``N`` in ``[17,
+    31]``, anchored on multiples of the step so decoded blocks re-encode identically.
 
     Args:
         lower_bound: Minimum sample value in the block.
@@ -379,11 +445,11 @@ def tolerance_scaled_grid(lower_bound: float, quant_exp: int, tol_step: float) -
         tol_step: Maximum allowed step ``2 * abs_tol``.
 
     Returns:
-        Tuple ``(scale_num, fine_exp, anchor_index)``, or ``(0, fine_exp, 0.0)`` if the scaled
-        tolerance grid is not applicable or its anchor exceeds ``INDEX_LIMIT``.
+        Tuple ``(scale_num, fine_exp, anchor_index)``, or ``(0, fine_exp, 0.0)`` if the
+        scaled tolerance grid is not applicable or its anchor exceeds ``INDEX_LIMIT``.
     """
-    # Only engage when tol_step lies strictly between 2^quant_exp and 2^(quant_exp + 1) and the
-    # subdivided fine exponent fits within the scaled binary exponent bounds.
+    # Only engage when tol_step lies strictly between 2^quant_exp and 2^(quant_exp + 1)
+    # and the subdivided fine exponent fits within the scaled binary exponent bounds.
     fine_exp = quant_exp - TOLERANCE_STEP_BITS
     if not (tol_step > 0 and quant_exp == math.floor(math.log2(tol_step))):
         return np.int64(0), fine_exp, 0.0
@@ -393,7 +459,8 @@ def tolerance_scaled_grid(lower_bound: float, quant_exp: int, tol_step: float) -
     scale_num = np.int64(tol_step / fine_step)
     if scale_num <= (1 << TOLERANCE_STEP_BITS):
         return np.int64(0), fine_exp, 0.0
-    # Anchor on the largest multiple of step <= lower_bound so reconstructed points are grid-aligned.
+    # Anchor on the largest multiple of step <= lower_bound so reconstructed points are
+    # grid-aligned.
     step = float(scale_num) * fine_step
     anchor_index = math.floor(lower_bound / step) * scale_num
     if not (math.isfinite(anchor_index) and abs(anchor_index) < INDEX_LIMIT):
@@ -415,7 +482,11 @@ def on_tolerance_grid(samples: np.ndarray, scale_num: np.int64, fine_exp: int) -
     """
     for sample_idx in range(samples.shape[0]):
         scaled = math.ldexp(samples[sample_idx], -fine_exp)
-        if scaled != math.floor(scaled) or not math.isfinite(scaled) or abs(scaled) >= 2.0 * FLOAT64_EXACT_INT_LIMIT:
+        if (
+            scaled != math.floor(scaled)
+            or not math.isfinite(scaled)
+            or abs(scaled) >= 2.0 * FLOAT64_EXACT_INT_LIMIT
+        ):
             return False
         if np.int64(scaled) % scale_num != 0:
             return False
@@ -449,7 +520,8 @@ def moved_off_tolerance_grid(
     anchor_index: np.int64,
     quantized: np.ndarray,
 ) -> bool:
-    """Checks whether a detected decimal grid would perturb samples already exact on a tolerance grid.
+    """Checks whether a detected decimal grid would perturb samples already exact on a
+    tolerance grid.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -460,8 +532,8 @@ def moved_off_tolerance_grid(
         quantized: 1D int32 array of candidate decimal grid offsets ``q``.
 
     Returns:
-        True if every sample is exact on ``k * scale_num * 2^fine_exp`` and at least one sample
-        would decode to a different float64 under the decimal grid.
+        True if every sample is exact on ``k * scale_num * 2^fine_exp`` and at least one
+        sample would decode to a different float64 under the decimal grid.
     """
     if not on_tolerance_grid(samples, scale_num, fine_exp):
         return False
@@ -482,23 +554,26 @@ def find_decimal_grid(
     pow2_step: float,
     out_quantized: np.ndarray,
 ) -> tuple[int, np.int64]:
-    """Finds the coarsest decimal step ``10^p > pow2_step`` fitting all samples within ``pow2_step / 4``.
+    """Finds the coarsest decimal step ``10^p > pow2_step`` fitting all samples within
+    ``pow2_step / 4``.
 
     Args:
         samples: 1D float64 array of block samples.
         lower_bound: Minimum sample value.
         upper_bound: Maximum sample value.
         pow2_step: Baseline power-of-two step ``2^e``.
-        out_quantized: Output 1D int32 array populated with decimal grid offsets on match.
+        out_quantized: Output 1D int32 array populated with decimal grid offsets on
+            match.
 
     Returns:
-        Tuple ``(decimal_exp, anchor_index)`` where ``decimal_exp`` is in ``[P_MIN, P_MAX]``
-        and ``anchor_index = floor(lower_bound * 10^-decimal_exp + 0.5)``, or
+        Tuple ``(decimal_exp, anchor_index)`` where ``decimal_exp`` is in ``[P_MIN,
+        P_MAX]`` and ``anchor_index = floor(lower_bound * 10^-decimal_exp + 0.5)``, or
         ``(NO_DECIMAL, 0)`` if no qualifying decimal grid matches.
     """
-    # Search downward from the coarsest decimal exponent that can span the range (with 2*tol
-    # slack for float rounding) down to the finest 10^p strictly coarser than pow2_step.
-    # Stop early if scaled magnitudes reach 2^52, where float64 spacing exceeds 0.5.
+    # Search downward from the coarsest decimal exponent that can span the range (with
+    # 2*tol slack for float rounding) down to the finest 10^p strictly coarser than
+    # pow2_step. Stop early if scaled magnitudes reach 2^52, where float64 spacing
+    # exceeds 0.5.
     tolerance = 0.25 * pow2_step
     max_abs_val = max(abs(lower_bound), abs(upper_bound))
     range_span = upper_bound - lower_bound
@@ -513,11 +588,14 @@ def find_decimal_grid(
         for sample_idx in range(samples.shape[0]):
             scaled_sample = samples[sample_idx] * inv_decimal_step
             rounded_grid_point = math.floor(scaled_sample + 0.5)
-            # Abort on the first off-grid sample; ordinary binary data fails immediately.
+            # Abort on the first off-grid sample; ordinary binary data fails
+            # immediately.
             if abs(scaled_sample - rounded_grid_point) > scaled_tolerance:
                 grid_matches = False
                 break
-            out_quantized[sample_idx] = np.int32(np.int64(rounded_grid_point) - anchor_index)
+            out_quantized[sample_idx] = np.int32(
+                np.int64(rounded_grid_point) - anchor_index
+            )
         if grid_matches:
             return decimal_exp, anchor_index
         decimal_exp -= 1
@@ -525,8 +603,11 @@ def find_decimal_grid(
 
 
 @njit(nogil=True, cache=True)
-def coarse_binary_exponent(samples: np.ndarray, quant_exp: int, decimal_step: float) -> int:
-    """Finds the coarsest exact power-of-two grid holding ``samples`` if coarser than ``decimal_step``.
+def coarse_binary_exponent(
+    samples: np.ndarray, quant_exp: int, decimal_step: float
+) -> int:
+    """Finds the coarsest exact power-of-two grid holding ``samples`` if coarser than
+    ``decimal_step``.
 
     Args:
         samples: 1D float64 array of a non-constant block's samples.
@@ -534,12 +615,13 @@ def coarse_binary_exponent(samples: np.ndarray, quant_exp: int, decimal_step: fl
         decimal_step: Candidate decimal step ``10^p > 2^quant_exp``.
 
     Returns:
-        Coarsest exponent ``e`` with ``2^e > decimal_step`` such that every sample is an exact
-        multiple of ``2^e``; otherwise ``quant_exp``.
+        Coarsest exponent ``e`` with ``2^e > decimal_step`` such that every sample is an
+        exact multiple of ``2^e``; otherwise ``quant_exp``.
     """
-    # Values on a coarse binary grid (e.g. 0.25) also match finer decimal grids (0.01), which
-    # introduces an unnecessary odd factor (x25). Check if all samples are exact multiples of
-    # the smallest power of two above decimal_step, then fold any shared trailing zero bits.
+    # Values on a coarse binary grid (e.g. 0.25) also match finer decimal grids (0.01),
+    # which introduces an unnecessary odd factor (x25). Check if all samples are exact
+    # multiples of the smallest power of two above decimal_step, then fold any shared
+    # trailing zero bits.
     coarse_exp = quant_exp + 1
     while math.ldexp(1.0, coarse_exp) <= decimal_step:
         coarse_exp += 1
@@ -550,7 +632,8 @@ def coarse_binary_exponent(samples: np.ndarray, quant_exp: int, decimal_step: fl
         if scaled != math.floor(scaled):
             return quant_exp
         index_bits |= np.int64(scaled)
-    # Non-constant blocks have at least one non-zero scaled index, so this loop always terminates.
+    # Non-constant blocks have at least one non-zero scaled index, so this loop always
+    # terminates.
     while index_bits & 1 == 0:
         index_bits >>= 1
         coarse_exp += 1
@@ -565,7 +648,8 @@ def moved_off_binary_grid(
     anchor_index: np.int64,
     quantized: np.ndarray,
 ) -> bool:
-    """Checks whether ``samples`` are exact on ``2^binary_exp`` and the decimal grid would perturb them.
+    """Checks whether ``samples`` are exact on ``2^binary_exp`` and the decimal grid
+    would perturb them.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -575,8 +659,8 @@ def moved_off_binary_grid(
         quantized: 1D int32 array of candidate decimal grid offsets ``q``.
 
     Returns:
-        True if every sample is an exact multiple of ``2^binary_exp`` and at least one sample
-        would reconstruct to a different float64 on the decimal grid.
+        True if every sample is an exact multiple of ``2^binary_exp`` and at least one
+        sample would reconstruct to a different float64 on the decimal grid.
     """
     inv_step = math.ldexp(1.0, -binary_exp)
     divide = decimal_exp < 0
@@ -603,48 +687,56 @@ def choose_decimal_or_binary_grid(
 ) -> tuple[int, np.int64, int]:
     """Selects a decimal grid when appropriate, or returns a binary grid exponent.
 
-    Prefers an exact power-of-two grid coarser than the detected decimal grid, and rejects a
-    decimal grid that would perturb samples already exact on ``2^quant_exp`` (preserving fixed
-    points on re-encoding).
+    Prefers an exact power-of-two grid coarser than the detected decimal grid, and
+    rejects a decimal grid that would perturb samples already exact on ``2^quant_exp``
+    (preserving fixed points on re-encoding).
 
     Args:
-        samples: 1D float64 array of a non-constant block's samples (span below ``2^1023``).
+        samples: 1D float64 array of a non-constant block's samples (span below
+            ``2^1023``).
         lower_bound: Minimum sample value.
         upper_bound: Maximum sample value.
         quant_exp: Planned power-of-two exponent.
-        out_quantized: Output 1D int32 array receiving decimal offsets when a decimal grid is chosen.
+        out_quantized: Output 1D int32 array receiving decimal offsets when a decimal
+            grid is chosen.
 
     Returns:
-        Tuple ``(decimal_exp, anchor_index, binary_exp)``. When a decimal grid is selected,
-        ``decimal_exp != NO_DECIMAL`` and ``out_quantized`` holds its offsets. Otherwise
-        ``decimal_exp == NO_DECIMAL``, ``anchor_index == 0``, and ``binary_exp`` is ``quant_exp``
-        or a coarser exact binary exponent.
+        Tuple ``(decimal_exp, anchor_index, binary_exp)``. When a decimal grid is
+        selected, ``decimal_exp != NO_DECIMAL`` and ``out_quantized`` holds its offsets.
+        Otherwise ``decimal_exp == NO_DECIMAL``, ``anchor_index == 0``, and
+        ``binary_exp`` is ``quant_exp`` or a coarser exact binary exponent.
     """
-    # Detect the coarsest matching decimal grid, then guard against two binary-grid cases:
-    # (1) samples already lie on an even coarser binary grid, or (2) samples are exact on
-    # 2^quant_exp and the decimal grid's quarter-step slack would move them.
+    # Detect the coarsest matching decimal grid, then guard against two binary-grid
+    # cases: (1) samples already lie on an even coarser binary grid, or (2) samples are
+    # exact on 2^quant_exp and the decimal grid's quarter-step slack would move them.
     decimal_exp, anchor_index = find_decimal_grid(
         samples, lower_bound, upper_bound, math.ldexp(1.0, quant_exp), out_quantized
     )
     if decimal_exp == NO_DECIMAL:
         return NO_DECIMAL, np.int64(0), quant_exp
     binary_exp = coarse_binary_exponent(samples, quant_exp, 10.0**decimal_exp)
-    # When decimal_exp >= 0 and quant_exp <= decimal_exp + 1, any multiple of 2^quant_exp within
-    # 2^quant_exp / 4 of a multiple of 10^decimal_exp must already equal that multiple.
+    # When decimal_exp >= 0 and quant_exp <= decimal_exp + 1, any multiple of
+    # 2^quant_exp within 2^quant_exp / 4 of a multiple of 10^decimal_exp must already
+    # equal that multiple.
     could_move = decimal_exp < 0 or quant_exp > decimal_exp + 1
     if binary_exp != quant_exp or (
-        could_move and moved_off_binary_grid(samples, quant_exp, decimal_exp, anchor_index, out_quantized)
+        could_move
+        and moved_off_binary_grid(
+            samples, quant_exp, decimal_exp, anchor_index, out_quantized
+        )
     ):
         return NO_DECIMAL, np.int64(0), binary_exp
     return decimal_exp, anchor_index, quant_exp
 
 
 @njit(nogil=True, cache=True)
-def quantize_relative(samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray) -> None:
+def quantize_relative(
+    samples: np.ndarray, lower_bound: float, quant_exp: int, out_quantized: np.ndarray
+) -> None:
     """Quantizes samples onto a power-of-two grid anchored directly at ``lower_bound``.
 
-    Used for blocks where ``snap_anchor`` returns a NaN anchor index (constant blocks and
-    blocks near ``+/-DBL_MAX``).
+    Used for blocks where ``snap_anchor`` returns a NaN anchor index (constant blocks
+    and blocks near ``+/-DBL_MAX``).
 
     Args:
         samples: 1D float64 array of block samples.
@@ -652,7 +744,8 @@ def quantize_relative(samples: np.ndarray, lower_bound: float, quant_exp: int, o
         quant_exp: Power-of-two quantization exponent.
         out_quantized: Output 1D int32 array receiving quantized grid offsets.
     """
-    # Use half-scale subtraction for huge exponents where sample - lower_bound can overflow.
+    # Use half-scale subtraction for huge exponents where sample - lower_bound can
+    # overflow.
     if quant_exp >= xm.E_HUGE:
         xm.quantize_huge_exponent(samples, lower_bound, quant_exp, out_quantized)
     else:
@@ -663,11 +756,14 @@ def quantize_relative(samples: np.ndarray, lower_bound: float, quant_exp: int, o
 
 
 @njit(nogil=True, cache=True)
-def quantize_snapped(samples: np.ndarray, quant_exp: int, anchor_index: float, out_quantized: np.ndarray) -> None:
-    """Quantizes samples onto the absolute power-of-two grid offset from ``anchor_index``.
+def quantize_snapped(
+    samples: np.ndarray, quant_exp: int, anchor_index: float, out_quantized: np.ndarray
+) -> None:
+    """Quantizes samples onto the absolute power-of-two grid offset from
+    ``anchor_index``.
 
-    Each sample becomes ``grid_index(sample, quant_exp) - anchor_index``, mapping the block
-    minimum to 0 and all samples to non-negative integers.
+    Each sample becomes ``grid_index(sample, quant_exp) - anchor_index``, mapping the
+    block minimum to 0 and all samples to non-negative integers.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -675,25 +771,34 @@ def quantize_snapped(samples: np.ndarray, quant_exp: int, anchor_index: float, o
         anchor_index: Anchor's grid index from ``snap_anchor``.
         out_quantized: Output 1D int32 array receiving quantized grid offsets.
     """
-    # Hoist the single-step reciprocal for normal exponents; fall back to two-stage scaling
-    # via grid_index for subnormal steps below E_TINY.
+    # Hoist the single-step reciprocal for normal exponents; fall back to two-stage
+    # scaling via grid_index for subnormal steps below E_TINY.
     if quant_exp >= xm.E_TINY:
         step_inv = math.ldexp(1.0, -quant_exp)
         for sample_idx in range(samples.shape[0]):
-            out_quantized[sample_idx] = np.int32(np.rint(samples[sample_idx] * step_inv) - anchor_index)
+            out_quantized[sample_idx] = np.int32(
+                np.rint(samples[sample_idx] * step_inv) - anchor_index
+            )
     else:
         for sample_idx in range(samples.shape[0]):
-            out_quantized[sample_idx] = np.int32(grid_index(samples[sample_idx], quant_exp) - anchor_index)
+            out_quantized[sample_idx] = np.int32(
+                grid_index(samples[sample_idx], quant_exp) - anchor_index
+            )
 
 
 @njit(nogil=True, cache=True)
 def quantize_power_of_two(
-    samples: np.ndarray, lower_bound: float, upper_bound: float, quant_exp: int, out_quantized: np.ndarray
+    samples: np.ndarray,
+    lower_bound: float,
+    upper_bound: float,
+    quant_exp: int,
+    out_quantized: np.ndarray,
 ) -> float:
-    """Quantizes a block onto its power-of-two grid and returns the block's float64 anchor.
+    """Quantizes a block onto its power-of-two grid and returns the block's float64
+    anchor.
 
-    Uses an absolute snapped grid when ``snap_anchor`` succeeds, otherwise quantizes relative
-    to ``lower_bound``.
+    Uses an absolute snapped grid when ``snap_anchor`` succeeds, otherwise quantizes
+    relative to ``lower_bound``.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -759,11 +864,13 @@ def step_multiple_of_planned(step: float, planned_exp: int) -> int:
         planned_exp: Block's planned power-of-two exponent.
 
     Returns:
-        Integer multiple ``M`` in ``[1, 65536]`` if ``step == M * 2^planned_exp`` exactly,
-        otherwise ``0``.
+        Integer multiple ``M`` in ``[1, 65536]`` if ``step == M * 2^planned_exp``
+        exactly, otherwise ``0``.
     """
     ratio = math.ldexp(step, -planned_exp)
-    return int(ratio) if ratio == math.floor(ratio) and 1 <= ratio <= SCALE_MASK + 1 else 0
+    return (
+        int(ratio) if ratio == math.floor(ratio) and 1 <= ratio <= SCALE_MASK + 1 else 0
+    )
 
 
 @njit(nogil=True, cache=True)
@@ -776,14 +883,16 @@ def center_anchor(
     anchor: float,
     grid_scale: np.int64,
 ) -> tuple[np.int64, float]:
-    """Shifts a block's anchor to its reference index and centers ``quantized`` into signed int16.
+    """Shifts a block's anchor to its reference index and centers ``quantized`` into
+    signed int16.
 
-    For order 0, targets the trimmed mean index so residuals center around 0; for orders 1-3,
-    targets ``quantized[0]`` so the first residual is 0. Clamps the shift so every shifted
-    index lies in ``[-32768, 32767]`` and the updated anchor stays exact.
+    For order 0, targets the trimmed mean index so residuals center around 0; for orders
+    1-3, targets ``quantized[0]`` so the first residual is 0. Clamps the shift so every
+    shifted index lies in ``[-32768, 32767]`` and the updated anchor stays exact.
 
     Args:
-        quantized: 1D int32 array of non-negative grid offsets (``0..65535``), shifted in place.
+        quantized: 1D int32 array of non-negative grid offsets (``0..65535``), shifted
+            in place.
         order: Selected predictor difference order (``0..3``).
         flags: Block flags byte.
         grid_exp: Block grid exponent.
@@ -794,10 +903,12 @@ def center_anchor(
     Returns:
         Tuple ``(new_anchor_index, new_anchor)`` after applying the chosen shift.
     """
-    # 1. Scan max index and halved sum in 32K chunks (stays in int32 for SIMD vectorization).
-    # 2. Pick the target shift: trimmed mean on a strided subsample for order 0, else q[0],
-    #    clamped to [max_q - 32767, min(max_q, 32768)].
-    # 3. Advance the integer or float64 anchor while preserving exactness, then subtract shift.
+    # 1. Scan max index and halved sum in 32K chunks (stays in int32 for SIMD
+    #    vectorization).
+    # 2. Pick the target shift: trimmed mean on a strided subsample for order 0, else
+    #    q[0], clamped to [max_q - 32767, min(max_q, 32768)].
+    # 3. Advance the integer or float64 anchor while preserving exactness, then subtract
+    #    shift.
     num_samples = quantized.shape[0]
     if num_samples == 0:
         return anchor_index, anchor
@@ -814,10 +925,18 @@ def center_anchor(
         max_q = max(max_q, chunk_max)
         total += np.int64(chunk_total)
     max_index = np.int64(max_q)
-    low, high = max(max_index - INT16_MAX, np.int64(0)), min(max_index, np.int64(-INT16_MIN))
-    wanted = (2 * total + num_samples // 2) // num_samples if order == 0 else np.int64(quantized[0])
+    low, high = (
+        max(max_index - INT16_MAX, np.int64(0)),
+        min(max_index, np.int64(-INT16_MIN)),
+    )
+    wanted = (
+        (2 * total + num_samples // 2) // num_samples
+        if order == 0
+        else np.int64(quantized[0])
+    )
     if order == 0:
-        # Refine with a trimmed mean over every TRIM_STRIDE-th sample so spikes do not pull the center.
+        # Refine with a trimmed mean over every TRIM_STRIDE-th sample so spikes do not
+        # pull the center.
         mean = np.int32(wanted)
         sub = quantized[::TRIM_STRIDE]
         abs_dev = np.int64(0)
@@ -834,20 +953,29 @@ def center_anchor(
             wanted = (2 * kept_sum + kept) // (2 * kept)
     shift = min(max(wanted, low), high)
     if flags & (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED):
-        scale_num = grid_scale & SCALE_MASK if flags & BLOCK_FLAG_SCALED else np.int64(1)
-        # Keep the integer anchor strictly below INDEX_LIMIT (2^52) so reconstruction stays exact.
+        scale_num = (
+            grid_scale & SCALE_MASK if flags & BLOCK_FLAG_SCALED else np.int64(1)
+        )
+        # Keep the integer anchor strictly below INDEX_LIMIT (2^52) so reconstruction
+        # stays exact.
         if abs(anchor_index + scale_num * shift) >= INDEX_LIMIT:
             shift = low
         anchor_index = anchor_index + scale_num * shift
     else:
         raw_anchor_index = math.ldexp(anchor, -grid_exp)
-        if raw_anchor_index == math.floor(raw_anchor_index) and abs(raw_anchor_index) < FLOAT64_EXACT_INT_LIMIT:
+        if (
+            raw_anchor_index == math.floor(raw_anchor_index)
+            and abs(raw_anchor_index) < FLOAT64_EXACT_INT_LIMIT
+        ):
             anchor = math.ldexp(raw_anchor_index + float(shift), grid_exp) + 0.0
         else:
-            # Unsnapped or huge-index anchor: shift only by the minimum required for int16 fit.
+            # Unsnapped or huge-index anchor: shift only by the minimum required for
+            # int16 fit.
             shift = low
             if shift:
-                anchor = 2.0 * (0.5 * anchor + float(shift) * math.ldexp(1.0, grid_exp - 1))
+                anchor = 2.0 * (
+                    0.5 * anchor + float(shift) * math.ldexp(1.0, grid_exp - 1)
+                )
     if shift:
         shift32 = np.int32(shift)
         for sample_idx in range(num_samples):

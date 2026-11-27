@@ -72,7 +72,9 @@ def _decode_mseed_steim2(path: Path, max_samples: int = MAX_SAMPLES) -> np.ndarr
     while pos + 48 <= len(buf) and len(out) < max_samples:
         nsamp = struct.unpack(">H", buf[pos + 30 : pos + 32])[0]
         data_off, blk_off = struct.unpack(">HH", buf[pos + 44 : pos + 48])
-        btype, _bnext, enc, _bo, reclen_exp = struct.unpack(">HHBBB", buf[pos + blk_off : pos + blk_off + 7])
+        btype, _bnext, enc, _bo, reclen_exp = struct.unpack(
+            ">HHBBB", buf[pos + blk_off : pos + blk_off + 7]
+        )
         reclen = 1 << reclen_exp
         if btype != 1000 or enc != 11:
             raise ValueError(f"Unsupported MiniSEED blockette={btype} encoding={enc}")
@@ -100,19 +102,30 @@ def _decode_mseed_steim2(path: Path, max_samples: int = MAX_SAMPLES) -> np.ndarr
                     if dnib == 1:
                         diffs = [_sext(word & 0x3FFFFFFF, 30)]
                     elif dnib == 2:
-                        diffs = [_sext((word >> (15 - 15 * k)) & 0x7FFF, 15) for k in range(2)]
+                        diffs = [
+                            _sext((word >> (15 - 15 * k)) & 0x7FFF, 15)
+                            for k in range(2)
+                        ]
                     elif dnib == 3:
-                        diffs = [_sext((word >> (20 - 10 * k)) & 0x3FF, 10) for k in range(3)]
+                        diffs = [
+                            _sext((word >> (20 - 10 * k)) & 0x3FF, 10) for k in range(3)
+                        ]
                     else:
                         continue
                 else:
                     dnib = (word >> 30) & 0x3
                     if dnib == 0:
-                        diffs = [_sext((word >> (24 - 6 * k)) & 0x3F, 6) for k in range(5)]
+                        diffs = [
+                            _sext((word >> (24 - 6 * k)) & 0x3F, 6) for k in range(5)
+                        ]
                     elif dnib == 1:
-                        diffs = [_sext((word >> (25 - 5 * k)) & 0x1F, 5) for k in range(6)]
+                        diffs = [
+                            _sext((word >> (25 - 5 * k)) & 0x1F, 5) for k in range(6)
+                        ]
                     elif dnib == 2:
-                        diffs = [_sext((word >> (24 - 4 * k)) & 0xF, 4) for k in range(7)]
+                        diffs = [
+                            _sext((word >> (24 - 4 * k)) & 0xF, 4) for k in range(7)
+                        ]
                     else:
                         continue
                 for d in diffs:
@@ -180,7 +193,15 @@ def _load_uci_power() -> tuple[np.ndarray, np.ndarray | None]:
                 continue
             dd, mm, yy = parts[0].split("/")
             hh, mi, ss = parts[1].split(":")
-            dt = datetime(int(yy), int(mm), int(dd), int(hh), int(mi), int(ss), tzinfo=timezone.utc)
+            dt = datetime(
+                int(yy),
+                int(mm),
+                int(dd),
+                int(hh),
+                int(mi),
+                int(ss),
+                tzinfo=timezone.utc,
+            )
             ts_int.append(int((dt - epoch).total_seconds()))
             v = parts[2]
             vals.append(np.nan if (v == "?" or v == "") else float(v))
@@ -216,7 +237,9 @@ def _load_skab() -> tuple[np.ndarray, np.ndarray | None]:
         for row in csv.DictReader(f, delimiter=";"):
             ts_list.append(np.datetime64(row["datetime"].strip(), "s"))
             vals.append(float(row["Pressure"].strip()))
-    return np.ascontiguousarray(vals, dtype=np.float64), np.array(ts_list, dtype="datetime64[s]")
+    return np.ascontiguousarray(vals, dtype=np.float64), np.array(
+        ts_list, dtype="datetime64[s]"
+    )
 
 
 def _load_uci_air_quality() -> tuple[np.ndarray, np.ndarray | None]:
@@ -234,7 +257,15 @@ def _load_uci_air_quality() -> tuple[np.ndarray, np.ndarray | None]:
                 continue
             dd, mm, yy = d_str.split("/")
             hh, mi, ss = t_str.split(".")
-            dt = datetime(int(yy), int(mm), int(dd), int(hh), int(mi), int(ss), tzinfo=timezone.utc)
+            dt = datetime(
+                int(yy),
+                int(mm),
+                int(dd),
+                int(hh),
+                int(mi),
+                int(ss),
+                tzinfo=timezone.utc,
+            )
             ts_int.append(int((dt - epoch).total_seconds()))
             s = (row.get("T") or "").strip().replace(",", ".")
             vals.append(float(s) if s else np.nan)
@@ -252,7 +283,9 @@ def _load_uci_appliances() -> tuple[np.ndarray, np.ndarray | None]:
         for row in csv.DictReader(f):
             ts_list.append(np.datetime64(row["date"].strip(), "s"))
             vals.append(float(row["T_out"].strip()))
-    return np.ascontiguousarray(vals, dtype=np.float64), np.array(ts_list, dtype="datetime64[s]")
+    return np.ascontiguousarray(vals, dtype=np.float64), np.array(
+        ts_list, dtype="datetime64[s]"
+    )
 
 
 def _load_noaa_buoy() -> tuple[np.ndarray, np.ndarray | None]:
@@ -300,7 +333,12 @@ def _load_era5_f32() -> tuple[np.ndarray, np.ndarray | None]:
 
 
 def _load_binance() -> tuple[np.ndarray, np.ndarray | None]:
-    p = DATA_DIR / "binance" / "BTCUSDT-trades-2024-01-01" / "BTCUSDT-trades-2024-01-01.csv"
+    p = (
+        DATA_DIR
+        / "binance"
+        / "BTCUSDT-trades-2024-01-01"
+        / "BTCUSDT-trades-2024-01-01.csv"
+    )
     if not p.exists():
         pytest.skip(f"missing {p}")
     prices: list[float] = []
@@ -377,29 +415,37 @@ TIMED_LOADERS: list[tuple[str, Loader]] = [
 ]
 
 
-@pytest.mark.parametrize(("name", "loader"), FAMILY_LOADERS, ids=[k for k, _ in FAMILY_LOADERS])
+@pytest.mark.parametrize(
+    ("name", "loader"), FAMILY_LOADERS, ids=[k for k, _ in FAMILY_LOADERS]
+)
 @pytest.mark.parametrize(
     "params",
     [Params(), Params(noise_floor_sigma=0)],
     ids=["default", "nf0"],
 )
-def test_public_family_verify_and_fixed_point(name: str, loader: Loader, params: Params) -> None:
+def test_public_family_verify_and_fixed_point(
+    name: str, loader: Loader, params: Params
+) -> None:
     x, _ = loader()
     assert len(x) > 0, f"{name} loaded empty"
-    res = fluxcode.encode_group(x, params)
-    assert verify.encode_group(res, x, params) == []
-    assert verify.fixed_point(res.group, params) == []
+    res = fluxcode.encode_group(x, params, block_len=1000)
+    assert verify.encode_group(res, x, params, block_len=1000) == []
+    assert verify.fixed_point(res.payload, params) == []
 
 
-@pytest.mark.parametrize(("name", "loader"), TIMED_LOADERS, ids=[k for k, _ in TIMED_LOADERS])
+@pytest.mark.parametrize(
+    ("name", "loader"), TIMED_LOADERS, ids=[k for k, _ in TIMED_LOADERS]
+)
 @pytest.mark.parametrize(
     "params",
     [Params(), Params(time_error=0.15)],
     ids=["exact_times", "time_error_015"],
 )
-def test_public_timestamps_verify_and_fixed_point(name: str, loader: Loader, params: Params) -> None:
+def test_public_timestamps_verify_and_fixed_point(
+    name: str, loader: Loader, params: Params
+) -> None:
     x, times = loader()
     assert times is not None and len(times) == len(x), f"{name} missing timestamps"
-    res = fluxcode.encode_group(x, params, times=times)
-    assert verify.encode_group(res, x, params, times=times) == []
-    assert verify.fixed_point(res.group, params) == []
+    res = fluxcode.encode_group(x, params, times=times, block_len=1000)
+    assert verify.encode_group(res, x, params, times=times, block_len=1000) == []
+    assert verify.fixed_point(res.payload, params) == []

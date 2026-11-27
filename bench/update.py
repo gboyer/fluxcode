@@ -35,12 +35,16 @@ SECOND = np.timedelta64(1, "s")
 
 def encode_seconds(x, t):
     """encode_time_blocks in one-second blocks from START."""
-    return fluxcode.encode_time_blocks(x, t, start_time=START, block_duration=SECOND).group
+    return fluxcode.encode_time_blocks(
+        x, t, start_time=START, block_duration=SECOND
+    ).payload
 
 
 def update_seconds(group, x, t, delete_range=None):
     """update_time_blocks of a block group made by encode_seconds."""
-    return fluxcode.update_time_blocks(group, x, t, start_time=START, block_duration=SECOND, delete_ranges=delete_range)
+    return fluxcode.update_time_blocks(
+        group, x, t, start_time=START, block_duration=SECOND, delete_ranges=delete_range
+    )
 
 
 def median_us(call, reps):
@@ -59,34 +63,56 @@ def relative(update, encode):
 
 def rows(name, x, reps):
     """Markdown rows for one signal of 60,000 samples."""
-    t = START + np.arange(60_000) * np.timedelta64(1, "ms")  # 1 kHz: one-second blocks of 1000
-    group = fluxcode.encode_group(x).group
-    timed = fluxcode.encode_group(x, times=t).group
+    t = START + np.arange(60_000) * np.timedelta64(
+        1, "ms"
+    )  # 1 kHz: one-second blocks of 1000
+    group = fluxcode.encode_group(x, block_len=1000).payload
+    timed = fluxcode.encode_group(x, times=t, block_len=1000).payload
     block = x[17_000:18_000][::-1].copy()
-    encode = median_us(lambda: fluxcode.encode_group(x), reps)
-    encode_t = median_us(lambda: fluxcode.encode_group(x, times=t), reps)
+    encode = median_us(lambda: fluxcode.encode_group(x, block_len=1000), reps)
+    encode_t = median_us(
+        lambda: fluxcode.encode_group(x, times=t, block_len=1000), reps
+    )
     one = median_us(lambda: fluxcode.update(group, {17: block}), reps)
-    one_t = median_us(lambda: fluxcode.update(timed, {17: block}, times={17: t[17_000:18_000]}), reps)
-    append_t = median_us(lambda: fluxcode.update(timed, {60: block}, times={60: t[-1] + 1 + np.arange(1000)}), reps)
+    one_t = median_us(
+        lambda: fluxcode.update(timed, {17: block}, times={17: t[17_000:18_000]}), reps
+    )
+    append_t = median_us(
+        lambda: fluxcode.update(
+            timed, {60: block}, times={60: t[-1] + 1 + np.arange(1000)}
+        ),
+        reps,
+    )
     tb = encode_seconds(x, t)
     lo, hi = START + np.timedelta64(30_500, "ms"), START + np.timedelta64(32_500, "ms")
     inside = (t >= lo) & (t < hi)
     encode_tb = median_us(lambda: encode_seconds(x, t), reps)
-    straddle = median_us(lambda: update_seconds(tb, x[inside][::-1], t[inside], (lo, hi)), reps)
+    straddle = median_us(
+        lambda: update_seconds(tb, x[inside][::-1], t[inside], (lo, hi)), reps
+    )
     # An hour at 10 Hz in one-second blocks: 3,600 blocks of 10 samples
     th = START + np.arange(36_000) * np.timedelta64(100, "ms")
     xh = np.resize(x, 36_000)
     hour = encode_seconds(xh, th)
-    lo_h, hi_h = START + np.timedelta64(1_800_500, "ms"), START + np.timedelta64(1_802_500, "ms")
+    lo_h, hi_h = (
+        START + np.timedelta64(1_800_500, "ms"),
+        START + np.timedelta64(1_802_500, "ms"),
+    )
     inside_h = (th >= lo_h) & (th < hi_h)
     encode_h = median_us(lambda: encode_seconds(xh, th), max(reps // 3, 10))
     straddle_h = median_us(
-        lambda: update_seconds(hour, xh[inside_h][::-1], th[inside_h], (lo_h, hi_h)), max(reps // 3, 10)
+        lambda: update_seconds(hour, xh[inside_h][::-1], th[inside_h], (lo_h, hi_h)),
+        max(reps // 3, 10),
     )
     # Upserts: existing times replaced, so the block group's shape stays the same
-    one_t_h = median_us(lambda: update_seconds(hour, xh[5_000:5_001] + 1, th[5_000:5_001]), max(reps // 3, 10))
+    one_t_h = median_us(
+        lambda: update_seconds(hour, xh[5_000:5_001] + 1, th[5_000:5_001]),
+        max(reps // 3, 10),
+    )
     every = np.arange(0, 36_000, 10)  # one sample from each block
-    every_h = median_us(lambda: update_seconds(hour, xh[every] + 1, th[every]), max(reps // 3, 10))
+    every_h = median_us(
+        lambda: update_seconds(hour, xh[every] + 1, th[every]), max(reps // 3, 10)
+    )
     return [
         f"| {name} | `update`, 1 of 60 blocks | {encode:.0f} µs | {relative(one, encode)} |",
         f"| {name} | `update` with times, 1 of 60 | {encode_t:.0f} µs | {relative(one_t, encode_t)} |",

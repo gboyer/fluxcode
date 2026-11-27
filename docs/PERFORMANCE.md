@@ -287,7 +287,7 @@ None of these change the format.
 - **fastmath reassociates across inlined helpers:** `x * s1 * s2` can become `x * (s1 * s2)`,
   which overflows. The first multiply of a two-step scale lives in a function compiled without
   fastmath (`_extreme_magnitudes._scaled`).
-- **Small code changes can move a hot loop's codegen:** an overflow fallback in `_escapes.impute_nonfinite`
+- **Small code changes can move a hot loop's codegen:** an overflow fallback in `_escapes.replace_nonfinite`
   that tested `isfinite(x[i])` instead of the codes slowed the whole function from 0.7 to
   1.15 µs/block, even though the fallback never ran. Time the stage before and after a refactor.
 - Benchmark stages with every output used: LLVM removes unused reductions, which makes them look free.

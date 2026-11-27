@@ -37,9 +37,11 @@ def round_trip(values, times, params=OFF, block_len=BLOCK_LEN, **kwargs):
     """Encodes and decodes with times; the values must decode as they do without times (times
     only steer the noise floor, so by default it is off, and the signals passed with it on are
     clean)."""
-    group = fluxcode.encode_group(values, params, block_len=block_len, times=times, **kwargs).group
+    group = fluxcode.encode_group(
+        values, params, block_len=block_len, times=times, **kwargs
+    ).payload
     decoded = fluxcode.decode_group(group)
-    plain = fluxcode.encode_group(values, params, block_len=block_len).group
+    plain = fluxcode.encode_group(values, params, block_len=block_len).payload
     np.testing.assert_array_equal(decoded.values, fluxcode.decode_group(plain).values)
     return group, decoded
 
@@ -51,7 +53,9 @@ def irregular_flags(group):
 @pytest.mark.parametrize("unit_name", ["s", "ms", "us", "ns"])
 def test_datetime64_round_trip_keeps_unit(unit_name):
     rng = np.random.default_rng(1)
-    ticks = 1_790_000_000 * 10 ** {"s": 0, "ms": 3, "us": 6, "ns": 9}[unit_name] + np.cumsum(rng.integers(0, 50, 5500))
+    ticks = 1_790_000_000 * 10 ** {"s": 0, "ms": 3, "us": 6, "ns": 9}[
+        unit_name
+    ] + np.cumsum(rng.integers(0, 50, 5500))
     times = ticks.view(f"datetime64[{unit_name}]")
     _, decoded = round_trip(minute("noisy-sine", 1)[:5500], times)
     assert decoded.times.dtype == times.dtype
@@ -67,7 +71,9 @@ def test_integer_ticks_round_trip_as_datetime64(unit_name):
 
 
 def test_group_without_times_decodes_times_none():
-    decoded = fluxcode.decode_group(fluxcode.encode_group(np.arange(10.0)).group)
+    decoded = fluxcode.decode_group(
+        fluxcode.encode_group(np.arange(10.0), block_len=1000).payload
+    )
     assert decoded.times is None
 
 
@@ -79,18 +85,22 @@ def test_regular_times_store_no_planes():
     rows = group_rows(group)
     np.testing.assert_array_equal(rows.time_columns.steps, 1_000_000)
     # 60 regular blocks cost only their start and step columns
-    assert len(group) - len(fluxcode.encode_group(values).group) < 100
+    assert len(group) - len(fluxcode.encode_group(values, block_len=1000).payload) < 100
 
 
 def test_gap_makes_only_its_block_irregular():
     values = minute("random-walk", 3)
     times = regular_times(values.size)
     times[5500:] += np.timedelta64(3, "s")  # inside block 5
-    times[20_000:] += np.timedelta64(7, "s")  # exactly at the start of block 20: blocks stay regular
+    times[20_000:] += np.timedelta64(
+        7, "s"
+    )  # exactly at the start of block 20: blocks stay regular
     group, decoded = round_trip(values, times)
     np.testing.assert_array_equal(decoded.times, times)
     np.testing.assert_array_equal(np.flatnonzero(irregular_flags(group)), [5])
-    assert group_rows(group).time_columns.steps[5] == 1_000_000  # the GCD of 1 ms and 3.001 s
+    assert (
+        group_rows(group).time_columns.steps[5] == 1_000_000
+    )  # the GCD of 1 ms and 3.001 s
 
 
 def test_irregular_block_step_is_gcd():
@@ -103,7 +113,9 @@ def test_irregular_block_step_is_gcd():
 
 
 @pytest.mark.parametrize("late_delta,step", [(1000, 1000), (1500, 500), (7, 1)])
-def test_gcd_of_the_whole_block_when_the_first_deltas_share_a_larger_one(late_delta, step):
+def test_gcd_of_the_whole_block_when_the_first_deltas_share_a_larger_one(
+    late_delta, step
+):
     """The encoder tries the GCD of a block's first deltas; a later delta can lower it."""
     deltas = np.full(999, 4000)
     deltas[1::2] = 2000
@@ -126,7 +138,9 @@ def test_reference_is_rounded_mean_for_jitter_and_minimum_for_skewed_deltas():
         ("events", events, lambda quotients: quotients.min()),
         ("gap", gap, lambda quotients: quotients.min()),
     ]:
-        group = fluxcode.encode_group(np.zeros(ticks.size), times=ticks, time_unit="us").group
+        group = fluxcode.encode_group(
+            np.zeros(ticks.size), times=ticks, time_unit="us", block_len=1000
+        ).payload
         time_columns = group_rows(group).time_columns
         for block_idx in range(3):
             block = ticks[1000 * block_idx : 1000 * (block_idx + 1)]
@@ -180,17 +194,23 @@ def test_bulk_encode_splits_times():
     values = np.tile(minute("chirp", 5), 3)[:130_000]
     times = regular_times(values.size)
     times[70_123:] += np.timedelta64(1, "s")
-    groups = fluxcode.encode(values, times=times).groups
+    groups = fluxcode.encode(
+        values, times=times, block_len=1000, blocks_per_group=60
+    ).payloads
     decoded = fluxcode.decode(groups)
     assert len(decoded) == 3
-    np.testing.assert_array_equal(np.concatenate([part.times for part in decoded]), times)
+    np.testing.assert_array_equal(
+        np.concatenate([part.times for part in decoded]), times
+    )
 
 
 def test_bulk_encode_rejects_decrease_at_group_boundary():
     ticks = np.arange(40, dtype=np.int64)
     ticks[16:] -= 100
     with pytest.raises(ValueError, match="sample 16 is -84, below sample 15"):
-        fluxcode.encode(np.zeros(40), block_len=8, blocks_per_group=2, times=ticks, time_unit="ns")
+        fluxcode.encode(
+            np.zeros(40), block_len=8, blocks_per_group=2, times=ticks, time_unit="ns"
+        )
 
 
 def test_byte_planes_and_nonfinite_with_times():
@@ -236,13 +256,23 @@ def test_worked_example_layout():
     )
     values = np.repeat([2.5, 2.25, 3.0], 8)[:20]
     with planes("bit"):
-        group = fluxcode.encode_group(values, block_len=8, times=ticks, time_unit="ns").group
+        group = fluxcode.encode_group(
+            values, block_len=8, times=ticks, time_unit="ns"
+        ).payload
     header = group[: _format.HEADER_BYTES]
     assert header == bytes([1, 0x08, 3, 0, 20, 0, 0, 0])
-    body = np.frombuffer(zstandard.ZstdDecompressor().decompress(group[_format.HEADER_BYTES :]), np.uint8)
+    body = np.frombuffer(
+        zstandard.ZstdDecompressor().decompress(group[_format.HEADER_BYTES :]), np.uint8
+    )
     num_blocks = 3
     flags, sizes = body[:3], np.array([8, 8, 4])
-    assert body.shape[0] == 203 == _format.body_byte_size(num_blocks, _format.compute_body_layout(flags, sizes), True)
+    assert (
+        body.shape[0]
+        == 203
+        == _format.body_byte_size(
+            num_blocks, _format.compute_body_layout(flags, sizes), True
+        )
+    )
     np.testing.assert_array_equal(flags & 0x10, [0, 0x10, 0])
     np.testing.assert_array_equal(body[3:9], [8, 8, 4, 0, 0, 0])
     assert not body[9:15].any()  # grid_params: exponent 0 for constant blocks
@@ -277,31 +307,49 @@ def test_worked_example_layout():
             {"time_unit": "ns"},
             "sample 1500 is 499, below sample 1499 at 1499",
         ),
-        (np.r_[np.arange(1000), np.arange(1000) - 5], {"time_unit": "ns"}, "sample 1000 is -5, below"),
-        (np.r_[np.arange(10), np.arange(1990) + 5], {"time_unit": "ns"}, "sample 10 is 5"),
+        (
+            np.r_[np.arange(1000), np.arange(1000) - 5],
+            {"time_unit": "ns"},
+            "sample 1000 is -5, below",
+        ),
+        (
+            np.r_[np.arange(10), np.arange(1990) + 5],
+            {"time_unit": "ns"},
+            "sample 10 is 5",
+        ),
         (np.r_[[INT64_MIN], np.arange(1999)], {"time_unit": "ns"}, "NaT"),
         (np.r_[np.arange(1999), [INT64_MIN]].view("datetime64[ns]"), {}, "NaT"),
         (np.arange(2000.0), {"time_unit": "ns"}, "dtype float64"),
         (np.arange(2000).view("datetime64[D]"), {}, "datetime64 in s, ms, us or ns"),
         (np.arange(2000).view("datetime64[10ms]"), {}, "datetime64 in s, ms, us or ns"),
-        (np.arange(2000).view("datetime64[ms]"), {"time_unit": "ms"}, "integer times only"),
+        (
+            np.arange(2000).view("datetime64[ms]"),
+            {"time_unit": "ms"},
+            "integer times only",
+        ),
         (np.arange(2000), {}, "need time_unit"),
         (np.arange(2000), {"time_unit": "minutes"}, "time_unit must be one of"),
         (np.arange(1999), {"time_unit": "ns"}, "one entry per sample"),
-        (np.arange(2000, dtype=np.uint64) + np.uint64(INT64_MAX), {"time_unit": "ns"}, "fit in int64"),
+        (
+            np.arange(2000, dtype=np.uint64) + np.uint64(INT64_MAX),
+            {"time_unit": "ns"},
+            "fit in int64",
+        ),
         (np.array([object()] * 2000), {}, "time zone"),
     ],
 )
 def test_invalid_times_are_rejected(times, kwargs, message):
     with pytest.raises(ValueError, match=message):
-        fluxcode.encode_group(np.zeros(2000), times=times, **kwargs)
+        fluxcode.encode_group(np.zeros(2000), times=times, block_len=1000, **kwargs)
     with pytest.raises(ValueError, match=message):
-        fluxcode.encode(np.zeros(2000), times=times, **kwargs)
+        fluxcode.encode(
+            np.zeros(2000), times=times, block_len=1000, blocks_per_group=60, **kwargs
+        )
 
 
 def test_time_unit_without_times_is_rejected():
     with pytest.raises(ValueError, match="time_unit needs times"):
-        fluxcode.encode_group(np.zeros(10), time_unit="ns")
+        fluxcode.encode_group(np.zeros(10), time_unit="ns", block_len=1000)
 
 
 def zigzag(residuals):
@@ -310,12 +358,23 @@ def zigzag(residuals):
     return ((residuals << 1) ^ (residuals >> 63)).view(np.uint64)
 
 
-def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_len=8, long=None, sizes=None):
+def corrupt_group(
+    block_flags_irregular,
+    starts,
+    steps,
+    refs,
+    residuals,
+    block_len=8,
+    long=None,
+    sizes=None,
+):
     """A block group with the given time rows (bypassing the encoder's checks) and zero values;
     long optionally flags blocks as long. Blocks hold block_len samples each, or sizes."""
     num_blocks = len(starts)
     sizes = np.full(num_blocks, block_len) if sizes is None else np.asarray(sizes)
-    block_flags = np.where(block_flags_irregular, BLOCK_FLAG_IRREGULAR_TIME, 0).astype(np.uint8)
+    block_flags = np.where(block_flags_irregular, BLOCK_FLAG_IRREGULAR_TIME, 0).astype(
+        np.uint8
+    )
     if long is not None:
         block_flags |= np.where(long, BLOCK_FLAG_WIDE_TIME, 0).astype(np.uint8)
     time_columns = _format.EncodedTimeColumns(
@@ -333,15 +392,31 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
         np.zeros(sizes.sum(), np.int16),
         time_columns=time_columns,
     )
-    header = _format.pack_header(num_blocks, int(sizes.sum()), False, int(_format.TimeUnitCode.NANOSECONDS))
+    header = _format.pack_header(
+        num_blocks, int(sizes.sum()), False, int(_format.TimeUnitCode.NANOSECONDS)
+    )
     return header + zstandard.ZstdCompressor(level=3).compress(body.tobytes())
 
 
 @pytest.mark.parametrize(
     "irregular,starts,steps,refs,residuals,message",
     [
-        ([False, False], [0, 100], [1, -1], [1, 1], np.zeros(16), "block 1: time step out of range"),
-        ([True, False], [0, 100], [0, 1], [1, 1], np.r_[0, np.ones(7), np.zeros(8)], "block 0: time step out of range"),
+        (
+            [False, False],
+            [0, 100],
+            [1, -1],
+            [1, 1],
+            np.zeros(16),
+            "block 1: time step out of range",
+        ),
+        (
+            [True, False],
+            [0, 100],
+            [0, 1],
+            [1, 1],
+            np.r_[0, np.ones(7), np.zeros(8)],
+            "block 0: time step out of range",
+        ),
         (
             [True, False],
             [0, 100],
@@ -350,8 +425,22 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
             np.r_[1, np.ones(7), np.zeros(8)],
             "block 0: first time residual is not 0",
         ),
-        ([False, False], [0, INT64_MAX - 6], [1, 1], [1, 1], np.zeros(16), "block 1: times overflow"),
-        ([False, False], [0, 100], [1, 1], [1, 2**62], np.zeros(16), "block 1: times overflow"),  # the reference
+        (
+            [False, False],
+            [0, INT64_MAX - 6],
+            [1, 1],
+            [1, 1],
+            np.zeros(16),
+            "block 1: times overflow",
+        ),
+        (
+            [False, False],
+            [0, 100],
+            [1, 1],
+            [1, 2**62],
+            np.zeros(16),
+            "block 1: times overflow",
+        ),  # the reference
         (
             [False, True],
             [0, INT64_MAX - 10],
@@ -376,20 +465,39 @@ def corrupt_group(block_flags_irregular, starts, steps, refs, residuals, block_l
             np.zeros(16),
             "block 1: start time out of range",
         ),  # a decreasing start
-        ([False, False], [INT64_MIN, 0], [1, 1], [1, 1], np.zeros(16), "block 0: start time out of range"),
+        (
+            [False, False],
+            [INT64_MIN, 0],
+            [1, 1],
+            [1, 1],
+            np.zeros(16),
+            "block 0: start time out of range",
+        ),
     ],
 )
-def test_corrupt_time_fields_are_rejected(irregular, starts, steps, refs, residuals, message):
+def test_corrupt_time_fields_are_rejected(
+    irregular, starts, steps, refs, residuals, message
+):
     with pytest.raises(ValueError, match=message):
         fluxcode.decode_group(corrupt_group(irregular, starts, steps, refs, residuals))
 
 
 def test_long_flag_without_irregular_or_needed_is_rejected():
     residuals = np.r_[np.zeros(8), 0, np.ones(7)]
-    with pytest.raises(ValueError, match="block 0: block flags 0x20 sets reserved bits"):
-        fluxcode.decode_group(corrupt_group([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[True, False]))
+    with pytest.raises(
+        ValueError, match="block 0: block flags 0x20 sets reserved bits"
+    ):
+        fluxcode.decode_group(
+            corrupt_group(
+                [False, True], [0, 100], [1, 1], [1, 1], residuals, long=[True, False]
+            )
+        )
     with pytest.raises(ValueError, match="block 1: wide time residuals fit in 32 bits"):
-        fluxcode.decode_group(corrupt_group([False, True], [0, 100], [1, 1], [1, 1], residuals, long=[False, True]))
+        fluxcode.decode_group(
+            corrupt_group(
+                [False, True], [0, 100], [1, 1], [1, 1], residuals, long=[False, True]
+            )
+        )
 
 
 def test_long_blocks_only_where_residuals_need_64_bits():
@@ -400,7 +508,9 @@ def test_long_blocks_only_where_residuals_need_64_bits():
     group, decoded = round_trip(np.zeros(4000), ticks, time_unit="ns")
     np.testing.assert_array_equal(decoded.times.view(np.int64), ticks)
     flags = group_rows(group).block_flags
-    np.testing.assert_array_equal((flags & BLOCK_FLAG_WIDE_TIME) != 0, [False, False, True, False])
+    np.testing.assert_array_equal(
+        (flags & BLOCK_FLAG_WIDE_TIME) != 0, [False, False, True, False]
+    )
     assert irregular_flags(group).all()
 
 
@@ -409,11 +519,19 @@ def test_corrupt_rows_decode_when_valid():
     is the reference plus its residual, mod 2^64."""
     quotients = np.arange(1, 8)
     group = corrupt_group(
-        [False, True, False], [0, 100, 200], [1, 5, 3], [1, 4, 2], np.r_[np.zeros(8), 0, quotients - 4, np.zeros(8)]
+        [False, True, False],
+        [0, 100, 200],
+        [1, 5, 3],
+        [1, 4, 2],
+        np.r_[np.zeros(8), 0, quotients - 4, np.zeros(8)],
     )
     np.testing.assert_array_equal(
         decoded_times(group).view(np.int64),
-        np.r_[np.arange(8), 100 + 5 * np.cumsum(np.r_[0, quotients]), 200 + 6 * np.arange(8)],
+        np.r_[
+            np.arange(8),
+            100 + 5 * np.cumsum(np.r_[0, quotients]),
+            200 + 6 * np.arange(8),
+        ],
     )
 
 
@@ -421,7 +539,11 @@ def encoded_with_times():
     values = minute("noisy-sine", 8)
     times = regular_times(values.size)
     times[33_333:] += np.timedelta64(5, "ms")
-    return values, times, fluxcode.encode_group(values, times=times).group
+    return (
+        values,
+        times,
+        fluxcode.encode_group(values, times=times, block_len=1000).payload,
+    )
 
 
 @pytest.mark.parametrize("indices", [[0], [33], [59], [3, 17, 42]])
@@ -437,31 +559,48 @@ def test_update_with_times_matches_reencode(indices):
         ) * np.timedelta64(1, "ns")
         new_times.append(block_times)
     for position, block_idx in enumerate(indices):
-        edited_values[block_idx * BLOCK_LEN : (block_idx + 1) * BLOCK_LEN] = new_blocks[position]
-        edited_times[block_idx * BLOCK_LEN : (block_idx + 1) * BLOCK_LEN] = new_times[position]
+        edited_values[block_idx * BLOCK_LEN : (block_idx + 1) * BLOCK_LEN] = new_blocks[
+            position
+        ]
+        edited_times[block_idx * BLOCK_LEN : (block_idx + 1) * BLOCK_LEN] = new_times[
+            position
+        ]
     updated = fluxcode.update(
-        group, dict(zip(indices, new_blocks, strict=True)), times=dict(zip(indices, new_times, strict=True))
-    ).group
-    assert updated == fluxcode.encode_group(edited_values, times=edited_times).group
+        group,
+        dict(zip(indices, new_blocks, strict=True)),
+        times=dict(zip(indices, new_times, strict=True)),
+    ).payload
+    assert (
+        updated
+        == fluxcode.encode_group(
+            edited_values, times=edited_times, block_len=1000
+        ).payload
+    )
     np.testing.assert_array_equal(fluxcode.decode_group(updated).times, edited_times)
 
 
 def test_update_appends_with_times():
     values, times, group = encoded_with_times()
     values, times = values[:30_000], times[:30_000]
-    group = fluxcode.encode_group(values, times=times).group
-    new_times = (times[-1] + np.arange(1, 2 * BLOCK_LEN + 1) * np.timedelta64(1, "ms")).reshape(2, BLOCK_LEN)
+    group = fluxcode.encode_group(values, times=times, block_len=1000).payload
+    new_times = (
+        times[-1] + np.arange(1, 2 * BLOCK_LEN + 1) * np.timedelta64(1, "ms")
+    ).reshape(2, BLOCK_LEN)
     new_blocks = np.ones((2, BLOCK_LEN))
     updated = fluxcode.update(
-        group, {30: new_blocks[0], 31: new_blocks[1]}, times={30: new_times[0], 31: new_times[1]}
-    ).group
+        group,
+        {30: new_blocks[0], 31: new_blocks[1]},
+        times={30: new_times[0], 31: new_times[1]},
+    ).payload
     decoded = fluxcode.decode_group(updated)
     np.testing.assert_array_equal(decoded.times, np.r_[times, new_times.reshape(-1)])
     # Integer ticks are read in the block group's time unit
     tick_blocks = new_times.view(np.int64)
     updated_from_ticks = fluxcode.update(
-        group, {30: new_blocks[0], 31: new_blocks[1]}, times={30: tick_blocks[0], 31: tick_blocks[1]}
-    ).group
+        group,
+        {30: new_blocks[0], 31: new_blocks[1]},
+        times={30: tick_blocks[0], 31: tick_blocks[1]},
+    ).payload
     assert updated_from_ticks == updated
 
 
@@ -472,9 +611,15 @@ def test_update_time_errors():
     with pytest.raises(ValueError, match="times are required"):
         fluxcode.update(group, {0: block})
     with pytest.raises(ValueError, match="no time axis"):
-        fluxcode.update(fluxcode.encode_group(values).group, {0: block}, times={0: block_times})
+        fluxcode.update(
+            fluxcode.encode_group(values, block_len=1000).payload,
+            {0: block},
+            times={0: block_times},
+        )
     with pytest.raises(ValueError, match="are in us but the block group stores ns"):
-        fluxcode.update(group, {0: block}, times={0: block_times.astype("datetime64[us]")})
+        fluxcode.update(
+            group, {0: block}, times={0: block_times.astype("datetime64[us]")}
+        )
     with pytest.raises(ValueError, match="shape of its samples"):
         fluxcode.update(group, {0: block}, times={0: block_times[:-1]})
     with pytest.raises(ValueError, match="same block indices"):
@@ -484,7 +629,11 @@ def test_update_time_errors():
         fluxcode.update(group, {1: block}, times={1: block_times})
     # Block 0's new times end after block 1 starts
     with pytest.raises(ValueError, match="non-decreasing: block 1 starts"):
-        fluxcode.update(group, {0: block}, times={0: times[BLOCK_LEN : 2 * BLOCK_LEN] + np.timedelta64(1, "ns")})
+        fluxcode.update(
+            group,
+            {0: block},
+            times={0: times[BLOCK_LEN : 2 * BLOCK_LEN] + np.timedelta64(1, "ns")},
+        )
     # Within a new block
     with pytest.raises(ValueError, match="non-decreasing: sample 1 "):
         fluxcode.update(group, {0: block}, times={0: block_times[::-1]})
@@ -496,10 +645,14 @@ def test_noise_floor_with_regular_times_is_the_untimed_one():
     times = regular_times(values.shape[0])
 
     def decoded(params, **kwargs):
-        return fluxcode.decode_group(fluxcode.encode_group(values, params, **kwargs).group).values
+        return fluxcode.decode_group(
+            fluxcode.encode_group(values, params, block_len=1000, **kwargs).payload
+        ).values
 
     np.testing.assert_array_equal(decoded(Params(), times=times), decoded(Params()))
-    assert not np.array_equal(decoded(Params()), decoded(OFF))  # the floor does gate this signal
+    assert not np.array_equal(
+        decoded(Params()), decoded(OFF)
+    )  # the floor does gate this signal
 
 
 def test_update_noise_floor_with_regular_times():
@@ -507,17 +660,25 @@ def test_update_noise_floor_with_regular_times():
     values = minute("noisy-sine", 8)[:5000]
     times = regular_times(values.shape[0])
     fresh = minute("noisy-sine", 9)[:BLOCK_LEN]
-    timed = fluxcode.encode_group(values, times=times).group
-    updated = fluxcode.update(timed, {2: fresh}, times={2: times[2 * BLOCK_LEN : 3 * BLOCK_LEN]}).group
-    reference = fluxcode.update(fluxcode.encode_group(values).group, {2: fresh}).group
-    np.testing.assert_array_equal(fluxcode.decode_group(updated).values, fluxcode.decode_group(reference).values)
+    timed = fluxcode.encode_group(values, times=times, block_len=1000).payload
+    updated = fluxcode.update(
+        timed, {2: fresh}, times={2: times[2 * BLOCK_LEN : 3 * BLOCK_LEN]}
+    ).payload
+    reference = fluxcode.update(
+        fluxcode.encode_group(values, block_len=1000).payload, {2: fresh}
+    ).payload
+    np.testing.assert_array_equal(
+        fluxcode.decode_group(updated).values, fluxcode.decode_group(reference).values
+    )
 
 
 def scans_kept(keep, sigma=1.5, decimals=None, seed=10):
     """Noisy scans 1 s apart (on a slow sine), of which the historian kept a share: values, times."""
     rng = np.random.default_rng(seed)
     num_scans = 20_000
-    values = 50 + 10 * np.sin(np.arange(num_scans) / 3000) + rng.normal(0, sigma, num_scans)
+    values = (
+        50 + 10 * np.sin(np.arange(num_scans) / 3000) + rng.normal(0, sigma, num_scans)
+    )
     if decimals is not None:
         values = np.round(values, decimals)
     kept = np.flatnonzero(rng.random(num_scans) < keep)
@@ -526,8 +687,10 @@ def scans_kept(keep, sigma=1.5, decimals=None, seed=10):
 
 def block_steps(values, times, params=Params()):
     """The power-of-two step exponent of every block, and the max decode error."""
-    group = fluxcode.encode_group(values, params, times=times).group
-    return group_rows(group).grid_exponents, np.abs(fluxcode.decode_group(group).values - values).max()
+    group = fluxcode.encode_group(values, params, times=times, block_len=1000).payload
+    return group_rows(group).grid_exponents, np.abs(
+        fluxcode.decode_group(group).values - values
+    ).max()
 
 
 def test_sparse_archive_gets_no_noise_floor():
@@ -535,19 +698,30 @@ def test_sparse_archive_gets_no_noise_floor():
     oversampled, so the default floor and an explicit one are off and decimals decode exactly."""
     values, times = scans_kept(0.3, decimals=2)
     for params in (Params(), Params(noise_floor_sigma=1.0)):
-        group = fluxcode.encode_group(values, params, times=times).group
+        group = fluxcode.encode_group(
+            values, params, times=times, block_len=1000
+        ).payload
         np.testing.assert_array_equal(fluxcode.decode_group(group).values, values)
     # Without times the same points gate
-    assert not np.array_equal(fluxcode.decode_group(fluxcode.encode_group(values).group).values, values)
+    assert not np.array_equal(
+        fluxcode.decode_group(
+            fluxcode.encode_group(values, block_len=1000).payload
+        ).values,
+        values,
+    )
 
 
 def test_noise_floor_needs_nearly_every_scan():
     """Nearly every scan kept: the full floor (step 0.25 for sigma 1.5); 80% kept: none, as with
     the floor off."""
     full, full_err = block_steps(*scans_kept(0.97))
-    assert (full[:-1] == -2).all() and 0 < full_err <= 0.125  # the last block is too short to gate
+    assert (
+        full[:-1] == -2
+    ).all() and 0 < full_err <= 0.125  # the last block is too short to gate
     thinned = scans_kept(0.8)
-    np.testing.assert_array_equal(block_steps(*thinned)[0], block_steps(*thinned, OFF)[0])
+    np.testing.assert_array_equal(
+        block_steps(*thinned)[0], block_steps(*thinned, OFF)[0]
+    )
 
 
 def test_noise_floor_on_jittered_clocks():
@@ -572,7 +746,9 @@ def test_mixed_scan_multiples_get_no_noise_floor():
     values, _ = scans_kept(1.0)
     scans = np.cumsum(rng.choice([1, 2, 3], values.size, p=[0.5, 0.45, 0.05]))
     times = START_2026 + scans * np.timedelta64(1, "s")
-    np.testing.assert_array_equal(block_steps(values, times)[0], block_steps(values, times, OFF)[0])
+    np.testing.assert_array_equal(
+        block_steps(values, times)[0], block_steps(values, times, OFF)[0]
+    )
 
 
 def test_events_without_a_cadence_get_no_noise_floor():
@@ -580,20 +756,26 @@ def test_events_without_a_cadence_get_no_noise_floor():
     rng = np.random.default_rng(12)
     ticks = np.cumsum(rng.exponential(1e6, 5000)).astype(np.int64)
     values = np.round(rng.normal(0, 1, 5000), 2)
-    group = fluxcode.encode_group(values, times=ticks.view("datetime64[us]")).group
+    group = fluxcode.encode_group(
+        values, times=ticks.view("datetime64[us]"), block_len=1000
+    ).payload
     np.testing.assert_array_equal(fluxcode.decode_group(group).values, values)
 
 
 def _seconds_in_ns(num_blocks=6, per_block=5, seed=0):
     """Sparse times on whole seconds, as datetime64[ns] (pandas' default unit)."""
     rng = np.random.default_rng(seed)
-    seconds = np.sort(rng.choice(3600 * num_blocks, num_blocks * per_block, replace=False))
-    return np.datetime64("2026-01-01", "ns") + seconds.astype("timedelta64[s]"), rng.normal(size=seconds.shape[0])
+    seconds = np.sort(
+        rng.choice(3600 * num_blocks, num_blocks * per_block, replace=False)
+    )
+    return np.datetime64("2026-01-01", "ns") + seconds.astype(
+        "timedelta64[s]"
+    ), rng.normal(size=seconds.shape[0])
 
 
 def test_time_columns_stored_over_group_time_step():
     times, values = _seconds_in_ns()
-    group = fluxcode.encode_group(values, times=times, block_len=5).group
+    group = fluxcode.encode_group(values, times=times, block_len=5).payload
     assert group[1] & _format.GROUP_FLAG_GROUP_TIME_STEP
     decoded = fluxcode.decode_group(group)
     np.testing.assert_array_equal(decoded.times, times)
@@ -604,24 +786,31 @@ def test_time_columns_stored_over_group_time_step():
 
 def test_group_time_step_follows_updates():
     times, values = _seconds_in_ns()
-    group = fluxcode.encode_group(values, times=times, block_len=5).group
+    group = fluxcode.encode_group(values, times=times, block_len=5).payload
     # A new block off the seconds: the group_time_step drops (to 1 ms), times stay exact
     new_times = times[10:15] + np.timedelta64(1, "ms")
-    updated = fluxcode.update(group, {2: values[10:15]}, times={2: new_times}).group
+    updated = fluxcode.update(group, {2: values[10:15]}, times={2: new_times}).payload
     edited = times.copy()
     edited[10:15] = new_times
     np.testing.assert_array_equal(fluxcode.decode_group(updated).times, edited)
-    assert updated == fluxcode.encode_group(values, times=edited, block_len=5).group
+    assert updated == fluxcode.encode_group(values, times=edited, block_len=5).payload
     # Back on the seconds: group_time_step returns
-    restored = fluxcode.update(updated, {2: values[10:15]}, times={2: times[10:15]}).group
+    restored = fluxcode.update(
+        updated, {2: values[10:15]}, times={2: times[10:15]}
+    ).payload
     assert restored == group
 
 
-@pytest.mark.parametrize("step,msg", [(0, "group_time_step"), (1, "group_time_step"), (2**62, "group_time_step")])
+@pytest.mark.parametrize(
+    "step,msg",
+    [(0, "group_time_step"), (1, "group_time_step"), (2**62, "group_time_step")],
+)
 def test_bad_group_time_step_is_rejected(step, msg):
     times, values = _seconds_in_ns()
-    group = fluxcode.encode_group(values, times=times, block_len=5).group
-    raw = bytearray(_compress.get_zstd_codecs()[1].decompress(group[_format.HEADER_BYTES :]))
+    group = fluxcode.encode_group(values, times=times, block_len=5).payload
+    raw = bytearray(
+        _compress.get_zstd_codecs()[1].decompress(group[_format.HEADER_BYTES :])
+    )
     raw[-8:] = np.array([step], np.uint64).tobytes()
     frame = _compress.get_zstd_codecs(3)[0].compress(bytes(raw))
     with pytest.raises(ValueError, match=msg):

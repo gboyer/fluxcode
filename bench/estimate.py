@@ -22,17 +22,28 @@ B16 = Params(min_quantize_bits=16, noise_floor_sigma=0)
 def estimate_and_actual(x, params):
     sizes = np.full(x.size // 1000, 1000)
     rows, _ = _group.encode_columns(x, sizes, params)
-    est = np.mean([_encoder.estimate_residual_bits(r) for r in rows.residuals.reshape(-1, 1000)])
-    return est, 8 * len(_compress.compress_columns(rows, x.size, _compress.EFFORTS[2], 0)) / x.size
+    est = np.mean(
+        [_encoder.estimate_residual_bits(r) for r in rows.residuals.reshape(-1, 1000)]
+    )
+    return est, 8 * len(
+        _compress.compress_columns(rows, x.size, _compress.EFFORTS[2], 0)
+    ) / x.size
 
 
 def main(minutes=5):
     sets = {k: [minute(k, 100 + j) for j in range(minutes)] for k in KINDS}
-    sets.update({n: [discrete_minute(n, 200 + j) for j in range(minutes)] for n, _, _ in DISCRETE})
+    sets.update(
+        {
+            n: [discrete_minute(n, 200 + j) for j in range(minutes)]
+            for n, _, _ in DISCRETE
+        }
+    )
     targets = (6.0, 8.0, 10.0)
     print(
         "| signal | estimate | actual | "
-        + " | ".join(f"target {t:g}: bits/sample, worst max err % range" for t in targets)
+        + " | ".join(
+            f"target {t:g}: bits/sample, worst max err % range" for t in targets
+        )
         + " |"
     )
     print("|---|---|---|" + "---|" * len(targets))

@@ -61,13 +61,13 @@ DAY_START = np.datetime64(DAY_START_NS, "ns")
 def time_blocks(minutes):
     def encode(values, ticks, params):
         return fluxcode.encode_time_blocks(values, ticks.view("datetime64[ns]"), params, start_time=DAY_START,
-                                           block_duration=np.timedelta64(minutes, "m")).group
+                                           block_duration=np.timedelta64(minutes, "m")).payload
     return encode
 
 
 def point_blocks(size):
     def encode(values, ticks, params):
-        return fluxcode.encode_group(values, params, block_len=size, times=ticks.view("datetime64[ns]")).group
+        return fluxcode.encode_group(values, params, block_len=size, times=ticks.view("datetime64[ns]")).payload
     return encode
 
 
@@ -109,7 +109,7 @@ def flux_measure(scans, idx, ticks, params, encode=ENCODE):
     assert np.array_equal(decoded.times.view(np.int64), ticks)
     off = dataclasses.replace(params, noise_floor_sigma=0)
     off_group = encode(values, ticks, off)
-    time_bytes = len(off_group) - len(fluxcode.encode_blocks(values, decoded.block_sizes, off).group)
+    time_bytes = len(off_group) - len(fluxcode.encode_blocks(values, decoded.block_sizes, off).payload)
     ends = np.cumsum(decoded.block_sizes)
     differs = np.add.reduceat(decoded.values != fluxcode.decode_group(off_group).values, ends - decoded.block_sizes)
     trend = interp(idx, decoded.values, DAY_S)
@@ -140,7 +140,7 @@ def every_scan(scans, budgets):
     ticks = (DAY_START_NS + np.arange(DAY_S, dtype=np.int64) * SECOND_NS).view("datetime64[ns]")
 
     def run(params):
-        group = fluxcode.encode_group(scans, params, times=ticks).group
+        group = fluxcode.encode_group(scans, params, block_len=1000, times=ticks).payload
         return len(group), np.abs(fluxcode.decode_group(group).values - scans).max()
 
     sweep = [(*run(Params(min_quantize_bits=1, max_quantize_bits=bits, noise_floor_sigma=0)), bits)
@@ -153,7 +153,7 @@ def resampled(read_back, idx, values):
     max error against that read-back."""
     series = read_back(idx, values, DAY_S)
     ticks = (DAY_START_NS + np.arange(DAY_S, dtype=np.int64) * SECOND_NS).view("datetime64[ns]")
-    group = fluxcode.encode_group(series, DEFAULT, times=ticks).group
+    group = fluxcode.encode_group(series, DEFAULT, block_len=1000, times=ticks).payload
     return len(group), np.abs(fluxcode.decode_group(group).values - series).max()
 
 

@@ -2,15 +2,18 @@
 # Copyright (c) 2026 Garry Boyer
 """Scaled quantization grids: index GCD reduction and rational step search.
 
-A scaled block reconstructs values as ``(K0 + N * q) * B^p / D`` with base ``B`` in ``{2, 10}``.
-The encoder discovers ``N`` and ``D`` independently per block via two mechanisms:
+A scaled block reconstructs values as ``(K0 + N * q) * B^p / D`` with base ``B`` in
+``{2, 10}``. The encoder discovers ``N`` and ``D`` independently per block via two
+mechanisms:
 
-- **Index GCD** (``index_gcd``, ``divide_indices_in_place``): divides out any common factor
-  ``N > 1`` already present in a block's binary or decimal grid indices (``D = 1``).
-- **Rational step search** (``fit_rational_step``, ``detect_rational_grid``): estimates a
-  coarser step ``S`` via approximate Euclidean GCD on sample differences, refines ``S`` by
-  least squares, finds the simplest rational ``N / D`` within ``S``'s uncertainty via
-  continued fractions, and verifies every sample against the candidate grid.
+- **Index GCD** (``index_gcd``, ``divide_indices_in_place``): divides out any common
+  factor ``N > 1`` already present in a block's binary or decimal grid indices (``D =
+  1``).
+- **Rational step search** (``fit_rational_step``, ``detect_rational_grid``): estimates
+  a coarser step ``S`` via approximate Euclidean GCD on sample differences, refines
+  ``S`` by least squares, finds the simplest rational ``N / D`` within ``S``'s
+  uncertainty via continued fractions, and verifies every sample against the candidate
+  grid.
 """
 
 import math
@@ -29,10 +32,14 @@ from ._format import (
 )
 
 PREFIX_LEN: int = 64
-"""Leading sample count used for GCD fast-path checks, step seeding, and spot-check windows."""
+"""Leading sample count used for GCD fast-path checks, step seeding, and spot-check
+windows.
+"""
 
 MAX_SPLIT: int = 16
-"""Maximum divisor tried when splitting the prefix seed step (handles shared prefix factors)."""
+"""Maximum divisor tried when splitting the prefix seed step (handles shared prefix
+factors).
+"""
 
 MAX_DECIMAL_FOLD: int = 4
 """Largest positive decimal exponent ``p`` folded into ``N`` (``10^5 > 65535``)."""
@@ -43,7 +50,8 @@ MAX_Q: int = 0xFFFF
 
 @njit(inline="always")
 def _gcd(a: int | np.integer, b: int | np.integer) -> int | np.integer:
-    """Computes the greatest common divisor of two non-negative integers via Euclid's algorithm.
+    """Computes the greatest common divisor of two non-negative integers via Euclid's
+    algorithm.
 
     Args:
         a: First non-negative integer.
@@ -67,9 +75,10 @@ def index_gcd(quantized: np.ndarray) -> int | np.integer:
     Returns:
         The GCD across all entries, or ``0`` if every entry is 0.
     """
-    # Scan indices and exit as soon as the running GCD reaches 1. If the GCD after PREFIX_LEN
-    # samples is a power of two, verify the remainder with a branch-free bitwise OR so LLVM
-    # vectorizes the common case (exact power-of-two data) without per-element modulo.
+    # Scan indices and exit as soon as the running GCD reaches 1. If the GCD after
+    # PREFIX_LEN samples is a power of two, verify the remainder with a branch-free
+    # bitwise OR so LLVM vectorizes the common case (exact power-of-two data) without
+    # per-element modulo.
     gcd: int | np.integer = np.int64(0)
     num_samples = quantized.shape[0]
     for sample_idx in range(num_samples):
@@ -90,10 +99,12 @@ def index_gcd(quantized: np.ndarray) -> int | np.integer:
 
 @njit(nogil=True, cache=True)
 def divide_indices_in_place(quantized: np.ndarray, divisor: int | np.integer) -> None:
-    """Divides every grid index in ``quantized`` by an exact positive ``divisor`` in place.
+    """Divides every grid index in ``quantized`` by an exact positive ``divisor`` in
+    place.
 
     Args:
-        quantized: 1D int32 array of grid indices, each an exact multiple of ``divisor``.
+        quantized: 1D int32 array of grid indices, each an exact multiple of
+            ``divisor``.
         divisor: Positive integer divisor.
     """
     # Use a right shift when divisor is a power of two so the loop vectorizes cleanly.
@@ -109,7 +120,9 @@ def divide_indices_in_place(quantized: np.ndarray, divisor: int | np.integer) ->
 
 
 @njit(nogil=True, cache=True)
-def simplest_fraction_between(lower: float, upper: float, max_den: int) -> tuple[int, int]:
+def simplest_fraction_between(
+    lower: float, upper: float, max_den: int
+) -> tuple[int, int]:
     """Finds the rational number with the smallest denominator in ``[lower, upper]``.
 
     Args:
@@ -119,17 +132,21 @@ def simplest_fraction_between(lower: float, upper: float, max_den: int) -> tuple
 
     Returns:
         Tuple ``(scale_num, scale_den)`` in lowest terms with ``scale_den <= max_den``,
-        or ``(0, 0)`` if no fraction in the interval has denominator at most ``max_den``.
+        or ``(0, 0)`` if no fraction in the interval has denominator at most
+        ``max_den``.
     """
-    # Standard continued-fraction interval narrowing: if an integer falls in [lower, upper],
-    # pick the smallest such integer as the final partial quotient; otherwise strip the shared
-    # integer part and invert the remaining fractional interval.
+    # Standard continued-fraction interval narrowing: if an integer falls in [lower,
+    # upper], pick the smallest such integer as the final partial quotient; otherwise
+    # strip the shared integer part and invert the remaining fractional interval.
     num_prev, den_prev, scale_num, scale_den = 0, 1, 1, 0
     for _ in range(64):
         whole = math.floor(lower)
         if whole == lower or whole + 1 <= upper:
             last = int(whole) if whole == lower else int(whole) + 1
-            result_num, result_den = last * scale_num + num_prev, last * scale_den + den_prev
+            result_num, result_den = (
+                last * scale_num + num_prev,
+                last * scale_den + den_prev,
+            )
             if result_den > max_den:
                 return 0, 0
             return result_num, result_den
@@ -156,7 +173,8 @@ def try_rational_grid(
     tolerance: float,
     out_quantized: np.ndarray,
 ) -> tuple[bool, np.int64]:
-    """Attempts to quantize ``samples`` onto the scaled grid ``(scale_num / scale_den) * B^grid_exp``.
+    """Attempts to quantize ``samples`` onto the scaled grid ``(scale_num / scale_den) *
+    B^grid_exp``.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -166,19 +184,27 @@ def try_rational_grid(
         scale_num: Numerator ``N`` (step in fine grid points).
         scale_den: Denominator ``D``.
         tolerance: Maximum allowed distance from each sample to its grid point.
-        out_quantized: Output 1D int32 array receiving ``q = (k - K0) / scale_num`` on success.
+        out_quantized: Output 1D int32 array receiving ``q = (k - K0) / scale_num`` on
+            success.
 
     Returns:
-        Tuple ``(fits, anchor_index)`` where ``fits`` is True iff every sample lies within
-        ``tolerance`` of a valid grid point with ``q`` in ``[0, MAX_Q]`` and ``|K0| < INDEX_LIMIT``.
+        Tuple ``(fits, anchor_index)`` where ``fits`` is True iff every sample lies
+        within ``tolerance`` of a valid grid point with ``q`` in ``[0, MAX_Q]`` and
+        ``|K0| < INDEX_LIMIT``.
     """
-    # Map each sample to its fine-grid index k = round(x * D / B^grid_exp). For decimal grids,
-    # D * 10^-p is exact (guaranteed by scale_valid); for binary grids, multiply by 2^-e first
-    # because D * 2^-e can overflow float64 when the fine indices themselves stay small.
-    first, second = (scale_den * 10.0**-grid_exp, 1.0) if decimal else (math.ldexp(1.0, -grid_exp), float(scale_den))
+    # Map each sample to its fine-grid index k = round(x * D / B^grid_exp). For decimal
+    # grids, D * 10^-p is exact (guaranteed by scale_valid); for binary grids, multiply
+    # by 2^-e first because D * 2^-e can overflow float64 when the fine indices
+    # themselves stay small.
+    first, second = (
+        (scale_den * 10.0**-grid_exp, 1.0)
+        if decimal
+        else (math.ldexp(1.0, -grid_exp), float(scale_den))
+    )
     scaled_tolerance = tolerance * first * second
     base_scaled = lower_bound * first * second
-    # Guard in float64 before int64 conversion so infinite or huge indices cannot overflow.
+    # Guard in float64 before int64 conversion so infinite or huge indices cannot
+    # overflow.
     if not abs(base_scaled) < INDEX_LIMIT:
         return False, np.int64(0)
     anchor_index = np.int64(math.floor(base_scaled + 0.5))
@@ -208,22 +234,26 @@ def _track(
     error: float,
     out_index: np.ndarray,
 ) -> tuple[bool, float, float, float, float, float]:
-    """Tracks cumulative integer step counts from consecutive differences over ``samples[first:stop]``.
+    """Tracks cumulative integer step counts from consecutive differences over
+    ``samples[first:stop]``.
 
     Args:
         samples: 1D float64 array of block samples.
         first: Inclusive start sample index (assigned step count 0).
         stop: Exclusive end sample index.
         step: Candidate grid step size.
-        error: Maximum allowed deviation of each consecutive difference from a multiple of ``step``.
-        out_index: Output 1D float64 array populated with step counts ``k`` at ``[first:stop]``.
+        error: Maximum allowed deviation of each consecutive difference from a multiple
+            of ``step``.
+        out_index: Output 1D float64 array populated with step counts ``k`` at
+            ``[first:stop]``.
 
     Returns:
-        Tuple ``(on_grid, sum_k, sum_kk, sum_u, sum_ku, largest_abs_k)`` where ``u = x - x[first]``
-        and the sums provide the sufficient statistics for ordinary least-squares step refinement.
+        Tuple ``(on_grid, sum_k, sum_kk, sum_u, sum_ku, largest_abs_k)`` where ``u = x -
+        x[first]`` and the sums provide the sufficient statistics for ordinary
+        least-squares step refinement.
     """
-    # Track integer steps incrementally from adjacent differences so small step errors do not
-    # accumulate into a wrong rounded index before least-squares refinement.
+    # Track integer steps incrementally from adjacent differences so small step errors
+    # do not accumulate into a wrong rounded index before least-squares refinement.
     inv_step = 1.0 / step
     index = sum_k = sum_kk = sum_u = sum_ku = largest = 0.0
     out_index[first] = 0.0
@@ -253,7 +283,8 @@ def _largest_residual(
     step: float,
     limit: float,
 ) -> float:
-    """Computes the maximum absolute grid residual over ``samples[first:stop]`` with early exit.
+    """Computes the maximum absolute grid residual over ``samples[first:stop]`` with
+    early exit.
 
     Args:
         samples: 1D float64 array of block samples.
@@ -265,12 +296,14 @@ def _largest_residual(
         limit: Maximum allowable residual magnitude.
 
     Returns:
-        Maximum ``|x[i] - x[first] - intercept - index[i] * step|``, or ``inf`` as soon as any
-        sample exceeds ``limit``.
+        Maximum ``|x[i] - x[first] - intercept - index[i] * step|``, or ``inf`` as soon
+        as any sample exceeds ``limit``.
     """
     largest = 0.0
     for sample_idx in range(first, stop):
-        residual = abs(samples[sample_idx] - samples[first] - intercept - index[sample_idx] * step)
+        residual = abs(
+            samples[sample_idx] - samples[first] - intercept - index[sample_idx] * step
+        )
         if residual > limit:
             return math.inf
         largest = max(largest, residual)
@@ -278,14 +311,17 @@ def _largest_residual(
 
 
 @njit(inline="always")
-def _approx_gcd(larger: float, smaller: float, error: float, floor_step: float) -> float:
+def _approx_gcd(
+    larger: float, smaller: float, error: float, floor_step: float
+) -> float:
     """Computes an approximate Euclidean GCD of two positive floats down to ``error``.
 
     Args:
         larger: First positive float.
         smaller: Second positive float.
         error: Remainder cutoff below which Euclid terminates.
-        floor_step: Minimum acceptable GCD; any remainder in ``(error, floor_step]`` aborts.
+        floor_step: Minimum acceptable GCD; any remainder in ``(error, floor_step]``
+            aborts.
 
     Returns:
         Approximate common step above ``floor_step``, or ``0.0`` if none exists.
@@ -296,7 +332,8 @@ def _approx_gcd(larger: float, smaller: float, error: float, floor_step: float) 
         if not smaller > floor_step:
             return 0.0
         remainder = abs(larger - math.floor(larger / smaller + 0.5) * smaller)
-        # Guard against float64 rounding above 2^53 where remainder could exceed 0.5 * smaller and cycle.
+        # Guard against float64 rounding above 2^53 where remainder could exceed 0.5 *
+        # smaller and cycle.
         if not remainder <= 0.5 * smaller:
             return 0.0
         larger, smaller = smaller, remainder
@@ -304,23 +341,30 @@ def _approx_gcd(larger: float, smaller: float, error: float, floor_step: float) 
 
 
 @njit(nogil=True, cache=True)
-def fit_rational_step(samples: np.ndarray, pow2_step: float, scratch_index: np.ndarray) -> tuple[float, float, float]:
-    """Finds the coarsest step ``S > pow2_step`` fitting all samples within ``pow2_step / 4`` of ``a + k * S``.
+def fit_rational_step(
+    samples: np.ndarray, pow2_step: float, scratch_index: np.ndarray
+) -> tuple[float, float, float]:
+    """Finds the coarsest step ``S > pow2_step`` fitting all samples within ``pow2_step
+    / 4`` of ``a + k * S``.
 
     Args:
         samples: 1D float64 array of block samples.
-        pow2_step: Baseline power-of-two step (candidate ``S`` must be strictly coarser).
-        scratch_index: Preallocated 1D float64 scratch buffer of at least ``len(samples)``.
+        pow2_step: Baseline power-of-two step (candidate ``S`` must be strictly
+            coarser).
+        scratch_index: Preallocated 1D float64 scratch buffer of at least
+            ``len(samples)``.
 
     Returns:
-        Tuple ``(fitted_step, largest_residual, largest_abs_index)``, or ``(0.0, 0.0, 0.0)`` if no
-        coarser step fits the block.
+        Tuple ``(fitted_step, largest_residual, largest_abs_index)``, or ``(0.0, 0.0,
+        0.0)`` if no coarser step fits the block.
     """
-    # 1. Seed S via approximate GCD of consecutive differences over the prefix (or whole block
-    #    if the prefix is constant), aborting immediately if S drops to pow2_step.
-    # 2. Refine the seed on the prefix by least squares through x[0]; drift here rules out any grid.
-    # 3. Try splits seed / 1..MAX_SPLIT (in case the prefix differences shared a common factor),
-    #    spot-checking end and middle windows before fitting the full block by least squares.
+    # 1. Seed S via approximate GCD of consecutive differences over the prefix (or whole
+    #    block if the prefix is constant), aborting immediately if S drops to pow2_step.
+    # 2. Refine the seed on the prefix by least squares through x[0]; drift here rules
+    #    out any grid.
+    # 3. Try splits seed / 1..MAX_SPLIT (in case the prefix differences shared a common
+    #    factor), spot-checking end and middle windows before fitting the full block by
+    #    least squares.
     num_samples = samples.shape[0]
     tolerance = pow2_step / 4
     # Two samples within tol of the grid differ by at most 2 * tol from a multiple of S.
@@ -329,7 +373,10 @@ def fit_rational_step(samples: np.ndarray, pow2_step: float, scratch_index: np.n
     for sample_idx in range(1, num_samples):
         diff = abs(samples[sample_idx] - samples[sample_idx - 1])
         # Skip differences that are already multiples of the current seed.
-        if diff > error and abs(diff - math.floor(diff * inv_seed + 0.5) * seed) > error:
+        if (
+            diff > error
+            and abs(diff - math.floor(diff * inv_seed + 0.5) * seed) > error
+        ):
             seed = diff if seed == 0.0 else _approx_gcd(seed, diff, error, pow2_step)
             if not seed > pow2_step:
                 return 0.0, 0.0, 0.0
@@ -340,14 +387,20 @@ def fit_rational_step(samples: np.ndarray, pow2_step: float, scratch_index: np.n
         return 0.0, 0.0, 0.0
     # Refine the seed on the prefix and reject drifting blocks early.
     prefix = min(PREFIX_LEN, num_samples)
-    on_grid, _, sum_kk, _, sum_ku, _ = _track(samples, 0, prefix, seed, error, scratch_index)
+    on_grid, _, sum_kk, _, sum_ku, _ = _track(
+        samples, 0, prefix, seed, error, scratch_index
+    )
     if not on_grid:
         return 0.0, 0.0, 0.0
     if sum_kk > 0:
         seed = sum_ku / sum_kk
-    if _largest_residual(samples, 0, prefix, scratch_index, 0.0, seed, error) == math.inf:
+    if (
+        _largest_residual(samples, 0, prefix, scratch_index, 0.0, seed, error)
+        == math.inf
+    ):
         return 0.0, 0.0, 0.0
-    # Test candidate splits against tail and middle windows before a full-block least-squares fit.
+    # Test candidate splits against tail and middle windows before a full-block
+    # least-squares fit.
     windows = (max(num_samples - PREFIX_LEN, 0), num_samples // 2)
     for split in range(1, MAX_SPLIT + 1):
         step = seed / split
@@ -359,7 +412,10 @@ def fit_rational_step(samples: np.ndarray, pow2_step: float, scratch_index: np.n
             if not _track(samples, first, stop, step, error, scratch_index)[0]:
                 off_grid = True
                 break
-            if _largest_residual(samples, first, stop, scratch_index, 0.0, step, error) == math.inf:
+            if (
+                _largest_residual(samples, first, stop, scratch_index, 0.0, step, error)
+                == math.inf
+            ):
                 return 0.0, 0.0, 0.0
         if off_grid:
             continue
@@ -371,7 +427,9 @@ def fit_rational_step(samples: np.ndarray, pow2_step: float, scratch_index: np.n
             continue
         fitted = (num_samples * sum_ku - sum_k * sum_u) / det
         intercept = (sum_u - fitted * sum_k) / num_samples
-        largest = _largest_residual(samples, 0, num_samples, scratch_index, intercept, fitted, tolerance)
+        largest = _largest_residual(
+            samples, 0, num_samples, scratch_index, intercept, fitted, tolerance
+        )
         if largest < math.inf and fitted > pow2_step:
             return fitted, largest, largest_index
     return 0.0, 0.0, 0.0
@@ -394,16 +452,20 @@ def detect_rational_grid(
         upper_bound: Maximum sample value in the block.
         pow2_step: Baseline power-of-two step ``2^e``.
         out_quantized: Output 1D int32 array receiving grid offsets ``q`` on success.
-        scratch_index: Preallocated 1D float64 scratch buffer of at least ``len(samples)``.
+        scratch_index: Preallocated 1D float64 scratch buffer of at least
+            ``len(samples)``.
 
     Returns:
-        Tuple ``(found, decimal, grid_exp, scale_num, scale_den, anchor_index)``. When ``found``
-        is False, all remaining fields are zero/False.
+        Tuple ``(found, decimal, grid_exp, scale_num, scale_den, anchor_index)``. When
+        ``found`` is False, all remaining fields are zero/False.
     """
-    # Fit an unconstrained step S and bound its uncertainty from the largest residual and float64
-    # ULP. Try base 10 first, then base 2: find the simplest fraction N / D inside S's uncertainty
-    # interval, fold small positive decimal powers into N, and verify every sample on the grid.
-    step, largest_residual, largest_index = fit_rational_step(samples, pow2_step, scratch_index)
+    # Fit an unconstrained step S and bound its uncertainty from the largest residual
+    # and float64 ULP. Try base 10 first, then base 2: find the simplest fraction N / D
+    # inside S's uncertainty interval, fold small positive decimal powers into N, and
+    # verify every sample on the grid.
+    step, largest_residual, largest_index = fit_rational_step(
+        samples, pow2_step, scratch_index
+    )
     if step == 0.0:
         return False, False, 0, 0, 0, np.int64(0)
     ulp = max(abs(lower_bound), abs(upper_bound)) * 2.0**-52
@@ -425,14 +487,22 @@ def detect_rational_grid(
         )
         if scale_num == 0:
             continue
-        # Scaled decimal grids require grid_exp <= 0; fold p in 1..MAX_DECIMAL_FOLD into scale_num.
+        # Scaled decimal grids require grid_exp <= 0; fold p in 1..MAX_DECIMAL_FOLD into
+        # scale_num.
         if decimal and grid_exp > SCALED_P_MAX:
             scale_num *= 10**grid_exp
             grid_exp = SCALED_P_MAX
         if not scale_valid(decimal, grid_exp, scale_num, scale_den):
             continue
         fits, anchor_index = try_rational_grid(
-            samples, lower_bound, decimal, grid_exp, scale_num, scale_den, pow2_step / 4, out_quantized
+            samples,
+            lower_bound,
+            decimal,
+            grid_exp,
+            scale_num,
+            scale_den,
+            pow2_step / 4,
+            out_quantized,
         )
         if fits:
             return True, decimal, grid_exp, scale_num, scale_den, anchor_index

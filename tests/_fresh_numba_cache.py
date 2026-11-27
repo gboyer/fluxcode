@@ -16,7 +16,11 @@ from pathlib import Path
 
 if "NUMBA_CACHE_DIR" not in os.environ:
     _root = Path(__file__).resolve().parents[1]
-    _sources = sorted([*(_root / "fluxcode").glob("*.py"), *(_root / "fluxprune").glob("*.py")])
-    _digest = hashlib.sha256(b"".join(p.name.encode() + p.read_bytes() for p in _sources)).hexdigest()[:16]
+    _sources = sorted(
+        [*(_root / "fluxcode").glob("*.py"), *(_root / "fluxprune").glob("*.py")]
+    )
+    _digest = hashlib.sha256(
+        b"".join(p.name.encode() + p.read_bytes() for p in _sources)
+    ).hexdigest()[:16]
     _cache = Path(os.environ.get("TMPDIR", "/tmp")) / f"fluxcode-numba-{_digest}"
     os.environ["NUMBA_CACHE_DIR"] = str(_cache)

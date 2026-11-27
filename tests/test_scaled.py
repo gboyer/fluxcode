@@ -37,14 +37,22 @@ def counts(seed, lo, hi, n=10 * L):
 
 
 def fahrenheit_text(seed):
-    c = np.round((20 + 5 * np.sin(np.arange(10 * L) / 6000) + walk(seed, sigma=0.02)) * 10) / 10
+    c = (
+        np.round(
+            (20 + 5 * np.sin(np.arange(10 * L) / 6000) + walk(seed, sigma=0.02)) * 10
+        )
+        / 10
+    )
     return np.round((32 + 1.8 * c) * 100) / 100
 
 
 # name -> (values, exact): exact data is the double nearest each rational, as decoding gives
 GRIDS = {
     "thirds": (lambda: np.round(walk(1) * 3) / 3, True),
-    "0.05": (lambda: np.round(walk(2, sigma=0.2) * 20) / 20, True),  # a walk of 1 would be floored at 0.125
+    "0.05": (
+        lambda: np.round(walk(2, sigma=0.2) * 20) / 20,
+        True,
+    ),  # a walk of 1 would be floored at 0.125
     "F from 0.1 C": (lambda: fahrenheit_text(3), True),
     "ADC 10 V / 4096": (lambda: counts(4, 0, 4095) * (10 / 4096), True),
     "ADC 10 V / 4095": (lambda: counts(5, 0, 4095) * 10 / 4095, True),
@@ -63,7 +71,11 @@ def decode(group):
 
 def step_of(rows, b):
     """Block b's grid step."""
-    flags, param, scale = int(rows.block_flags[b]), int(rows.grid_exponents[b]), int(rows.grid_scales[b])
+    flags, param, scale = (
+        int(rows.block_flags[b]),
+        int(rows.grid_exponents[b]),
+        int(rows.grid_scales[b]),
+    )
     step = 10.0**param if flags & BLOCK_FLAG_DECIMAL else 2.0**param
     if flags & BLOCK_FLAG_SCALED:
         step *= (scale & 0xFFFF) / (scale >> SCALE_SHIFT)
@@ -77,17 +89,22 @@ def test_grids_are_found_and_decode(name):
     index gcd's grids (D = 1) remain."""
     make, exact = GRIDS[name]
     x = make()
-    group = fluxcode.encode_group(x, block_len=L).group
+    group = fluxcode.encode_group(x, block_len=L).payload
     rows = group_rows(group)
-    plain = fluxcode.encode_group(x, Params(grids="decimal"), block_len=L).group
-    if name != "ADC 10 V / 4096":  # an exact binary grid: 5 x 2^-11, scaled by the index gcd
+    plain = fluxcode.encode_group(x, Params(grids="decimal"), block_len=L).payload
+    if (
+        name != "ADC 10 V / 4096"
+    ):  # an exact binary grid: 5 x 2^-11, scaled by the index gcd
         assert (rows.block_flags & BLOCK_FLAG_SCALED).all()
     y = decode(group)
     if exact:
         np.testing.assert_array_equal(y, x)
     else:
         err = np.abs(y - x).reshape(-1, L).max(1)
-        fine = [2.0 ** fluxcode._grids.snapped_exponent_for_range(b.min(), b.max(), 16) for b in x.reshape(-1, L)]
+        fine = [
+            2.0 ** fluxcode._grids.snapped_exponent_for_range(b.min(), b.max(), 16)
+            for b in x.reshape(-1, L)
+        ]
         assert (err <= np.array(fine) / 4).all()
     dens = group_rows(plain).grid_scales >> SCALE_SHIFT
     assert (dens <= 1).all()  # no rational search: D = 1 (or unscaled)
@@ -99,10 +116,10 @@ def test_grids_are_found_and_decode(name):
 def test_scaled_grids_are_fixed_points(name):
     """decode(encode(y)) = y for decoded y, and the bytes are identical from the second encode on."""
     x = GRIDS[name][0]()
-    y = decode(fluxcode.encode_group(x, block_len=L).group)
-    again = fluxcode.encode_group(y, block_len=L).group
+    y = decode(fluxcode.encode_group(x, block_len=L).payload)
+    again = fluxcode.encode_group(y, block_len=L).payload
     np.testing.assert_array_equal(decode(again), y)
-    assert fluxcode.encode_group(decode(again), block_len=L).group == again
+    assert fluxcode.encode_group(decode(again), block_len=L).payload == again
 
 
 @pytest.mark.parametrize("name", GRIDS)
@@ -111,34 +128,47 @@ def test_each_block_encodes_as_it_would_alone(name):
     alone. Today's encoder, not a guarantee (ENCODER §6): a change adding state between blocks
     would change this test."""
     x = GRIDS[name][0]()
-    together = group_rows(fluxcode.encode_group(x, block_len=L).group)
+    together = group_rows(fluxcode.encode_group(x, block_len=L).payload)
     for b in range(x.size // L):
-        alone = group_rows(fluxcode.encode_group(x[b * L : (b + 1) * L], block_len=L).group)
+        alone = group_rows(
+            fluxcode.encode_group(x[b * L : (b + 1) * L], block_len=L).payload
+        )
         for field in ("block_flags", "grid_exponents", "grid_scales", "block_anchors"):
             assert getattr(alone, field)[0] == getattr(together, field)[b], (b, field)
-        np.testing.assert_array_equal(alone.residuals, together.residuals[b * L : (b + 1) * L])
+        np.testing.assert_array_equal(
+            alone.residuals, together.residuals[b * L : (b + 1) * L]
+        )
 
 
 def test_the_step_fit_reads_no_stale_scratch():
     """A prefix difference off the seed ends the fit: the scratch indices past it were never written,
     and the block before (or uninitialised memory) mustn't decide the grid."""
     rng = np.random.default_rng(0)
-    for trial in range(3000):  # 1194, 1779 and 2770 depended on the scratch before the fix
+    for trial in range(
+        3000
+    ):  # 1194, 1779 and 2770 depended on the scratch before the fix
         n = int(rng.integers(3, 120))
         step = rng.uniform(0.5, 2)
         pow2_step = step / rng.uniform(2, 40)
-        x = np.cumsum(rng.integers(-40, 41, n)) * step + rng.uniform(-1, 1, n) * pow2_step * rng.uniform(0, 0.3)
-        fits = {_rational.fit_rational_step(x, pow2_step, np.full(n, fill)) for fill in (0.0, np.nan, 1e6)}
+        x = np.cumsum(rng.integers(-40, 41, n)) * step + rng.uniform(
+            -1, 1, n
+        ) * pow2_step * rng.uniform(0, 0.3)
+        fits = {
+            _rational.fit_rational_step(x, pow2_step, np.full(n, fill))
+            for fill in (0.0, np.nan, 1e6)
+        }
         assert len(fits) == 1, (trial, fits)
 
 
 def test_an_unrationalizable_step_stays_binary():
     """A gain no fraction of 16-bit N and D reaches: power-of-two grid, alone or in a group."""
     x = -3.21 + counts(12, 100, 600) * 0.013712345678
-    together = group_rows(fluxcode.encode_group(x, block_len=L).group)
+    together = group_rows(fluxcode.encode_group(x, block_len=L).payload)
     assert not (together.block_flags & BLOCK_FLAG_SCALED).any()
     for b in range(x.size // L):
-        alone = group_rows(fluxcode.encode_group(x[b * L : (b + 1) * L], block_len=L).group)
+        alone = group_rows(
+            fluxcode.encode_group(x[b * L : (b + 1) * L], block_len=L).payload
+        )
         assert alone.grid_exponents[0] == together.grid_exponents[b]
 
 
@@ -146,9 +176,13 @@ def test_an_unrationalizable_step_stays_binary():
 def test_the_target_coarsens_scaled_grids_within_half_a_step(target):
     """A wide thirds walk (about 11 bits a sample) capped: coarser blocks, half a step of error."""
     x = np.round(walk(13, sigma=300) * 3) / 3
-    off = Params(noise_floor_sigma=0)  # a walk this wide is floored first (ENCODER §5.2): the target alone
-    exact = fluxcode.encode_group(x, off, block_len=L).group
-    capped = fluxcode.encode_group(x, Params(noise_floor_sigma=0, target_bits_per_sample=target), block_len=L).group
+    off = Params(
+        noise_floor_sigma=0
+    )  # a walk this wide is floored first (ENCODER §5.2): the target alone
+    exact = fluxcode.encode_group(x, off, block_len=L).payload
+    capped = fluxcode.encode_group(
+        x, Params(noise_floor_sigma=0, target_bits_per_sample=target), block_len=L
+    ).payload
     assert len(capped) < len(exact)
     rows = group_rows(capped)
     err = np.abs(decode(capped) - x).reshape(-1, L).max(1)
@@ -171,14 +205,18 @@ def test_the_target_caps_exact_grids_and_keeps_fixed_points(name, make, target):
     x = make()
     # Walks this wide are floored first (ENCODER §5.2): the target alone
     params = Params(noise_floor_sigma=0, target_bits_per_sample=target)
-    free = len(fluxcode.encode_group(x, Params(noise_floor_sigma=0), block_len=L).group)
-    capped = fluxcode.encode_group(x, params, block_len=L).group
+    free = len(
+        fluxcode.encode_group(x, Params(noise_floor_sigma=0), block_len=L).payload
+    )
+    capped = fluxcode.encode_group(x, params, block_len=L).payload
     assert len(capped) < free
-    assert 8 * len(capped) / x.size < target + 1.0  # soft: the estimate is within about a bit
+    assert (
+        8 * len(capped) / x.size < target + 1.0
+    )  # soft: the estimate is within about a bit
     y = decode(capped)
-    again = fluxcode.encode_group(y, params, block_len=L).group
+    again = fluxcode.encode_group(y, params, block_len=L).payload
     np.testing.assert_array_equal(decode(again), y)
-    assert fluxcode.encode_group(decode(again), params, block_len=L).group == again
+    assert fluxcode.encode_group(decode(again), params, block_len=L).payload == again
 
 
 @pytest.mark.parametrize(
@@ -194,7 +232,7 @@ def test_grid_levels_nest(grids, allowed, name):
     """Each level of Params.grids adds grids to the one before: binary stores no decimal or scaled
     block, decimal no scaled one; every level decodes within its bounds."""
     x = GRIDS[name][0]()
-    group = fluxcode.encode_group(x, Params(grids=grids), block_len=L).group
+    group = fluxcode.encode_group(x, Params(grids=grids), block_len=L).payload
     flags = group_rows(group).block_flags
     forbidden = (BLOCK_FLAG_DECIMAL | BLOCK_FLAG_SCALED) & ~allowed
     assert not (flags & forbidden).any()
@@ -212,7 +250,9 @@ def test_large_decimal_steps_fold_or_stay_decimal(step):
     """A decimal grid of p > 4 can't fold into N (10^5 > 2^16): it stays a plain decimal grid
     (10^19 overflowed int64 once, giving a scale the decoder rejected)."""
     x = np.array([0.0, step, 2 * step, step] * 8)
-    np.testing.assert_array_equal(decode(fluxcode.encode_group(x).group), x)
+    np.testing.assert_array_equal(
+        decode(fluxcode.encode_group(x, block_len=1000).payload), x
+    )
 
 
 # --- Decoding: one rounding (SPEC §5) ------------------------------------------------------------
@@ -232,7 +272,9 @@ def scaled_group(flags, param, num, den, k0, q):
         None,
     )
     body = _oracle.write_group(*rows[:7])
-    return _format.pack_header(1, n, False, 0) + zstandard.ZstdCompressor().compress(body.tobytes())
+    return _format.pack_header(1, n, False, 0) + zstandard.ZstdCompressor().compress(
+        body.tobytes()
+    )
 
 
 @pytest.mark.parametrize("decimal", [True, False])
@@ -240,7 +282,11 @@ def test_decoding_rounds_once(decimal):
     """Each sample decodes to the double nearest (K0 + N q) B^p / D (Python's float(Fraction) is
     correctly rounded), down to the subnormals and up to the largest exponent."""
     rng = np.random.default_rng(14)
-    params = rng.integers(-22, 1, 40) if decimal else np.r_[rng.integers(-1022, 971, 37), -1022, 970, -1000]
+    params = (
+        rng.integers(-22, 1, 40)
+        if decimal
+        else np.r_[rng.integers(-1022, 971, 37), -1022, 970, -1000]
+    )
     for param in params:
         num, den = int(rng.integers(1, 2**16)), int(rng.integers(1, 2**16))
         if decimal and not 5 ** -int(param) < (1 << 53) // den:
@@ -248,7 +294,14 @@ def test_decoding_rounds_once(decimal):
         k0 = int(rng.integers(-(2**51), 2**51))
         q = rng.integers(-32768, 32768, 64)
         y = decode(
-            scaled_group(BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if decimal else 0), int(param), num, den, k0, q)
+            scaled_group(
+                BLOCK_FLAG_SCALED | (BLOCK_FLAG_DECIMAL if decimal else 0),
+                int(param),
+                num,
+                den,
+                k0,
+                q,
+            )
         )
         base = Fraction(10) if decimal else Fraction(2)
         want = [float((k0 + num * int(v)) * base ** int(param) / den) for v in q]
@@ -260,11 +313,29 @@ def test_decoding_rounds_once(decimal):
     [
         (BLOCK_FLAG_SCALED, 0, 0, 1, "grid scale"),  # N = 0
         (BLOCK_FLAG_SCALED, 0, 1, 0, "grid scale"),  # D = 0
-        (BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL, 1, 3, 1, "grid scale"),  # decimal p > 0
+        (
+            BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL,
+            1,
+            3,
+            1,
+            "grid scale",
+        ),  # decimal p > 0
         (BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL, -23, 3, 1, "grid scale"),  # p < -22
-        (BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL, -22, 3, 4, "grid scale"),  # 4 x 5^22 >= 2^53: D 10^22 inexact
+        (
+            BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL,
+            -22,
+            3,
+            4,
+            "grid scale",
+        ),  # 4 x 5^22 >= 2^53: D 10^22 inexact
         (BLOCK_FLAG_SCALED, 971, 3, 1, "grid scale"),  # could overflow
-        (BLOCK_FLAG_SCALED, -1023, 3, 1, "grid scale"),  # would scale into the subnormals
+        (
+            BLOCK_FLAG_SCALED,
+            -1023,
+            3,
+            1,
+            "grid scale",
+        ),  # would scale into the subnormals
         (0, 0, 3, 1, "grid scale"),  # a scale on an unscaled block
     ],
 )
@@ -281,8 +352,14 @@ def test_scaled_anchor_bound():
 
 def test_largest_valid_decimal_denominators_decode():
     """D 10^22 with 3 x 5^22 < 2^53 is exact: it decodes like any other."""
-    y = decode(scaled_group(BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL, -22, 1, 3, 10**15, np.arange(8)))
-    np.testing.assert_array_equal(y, [float(Fraction(10**15 + v, 3 * 10**22)) for v in range(8)])
+    y = decode(
+        scaled_group(
+            BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL, -22, 1, 3, 10**15, np.arange(8)
+        )
+    )
+    np.testing.assert_array_equal(
+        y, [float(Fraction(10**15 + v, 3 * 10**22)) for v in range(8)]
+    )
 
 
 # --- The fraction search ------------------------------------------------------------------------
@@ -296,7 +373,14 @@ def test_simplest_between_matches_brute_force():
         width = 10.0 ** rng.uniform(-9, -1)
         lo, hi = center - width, center + width
         num, den = _rational.simplest_fraction_between(lo, hi, 5000)
-        best = next(((math.ceil(lo * d), d) for d in range(1, 5001) if math.ceil(lo * d) <= hi * d), (0, 0))
+        best = next(
+            (
+                (math.ceil(lo * d), d)
+                for d in range(1, 5001)
+                if math.ceil(lo * d) <= hi * d
+            ),
+            (0, 0),
+        )
         assert (num, den) == best
         if den:
             assert lo <= num / den <= hi
@@ -305,9 +389,16 @@ def test_simplest_between_matches_brute_force():
 def test_the_step_uncertainty_picks_the_true_fraction():
     """0.0137 from float-computed counts (offset -3.21): 137/100, not a nearer fraction of larger D."""
     x = -3.21 + counts(16, 100, 600, L) * 0.0137
-    rows = group_rows(fluxcode.encode_group(x, block_len=L).group)
-    assert rows.block_flags[0] & BLOCK_FLAG_SCALED and rows.block_flags[0] & BLOCK_FLAG_DECIMAL
-    assert (int(rows.grid_exponents[0]), int(rows.grid_scales[0]) & 0xFFFF, int(rows.grid_scales[0]) >> 16) == (
+    rows = group_rows(fluxcode.encode_group(x, block_len=L).payload)
+    assert (
+        rows.block_flags[0] & BLOCK_FLAG_SCALED
+        and rows.block_flags[0] & BLOCK_FLAG_DECIMAL
+    )
+    assert (
+        int(rows.grid_exponents[0]),
+        int(rows.grid_scales[0]) & 0xFFFF,
+        int(rows.grid_scales[0]) >> 16,
+    ) == (
         -2,
         137,
         100,
@@ -326,15 +417,28 @@ def test_updates_from_the_same_sensor_keep_samples_exact():
     rng = np.random.default_rng(17)
     t = START + np.arange(1000) * np.timedelta64(10, "ms")
     x = np.round(walk(18, 1000) * 3) / 3
-    group = fluxcode.encode_time_blocks(x, t, start_time=START, block_duration=SECOND).group
+    group = fluxcode.encode_time_blocks(
+        x, t, start_time=START, block_duration=SECOND
+    ).payload
     lo, hi = START + 5 * SECOND + np.timedelta64(500, "ms"), START + 6 * SECOND
     kept = (t >= START + 5 * SECOND) & (t < lo)
     replaced = (t >= lo) & (t < hi)
     for _ in range(100):
-        new = np.round((x[kept].mean() + rng.uniform(-3, 3) * rng.normal(0, 3, replaced.sum())) * 3) / 3
+        new = (
+            np.round(
+                (x[kept].mean() + rng.uniform(-3, 3) * rng.normal(0, 3, replaced.sum()))
+                * 3
+            )
+            / 3
+        )
         group = fluxcode.update_time_blocks(
-            group, new, t[replaced], delete_ranges=[(lo, hi)], start_time=START, block_duration=SECOND
-        ).group
+            group,
+            new,
+            t[replaced],
+            delete_ranges=[(lo, hi)],
+            start_time=START,
+            block_duration=SECOND,
+        ).payload
         assert group_rows(group).block_flags[5] & BLOCK_FLAG_SCALED
         np.testing.assert_array_equal(decode(group)[kept], x[kept])
 
@@ -347,7 +451,9 @@ def test_mixed_updates_keep_a_bounded_error():
     rng = np.random.default_rng(19)
     t = START + np.arange(1000) * np.timedelta64(10, "ms")
     x = np.round(walk(20, 1000) * 3) / 3
-    group = fluxcode.encode_time_blocks(x, t, start_time=START, block_duration=SECOND).group
+    group = fluxcode.encode_time_blocks(
+        x, t, start_time=START, block_duration=SECOND
+    ).payload
     lo, hi = START + 5 * SECOND + np.timedelta64(500, "ms"), START + 6 * SECOND
     kept = (t >= START + 5 * SECOND) & (t < lo)
     replaced = (t >= lo) & (t < hi)
@@ -362,11 +468,18 @@ def test_mixed_updates_keep_a_bounded_error():
         elif kind == "cents":
             new = np.round(new * 100) / 100
         group = fluxcode.update_time_blocks(
-            group, new, t[replaced], delete_ranges=[(lo, hi)], start_time=START, block_duration=SECOND
-        ).group
+            group,
+            new,
+            t[replaced],
+            delete_ranges=[(lo, hi)],
+            start_time=START,
+            block_duration=SECOND,
+        ).payload
         rows = group_rows(group)
         steps.append(step_of(rows, 5))
-        kinds.add((kind, int(rows.block_flags[5]) & (BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL)))
+        kinds.add(
+            (kind, int(rows.block_flags[5]) & (BLOCK_FLAG_SCALED | BLOCK_FLAG_DECIMAL))
+        )
         err = np.abs(decode(group)[kept] - original).max()
         assert err < max(steps)
     assert len(kinds) >= 4  # the block moved between grids

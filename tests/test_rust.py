@@ -16,7 +16,9 @@ from fluxcode import Params, _compress, _format
 from fluxcode._types import MAX_EFFORT, MIN_EFFORT
 from tests._signals import KINDS, discrete_minute, minute
 
-fluxcode_rs = pytest.importorskip("fluxcode_rs", reason="the fluxcode[rust] extra isn't installed")
+fluxcode_rs = pytest.importorskip(
+    "fluxcode_rs", reason="the fluxcode[rust] extra isn't installed"
+)
 pytestmark = pytest.mark.skipif(_compress._rust is None, reason="FLUXCODE_RUST=0")
 
 SAME_ZSTD = fluxcode_rs.zstd_version() == zstandard.ZSTD_VERSION
@@ -32,7 +34,11 @@ def inputs():
     yield "sensor-0.1", discrete_minute("sensor-0.1", 1)[:20_000], None
     yield "nonfinite", nonfinite, None
     yield "constant", np.full(3000, 3.25), None
-    yield "variable blocks", minute("random-walk", 2)[:2000], [7, 3, 1000, 0, 5, 300, 64, 621]
+    yield (
+        "variable blocks",
+        minute("random-walk", 2)[:2000],
+        [7, 3, 1000, 0, 5, 300, 64, 621],
+    )
     yield "short blocks", minute("chirp", 2)[:40], [1, 8, 9, 2, 20]
 
 
@@ -42,8 +48,10 @@ def encode(x, sizes, params, rust):
         _compress._rust = None
     try:
         if sizes is None:
-            return fluxcode.encode(x, params).groups
-        return [fluxcode.encode_blocks(x[: sum(sizes)], sizes, params).group]
+            return fluxcode.encode(
+                x, params, block_len=1000, blocks_per_group=60
+            ).payloads
+        return [fluxcode.encode_blocks(x[: sum(sizes)], sizes, params).payload]
     finally:
         _compress._rust = saved
 
@@ -59,9 +67,15 @@ def test_rust_groups_match_python_groups(effort):
         else:
             # another libzstd may code the same body differently: the block groups still decode alike
             for group_rust, group_python in zip(rust, python, strict=True):
-                a, b = fluxcode.decode_group(group_rust), fluxcode.decode_group(group_python)
+                a, b = (
+                    fluxcode.decode_group(group_rust),
+                    fluxcode.decode_group(group_python),
+                )
                 assert np.array_equal(a.values, b.values, equal_nan=True), name
-                assert abs(len(group_rust) - len(group_python)) <= 0.02 * len(group_python) + 16, name
+                assert (
+                    abs(len(group_rust) - len(group_python))
+                    <= 0.02 * len(group_python) + 16
+                ), name
 
 
 def test_rust_groups_decode_to_the_encoded_values():
@@ -95,7 +109,9 @@ def timed_inputs():
     rng = np.random.default_rng(5)
     x = minute("noisy-sine", 1)[:6000]
     regular = np.datetime64("2026-01-01") + np.arange(6000) * np.timedelta64(10, "ms")
-    irregular = np.datetime64("2026-01-01") + np.cumsum(rng.integers(1, 40, 6000)).astype("timedelta64[ms]")
+    irregular = np.datetime64("2026-01-01") + np.cumsum(
+        rng.integers(1, 40, 6000)
+    ).astype("timedelta64[ms]")
     yield x, regular
     yield x, irregular
 
@@ -113,7 +129,9 @@ def test_time_axis_groups_and_updates_match_python(effort):
         try:
             out = []
             for x, times in timed_inputs():
-                group = fluxcode.encode_time_blocks(x, times, params, start_time=start, block_duration=second).group
+                group = fluxcode.encode_time_blocks(
+                    x, times, params, start_time=start, block_duration=second
+                ).payload
                 out.append(group)
                 lo = int(np.searchsorted(times, times[2500]))
                 new = x[lo : lo + 300][::-1] + 1
@@ -126,9 +144,13 @@ def test_time_axis_groups_and_updates_match_python(effort):
                         start_time=start,
                         block_duration=second,
                         delete_ranges=(times[2800], times[3300]),
-                    ).group
+                    ).payload
                 )
-                out.append(fluxcode.update(group, {0: x[:10]}, params, times={0: times[:10]}).group)
+                out.append(
+                    fluxcode.update(
+                        group, {0: x[:10]}, params, times={0: times[:10]}
+                    ).payload
+                )
             return out
         finally:
             _compress._rust = saved
@@ -138,7 +160,10 @@ def test_time_axis_groups_and_updates_match_python(effort):
         if SAME_ZSTD:
             assert group_rust == group_python
         else:
-            a, b = fluxcode.decode_group(group_rust), fluxcode.decode_group(group_python)
+            a, b = (
+                fluxcode.decode_group(group_rust),
+                fluxcode.decode_group(group_python),
+            )
             assert np.array_equal(a.values, b.values, equal_nan=True)
             assert a.times is not None and b.times is not None
             assert np.array_equal(a.times, b.times)
@@ -148,7 +173,9 @@ def test_pack_group_rejects_a_short_body_and_an_unknown_layout():
     with pytest.raises(ValueError, match="too short"):
         fluxcode_rs.pack_group(np.zeros(10, np.uint8), 1, 8, 1, 0, "best", True, [3])
     with pytest.raises(ValueError, match="layout"):
-        fluxcode_rs.pack_group(np.zeros(17 + 16, np.uint8), 1, 8, 1, 0, "size", True, [3])
+        fluxcode_rs.pack_group(
+            np.zeros(17 + 16, np.uint8), 1, 8, 1, 0, "size", True, [3]
+        )
 
 
 def test_mismatched_rows_are_rejected():
@@ -196,18 +223,19 @@ def test_rust_and_python_match_with_escapes():
     x[7000:7010] = -9999.0
     for effort in (1, 4, 5):
         params = Params(effort=effort)
-        group_rust = fluxcode.encode_group(x, params).group
+        group_rust = fluxcode.encode_group(x, params, block_len=1000).payload
         saved = _compress._rust
         try:
             _compress._rust = None
-            group_python = fluxcode.encode_group(x, params).group
+            group_python = fluxcode.encode_group(x, params, block_len=1000).payload
         finally:
             _compress._rust = saved
         if SAME_ZSTD:
             assert group_rust == group_python
         else:
             np.testing.assert_array_equal(
-                fluxcode.decode_group(group_rust).values, fluxcode.decode_group(group_python).values
+                fluxcode.decode_group(group_rust).values,
+                fluxcode.decode_group(group_python).values,
             )
 
 
@@ -224,18 +252,25 @@ def test_rust_and_python_match_with_group_time_step():
     values = rng.normal(size=30)
     for effort in (1, 4, 5):
         params = Params(effort=effort)
-        group_rust = fluxcode.encode_group(values, params, block_len=5, times=times).group
+        group_rust = fluxcode.encode_group(
+            values, params, block_len=5, times=times
+        ).payload
         saved = _compress._rust
         try:
             _compress._rust = None
-            group_python = fluxcode.encode_group(values, params, block_len=5, times=times).group
+            group_python = fluxcode.encode_group(
+                values, params, block_len=5, times=times
+            ).payload
         finally:
             _compress._rust = saved
         assert group_rust[1] & _format.GROUP_FLAG_GROUP_TIME_STEP
         if SAME_ZSTD:
             assert group_rust == group_python
         else:
-            a, b = fluxcode.decode_group(group_rust), fluxcode.decode_group(group_python)
+            a, b = (
+                fluxcode.decode_group(group_rust),
+                fluxcode.decode_group(group_python),
+            )
             np.testing.assert_array_equal(a.values, b.values)
             assert a.times is not None and b.times is not None
             np.testing.assert_array_equal(a.times, b.times)

@@ -6,10 +6,11 @@ Timestamps are int64 ticks in a block group's time unit (seconds through nanosec
 naive (no time zone), and non-decreasing within and across blocks. Each block stores:
 
 - ``time_start``: first timestamp in the block (0 if empty).
-- ``time_step``: GCD of consecutive within-block timestamp deltas (0 if all equal or < 2 samples).
+- ``time_step``: GCD of consecutive within-block timestamp deltas (0 if all equal or < 2
+  samples).
 - ``time_ref_quotient``: reference quotient ``(time[i] - time[i - 1]) / time_step``.
-- ``time_residuals`` (irregular blocks only): per-sample zigzagged
-  ``(quotient - time_ref_quotient) mod 2^64``, with 0 at sample 0.
+- ``time_residuals`` (irregular blocks only): per-sample zigzagged ``(quotient -
+  time_ref_quotient) mod 2^64``, with 0 at sample 0.
 
 Blocks with identical consecutive deltas are regular and store no time residuals. Lossy
 timestamp rounding (``Params.time_error > 0``) lives in ``_time_rounding``.
@@ -37,7 +38,9 @@ CADENCE_SAMPLES: int = 15
 """Number of evenly spaced intervals whose median estimates a block's scan interval."""
 
 CADENCE_SHARE: float = 0.9
-"""Minimum fraction of one-scan intervals required to classify a block as having a regular cadence."""
+"""Minimum fraction of one-scan intervals required to classify a block as having a
+regular cadence.
+"""
 
 # Status codes returned by encode_times and expand_times (plain ints for Numba).
 OK: int = 0
@@ -104,7 +107,8 @@ def _deltas_gcd(times: np.ndarray, num_deltas: int) -> np.uint64:
     step_gcd = np.uint64(0)
     for sample_idx in range(1, num_deltas + 1):
         delta = np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
-        # Fast path: skip Euclidean division when delta is already divisible by step_gcd.
+        # Fast path: skip Euclidean division when delta is already divisible by
+        # step_gcd.
         if step_gcd != 0 and delta % step_gcd == 0:
             continue
         step_gcd = _gcd(step_gcd, delta)
@@ -114,24 +118,30 @@ def _deltas_gcd(times: np.ndarray, num_deltas: int) -> np.uint64:
 
 
 @njit(inline="always")
-def _divide_deltas(times: np.ndarray, step: np.uint64, out_quotients: np.ndarray) -> tuple[bool, np.uint64, np.uint64]:
-    """Divides every consecutive timestamp delta by ``step`` and checks exact divisibility.
+def _divide_deltas(
+    times: np.ndarray, step: np.uint64, out_quotients: np.ndarray
+) -> tuple[bool, np.uint64, np.uint64]:
+    """Divides every consecutive timestamp delta by ``step`` and checks exact
+    divisibility.
 
-    The returned ``minimum`` and ``total`` are meaningful only when ``divisible`` is True.
+    The returned ``minimum`` and ``total`` are meaningful only when ``divisible`` is
+    True.
 
     Args:
         times: 1D int64 array of non-decreasing timestamps.
         step: Positive uint64 candidate divisor.
-        out_quotients: Preallocated 1D uint64 array receiving quotients at indices ``1..n-1``.
+        out_quotients: Preallocated 1D uint64 array receiving quotients at indices
+            ``1..n-1``.
 
     Returns:
-        Tuple ``(divisible, minimum, total)`` where ``divisible`` is True iff ``step`` divides
-        every delta exactly, ``minimum`` is the smallest quotient, and ``total`` is the sum
-        of all quotients.
+        Tuple ``(divisible, minimum, total)`` where ``divisible`` is True iff ``step``
+        divides every delta exactly, ``minimum`` is the smallest quotient, and ``total``
+        is the sum of all quotients.
     """
-    # Factor step = odd * 2^shift and replace 64-bit hardware division with a right shift and
-    # multiplication by the modular inverse of odd; exact divisibility holds iff all shifted-out
-    # low bits are zero and every quotient stays within floor((2^64 - 1) / odd).
+    # Factor step = odd * 2^shift and replace 64-bit hardware division with a right
+    # shift and multiplication by the modular inverse of odd; exact divisibility holds
+    # iff all shifted-out low bits are zero and every quotient stays within floor((2^64
+    # - 1) / odd).
     minimum = np.uint64(0xFFFFFFFFFFFFFFFF)
     total = np.uint64(0)
     if step == 1:
@@ -161,21 +171,27 @@ def _divide_deltas(times: np.ndarray, step: np.uint64, out_quotients: np.ndarray
 
 
 @njit(inline="always")
-def _reference_quotient(quotients: np.ndarray, minimum: np.uint64, total: np.uint64) -> np.uint64:
-    """Selects the reference quotient used to center an irregular block's time residuals.
+def _reference_quotient(
+    quotients: np.ndarray, minimum: np.uint64, total: np.uint64
+) -> np.uint64:
+    """Selects the reference quotient used to center an irregular block's time
+    residuals.
 
     Args:
-        quotients: 1D uint64 array of block quotients (valid entries at indices ``1..n-1``).
+        quotients: 1D uint64 array of block quotients (valid entries at indices
+            ``1..n-1``).
         minimum: Minimum quotient in the block.
         total: Sum of all quotients in the block.
 
     Returns:
-        Selected uint64 reference quotient (rounded mean for tight distributions, else minimum).
+        Selected uint64 reference quotient (rounded mean for tight distributions, else
+        minimum).
     """
-    # Compare variance against squared distance from the minimum to decide whether centering on
-    # the mean produces smaller zigzagged residuals than anchoring at the minimum. Accumulate
-    # float64 sums in four fixed-order lanes to break serial FP latency without fastmath
-    # (which would make encoded bytes depend on the CPU's SIMD width).
+    # Compare variance against squared distance from the minimum to decide whether
+    # centering on the mean produces smaller zigzagged residuals than anchoring at the
+    # minimum. Accumulate float64 sums in four fixed-order lanes to break serial FP
+    # latency without fastmath (which would make encoded bytes depend on the CPU's SIMD
+    # width).
     num_quotients = quotients.shape[0] - 1
     first = np.float64(quotients[1])
     sum0 = sum1 = sum2 = sum3 = 0.0
@@ -222,38 +238,43 @@ def encode_times(
     out_time_refs: np.ndarray,
     out_time_residuals: np.ndarray,
 ) -> tuple[int, int]:
-    """Encodes each block's timestamps into start, step, reference quotient, and optional residuals.
+    """Encodes each block's timestamps into start, step, reference quotient, and
+    optional residuals.
 
     Clears and updates ``BLOCK_FLAG_IRREGULAR_TIME`` and ``BLOCK_FLAG_WIDE_TIME`` in
-    ``out_block_flags`` while preserving all other flag bits. Empty blocks receive 0 for start,
-    step, and reference; single-sample blocks receive 0 for step and reference. Also verifies
-    monotonic non-decreasing order within and across all non-empty blocks.
+    ``out_block_flags`` while preserving all other flag bits. Empty blocks receive 0 for
+    start, step, and reference; single-sample blocks receive 0 for step and reference.
+    Also verifies monotonic non-decreasing order within and across all non-empty blocks.
 
     Args:
         ticks: 1D int64 array of all samples' timestamp ticks.
-        sample_offsets: 1D int64 array of cumulative per-block sample offsets (``num_blocks + 1``).
+        sample_offsets: 1D int64 array of cumulative per-block sample offsets
+            (``num_blocks + 1``).
         out_block_flags: In-out 1D uint8 array of per-block flags.
         out_time_starts: Output 1D int64 array receiving block start timestamps.
         out_time_steps: Output 1D int64 array receiving per-block delta GCDs.
         out_time_refs: Output 1D uint64 array receiving per-block reference quotients.
-        out_time_residuals: Output 1D uint64 array receiving zigzagged residuals for irregular
-            blocks (slices for regular blocks are left untouched).
+        out_time_residuals: Output 1D uint64 array receiving zigzagged residuals for
+            irregular blocks (slices for regular blocks are left untouched).
 
     Returns:
-        Tuple ``(OK, 0)`` on success, or ``(DECREASING, sample_idx)`` naming the first flat
-        sample index whose timestamp is smaller than its predecessor.
+        Tuple ``(OK, 0)`` on success, or ``(DECREASING, sample_idx)`` naming the first
+        flat sample index whose timestamp is smaller than its predecessor.
     """
-    # For each block: verify monotonic order and check regularity in one branch-free pass.
-    # Regular blocks store only (start, step, ref). Irregular blocks estimate step GCD from
-    # the first 8 deltas (falling back to full GCD if needed), pick a reference quotient, and
-    # zigzag-encode residuals in place, setting BLOCK_FLAG_WIDE_TIME if any exceeds 32 bits.
+    # For each block: verify monotonic order and check regularity in one branch-free
+    # pass. Regular blocks store only (start, step, ref). Irregular blocks estimate step
+    # GCD from the first 8 deltas (falling back to full GCD if needed), pick a reference
+    # quotient, and zigzag-encode residuals in place, setting BLOCK_FLAG_WIDE_TIME if
+    # any exceeds 32 bits.
     num_blocks = sample_offsets.shape[0] - 1
     int64_max = np.uint64(INT64_MAX)
     previous_last = -1
     for block_idx in range(num_blocks):
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
-        out_block_flags[block_idx] &= ~(BLOCK_FLAG_IRREGULAR_TIME | BLOCK_FLAG_WIDE_TIME)
+        out_block_flags[block_idx] &= ~(
+            BLOCK_FLAG_IRREGULAR_TIME | BLOCK_FLAG_WIDE_TIME
+        )
         if block_len:
             # Verify monotonic ordering across non-empty block boundaries.
             if previous_last >= 0 and ticks[first_sample] < ticks[previous_last]:
@@ -273,15 +294,17 @@ def encode_times(
         differing_bits = np.uint64(0)
         decreased = False
         for sample_idx in range(1, block_len):
-            differing_bits |= (np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])) ^ first_delta
+            differing_bits |= (
+                np.uint64(times[sample_idx]) - np.uint64(times[sample_idx - 1])
+            ) ^ first_delta
             decreased |= times[sample_idx] < times[sample_idx - 1]
         if decreased:
             for sample_idx in range(1, block_len):
                 if times[sample_idx] < times[sample_idx - 1]:
                     return DECREASING, first_sample + sample_idx
         if differing_bits == 0:
-            # Regular block: all deltas equal. A single delta exceeding INT64_MAX is encoded
-            # as ref = delta over step = 1 so step always fits in signed int64.
+            # Regular block: all deltas equal. A single delta exceeding INT64_MAX is
+            # encoded as ref = delta over step = 1 so step always fits in signed int64.
             if first_delta > int64_max:
                 out_time_steps[block_idx] = 1
                 out_time_refs[block_idx] = first_delta
@@ -291,7 +314,8 @@ def encode_times(
             continue
         quotients = out_time_residuals[first_sample : first_sample + block_len]
         quotients[0] = 0
-        # Optimistically test the GCD of the first 8 deltas while dividing all deltas in one pass.
+        # Optimistically test the GCD of the first 8 deltas while dividing all deltas in
+        # one pass.
         step_gcd = _deltas_gcd(times, min(8, block_len - 1))
         divisible = False
         if 0 < step_gcd <= int64_max:
@@ -299,11 +323,13 @@ def encode_times(
         if not divisible:
             step_gcd = _deltas_gcd(times, block_len - 1)
             if step_gcd > int64_max:
-                # Only possible when a delta spans more than half the int64 range: fall back to step 1.
+                # Only possible when a delta spans more than half the int64 range: fall
+                # back to step 1.
                 step_gcd = np.uint64(1)
             _, minimum, total = _divide_deltas(times, step_gcd, quotients)
         reference = _reference_quotient(quotients, minimum, total)
-        # Zigzag-encode residuals mod 2^64 in place and track whether any residual exceeds 32 bits.
+        # Zigzag-encode residuals mod 2^64 in place and track whether any residual
+        # exceeds 32 bits.
         all_bits = np.uint64(0)
         for sample_idx in range(1, block_len):
             residual = np.int64(quotients[sample_idx] - reference)
@@ -328,26 +354,30 @@ def expand_times(
     block_ids: np.ndarray,
     out_times: np.ndarray,
 ) -> tuple[int, int]:
-    """Reconstructs timestamp ticks for the specified blocks from their encoded time columns.
+    """Reconstructs timestamp ticks for the specified blocks from their encoded time
+    columns.
 
     Args:
         block_flags: 1D uint8 array of per-block flags.
-        sample_offsets: 1D int64 array of cumulative per-block sample offsets (``num_blocks + 1``).
+        sample_offsets: 1D int64 array of cumulative per-block sample offsets
+            (``num_blocks + 1``).
         time_starts: 1D int64 array of absolute block start timestamps.
         time_steps: 1D int64 array of per-block time steps.
         time_refs: 1D uint64 array of per-block reference quotients.
-        time_residuals: 1D uint64 array of zigzagged time residuals (read only for irregular blocks).
+        time_residuals: 1D uint64 array of zigzagged time residuals (read only for
+            irregular blocks).
         block_ids: 1D int64 array of block indices to expand.
-        out_times: Preallocated 1D int64 array sized for all samples; only slices belonging to
-            ``block_ids`` are written.
+        out_times: Preallocated 1D int64 array sized for all samples; only slices
+            belonging to ``block_ids`` are written.
 
     Returns:
         Tuple ``(OK, 0)`` on success, or ``(status, block_idx)`` with ``BAD_STEP``,
         ``BAD_FIRST_RESIDUAL``, or ``OVERFLOW`` for the first invalid block.
     """
-    # For each requested block, validate step and compute the maximum safe cumulative quotient
-    # (quotient_limit) with one division per block. Regular blocks expand linearly; irregular
-    # blocks reverse zigzag encoding and integrate quotients while checking overflow at each step.
+    # For each requested block, validate step and compute the maximum safe cumulative
+    # quotient (quotient_limit) with one division per block. Regular blocks expand
+    # linearly; irregular blocks reverse zigzag encoding and integrate quotients while
+    # checking overflow at each step.
     int64_max = np.uint64(INT64_MAX)
     for block_idx in block_ids:
         first_sample = sample_offsets[block_idx]
@@ -365,7 +395,8 @@ def expand_times(
             times[:] = time_starts[block_idx]
             continue
         step_unsigned = np.uint64(step)
-        # start + step * quotient_sum <= INT64_MAX iff quotient_sum <= (INT64_MAX - start) // step.
+        # start + step * quotient_sum <= INT64_MAX iff quotient_sum <= (INT64_MAX -
+        # start) // step.
         quotient_limit = (int64_max - start) // step_unsigned
         times[0] = time_starts[block_idx]
         if not irregular:
@@ -381,7 +412,10 @@ def expand_times(
         quotient_sum = np.uint64(0)
         for sample_idx in range(1, block_len):
             zigzagged = residuals[sample_idx]
-            quotient = reference + ((zigzagged >> np.uint64(1)) ^ (np.uint64(0) - (zigzagged & np.uint64(1))))
+            quotient = reference + (
+                (zigzagged >> np.uint64(1))
+                ^ (np.uint64(0) - (zigzagged & np.uint64(1)))
+            )
             if quotient > quotient_limit - quotient_sum:
                 return OVERFLOW, block_idx
             quotient_sum += quotient
@@ -391,16 +425,20 @@ def expand_times(
 
 @njit(inline="always")
 def sampled_intervals(ticks: np.ndarray, scratch_pivots: np.ndarray) -> np.ndarray:
-    """Samples ``CADENCE_SAMPLES`` evenly spaced consecutive intervals from ``ticks``, sorted.
+    """Samples ``CADENCE_SAMPLES`` evenly spaced consecutive intervals from ``ticks``,
+    sorted.
 
     Args:
         ticks: 1D int64 array of block timestamps (at least 2 samples).
-        scratch_pivots: Preallocated 1D int64 scratch buffer of length ``>= CADENCE_SAMPLES``.
+        scratch_pivots: Preallocated 1D int64 scratch buffer of length ``>=
+            CADENCE_SAMPLES``.
 
     Returns:
-        View ``scratch_pivots[:CADENCE_SAMPLES]`` containing the sampled intervals in ascending order.
+        View ``scratch_pivots[:CADENCE_SAMPLES]`` containing the sampled intervals in
+        ascending order.
     """
-    # Insertion-sort directly into scratch_pivots to avoid heap allocation inside Numba kernels.
+    # Insertion-sort directly into scratch_pivots to avoid heap allocation inside Numba
+    # kernels.
     num_intervals = ticks.shape[0] - 1
     pivots = scratch_pivots[:CADENCE_SAMPLES]
     for pivot_idx in range(CADENCE_SAMPLES):
@@ -416,11 +454,13 @@ def sampled_intervals(ticks: np.ndarray, scratch_pivots: np.ndarray) -> np.ndarr
 
 @njit(inline="always")
 def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
-    """Estimates a block's median interval from ``CADENCE_SAMPLES`` evenly spaced intervals.
+    """Estimates a block's median interval from ``CADENCE_SAMPLES`` evenly spaced
+    intervals.
 
     Args:
         ticks: 1D int64 array of block timestamps (at least 2 samples).
-        scratch_pivots: Preallocated 1D int64 scratch buffer of length ``>= CADENCE_SAMPLES``.
+        scratch_pivots: Preallocated 1D int64 scratch buffer of length ``>=
+            CADENCE_SAMPLES``.
 
     Returns:
         Median of the sampled intervals.
@@ -429,24 +469,29 @@ def median_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> int:
 
 
 @njit(inline="always")
-def detect_scan_interval(ticks: np.ndarray, scratch_pivots: np.ndarray) -> tuple[int, int, int, int]:
-    """Detects a block's dominant single-scan interval and counts how many intervals match it.
+def detect_scan_interval(
+    ticks: np.ndarray, scratch_pivots: np.ndarray
+) -> tuple[int, int, int, int]:
+    """Detects a block's dominant single-scan interval and counts how many intervals
+    match it.
 
-    An interval ``d`` counts as one scan when strictly inside ``(scan / 2, 3 * scan / 2)``,
-    separating single scans (including clock jitter) from skipped scans (2+ periods) and
-    decreasing/duplicate timestamps.
+    An interval ``d`` counts as one scan when strictly inside ``(scan / 2, 3 * scan /
+    2)``, separating single scans (including clock jitter) from skipped scans (2+
+    periods) and decreasing/duplicate timestamps.
 
     Args:
         ticks: 1D int64 array of block timestamps (at least 2 samples).
-        scratch_pivots: Preallocated 1D int64 scratch buffer of length ``>= CADENCE_SAMPLES``.
+        scratch_pivots: Preallocated 1D int64 scratch buffer of length ``>=
+            CADENCE_SAMPLES``.
 
     Returns:
-        Tuple ``(scan, lower, upper, num_one_scan)`` where an interval ``d`` is one scan iff
-        ``lower < d < upper``. Returns ``(0, 0, 0, 0)`` if ``scan`` is not in ``(0, 2^62)``.
+        Tuple ``(scan, lower, upper, num_one_scan)`` where an interval ``d`` is one scan
+        iff ``lower < d < upper``. Returns ``(0, 0, 0, 0)`` if ``scan`` is not in ``(0,
+        2^62)``.
     """
     # Compute integer half-open bounds (scan // 2, scan + (scan + 1) // 2) for exact
-    # (scan / 2, 3 * scan / 2) membership without floating-point rounding, then count matches
-    # over zero-based slices so LLVM vectorizes the loop.
+    # (scan / 2, 3 * scan / 2) membership without floating-point rounding, then count
+    # matches over zero-based slices so LLVM vectorizes the loop.
     num_intervals = ticks.shape[0] - 1
     scan = median_interval(ticks, scratch_pivots)
     if not 0 < scan < (1 << 62):

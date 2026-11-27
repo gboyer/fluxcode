@@ -80,15 +80,24 @@ def write_group(
     zigzag = (zigzag & 0xFFFF).astype(np.uint16)
     planes = body[start:stop].reshape(16, num_plane_bytes)
     for block_idx in range(num_blocks):
-        first, last = offsets.sample_offsets[block_idx], offsets.sample_offsets[block_idx + 1]
-        plane_bytes = offsets.plane_byte_offsets[block_idx + 1] - offsets.plane_byte_offsets[block_idx]
+        first, last = (
+            offsets.sample_offsets[block_idx],
+            offsets.sample_offsets[block_idx + 1],
+        )
+        plane_bytes = (
+            offsets.plane_byte_offsets[block_idx + 1]
+            - offsets.plane_byte_offsets[block_idx]
+        )
         padded = np.zeros(8 * plane_bytes, np.uint16)
         padded[: last - first] = zigzag[first:last]
         for plane_idx in range(16):
             bits = ((padded >> plane_idx) & 1).astype(np.uint8)
-            planes[plane_idx, offsets.plane_byte_offsets[block_idx] : offsets.plane_byte_offsets[block_idx + 1]] = (
-                np.packbits(bits, bitorder="little")
-            )
+            planes[
+                plane_idx,
+                offsets.plane_byte_offsets[block_idx] : offsets.plane_byte_offsets[
+                    block_idx + 1
+                ],
+            ] = np.packbits(bits, bitorder="little")
     return body
 
 
@@ -96,7 +105,9 @@ def wide_share(raw_group, num_blocks, num_plane_bytes, has_time, byte_planes, bi
     """The share of residual slots whose zigzagged residual reaches 2^bit_idx, from either layout
     (the package's wide_residual_fraction reads byte planes only)."""
     if byte_planes:
-        return _bitpacking.wide_residual_fraction(raw_group, num_blocks, num_plane_bytes, has_time, bit_idx)
+        return _bitpacking.wide_residual_fraction(
+            raw_group, num_blocks, num_plane_bytes, has_time, bit_idx
+        )
     if not num_plane_bytes:
         return 0.0
     planes = residual_bit_planes_view(raw_group, num_blocks, num_plane_bytes, has_time)
@@ -109,7 +120,9 @@ def get_codes(code_planes, plane_byte_offset, out_codes):
     """Unpacks a flagged block's 2-bit non-finite codes from the code planes."""
     for sample_idx in range(out_codes.shape[0]):
         octet_idx = plane_byte_offset + sample_idx // 8
-        out_codes[sample_idx] = unpack_sample_code(code_planes[0, octet_idx], code_planes[1, octet_idx], sample_idx % 8)
+        out_codes[sample_idx] = unpack_sample_code(
+            code_planes[0, octet_idx], code_planes[1, octet_idx], sample_idx % 8
+        )
 
 
 @njit(nogil=True)
@@ -129,25 +142,44 @@ def _read_rows(
     num_blocks = out_grid_exponents.shape[0]
     max_plane_bytes = 0
     for block_idx in range(num_blocks):
-        max_plane_bytes = max(max_plane_bytes, plane_byte_offsets[block_idx + 1] - plane_byte_offsets[block_idx])
+        max_plane_bytes = max(
+            max_plane_bytes,
+            plane_byte_offsets[block_idx + 1] - plane_byte_offsets[block_idx],
+        )
     scratch_low_bytes = np.empty(8 * max_plane_bytes, np.uint8)
     scratch_high_bytes = np.empty(8 * max_plane_bytes, np.uint8)
     num_plane_bytes = int(plane_byte_offsets[num_blocks])
     planes = residual_bit_planes_view(raw_group, num_blocks, num_plane_bytes, has_time)
-    bplanes = residual_byte_planes_view(raw_group, num_blocks, num_plane_bytes, has_time)
+    bplanes = residual_byte_planes_view(
+        raw_group, num_blocks, num_plane_bytes, has_time
+    )
     cplanes = sample_code_planes_view(
-        raw_group, num_blocks, num_plane_bytes, int(code_plane_offsets[num_blocks]), has_time
+        raw_group,
+        num_blocks,
+        num_plane_bytes,
+        int(code_plane_offsets[num_blocks]),
+        has_time,
     )
     for block_idx in range(num_blocks):
-        out_grid_exponents[block_idx] = get_int16(raw_group, grid_exponents_start(num_blocks), num_blocks, block_idx)
-        out_grid_scales[block_idx] = get_uint32(raw_group, grid_scales_start(num_blocks), num_blocks, block_idx)
-        out_block_anchors[block_idx] = get_int64(raw_group, block_anchors_start(num_blocks), num_blocks, block_idx)
+        out_grid_exponents[block_idx] = get_int16(
+            raw_group, grid_exponents_start(num_blocks), num_blocks, block_idx
+        )
+        out_grid_scales[block_idx] = get_uint32(
+            raw_group, grid_scales_start(num_blocks), num_blocks, block_idx
+        )
+        out_block_anchors[block_idx] = get_int64(
+            raw_group, block_anchors_start(num_blocks), num_blocks, block_idx
+        )
         first_sample = sample_offsets[block_idx]
         block_len = sample_offsets[block_idx + 1] - first_sample
         if byte_planes:
             sample_start = 8 * plane_byte_offsets[block_idx]
-            scratch_low_bytes[:block_len] = bplanes[0, sample_start : sample_start + block_len]
-            scratch_high_bytes[:block_len] = bplanes[1, sample_start : sample_start + block_len]
+            scratch_low_bytes[:block_len] = bplanes[
+                0, sample_start : sample_start + block_len
+            ]
+            scratch_high_bytes[:block_len] = bplanes[
+                1, sample_start : sample_start + block_len
+            ]
         else:
             unshuffle_residual_block(
                 planes,
@@ -161,23 +193,37 @@ def _read_rows(
                 scratch_low_bytes, scratch_high_bytes, sample_idx
             )
         if raw_group[block_idx] & BLOCK_FLAG_SAMPLE_CODES:
-            get_codes(cplanes, code_plane_offsets[block_idx], out_codes[first_sample : first_sample + block_len])
+            get_codes(
+                cplanes,
+                code_plane_offsets[block_idx],
+                out_codes[first_sample : first_sample + block_len],
+            )
 
 
-def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> EncodedBlockColumns:
+def read_group(
+    raw_group, num_blocks, byte_planes=False, has_time=False
+) -> EncodedBlockColumns:
     """Deserializes a body (either layout) into its columns.
 
     Raises:
         ValueError: If the buffer size does not match its block flags and sizes, or a time column is invalid.
     """
-    raw_arr = np.frombuffer(raw_group, np.uint8) if not isinstance(raw_group, np.ndarray) else raw_group
+    raw_arr = (
+        np.frombuffer(raw_group, np.uint8)
+        if not isinstance(raw_group, np.ndarray)
+        else raw_group
+    )
     if raw_arr.shape[0] < (BYTES_PER_FLAGS + BYTES_PER_SIZE) * num_blocks:
-        raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold {num_blocks} blocks")
+        raise ValueError(
+            f"a body of {raw_arr.shape[0]} bytes doesn't hold {num_blocks} blocks"
+        )
     block_flags = raw_arr[:num_blocks].copy()
     block_sizes, offsets = read_body_layout(raw_arr, num_blocks)
     fields_size = body_byte_size(num_blocks, offsets, has_time)
     if raw_arr.shape[0] < fields_size or (raw_arr.shape[0] - fields_size) % 8:
-        raise ValueError(f"a body of {raw_arr.shape[0]} bytes doesn't hold its {num_blocks} blocks")
+        raise ValueError(
+            f"a body of {raw_arr.shape[0]} bytes doesn't hold its {num_blocks} blocks"
+        )
     num_escapes = (raw_arr.shape[0] - fields_size) // 8
     escaped_values = _escapes.unpack_escaped_values(raw_arr, fields_size, num_escapes)
     num_samples = int(offsets.sample_offsets[-1])
@@ -205,7 +251,9 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Enco
         time_columns = allocate_time_columns(num_blocks, num_samples)
         time_columns.residuals[:] = 0
         everyone = np.arange(num_blocks, dtype=np.int64)
-        _body.check_time_fields_status(*_body.read_time_fields(raw_arr, *offsets, *time_columns, everyone))
+        _body.check_time_fields_status(
+            *_body.read_time_fields(raw_arr, *offsets, *time_columns, everyone)
+        )
     return EncodedBlockColumns(
         block_flags,
         block_sizes,
@@ -221,4 +269,9 @@ def read_group(raw_group, num_blocks, byte_planes=False, has_time=False) -> Enco
 
 def read_rows(parsed: _group.ParsedGroup) -> EncodedBlockColumns:
     """Every block's columns (residuals and codes, without dequantizing) and time columns."""
-    return read_group(parsed.body, parsed.header.num_blocks, parsed.header.byte_planes, parsed.has_time)
+    return read_group(
+        parsed.body,
+        parsed.header.num_blocks,
+        parsed.header.byte_planes,
+        parsed.has_time,
+    )
