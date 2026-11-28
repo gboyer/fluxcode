@@ -12,13 +12,11 @@ plt.rcParams["svg.fonttype"] = "none"  # text stays text: smaller and crisper th
 
 SITE_NAV = [
     ("overview", "Overview", "index.html"),
-    ("codecs", "Codecs", "codecs.html"),
-    ("public", "Public Data", "public.html"),
+    ("benchmarks", "Benchmarks", "public.html"),
     ("time", "Timestamps", "time.html"),
-    ("sdt", "Historian", "sdt.html"),
     ("prune", "Fluxprune", "prune.html"),
-    ("rate", "Rate Control", "rate.html"),
     ("spec", "Spec", "spec.html"),
+    ("experiments", "Experiments", "experiments.html"),
 ]
 
 CSS = """
@@ -56,9 +54,15 @@ details.data-table>summary{cursor:pointer;padding:8px 12px;font-size:13.5px;font
 details.data-table>summary:hover{color:var(--fg)}
 details.data-table[open]>summary{border-bottom:1px solid var(--line);color:var(--fg)}
 details.data-table>.table-wrap{padding:8px 12px;background:var(--bg);border-radius:0 0 6px 6px}
+.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:18px 0 20px}
+.pillar{padding:16px 18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.pillar h3{margin:0 0 6px;font-size:17px}
+.pillar p{margin:0;font-size:14px;color:var(--muted);line-height:1.5}
+.pillar p strong,.pillar p b{color:var(--fg)}
 .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin:20px 0 28px}
 .card{display:block;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);transition:border-color 0.15s}
 .card:hover{border-color:var(--accent);text-decoration:none}
+.card .tag{display:inline-block;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px}
 .card h3{margin:0 0 6px;font-size:16px;color:var(--accent)}
 .card p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.45}
 .figure-card{margin:18px 0 24px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
