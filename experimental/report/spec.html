@@ -34,9 +34,15 @@ details.data-table>summary{cursor:pointer;padding:8px 12px;font-size:13.5px;font
 details.data-table>summary:hover{color:var(--fg)}
 details.data-table[open]>summary{border-bottom:1px solid var(--line);color:var(--fg)}
 details.data-table>.table-wrap{padding:8px 12px;background:var(--bg);border-radius:0 0 6px 6px}
+.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:18px 0 20px}
+.pillar{padding:16px 18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.pillar h3{margin:0 0 6px;font-size:17px}
+.pillar p{margin:0;font-size:14px;color:var(--muted);line-height:1.5}
+.pillar p strong,.pillar p b{color:var(--fg)}
 .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin:20px 0 28px}
 .card{display:block;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);transition:border-color 0.15s}
 .card:hover{border-color:var(--accent);text-decoration:none}
+.card .tag{display:inline-block;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px}
 .card h3{margin:0 0 6px;font-size:16px;color:var(--accent)}
 .card p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.45}
 .figure-card{margin:18px 0 24px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
@@ -48,7 +54,7 @@ blockquote{margin:12px 0;padding:8px 14px;border-left:3px solid var(--line);colo
 hr{border:0;border-top:1px solid var(--line);margin:24px 0}
 .muted{color:var(--muted)}
 </style></head><body>
-<header class='site-header'><a class='brand' href='index.html'>fluxcode</a><nav class='site-nav' aria-label='Site navigation'><a href='index.html'>Overview</a><a href='codecs.html'>Codecs</a><a href='public.html'>Public Data</a><a href='time.html'>Timestamps</a><a href='sdt.html'>Historian</a><a href='prune.html'>Fluxprune</a><a href='rate.html'>Rate Control</a><a href='spec.html' class='active'>Spec</a></nav></header>
+<header class='site-header'><a class='brand' href='index.html'>fluxcode</a><nav class='site-nav' aria-label='Site navigation'><a href='index.html'>Overview</a><a href='public.html'>Benchmarks</a><a href='time.html'>Timestamps</a><a href='prune.html'>Fluxprune</a><a href='spec.html' class='active'>Spec</a><a href='experiments.html'>Experiments</a></nav></header>
 <h1>fluxcode Format Specification</h1>
 <p class='muted'>Rendered from <a href='https://github.com/gboyer/fluxcode/blob/main/docs/SPEC.md'><code>docs/SPEC.md</code></a>. See also <a href='https://github.com/gboyer/fluxcode/blob/main/docs/ENCODER.md'><code>ENCODER.md</code></a> and <a href='https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md'><code>TUNING.md</code></a>.</p>
 <nav class='toc'><h2 id='contents'>Contents</h2><ul><li><a href='#0-how-fluxcode-works-overview-design-rationale'>0. How fluxcode works (Overview &amp; Design Rationale)</a><ul><li><a href='#pipeline-overview'>Pipeline overview</a></li><li><a href='#design-rationale'>Design rationale</a></li></ul></li><li><a href='#1-block-groups-and-blocks'>1. Block groups and blocks</a></li><li><a href='#2-sample-exception-codes-and-escaped-values'>2. Sample exception codes and escaped values</a></li><li><a href='#3-time-axis'>3. Time axis</a></li><li><a href='#4-anchors-grid-indices-and-modular-residuals'>4. Anchors, grid indices, and modular residuals</a><ul><li><a href='#grid-indices-and-anchors'>Grid indices and anchors</a></li><li><a href='#modular-216-residuals'>Modular 2^16 residuals</a></li></ul></li><li><a href='#5-decoding-one-block'>5. Decoding one block</a><ul><li><a href='#1-reconstruct-grid-indices-q'>1. Reconstruct grid indices q</a></li><li><a href='#2-dequantize-q-to-float64'>2. Dequantize q to float64</a></li><li><a href='#3-overlay-sample-exception-codes'>3. Overlay sample exception codes</a></li><li><a href='#4-reconstruct-timestamps'>4. Reconstruct timestamps</a></li></ul></li><li><a href='#6-binary-block-group-layout'>6. Binary block group layout</a><ul><li><a href='#61-header'>6.1 Header</a></li><li><a href='#62-8-sample-groups-planes-and-padding'>6.2 8-sample groups, planes, and padding</a></li><li><a href='#63-body'>6.3 Body</a></li><li><a href='#64-validation'>6.4 Validation</a></li><li><a href='#65-examples'>6.5 Examples</a></li></ul></li><li><a href='#7-exactly-representable-values'>7. Exactly representable values</a></li><li><a href='#8-conformance-tests'>8. Conformance tests</a></li><li><a href='#references'>References</a></li></ul></nav>

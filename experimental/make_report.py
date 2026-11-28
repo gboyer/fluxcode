@@ -573,7 +573,7 @@ Bits per sample is measured over complete block groups.</p>
            ("matrix", "Summary matrix", []),
            ("legend", "Codec legend", []),
            ("notes", "Design notes", [])]
-    (OUT / "codecs.html").write_text(shell("Codec comparison", intro, toc, "\n".join(body), active="codecs"))
+    (OUT / "codecs.html").write_text(shell("Synthetic & edge-case codec comparison", intro, toc, "\n".join(body), active="experiments"))
 
 
 F_SWEEP_RD = (0.0, 0.01, 0.03, 0.1, 0.25, 0.5, 1.0)

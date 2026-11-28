@@ -4,7 +4,7 @@ Bounded-error compression for float64 time series, built for scientific and engi
 
 Fluxcode compresses float64 streams into self-describing block groups with a hard per-sample error bound, while automatically detecting and preserving values on exact binary, decimal, or rational-step grids (such as `0.01`, `0.05`, thirds, or calibrated ADC counts) whenever the bit range allows.
 
-**Live benchmarks & documentation:** [gboyer.github.io/fluxcode/report/](https://gboyer.github.io/fluxcode/report/) — interactive results across synthetic signals ([Codec Comparison](https://gboyer.github.io/fluxcode/report/codecs.html)) and 14 real-world public dataset families ([Public Datasets](https://gboyer.github.io/fluxcode/report/public.html)), plus the [Format Specification](https://gboyer.github.io/fluxcode/report/spec.html), [Timestamps](https://gboyer.github.io/fluxcode/report/time.html), [Historian](https://gboyer.github.io/fluxcode/report/sdt.html), [Fluxprune](https://gboyer.github.io/fluxcode/report/prune.html), and [Rate Control](https://gboyer.github.io/fluxcode/report/rate.html).
+**Live benchmarks & documentation:** [gboyer.github.io/fluxcode/report/](https://gboyer.github.io/fluxcode/report/) — covering value compression ([Benchmarks](https://gboyer.github.io/fluxcode/report/public.html)), time compression ([Timestamps](https://gboyer.github.io/fluxcode/report/time.html)), cardinality reduction ([Fluxprune](https://gboyer.github.io/fluxcode/report/prune.html)), the [Format Specification](https://gboyer.github.io/fluxcode/report/spec.html), and [Experiments & Case Studies](https://gboyer.github.io/fluxcode/report/experiments.html) (synthetic edge cases, swinging-door historian, and rate control).
 
 ## Key properties
 

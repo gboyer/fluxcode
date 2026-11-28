@@ -174,19 +174,22 @@ def measure_rounded(values, ticks, plain_group, time_error, reps, plain_times):
 
 
 def plot_rounding(sweep):
-    """Bytes the timestamps add against the time error, one line per shape (log scale)."""
+    """Bits/sample the timestamps add against the time error (%), one line per shape (log scale)."""
     fig, ax = plt.subplots(figsize=(11, 4.2), layout="constrained")
+    err_pct = [100.0 * e for e in SWEEP_ERRORS]
     for color, (label, sizes) in zip(PALETTE, sweep):
-        ax.step(SWEEP_ERRORS, sizes, where="post", color=color, lw=1.5, label=label)
+        bps = [8.0 * s / MINUTE for s in sizes]
+        ax.step(err_pct, bps, where="post", color=color, lw=1.5, label=label)
     ax.set_yscale("log")
-    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:,.0f}"))
-    ax.set_xlabel("time error e (Params.time_error)")
-    ax.set_ylabel("bytes the timestamps add")
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:g}"))
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda value, _: f"{value:g}%"))
+    ax.set_xlabel("time error (% of interval, Params.time_error)")
+    ax.set_ylabel("bits / sample added")
     ax.grid(color="0.9", lw=0.6)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     ax.legend(frameon=False, fontsize=9)
-    return save_fig(fig, OUT, "time-rounding", "Bytes the timestamps add per block group against the time error")
+    return save_fig(fig, OUT, "time-rounding", "Bits per sample added by timestamps against time error (%)")
 
 
 def main():
@@ -279,7 +282,7 @@ to just a few bytes.</li>
 host arrival timestamps—is the third common case, and the only one where timestamps take more space than the values
 themselves (about two and a half times as much here).</p>
 {chart}
-{collapsible_table(f"Show common shapes table ({len(examples)} shapes)", "".join(shapes_tbl))}
+{"".join(shapes_tbl)}
 <ul>
 <li><b>Perfect grid</b> takes {grid_bytes} bytes for 60,000 timestamps regardless of the start time, step size, or tick
 unit. Most of the decode time is simply writing out the 60,000 int64 ticks.</li>
@@ -300,7 +303,7 @@ rather than signal, <code>Params(time_error=0.1)</code> lets fluxcode round it a
                         f"<td>{8 * size / MINUTE:.3f}</td><td>{per_gap}</td></tr>")
     gaps_tbl.append("</table>")
     h.append(f"<h2 id='gaps'>Cost per gap</h2><p>A 1 ms grid with <i>k</i> gaps per minute (each lasting 5 ms to 3 s), showing the median across 16 block groups per row.</p>"
-             + collapsible_table(f"Show gap sweep table ({len(sweep)} rows)", "".join(gaps_tbl)))
+             + "".join(gaps_tbl))
 
     harder_tbl = ["<table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>"
                   "<th>encode time added</th><th>decode time added</th></tr>"]
@@ -313,7 +316,7 @@ rather than signal, <code>Params(time_error=0.1)</code> lets fluxcode round it a
 <p>For comparison, here are patterns from <code>bench/time_axis.py</code> that produce many more irregular blocks. Only
 patterns with random intervals end up larger than the values. As above, percentages are relative to the values-only
 encode and decode times.</p>"""
-             + collapsible_table(f"Show harder shapes table ({len(others)} patterns)", "".join(harder_tbl))
+             + "".join(harder_tbl)
              + """<p class='muted'>A 1% drop rate and a drifting clock stay compact because their intervals only take
 two or three distinct values. Jitter, Poisson events, and deadband logging have random intervals, and nanosecond
 resolution costs more than microsecond resolution whenever the jitter actually extends down to nanoseconds.</p>""")
@@ -378,7 +381,7 @@ happens once during encoding: <code>update_time_blocks</code> stores newly added
 <code>replace_time_blocks</code> re-encodes whole blocks from the supplied samples.</li>
 </ul>
 {rounding_chart}
-{collapsible_table(f"Show time_error table ({len(rounded)} patterns × {len(TIME_ERRORS)} values)", "".join(round_tbl))}
+{"".join(round_tbl)}
 <ul>
 <li><b>Jittered clocks</b> drop from roughly 120 KB to {min(jitter_bytes)}–{max(jitter_bytes)} bytes once <i>e</i>
 reaches about 5σ (0.05 here), whether aligned to round times or free-running. When drift is also present, the phase

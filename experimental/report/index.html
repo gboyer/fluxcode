@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>fluxcode</title><style>
+<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>fluxcode &amp; fluxprune</title><style>
 :root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--surface:#f7f7f8;--surface-hover:#eeeef0;--accent:#2a5bd7;--accent-bg:#eaf0ff;--hl:#dcefdc;--l1:#e8f3e8;--l2:#fff3cc;--l3:#ffe0cc;--l4:#ffcccc}
 @media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--muted:#999;--line:#333;--surface:#202022;--surface-hover:#2a2a2e;--accent:#7aa2ff;--accent-bg:#1c2740;--hl:#254025;--l1:#1f2e1f;--l2:#3a3418;--l3:#40291a;--l4:#452020}}
 *{box-sizing:border-box}
@@ -34,9 +34,15 @@ details.data-table>summary{cursor:pointer;padding:8px 12px;font-size:13.5px;font
 details.data-table>summary:hover{color:var(--fg)}
 details.data-table[open]>summary{border-bottom:1px solid var(--line);color:var(--fg)}
 details.data-table>.table-wrap{padding:8px 12px;background:var(--bg);border-radius:0 0 6px 6px}
+.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:18px 0 20px}
+.pillar{padding:16px 18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.pillar h3{margin:0 0 6px;font-size:17px}
+.pillar p{margin:0;font-size:14px;color:var(--muted);line-height:1.5}
+.pillar p strong,.pillar p b{color:var(--fg)}
 .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin:20px 0 28px}
 .card{display:block;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);transition:border-color 0.15s}
 .card:hover{border-color:var(--accent);text-decoration:none}
+.card .tag{display:inline-block;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px}
 .card h3{margin:0 0 6px;font-size:16px;color:var(--accent)}
 .card p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.45}
 .figure-card{margin:18px 0 24px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
@@ -48,59 +54,80 @@ blockquote{margin:12px 0;padding:8px 14px;border-left:3px solid var(--line);colo
 hr{border:0;border-top:1px solid var(--line);margin:24px 0}
 .muted{color:var(--muted)}
 </style></head><body>
-<header class='site-header'><a class='brand' href='index.html'>fluxcode</a><nav class='site-nav' aria-label='Site navigation'><a href='index.html' class='active'>Overview</a><a href='codecs.html'>Codecs</a><a href='public.html'>Public Data</a><a href='time.html'>Timestamps</a><a href='sdt.html'>Historian</a><a href='prune.html'>Fluxprune</a><a href='rate.html'>Rate Control</a><a href='spec.html'>Spec</a></nav></header>
-<h1>fluxcode</h1>
-<p><b>fluxcode</b> compresses <code>float64</code> time series for scientific and engineering
-telemetry. It bounds quantization error per block, detects binary, decimal, and rational/ADC grids
-automatically, and can store exact <code>int64</code> timestamps alongside the values.</p>
-<p>On a single Apple M3 core, it decodes at several GB/s and packs typical sensor series to 1–6 bits per
-sample (compared to 64 for raw <code>float64</code>). Use the navigation bar above or the cards below to
-browse the format specification and benchmark reports.</p>
+<header class='site-header'><a class='brand' href='index.html'>fluxcode</a><nav class='site-nav' aria-label='Site navigation'><a href='index.html' class='active'>Overview</a><a href='public.html'>Benchmarks</a><a href='time.html'>Timestamps</a><a href='prune.html'>Fluxprune</a><a href='spec.html'>Spec</a><a href='experiments.html'>Experiments</a></nav></header>
+<h1>fluxcode &amp; fluxprune</h1>
+<p>This repository contains two complementary tools for scientific and engineering time series:
+<b><code>fluxcode</code></b> for storage compression and <b><code>fluxprune</code></b> for volume reduction. You can use
+either one on its own, or chain them together—pruning a high-volume series first and then packing the remaining
+<code>(time, value)</code> points with <code>fluxcode</code>.</p>
+<div class='two-col'>
+  <div class='pillar'>
+    <h3><code>fluxcode</code> — reduce storage with minimal loss</h3>
+    <p>Packs <code>float64</code> values and optional exact <code>int64</code> timestamps into self-describing block
+    groups. Every sample is preserved within a strict error bound, exact binary, decimal, and rational/ADC grids decode
+    bit-for-bit, and decoding runs at multi-GB/s on a single core.</p>
+  </div>
+  <div class='pillar'>
+    <h3><code>fluxprune</code> — reduce data volume itself</h3>
+    <p>A pre-pass downsampler that drops redundant points and keeps the subset that carries a series' shape for linear
+    interpolation. Fewer stored points means faster scans, plots, and downstream analytics.</p>
+  </div>
+</div>
+<h2 id='explore'>Three dimensions, plus spec &amp; experiments</h2>
 <div class='card-grid'>
-<a class='card' href='codecs.html'>
-  <h3>Codec Comparison</h3>
-  <p>Size vs. error scatterplots, per-signal waveforms, and parameter sweeps across 30+ time-series codecs on 1 kHz synthetic signals.</p>
-</a>
 <a class='card' href='public.html'>
-  <h3>Public Real-World Datasets</h3>
-  <p>Compression ratios, ADC and rational grid recovery, throughput, and timestamp overhead across 14 public dataset families (~29M samples).</p>
-</a>
-<a class='card' href='spec.html'>
-  <h3>Format Specification</h3>
-  <p>The binary block-group specification (<code>docs/SPEC.md</code>), covering the pipeline overview, design rationale, wire layout, and decoding rules.</p>
+  <span class='tag'>Value compression</span>
+  <h3>Benchmarks</h3>
+  <p>Real-world size-vs-error scatterplots comparing <code>fluxcode</code> against competing codecs on public datasets,
+  plus hidden ADC/rational grid recovery and throughput across 14 dataset families (~29M samples).</p>
 </a>
 <a class='card' href='time.html'>
-  <h3>Timestamps (Time Axis)</h3>
-  <p>Exact and tolerance-rounded (<code>time_error</code>) timestamp storage across regular grids, gapped clocks, jittered sensors, and irregular events.</p>
-</a>
-<a class='card' href='sdt.html'>
-  <h3>Swinging-Door Historian</h3>
-  <p>Encoding swinging-door trending (SDT) historian archives with fluxcode, compared against zstd, Gorilla, and storing every scan.</p>
+  <span class='tag'>Time compression</span>
+  <h3>Timestamps</h3>
+  <p>Exact and tolerance-rounded (<code>time_error</code>) timestamp storage across regular grids, gapped clocks,
+  jittered sensors, and irregular event streams.</p>
 </a>
 <a class='card' href='prune.html'>
+  <span class='tag'>Cardinality reduction</span>
   <h3>Fluxprune</h3>
-  <p>A pre-pass downsampler for slow series that keeps the points most important for linear interpolation, compared against SDT and LTTB.</p>
+  <p>Point-selection quality, stopping rules, noise floor, and speed compared against optimal DP, swinging-door
+  trending, Visvalingam-Whyatt, and LTTB.</p>
 </a>
-<a class='card' href='rate.html'>
-  <h3>Rate Control</h3>
-  <p>Windowed vs. fixed-rate quantization, prediction, and entropy coding on mixed-regime one-minute block groups.</p>
+<a class='card' href='spec.html'>
+  <span class='tag'>Reference</span>
+  <h3>Format Specification</h3>
+  <p>The normative binary layout and design rationale for <code>fluxcode</code> block groups
+  (<code>docs/SPEC.md</code>).</p>
+</a>
+<a class='card' href='experiments.html'>
+  <span class='tag'>Deep dives</span>
+  <h3>Experiments &amp; Case Studies</h3>
+  <p>Synthetic and edge-case codec stress tests, a swinging-door historian (SDT) case study showing how pruning and
+  <code>fluxcode</code> interact, and rate-control experiments.</p>
 </a>
 </div><h2 id='highlights'>Key results at a glance</h2>
 <figure class='figure-card'>
-  <a href='codecs.html#scatter'><img src='scatter.svg' alt='Bits per sample vs RMSE across all codecs'></a>
-  <figcaption><b>Size vs. error on synthetic 1 kHz signals.</b> Median bits per sample against median RMSE across 12 signal types.
-  Purple lines sweep <code>fluxcode</code> bit budgets (B = 4..16), and the diamond marks default settings.
-  <a href='codecs.html#scatter'>View full codec comparison &rarr;</a></figcaption>
+  <a href='public.html#scatter'><img src='public-scatter.svg' alt='Real-world bits per sample vs RMSE across codecs'></a>
+  <figcaption><b>Value compression (real-world size vs. error):</b> median bits per sample vs. median RMSE across 9
+  diverse public datasets (vibration, ECG, PPG, seismic, hydraulic PLC, smart meters, weather, and trades). Purple lines
+  sweep <code>fluxcode</code> from B = 6 to 16; the diamond marks default settings.
+  <a href='public.html#scatter'>View full benchmarks &rarr;</a></figcaption>
 </figure>
 <figure class='figure-card'>
   <a href='public.html#summary'><img src='public-bps.svg' alt='Bits per sample across 14 public dataset families'></a>
-  <figcaption><b>Real-world compression.</b> Sample-weighted bits per sample across 14 public dataset families (vibration, ECG, seismology,
-  industrial PLC, smart meters, weather, buoys, exchange trades, and the Elf corpus) compared with raw zstd and byte-shuffled zstd.
-  <a href='public.html#summary'>View public dataset results &rarr;</a></figcaption>
+  <figcaption><b>Real-world compression ratios:</b> sample-weighted bits per sample across all 14 public dataset families
+  compared against raw zstd and byte-shuffled zstd.
+  <a href='public.html#summary'>View all 14 families &rarr;</a></figcaption>
+</figure>
+<figure class='figure-card'>
+  <a href='prune.html#curves'><img src='prune-curves.svg' alt='Fluxprune error vs points kept'></a>
+  <figcaption><b>Cardinality reduction (<code>fluxprune</code>):</b> reconstruction error vs. points kept per hour
+  compared against optimal DP, swinging-door trending, Visvalingam-Whyatt, and LTTB.
+  <a href='prune.html#curves'>View fluxprune results &rarr;</a></figcaption>
 </figure>
 <h2 id='docs'>Source &amp; documentation</h2>
 <ul>
-  <li><a href='https://github.com/gboyer/fluxcode'>GitHub repository</a> — Python package (<code>fluxcode</code>, <code>fluxprune</code>), optional Rust extension, and test suite.</li>
+  <li><a href='https://github.com/gboyer/fluxcode'>GitHub repository</a> — Python packages (<code>fluxcode</code>, <code>fluxprune</code>), optional Rust extension, and test suite.</li>
   <li><a href='spec.html'>Format specification</a> (<code>docs/SPEC.md</code>) — normative binary layout and design rationale.</li>
   <li><a href='https://github.com/gboyer/fluxcode/blob/main/docs/ENCODER.md'>Encoder design</a> (<code>docs/ENCODER.md</code>) — grid detection, noise floor, and predictor selection.</li>
   <li><a href='https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md'>Tuning guide</a> (<code>docs/TUNING.md</code>) — choosing <code>effort</code>, <code>noise_floor_sigma</code>, <code>time_error</code>, and grid modes.</li>

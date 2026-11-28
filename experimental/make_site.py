@@ -262,61 +262,115 @@ def write_spec() -> None:
     print(f"Wrote {OUT / 'spec.html'}")
 
 
-def write_overview() -> None:
-    intro = """<p><b>fluxcode</b> compresses <code>float64</code> time series for scientific and engineering
-telemetry. It bounds quantization error per block, detects binary, decimal, and rational/ADC grids
-automatically, and can store exact <code>int64</code> timestamps alongside the values.</p>
-<p>On a single Apple M3 core, it decodes at several GB/s and packs typical sensor series to 1–6 bits per
-sample (compared to 64 for raw <code>float64</code>). Use the navigation bar above or the cards below to
-browse the format specification and benchmark reports.</p>"""
+def write_experiments() -> None:
+    intro = """<p>Side experiments, synthetic stress tests, and applied case studies that informed the design of
+<code>fluxcode</code> and <code>fluxprune</code>. These sit outside the main value, time, and cardinality benchmarks
+so you can dig into extreme behaviors and design history when you want to.</p>"""
 
     cards = """<div class='card-grid'>
 <a class='card' href='codecs.html'>
-  <h3>Codec Comparison</h3>
-  <p>Size vs. error scatterplots, per-signal waveforms, and parameter sweeps across 30+ time-series codecs on 1 kHz synthetic signals.</p>
-</a>
-<a class='card' href='public.html'>
-  <h3>Public Real-World Datasets</h3>
-  <p>Compression ratios, ADC and rational grid recovery, throughput, and timestamp overhead across 14 public dataset families (~29M samples).</p>
-</a>
-<a class='card' href='spec.html'>
-  <h3>Format Specification</h3>
-  <p>The binary block-group specification (<code>docs/SPEC.md</code>), covering the pipeline overview, design rationale, wire layout, and decoding rules.</p>
-</a>
-<a class='card' href='time.html'>
-  <h3>Timestamps (Time Axis)</h3>
-  <p>Exact and tolerance-rounded (<code>time_error</code>) timestamp storage across regular grids, gapped clocks, jittered sensors, and irregular events.</p>
+  <span class='tag'>Synthetic stress tests</span>
+  <h3>Synthetic &amp; Edge-Case Codec Comparison</h3>
+  <p>All 34 codecs across 12 synthetic 1 kHz signals—including idealized waves (pure sines, square waves, chirps, linear
+  and quadratic ramps) alongside spikes, impulses, and random walks to expose extreme behaviors like slope overload and outlier clipping.</p>
 </a>
 <a class='card' href='sdt.html'>
-  <h3>Swinging-Door Historian</h3>
-  <p>Encoding swinging-door trending (SDT) historian archives with fluxcode, compared against zstd, Gorilla, and storing every scan.</p>
-</a>
-<a class='card' href='prune.html'>
-  <h3>Fluxprune</h3>
-  <p>A pre-pass downsampler for slow series that keeps the points most important for linear interpolation, compared against SDT and LTTB.</p>
+  <span class='tag'>Applied case study</span>
+  <h3>Swinging-Door Historian (SDT)</h3>
+  <p>Encoding swinging-door historian archives with <code>fluxcode</code>, compared against zstd, Gorilla, resampled
+  exports, and storing every scan directly.</p>
 </a>
 <a class='card' href='rate.html'>
+  <span class='tag'>Design experiment</span>
   <h3>Rate Control</h3>
-  <p>Windowed vs. fixed-rate quantization, prediction, and entropy coding on mixed-regime one-minute block groups.</p>
+  <p>Windowed vs. fixed-rate quantize-predict-entropy experiments on mixed-regime minutes—the study behind
+  <code>fluxcode</code>'s one-shot quantization design.</p>
+</a>
+</div>"""
+
+    (OUT / "experiments.html").write_text(
+        shell("Experiments & Case Studies", intro, [], cards, active="experiments"),
+        encoding="utf-8",
+    )
+    print(f"Wrote {OUT / 'experiments.html'}")
+
+
+def write_overview() -> None:
+    intro = """<p>This repository contains two complementary tools for scientific and engineering time series:
+<b><code>fluxcode</code></b> for storage compression and <b><code>fluxprune</code></b> for volume reduction. You can use
+either one on its own, or chain them together—pruning a high-volume series first and then packing the remaining
+<code>(time, value)</code> points with <code>fluxcode</code>.</p>
+<div class='two-col'>
+  <div class='pillar'>
+    <h3><code>fluxcode</code> — reduce storage with minimal loss</h3>
+    <p>Packs <code>float64</code> values and optional exact <code>int64</code> timestamps into self-describing block
+    groups. Every sample is preserved within a strict error bound, exact binary, decimal, and rational/ADC grids decode
+    bit-for-bit, and decoding runs at multi-GB/s on a single core.</p>
+  </div>
+  <div class='pillar'>
+    <h3><code>fluxprune</code> — reduce data volume itself</h3>
+    <p>A pre-pass downsampler that drops redundant points and keeps the subset that carries a series' shape for linear
+    interpolation. Fewer stored points means faster scans, plots, and downstream analytics.</p>
+  </div>
+</div>"""
+
+    cards = """<h2 id='explore'>Three dimensions, plus spec &amp; experiments</h2>
+<div class='card-grid'>
+<a class='card' href='public.html'>
+  <span class='tag'>Value compression</span>
+  <h3>Benchmarks</h3>
+  <p>Real-world size-vs-error scatterplots comparing <code>fluxcode</code> against competing codecs on public datasets,
+  plus hidden ADC/rational grid recovery and throughput across 14 dataset families (~29M samples).</p>
+</a>
+<a class='card' href='time.html'>
+  <span class='tag'>Time compression</span>
+  <h3>Timestamps</h3>
+  <p>Exact and tolerance-rounded (<code>time_error</code>) timestamp storage across regular grids, gapped clocks,
+  jittered sensors, and irregular event streams.</p>
+</a>
+<a class='card' href='prune.html'>
+  <span class='tag'>Cardinality reduction</span>
+  <h3>Fluxprune</h3>
+  <p>Point-selection quality, stopping rules, noise floor, and speed compared against optimal DP, swinging-door
+  trending, Visvalingam-Whyatt, and LTTB.</p>
+</a>
+<a class='card' href='spec.html'>
+  <span class='tag'>Reference</span>
+  <h3>Format Specification</h3>
+  <p>The normative binary layout and design rationale for <code>fluxcode</code> block groups
+  (<code>docs/SPEC.md</code>).</p>
+</a>
+<a class='card' href='experiments.html'>
+  <span class='tag'>Deep dives</span>
+  <h3>Experiments &amp; Case Studies</h3>
+  <p>Synthetic and edge-case codec stress tests, a swinging-door historian (SDT) case study showing how pruning and
+  <code>fluxcode</code> interact, and rate-control experiments.</p>
 </a>
 </div>"""
 
     highlights = """<h2 id='highlights'>Key results at a glance</h2>
 <figure class='figure-card'>
-  <a href='codecs.html#scatter'><img src='scatter.svg' alt='Bits per sample vs RMSE across all codecs'></a>
-  <figcaption><b>Size vs. error on synthetic 1 kHz signals.</b> Median bits per sample against median RMSE across 12 signal types.
-  Purple lines sweep <code>fluxcode</code> bit budgets (B = 4..16), and the diamond marks default settings.
-  <a href='codecs.html#scatter'>View full codec comparison &rarr;</a></figcaption>
+  <a href='public.html#scatter'><img src='public-scatter.svg' alt='Real-world bits per sample vs RMSE across codecs'></a>
+  <figcaption><b>Value compression (real-world size vs. error):</b> median bits per sample vs. median RMSE across 9
+  diverse public datasets (vibration, ECG, PPG, seismic, hydraulic PLC, smart meters, weather, and trades). Purple lines
+  sweep <code>fluxcode</code> from B = 6 to 16; the diamond marks default settings.
+  <a href='public.html#scatter'>View full benchmarks &rarr;</a></figcaption>
 </figure>
 <figure class='figure-card'>
   <a href='public.html#summary'><img src='public-bps.svg' alt='Bits per sample across 14 public dataset families'></a>
-  <figcaption><b>Real-world compression.</b> Sample-weighted bits per sample across 14 public dataset families (vibration, ECG, seismology,
-  industrial PLC, smart meters, weather, buoys, exchange trades, and the Elf corpus) compared with raw zstd and byte-shuffled zstd.
-  <a href='public.html#summary'>View public dataset results &rarr;</a></figcaption>
+  <figcaption><b>Real-world compression ratios:</b> sample-weighted bits per sample across all 14 public dataset families
+  compared against raw zstd and byte-shuffled zstd.
+  <a href='public.html#summary'>View all 14 families &rarr;</a></figcaption>
+</figure>
+<figure class='figure-card'>
+  <a href='prune.html#curves'><img src='prune-curves.svg' alt='Fluxprune error vs points kept'></a>
+  <figcaption><b>Cardinality reduction (<code>fluxprune</code>):</b> reconstruction error vs. points kept per hour
+  compared against optimal DP, swinging-door trending, Visvalingam-Whyatt, and LTTB.
+  <a href='prune.html#curves'>View fluxprune results &rarr;</a></figcaption>
 </figure>
 <h2 id='docs'>Source &amp; documentation</h2>
 <ul>
-  <li><a href='https://github.com/gboyer/fluxcode'>GitHub repository</a> — Python package (<code>fluxcode</code>, <code>fluxprune</code>), optional Rust extension, and test suite.</li>
+  <li><a href='https://github.com/gboyer/fluxcode'>GitHub repository</a> — Python packages (<code>fluxcode</code>, <code>fluxprune</code>), optional Rust extension, and test suite.</li>
   <li><a href='spec.html'>Format specification</a> (<code>docs/SPEC.md</code>) — normative binary layout and design rationale.</li>
   <li><a href='https://github.com/gboyer/fluxcode/blob/main/docs/ENCODER.md'>Encoder design</a> (<code>docs/ENCODER.md</code>) — grid detection, noise floor, and predictor selection.</li>
   <li><a href='https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md'>Tuning guide</a> (<code>docs/TUNING.md</code>) — choosing <code>effort</code>, <code>noise_floor_sigma</code>, <code>time_error</code>, and grid modes.</li>
@@ -324,7 +378,7 @@ browse the format specification and benchmark reports.</p>"""
 </ul>"""
 
     (OUT / "index.html").write_text(
-        shell("fluxcode", intro, [], cards + highlights, active="overview"),
+        shell("fluxcode & fluxprune", intro, [], cards + highlights, active="overview"),
         encoding="utf-8",
     )
     print(f"Wrote {OUT / 'index.html'}")
@@ -333,6 +387,7 @@ browse the format specification and benchmark reports.</p>"""
 def main() -> None:
     OUT.mkdir(exist_ok=True)
     write_spec()
+    write_experiments()
     write_overview()
 
 

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Experiments &amp; Case Studies</title><style>
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--surface:#f7f7f8;--surface-hover:#eeeef0;--accent:#2a5bd7;--accent-bg:#eaf0ff;--hl:#dcefdc;--l1:#e8f3e8;--l2:#fff3cc;--l3:#ffe0cc;--l4:#ffcccc}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--muted:#999;--line:#333;--surface:#202022;--surface-hover:#2a2a2e;--accent:#7aa2ff;--accent-bg:#1c2740;--hl:#254025;--l1:#1f2e1f;--l2:#3a3418;--l3:#40291a;--l4:#452020}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,sans-serif;max-width:1200px;margin:0 auto;padding:0 20px 48px}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+header.site-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;margin-bottom:20px;border-bottom:1px solid var(--line)}
+header.site-header .brand{font-weight:700;font-size:16px;color:var(--fg);letter-spacing:-0.01em}
+header.site-header .brand:hover{text-decoration:none}
+nav.site-nav{display:flex;flex-wrap:wrap;gap:4px}
+nav.site-nav a{padding:4px 10px;border-radius:6px;font-size:13.5px;color:var(--muted);font-weight:500}
+nav.site-nav a:hover{background:var(--surface-hover);color:var(--fg);text-decoration:none}
+nav.site-nav a.active{background:var(--accent-bg);color:var(--accent);font-weight:600}
+h1{font-size:28px;line-height:1.2;margin:8px 0 12px;letter-spacing:-0.02em}
+h2{margin-top:36px;border-top:1px solid var(--line);padding-top:16px;font-size:20px}
+h3{margin-top:24px;font-size:16.5px}
+table{border-collapse:collapse;margin:8px 0 12px;font-size:13.5px;font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:4px 8px;text-align:right;white-space:nowrap}
+th{background:var(--surface)}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+td.best{background:var(--hl);font-weight:600}
+td.r1{background:var(--l1)}td.r2{background:var(--l2)}td.r3{background:var(--l3)}td.r4{background:var(--l4)}
+tr.fam td:first-child{border-left:4px solid var(--c,var(--line))}
+img{max-width:100%;height:auto;background:#fff;border-radius:4px}
+nav.toc{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:18px 0 24px}
+nav.toc h2{margin:0 0 8px;padding:0;border:0;font-size:14px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted)}
+nav.toc ul{columns:2;list-style:none;padding-left:0;margin:0;font-size:14px}
+nav.toc li{margin:3px 0;break-inside:avoid}
+nav.toc ul ul{columns:1;padding-left:16px;font-size:13px}
+@media (max-width:640px){nav.toc ul{columns:1}}
+details.data-table{margin:12px 0 18px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+details.data-table>summary{cursor:pointer;padding:8px 12px;font-size:13.5px;font-weight:500;color:var(--muted);user-select:none}
+details.data-table>summary:hover{color:var(--fg)}
+details.data-table[open]>summary{border-bottom:1px solid var(--line);color:var(--fg)}
+details.data-table>.table-wrap{padding:8px 12px;background:var(--bg);border-radius:0 0 6px 6px}
+.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin:18px 0 20px}
+.pillar{padding:16px 18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.pillar h3{margin:0 0 6px;font-size:17px}
+.pillar p{margin:0;font-size:14px;color:var(--muted);line-height:1.5}
+.pillar p strong,.pillar p b{color:var(--fg)}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin:20px 0 28px}
+.card{display:block;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);transition:border-color 0.15s}
+.card:hover{border-color:var(--accent);text-decoration:none}
+.card .tag{display:inline-block;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);margin-bottom:4px}
+.card h3{margin:0 0 6px;font-size:16px;color:var(--accent)}
+.card p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.45}
+.figure-card{margin:18px 0 24px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.figure-card figcaption{margin-top:8px;font-size:13.5px;color:var(--muted)}
+pre{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto;font-size:13px;line-height:1.45}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.9em}
+pre code{font-size:13px}
+blockquote{margin:12px 0;padding:8px 14px;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:24px 0}
+.muted{color:var(--muted)}
+</style></head><body>
+<header class='site-header'><a class='brand' href='index.html'>fluxcode</a><nav class='site-nav' aria-label='Site navigation'><a href='index.html'>Overview</a><a href='public.html'>Benchmarks</a><a href='time.html'>Timestamps</a><a href='prune.html'>Fluxprune</a><a href='spec.html'>Spec</a><a href='experiments.html' class='active'>Experiments</a></nav></header>
+<h1>Experiments &amp; Case Studies</h1>
+<p>Side experiments, synthetic stress tests, and applied case studies that informed the design of
+<code>fluxcode</code> and <code>fluxprune</code>. These sit outside the main value, time, and cardinality benchmarks
+so you can dig into extreme behaviors and design history when you want to.</p>
+<div class='card-grid'>
+<a class='card' href='codecs.html'>
+  <span class='tag'>Synthetic stress tests</span>
+  <h3>Synthetic &amp; Edge-Case Codec Comparison</h3>
+  <p>All 34 codecs across 12 synthetic 1 kHz signals—including idealized waves (pure sines, square waves, chirps, linear
+  and quadratic ramps) alongside spikes, impulses, and random walks to expose extreme behaviors like slope overload and outlier clipping.</p>
+</a>
+<a class='card' href='sdt.html'>
+  <span class='tag'>Applied case study</span>
+  <h3>Swinging-Door Historian (SDT)</h3>
+  <p>Encoding swinging-door historian archives with <code>fluxcode</code>, compared against zstd, Gorilla, resampled
+  exports, and storing every scan directly.</p>
+</a>
+<a class='card' href='rate.html'>
+  <span class='tag'>Design experiment</span>
+  <h3>Rate Control</h3>
+  <p>Windowed vs. fixed-rate quantize-predict-entropy experiments on mixed-regime minutes—the study behind
+  <code>fluxcode</code>'s one-shot quantization design.</p>
+</a>
+</div>
+</body></html>

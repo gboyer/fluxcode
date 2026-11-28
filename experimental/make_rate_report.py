@@ -201,7 +201,7 @@ restricts the order choice to 1 and 2 for speed.</li>
                        "Encode time covers the full single-threaded Python rate-control search per block for window "
                        "and fixed rows, whereas one-shot runs in a single pass. Because every block spans [0, 1], "
                        "one-shot's per-block step and the shared window step are directly comparable.</p>")
-    h.append("<h2 id='summary'>Summary</h2>" + collapsible_table(f"Show summary table ({len(results) + 1} coders)", "".join(summary_tbl)))
+    h.append("<h2 id='summary'>Summary</h2>" + "".join(summary_tbl))
 
     for key in PER_KIND_TABLES:
         r = results[key]
@@ -222,7 +222,7 @@ restricts the order choice to 1 and 2 for speed.</li>
                  + collapsible_table(f"Show {key[0]} / {key[1]} table ({len(KINDS)} signal kinds)", "".join(ktbl)))
     toc = [("per-kind-chart", "Bits and error per signal kind", []), ("method", "Method", []), ("summary", "Summary", [])] + [
         (sect_id(k), f"Per signal kind: {k[0]} / {k[1]}", []) for k in PER_KIND_TABLES]
-    (OUT / "rate.html").write_text(shell("Rate control: quantize → predict → entropy code", intro, toc, "\n".join(h), active="rate"))
+    (OUT / "rate.html").write_text(shell("Rate control: quantize → predict → entropy code", intro, toc, "\n".join(h), active="experiments"))
     print(f"wrote {OUT / 'rate.html'}")
 
 

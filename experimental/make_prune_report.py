@@ -993,12 +993,15 @@ def pct(v, digits=2):
 
 
 def table(head, rows, title=None):
-    """Cells are HTML strings, or (class, HTML) pairs. Wrapped in a closed-by-default collapsible table."""
+    """Cells are HTML strings, or (class, HTML) pairs. Large tables are collapsed by default; compact ones stay open."""
     def td(c):
         return f"<td class='{c[0]}'>{c[1]}</td>" if isinstance(c, tuple) else f"<td>{c}</td>"
     th = "".join(f"<th>{html.escape(h)}</th>" for h in head)
     body = "".join("<tr>" + "".join(td(c) for c in row) + "</tr>" for row in rows)
-    return collapsible_table(title or f"Show data table ({len(rows)} rows)", f"<table><tr>{th}</tr>{body}</table>")
+    tbl = f"<table><tr>{th}</tr>{body}</table>"
+    if len(rows) > 10 or len(head) > 8:
+        return collapsible_table(title or f"Show data table ({len(rows)} rows × {len(head)} cols)", tbl)
+    return tbl
 
 
 def shade(ratio):

@@ -362,7 +362,7 @@ swinging door archives the scan where its doors close, the resulting line is onl
 that closing scan; earlier snapshots along the segment can stray by up to 2 CompDevs (about 1.9 here), and the exception
 filter pushes the total worst-case deviation to roughly 2.5 CompDevs.</p>"""
              + plot_tags()
-             + collapsible_table(f"Show tag summary table ({len(TAGS)} tags)", "".join(tags_tbl)))
+             + "".join(tags_tbl))
 
     size_tbl = ["<table><tr><th class='l'>tag</th><th>points per day</th><th>raw</th><th>zstd</th><th>Gorilla</th>"
                 "<th>fluxcode defaults</th><th>values</th><th>times</th><th>max error</th><th>exact</th><th>kB per day</th>"
@@ -387,7 +387,7 @@ an int64 timestamp plus a float64 value (16 bytes). Both zstd and Gorilla are lo
 deltas and values as two columns, while Gorilla uses its delta-of-delta timestamps (in seconds) and XOR value coding.
 fluxcode encodes one block group per tag-day using {LAYOUT} (<a href="#layout">layout</a>) with exact timestamps; the
 <i>values</i> and <i>times</i> columns break down that total.</p>"""
-             + collapsible_table(f"Show size comparison table ({len(TAGS)} tags)", "".join(size_tbl)))
+             + "".join(size_tbl))
 
     acc_tbl = ["<table><tr><th class='l'>tag</th><th>SDT alone: max</th><th>RMS</th><th>+ fluxcode defaults: max</th><th>RMS</th>"
                "<th>+ fluxcode, noise floor off: max</th><th>RMS</th></tr>"]
@@ -403,7 +403,7 @@ fluxcode encodes one block group per tag-day using {LAYOUT} (<a href="#layout">l
 <p>Downstream consumers see the reconstructed trend—straight lines connecting the decoded points—compared against the
 original 1 s scans. The table reports worst-case errors in CompDevs over the {days}, showing the historian's own SDT
 error alongside the combined error after fluxcode.</p>"""
-             + collapsible_table(f"Show trend accuracy table ({len(TAGS)} tags)", "".join(acc_tbl)))
+             + "".join(acc_tbl))
 
     h.append(noise_floor_section(results))
 
@@ -422,7 +422,7 @@ defaults (diamond marker: B = 16 with the noise floor enabled). Error is the wor
 each block's range, the same B produces a different error in CompDevs on each tag—there is no single B that maps
 directly to a fixed fraction of CompDev.</p>"""
              + plot_sweep(results)
-             + collapsible_table(f"Show B sweep table ({len(TAGS)} tags × {len(SWEEP_BITS)} values)", "".join(sweep_tbl)))
+             + "".join(sweep_tbl))
 
     layout_tbl = ["<table><tr><th class='l'>tag</th><th>points per day</th>" + "".join(f"<th>{name}</th>" for name, _ in LAYOUTS) + "</tr>"]
     for tag in TAGS:
@@ -438,7 +438,7 @@ most 65,535 points, the densest tag splits into two blocks under the one-block-p
 <p>Because an SDT archive often has only a few points per hour, block boundaries matter much more here than on 1 kHz
 data—every block carries its own anchors, sizes, and time reference. The table compares bytes per point at default
 settings across all {days}.</p>"""
-             + collapsible_table(f"Show block layout table ({len(TAGS)} tags)", "".join(layout_tbl)))
+             + "".join(layout_tbl))
 
     ts_tbl = ["<table><tr><th class='l'>tag</th><th>fluxcode times: scan-aligned</th><th>source timestamps</th>"
               "<th>Gorilla (all): scan-aligned</th><th>source timestamps</th></tr>"]
@@ -454,7 +454,7 @@ settings across all {days}.</p>"""
 device's timestamp—delayed by 0–200 ms at millisecond resolution, as is common with OPC—while the values remain
 unchanged. The table shows fluxcode's timestamp-only bytes per point (default settings) alongside Gorilla's total bytes
 per point for comparison.</p>"""
-             + collapsible_table(f"Show timestamps table ({len(TAGS)} tags)", "".join(ts_tbl)))
+             + "".join(ts_tbl))
 
     resamp_tbl = ["<table><tr><th class='l'>tag</th><th>archived points + times: kB/day</th>" + "".join(
         f"<th>{name} at 1 s: kB/day</th><th>max error</th>" for name, _ in READ_BACKS) + "</tr>"]
@@ -472,7 +472,7 @@ forward-filled (held at the last archived value). fluxcode can compress those re
 blocks, and 1 s timestamps), but storing the raw archived points is both smaller and more faithful. Interpolated values
 fall off the original decimal grid, and rounding along those ramps leaves small residuals. Figures are mean kB/day over
 the {days}, with max |decoded − read-back| error in CompDevs.</p>"""
-             + collapsible_table(f"Show resampled exports table ({len(TAGS)} tags)", "".join(resamp_tbl)))
+             + "".join(resamp_tbl))
 
     nosdt_tbl = ["<table><tr><th class='l'>tag</th><th>SDT + fluxcode: kB/day</th><th>max error</th>"
                  "<th>every scan, defaults: kB/day</th><th>max error</th><th>within 1 CompDev: kB/day</th><th>B</th><th>max error</th>"
@@ -496,12 +496,12 @@ the coarsest B matching SDT's actual worst-case error for that day. The SDT base
 fluxcode defaults, scored by its trend error. Figures are mean kB/day over the {days}, and errors are the worst
 |decoded − scan| in CompDevs.</p>"""
              + plot_dev_sweep(results)
-             + collapsible_table(f"Show SDT vs every-scan table ({len(TAGS)} tags)", "".join(nosdt_tbl)))
+             + "".join(nosdt_tbl))
 
     toc = [("findings", "Findings", []), ("tags", "The tags", []), ("size", "Size", []), ("accuracy", "Accuracy against the scans", []),
            ("noise-floor", "Noise floor", []), ("sweep", "Size vs accuracy", []), ("layout", "Block layout", []), ("timestamps", "Timestamps", []), ("resampled", "Resampled exports", []),
            ("no-sdt", "SDT or every scan?", [])]
-    (OUT / "sdt.html").write_text(shell("fluxcode on swinging-door historian data", intro, toc, "\n".join(h), active="sdt"))
+    (OUT / "sdt.html").write_text(shell("fluxcode on swinging-door historian data", intro, toc, "\n".join(h), active="experiments"))
     print(f"wrote {OUT / 'sdt.html'}")
 
 

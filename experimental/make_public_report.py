@@ -20,6 +20,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 
 from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell
@@ -27,8 +28,23 @@ from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell
 HERE = Path(__file__).resolve().parent
 PUB_DIR = HERE / "public_datasets"
 RESULTS_PATH = PUB_DIR / "results.json"
+CODEC_RESULTS_PATH = PUB_DIR / "codec_results.json"
 DATASETS_PATH = PUB_DIR / "datasets.json"
 OUT = HERE / "report"
+
+EXACT_PCT = 1e-7
+ZERO_PCT = EXACT_PCT
+Y_TOP = 15.0
+X_MAX = 20.0
+ZERO_NOTE = "0*: lossless (RMSE ≤ $10^{-7}$%)"
+
+FAM_STYLE = {
+    "lossless": ("#525252", "P", "Lossless zstd baselines"),
+    "classic": ("#3182bd", "o", "Classic (Gorilla, quant, DPCM, SDT, DCT)"),
+    "constwidth": ("#e6550d", "^", "Constant width (BFP)"),
+    "entropy": ("#31a354", "s", "Entropy (delta + zstd)"),
+    "flux": ("#6a51a3", "D", "fluxcode"),
+}
 
 # House palette (aligned with make_time_report.py and make_report.py)
 C_RAW = "#8e99a4"
@@ -47,7 +63,178 @@ def slug(name: str) -> str:
     return "grp-" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
-def load_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
+def _shown_rmse(v: float) -> float:
+    return ZERO_PCT if v <= EXACT_PCT else v
+
+
+def _pct_label(v: float) -> str:
+    if v == ZERO_PCT:
+        return "0*"
+    d = round(np.log10(v))
+    return f"{10 ** d}%" if d >= 0 else f"$10^{{{d}}}$%"
+
+
+def _rmse_axis(ax: Any, fontsize: int) -> None:
+    bottom = ZERO_PCT / 3
+    ax.set_ylim(bottom, Y_TOP)
+    ax.axhspan(bottom, 1.5 * ZERO_PCT, color="0.5", alpha=0.12, lw=0, zorder=0)
+    first = round(np.log10(EXACT_PCT)) + 1
+    decades = [10.0 ** d for d in range(first, int(np.floor(np.log10(Y_TOP))) + 1)]
+    major = [ZERO_PCT] + decades
+    ax.set_yticks(major, [_pct_label(v) for v in major], fontsize=fontsize)
+    minor = [m * v for v in [decades[0] / 10] + decades for m in range(2, 10) if max(bottom, EXACT_PCT) < m * v < Y_TOP]
+    ax.set_yticks(minor, [""] * len(minor), minor=True)
+
+
+def plot_real_scatter(codec_data: dict[str, Any]) -> str:
+    """Real-world size vs error scatterplot: median bits/sample vs median RMSE across the 9 curated public series."""
+    series = codec_data["series"]
+    codec_names = list(series[0]["codecs"].keys())
+    fig, ax = plt.subplots(figsize=(11, 6.2), layout="constrained")
+    ax.set_yscale("log")
+    ax.set_xlim(-0.3, X_MAX + 0.5)
+    ax.set_xticks(range(0, int(X_MAX) + 1, 2))
+
+    # fluxcode B=6..16 curve (median across the 9 series)
+    n_b = len(codec_data["curve_bits"])
+    curve_pts = [
+        (
+            float(np.median([s["fluxcode_curve"][i]["bps"] for s in series])),
+            _shown_rmse(float(np.median([s["fluxcode_curve"][i]["rmse_med_pct"] for s in series]))),
+        )
+        for i in range(n_b)
+    ]
+    ax.plot(*zip(*curve_pts), color=C_DEF, lw=2.4, marker=".", ms=6, zorder=3, label="fluxcode (B = 6..16, nf=0)")
+
+    pts = []
+    for cname in codec_names:
+        if cname == "gorilla-xor":
+            continue
+        fam = series[0]["codecs"][cname]["family"]
+        color, mk, _ = FAM_STYLE[fam]
+        bps = float(np.median([s["codecs"][cname]["bps"] for s in series]))
+        rmse = float(np.median([s["codecs"][cname]["rmse_med_pct"] for s in series]))
+        px, py = min(bps, X_MAX - 0.2), _shown_rmse(rmse)
+        if cname == "fluxcode-default":
+            ax.scatter(px, py, marker="D", s=78, color=C_DEF, edgecolor="k", linewidth=0.9, zorder=5)
+            pts.append(("fluxcode (default)", px, py))
+            continue
+        if cname == "fluxcode-bin-nf0":
+            ax.scatter(px, py, marker="D", s=54, color=C_BIN, edgecolor="k", linewidth=0.7, zorder=4)
+            pts.append(("fluxcode (binary grid)", px, py))
+            continue
+        ax.scatter(px, py, marker=mk, s=52, color=color, edgecolor="k", linewidth=0.45, zorder=4)
+        lbl = cname + (f" ({bps:.0f} b/s)" if bps > X_MAX else "")
+        pts.append((lbl, px, py))
+
+    _rmse_axis(ax, 9)
+    fig.canvas.draw()
+    taken: list[tuple[float, float, float, float]] = []
+    for name, px, py in pts:
+        u, v = ax.transData.transform((px, py))
+        w = 4.5 * len(name)
+        box = (u + 6, v + 2, u + 6 + w, v + 13)
+        if box[2] > ax.bbox.x1 + 6:
+            box = (u - 6 - w, v + 2, u - 6, v + 13)
+        if any(box[0] < t[2] and t[0] < box[2] and box[1] < t[3] and t[1] < box[3] for t in taken):
+            # Try below the point
+            box2 = (u + 6, v - 13, u + 6 + w, v - 2)
+            if any(box2[0] < t[2] and t[0] < box2[2] and box2[1] < t[3] and t[1] < box2[3] for t in taken):
+                continue
+            taken.append(box2)
+            ax.annotate(name, (px, py), textcoords="offset points", xytext=(6, -9), ha="left", fontsize=7.5)
+            continue
+        taken.append(box)
+        ax.annotate(
+            name,
+            (px, py),
+            textcoords="offset points",
+            xytext=(-6, 3) if box[2] < u else (6, 3),
+            ha="right" if box[2] < u else "left",
+            fontsize=7.5,
+        )
+
+    ax.text(0.01, 0.01, ZERO_NOTE, transform=ax.transAxes, ha="left", va="bottom", fontsize=8, color="0.4")
+    ax.set(
+        xlabel="bits / sample (median across 9 real-world datasets)",
+        ylabel="median block RMSE (% of range, log)",
+        title="Real-world size vs. error across 9 public datasets (lower-left is better)",
+    )
+    ax.grid(alpha=0.3, lw=0.4, which="both")
+    handles = [
+        Line2D([], [], color=C_DEF, lw=2.4, marker=".", ms=6, label="fluxcode (B = 6..16, nf=0)"),
+        Line2D([], [], marker="D", ls="", color=C_DEF, markeredgecolor="k", ms=7, label="fluxcode (default)"),
+        Line2D([], [], marker="D", ls="", color=C_BIN, markeredgecolor="k", ms=6, label="fluxcode (binary grid, nf=0)"),
+    ] + [
+        Line2D([], [], marker=mk, ls="", color=col, markeredgecolor="k", ms=6.5, label=lbl)
+        for fam, (col, mk, lbl) in FAM_STYLE.items()
+        if fam != "flux"
+    ]
+    ax.legend(handles=handles, loc="upper right", fontsize=8.5, frameon=True)
+    return save_fig(fig, OUT, "public-scatter", "Real-world bits per sample vs RMSE across codecs")
+
+
+def plot_real_rd(codec_data: dict[str, Any]) -> str:
+    """3x3 per-dataset real-world size vs error panels."""
+    series = codec_data["series"]
+    cols = 3
+    rows = -(-len(series) // cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(14.5, 3.6 * rows), layout="constrained")
+    for ax, s in zip(axes.flat, series):
+        ax.set_yscale("log")
+        pts = [(p["bps"], _shown_rmse(p["rmse_med_pct"])) for p in s["fluxcode_curve"]]
+        ax.plot(*zip(*pts), color=C_DEF, lw=2.2, marker=".", ms=5, zorder=3)
+        for cname, st in s["codecs"].items():
+            if cname == "gorilla-xor":
+                continue
+            fam = st["family"]
+            col, mk, _ = FAM_STYLE[fam]
+            px, py = min(st["bps"], X_MAX - 0.2), _shown_rmse(st["rmse_med_pct"])
+            if cname == "fluxcode-default":
+                ax.scatter(px, py, marker="D", s=62, color=C_DEF, edgecolor="k", linewidth=0.8, zorder=5)
+            elif cname == "fluxcode-bin-nf0":
+                ax.scatter(px, py, marker="D", s=44, color=C_BIN, edgecolor="k", linewidth=0.6, zorder=4)
+            else:
+                ax.scatter(px, py, marker=mk, s=34, color=col, edgecolor="k", linewidth=0.35, zorder=4)
+        ax.set_xlim(-0.3, X_MAX + 0.5)
+        ax.set_xticks(range(0, int(X_MAX) + 1, 4))
+        _rmse_axis(ax, 7)
+        ax.set_title(s["label"], fontsize=10)
+        ax.tick_params(labelsize=7.5)
+        ax.grid(alpha=0.3, which="both", lw=0.4)
+    for ax in axes[:, 0]:
+        ax.set_ylabel("median RMSE (% FS, log)", fontsize=8.5)
+    for ax in axes[-1]:
+        ax.set_xlabel("bits / sample", fontsize=8.5)
+    handles = [
+        Line2D([], [], color=C_DEF, lw=2.2, marker=".", ms=5, label="fluxcode (B = 6..16, nf=0)"),
+        Line2D([], [], marker="D", ls="", color=C_DEF, markeredgecolor="k", ms=7, label="fluxcode (default)"),
+        Line2D([], [], marker="D", ls="", color=C_BIN, markeredgecolor="k", ms=6, label="fluxcode (binary grid)"),
+    ] + [
+        Line2D([], [], marker=mk, ls="", color=col, markeredgecolor="k", ms=6, label=lbl)
+        for fam, (col, mk, lbl) in FAM_STYLE.items()
+        if fam != "flux"
+    ] + [Line2D([], [], ls="", label=ZERO_NOTE)]
+    fig.legend(handles=handles, loc="outside lower center", ncol=4, fontsize=8.5, frameon=False)
+    return save_fig(fig, OUT, "public-rd", "Per-dataset real-world bits per sample vs RMSE")
+
+
+def render_codec_matrix(codec_data: dict[str, Any]) -> str:
+    series = codec_data["series"]
+    codec_names = list(series[0]["codecs"].keys())
+    h = ["<table><tr><th class='l'>codec</th>" + "".join(f"<th>{html.escape(s['label'])}</th>" for s in series) + "</tr>"]
+    for cname in codec_names:
+        cells = []
+        for s in series:
+            st = s["codecs"][cname]
+            err = "EXACT" if st["rmse_med_pct"] <= EXACT_PCT else f"{st['rmse_med_pct']:.3g}%"
+            cells.append(f"<td>{st['bps']:.2f} b/s<br><span class='muted'>{err}</span></td>")
+        h.append(f"<tr><td><code>{html.escape(cname)}</code></td>{''.join(cells)}</tr>")
+    h.append("</table>")
+    return collapsible_table(f"Show multi-codec comparison table ({len(codec_names)} codecs × {len(series)} datasets)", "".join(h))
+
+
+def load_inputs() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     if not RESULTS_PATH.exists():
         raise FileNotFoundError(
             f"Missing {RESULTS_PATH}. Run 'make public-bench' first to generate results.json."
@@ -56,7 +243,8 @@ def load_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
         raise FileNotFoundError(f"Missing {DATASETS_PATH}.")
     results = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
     manifest = json.loads(DATASETS_PATH.read_text(encoding="utf-8"))
-    return results, manifest
+    codec_data = json.loads(CODEC_RESULTS_PATH.read_text(encoding="utf-8")) if CODEC_RESULTS_PATH.exists() else None
+    return results, manifest, codec_data
 
 
 def plot_bps(groups: dict[str, dict[str, float]]) -> str:
@@ -258,7 +446,7 @@ def render_group_summary_table(groups: dict[str, dict[str, float]]) -> str:
         f"<td><b>{64.0 / tot_avg['default']:.1f}×</b></td></tr>"
     )
     h.append("</table>")
-    return collapsible_table(f"Show group summary table ({len(groups)} families)", "".join(h))
+    return "".join(h)
 
 
 def render_timestamp_table(ts_rows: list[dict[str, Any]]) -> str:
@@ -280,7 +468,7 @@ def render_timestamp_table(ts_rows: list[dict[str, Any]]) -> str:
             f"<td>{t05:.2f}</td><td{cls}>{t15:.2f}</td></tr>"
         )
     h.append("</table>")
-    return collapsible_table(f"Show timestamp table ({len(ts_rows)} channels)", "".join(h))
+    return "".join(h)
 
 
 def render_series_tables(groups: dict[str, dict[str, float]], series_rows: list[dict[str, Any]]) -> str:
@@ -318,8 +506,7 @@ def render_series_tables(groups: dict[str, dict[str, float]], series_rows: list[
             f"<td><b>{gavg['nf0']:.2f}</b></td><td></td><td><b>{gavg['bin_nf0']:.2f}</b></td>"
             f"<td><b>{g_gain:+.1f}%</b></td><td></td></tr></table>"
         )
-        summary = f"{gname} ({len(rows)} series, avg {gavg['default']:.2f} bps)"
-        parts.append(f"<div id='{slug(gname)}'>{collapsible_table(summary, ''.join(tbl))}</div>")
+        parts.append(f"<h3 id='{slug(gname)}'>{html.escape(gname)}</h3>" + "".join(tbl))
     return "".join(parts)
 
 
@@ -364,13 +551,15 @@ def render_provenance_table(groups: dict[str, dict[str, float]], manifest: dict[
 
 
 def main() -> None:
-    results, manifest = load_inputs()
+    results, manifest, codec_data = load_inputs()
     groups: dict[str, dict[str, float]] = results["groups"]
     series_rows: list[dict[str, Any]] = results["series"]
     ts_rows: list[dict[str, Any]] = results["timestamps"]
 
     clean_outputs(OUT, ("public.html", "public-*.svg"))
 
+    fig_scatter = plot_real_scatter(codec_data) if codec_data else ""
+    fig_rd = plot_real_rd(codec_data) if codec_data else ""
     fig_bps = plot_bps(groups)
     fig_grid = plot_grid_gain(series_rows)
     fig_tp = plot_throughput(groups, series_rows)
@@ -380,18 +569,32 @@ def main() -> None:
     tot_samples = sum(int(r["n"]) for r in series_rows)
     tot_mb = 8.0 * tot_samples / 1e6
 
-    intro = f"""<p>This report evaluates <code>fluxcode</code> on <b>{len(groups)} public dataset families</b>
-(<b>{tot_series} series</b>, <b>{tot_samples:,} float64 samples</b>, {tot_mb:.1f} MB uncompressed).
-The corpus covers high-frequency bearing vibration, clinical ECG/PPG waveforms, 24-bit sigma-delta broadband seismology,
-multi-rate industrial PLC telemetry, residential smart-meter power, oceanographic buoys, float32-originated
-ERA5 weather, irregular millisecond exchange trades, jittered smartphone IMU clocks, and the
-VLDB/SIGMOD floating-point compression benchmark (Elf / Chimp / ALP).
+    intro = f"""<p>Real-world value compression benchmarks across <b>{len(groups)} public dataset families</b>
+(<b>{tot_series} series</b>, <b>{tot_samples:,} float64 samples</b>, {tot_mb:.1f} MB uncompressed), covering
+high-frequency bearing vibration, clinical ECG/PPG waveforms, 24-bit broadband seismology, multi-rate industrial PLC
+telemetry, residential smart-meter power, oceanographic buoys, float32-originated ERA5 weather, irregular millisecond
+exchange trades, jittered smartphone IMU clocks, and the VLDB/SIGMOD floating-point benchmark (Elf / Chimp / ALP).
 Every block group passed <code>fluxcode.verify.encode_group</code> with <b>0 errors</b>.</p>
-<p class='muted'>To regenerate, run <code>make datasets &amp;&amp; make public-bench &amp;&amp; make public-report</code>,
-or <code>cd experimental &amp;&amp; uv run python make_public_report.py</code> using an existing
-<code>experimental/public_datasets/results.json</code>.</p>"""
+<p class='muted'>For idealized and extreme synthetic stress tests (pure sines, square waves, chirps, impulses), see
+<a href='codecs.html'>Synthetic &amp; edge-case codec comparison</a> under <a href='experiments.html'>Experiments</a>.
+Regenerate with <code>make datasets &amp;&amp; make public-bench &amp;&amp; make public-report</code>.</p>"""
 
     body: list[str] = []
+
+    if codec_data:
+        body.append(f"""<h2 id='scatter'>Size vs. error on real-world datasets</h2>
+<p>Comparing <code>fluxcode</code> against classic, constant-width, entropy, and lossless codecs on 9 representative
+real-world series (up to 60 blocks of 1,000 samples per series). The purple line sweeps <code>fluxcode</code>'s bit
+budget from B = 6 to 16 with the noise floor off; the dark diamond is default <code>Params()</code>, and the light
+diamond forces a binary-only grid. Markers below or to the left of the purple curve beat <code>fluxcode</code> at the
+same error or size. <code>gorilla-xor</code> is omitted from the plot because it sits around 40–60 bits/sample, but it
+is included in the table below.</p>
+{fig_scatter}
+<h3 id='scatter-per-series'>Per dataset</h3>
+<p>Each panel shows one real-world series on the same axes. Lossless points (RMSE ≤ 10<sup>−7</sup>%) sit on the
+<code>0*</code> band at the bottom.</p>
+{fig_rd}
+{render_codec_matrix(codec_data)}""")
 
     # 1. Summary & bshuf vs raw zstd insight
     body.append(f"""<h2 id='summary'>Group summary &amp; compression ratios</h2>
@@ -508,7 +711,11 @@ source URLs, extraction modes, and SHA-256 checksums. Run <code>make datasets</c
 <code>uv run python experimental/public_datasets/download.py --verify</code>) to fetch or verify them locally.</p>
 {render_provenance_table(groups, manifest)}""")
 
-    toc = [
+    toc = (
+        [("scatter", "Size vs. error on real-world datasets", [("scatter-per-series", "Per dataset")])]
+        if codec_data
+        else []
+    ) + [
         ("summary", "Group summary & compression ratios", []),
         ("grids", "Hidden rational/ADC grids & float32 recovery", []),
         ("insights", "Real-world signal findings", []),
@@ -520,10 +727,10 @@ source URLs, extraction modes, and SHA-256 checksums. Run <code>make datasets</c
 
     out_html = OUT / "public.html"
     out_html.write_text(
-        shell("fluxcode on public real-world datasets", intro, toc, "\n".join(body), active="public"),
+        shell("Benchmarks: real-world datasets", intro, toc, "\n".join(body), active="benchmarks"),
         encoding="utf-8",
     )
-    print(f"Wrote {out_html} (+ 4 SVG charts)")
+    print(f"Wrote {out_html} (+ {6 if codec_data else 4} SVG charts)")
 
 
 if __name__ == "__main__":

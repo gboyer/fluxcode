@@ -1,0 +1,1435 @@
+{
+  "block_len": 1000,
+  "curve_bits": [
+    6,
+    8,
+    10,
+    12,
+    14,
+    16
+  ],
+  "series": [
+    {
+      "group": "CWRU Vibration",
+      "series": "normal_48k_DE",
+      "label": "CWRU Vibration (48 kHz)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 17.1052,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 52.00306666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 65.8764,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.11312662817437136,
+          "rmse_worst_pct": 0.1182253224003124,
+          "maxerr_worst_pct": 0.19607843137255848,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 6.925066666666667,
+          "rmse_med_pct": 0.11312662817437136,
+          "rmse_worst_pct": 0.1182253224003124,
+          "maxerr_worst_pct": 0.19607843137255848,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 3.4504,
+          "rmse_med_pct": 1.1306314719512922,
+          "rmse_worst_pct": 1.4360246915342931,
+          "maxerr_worst_pct": 2.4898848428260165,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 14.739733333333334,
+          "rmse_med_pct": 0.12613200807792152,
+          "rmse_worst_pct": 0.1486906350072403,
+          "maxerr_worst_pct": 0.8286379330512788,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 10.552266666666666,
+          "rmse_med_pct": 1.008155178316839,
+          "rmse_worst_pct": 1.1133759034990052,
+          "maxerr_worst_pct": 3.4803952957247426,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 5.842651101656258,
+          "rmse_worst_pct": 6.885335316704625,
+          "maxerr_worst_pct": 33.31663557492539,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.04823863865976753,
+          "rmse_worst_pct": 0.05481568923788971,
+          "maxerr_worst_pct": 0.19579687886326957,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.05574965347564958,
+          "rmse_worst_pct": 0.06462191640283213,
+          "maxerr_worst_pct": 0.19607843916400694,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 6.863333333333333,
+          "rmse_med_pct": 0.11312662817437148,
+          "rmse_worst_pct": 0.11822532240031243,
+          "maxerr_worst_pct": 0.19607843137255404,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 8.1776,
+          "rmse_med_pct": 0.05627617748277004,
+          "rmse_worst_pct": 0.05788018117573457,
+          "maxerr_worst_pct": 0.09784735812134135,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 9.670666666666667,
+          "rmse_med_pct": 1.5555154375940264e-15,
+          "rmse_worst_pct": 0.04114468041120405,
+          "maxerr_worst_pct": 0.07051643027742793,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 14.3692,
+          "rmse_med_pct": 0.0005679503919753461,
+          "rmse_worst_pct": 0.0006477684596461295,
+          "maxerr_worst_pct": 0.0011159364499987077,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 4.249733333333333,
+          "rmse_med_pct": 0.5777259101992978,
+          "rmse_worst_pct": 0.6668236876106722,
+          "maxerr_worst_pct": 1.1422349364827205,
+          "B": 6
+        },
+        {
+          "bps": 6.2772,
+          "rmse_med_pct": 0.14699138483964283,
+          "rmse_worst_pct": 0.1654082810068957,
+          "maxerr_worst_pct": 0.28577258942302824,
+          "B": 8
+        },
+        {
+          "bps": 8.258,
+          "rmse_med_pct": 0.03650232486864296,
+          "rmse_worst_pct": 0.04114468041120405,
+          "maxerr_worst_pct": 0.0712482857809177,
+          "B": 10
+        },
+        {
+          "bps": 9.779733333333333,
+          "rmse_med_pct": 1.5378879101754742e-15,
+          "rmse_worst_pct": 1.8517567000426787e-15,
+          "maxerr_worst_pct": 1.2217322155693973e-14,
+          "B": 12
+        },
+        {
+          "bps": 9.779733333333333,
+          "rmse_med_pct": 1.5378879101754742e-15,
+          "rmse_worst_pct": 1.8517567000426787e-15,
+          "maxerr_worst_pct": 1.2217322155693973e-14,
+          "B": 14
+        },
+        {
+          "bps": 9.779733333333333,
+          "rmse_med_pct": 1.5378879101754742e-15,
+          "rmse_worst_pct": 1.8517567000426787e-15,
+          "maxerr_worst_pct": 1.2217322155693973e-14,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "MIT-BIH ECG",
+      "series": "rec100_MLII",
+      "label": "MIT-BIH ECG (360 Hz)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 9.482133333333334,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 30.228,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 52.9632,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.11324986286223863,
+          "rmse_worst_pct": 0.11963194871201098,
+          "maxerr_worst_pct": 0.19607843137255804,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 3.9585333333333335,
+          "rmse_med_pct": 0.11324986286223863,
+          "rmse_worst_pct": 0.11963194871201098,
+          "maxerr_worst_pct": 0.19607843137255804,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 1.1126666666666667,
+          "rmse_med_pct": 1.1085182861650513,
+          "rmse_worst_pct": 1.336136853042945,
+          "maxerr_worst_pct": 2.1791767554479398,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 5.8968,
+          "rmse_med_pct": 0.33708175161833454,
+          "rmse_worst_pct": 0.35873827404461855,
+          "maxerr_worst_pct": 0.9464063444645963,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 1.7288,
+          "rmse_med_pct": 0.9812548677802697,
+          "rmse_worst_pct": 1.0574706130683404,
+          "maxerr_worst_pct": 3.7271062271062227,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 4.484453001310855,
+          "rmse_worst_pct": 5.449139634750093,
+          "maxerr_worst_pct": 45.29769111334446,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.015204333859177712,
+          "rmse_worst_pct": 0.0188225424003365,
+          "maxerr_worst_pct": 0.1960784313725538,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.018763661963517437,
+          "rmse_worst_pct": 0.024323460520395482,
+          "maxerr_worst_pct": 0.1960784313725538,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 4.059466666666666,
+          "rmse_med_pct": 0.11324986286223857,
+          "rmse_worst_pct": 0.1196319487120112,
+          "maxerr_worst_pct": 0.19607843137255804,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 6.3529333333333335,
+          "rmse_med_pct": 0.014062997871157069,
+          "rmse_worst_pct": 0.016772905965812282,
+          "maxerr_worst_pct": 0.02442598925256584,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 4.268133333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 9.956533333333333,
+          "rmse_med_pct": 0.0005559291107295225,
+          "rmse_worst_pct": 0.0006099305631104758,
+          "maxerr_worst_pct": 0.0009998933447099355,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 1.9090666666666667,
+          "rmse_med_pct": 0.5692714093868655,
+          "rmse_worst_pct": 0.624568896625101,
+          "maxerr_worst_pct": 1.0238907849829362,
+          "B": 6
+        },
+        {
+          "bps": 3.627466666666667,
+          "rmse_med_pct": 0.14207660010008183,
+          "rmse_worst_pct": 0.15595468983297703,
+          "maxerr_worst_pct": 0.25597269624573593,
+          "B": 8
+        },
+        {
+          "bps": 4.268133333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 10
+        },
+        {
+          "bps": 4.268133333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 12
+        },
+        {
+          "bps": 4.268133333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 14
+        },
+        {
+          "bps": 4.268133333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "BIDMC Clinical",
+      "series": "PLETH",
+      "label": "BIDMC PPG (125 Hz)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 11.180666666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 33.96346666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 47.54626666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.11273904739212996,
+          "rmse_worst_pct": 0.13073363107229788,
+          "maxerr_worst_pct": 0.19607843137257247,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 3.6781333333333333,
+          "rmse_med_pct": 0.11273904739212996,
+          "rmse_worst_pct": 0.13073363107229788,
+          "maxerr_worst_pct": 0.19607843137257247,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 2.086133333333333,
+          "rmse_med_pct": 0.4331894318509057,
+          "rmse_worst_pct": 0.5343363961182888,
+          "maxerr_worst_pct": 0.948620654291797,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 4.3128,
+          "rmse_med_pct": 0.36624845622927693,
+          "rmse_worst_pct": 0.4161678868374199,
+          "maxerr_worst_pct": 0.9620755684168761,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 1.9682666666666666,
+          "rmse_med_pct": 1.5367624446637178,
+          "rmse_worst_pct": 1.5994996590554849,
+          "maxerr_worst_pct": 3.5729701235737723,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 1.8475031027489783,
+          "rmse_worst_pct": 2.6867499925854146,
+          "maxerr_worst_pct": 25.290262439313445,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.011957412041561893,
+          "rmse_worst_pct": 0.013480762560867506,
+          "maxerr_worst_pct": 0.05208814446003126,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.013709682723168486,
+          "rmse_worst_pct": 0.01528909740732435,
+          "maxerr_worst_pct": 0.09440585279338061,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 3.4326666666666665,
+          "rmse_med_pct": 0.11273904739213009,
+          "rmse_worst_pct": 0.130733631072298,
+          "maxerr_worst_pct": 0.19607843137257247,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 5.633466666666667,
+          "rmse_med_pct": 0.007024628090846555,
+          "rmse_worst_pct": 0.007907347318640713,
+          "maxerr_worst_pct": 0.012210012210025115,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 4.265333333333333,
+          "rmse_med_pct": 0.008435496512136625,
+          "rmse_worst_pct": 0.009844336414922215,
+          "maxerr_worst_pct": 0.015535086317154358,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 7.528933333333334,
+          "rmse_med_pct": 0.00040170373389157837,
+          "rmse_worst_pct": 0.0009473807619668586,
+          "maxerr_worst_pct": 0.0015131353022150372,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 1.7805333333333333,
+          "rmse_med_pct": 0.4702055249807332,
+          "rmse_worst_pct": 0.8827594519025854,
+          "maxerr_worst_pct": 1.3982699371963454,
+          "B": 6
+        },
+        {
+          "bps": 2.7862666666666667,
+          "rmse_med_pct": 0.18081791375777956,
+          "rmse_worst_pct": 0.22385059289188633,
+          "maxerr_worst_pct": 0.24904092071611136,
+          "B": 8
+        },
+        {
+          "bps": 3.0474666666666668,
+          "rmse_med_pct": 0.030046251104342787,
+          "rmse_worst_pct": 0.03361270251697728,
+          "maxerr_worst_pct": 0.06328054408156686,
+          "B": 10
+        },
+        {
+          "bps": 4.3756,
+          "rmse_med_pct": 0.008940682972853628,
+          "rmse_worst_pct": 0.015250763404341231,
+          "maxerr_worst_pct": 0.024241383616403097,
+          "B": 12
+        },
+        {
+          "bps": 5.567733333333333,
+          "rmse_med_pct": 0.001874643201034768,
+          "rmse_worst_pct": 0.0034892388741387926,
+          "maxerr_worst_pct": 0.006060345904100774,
+          "B": 14
+        },
+        {
+          "bps": 6.884266666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "IRIS Seismic",
+      "series": "ANMO_BHZ_mps",
+      "label": "IRIS Seismic (40 Hz)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 19.244666666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 43.27186666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 60.995866666666664,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.1132064111906595,
+          "rmse_worst_pct": 0.11689575024827854,
+          "maxerr_worst_pct": 0.19607843137255418,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 2.1126666666666667,
+          "rmse_med_pct": 0.1132064111906595,
+          "rmse_worst_pct": 0.11689575024827854,
+          "maxerr_worst_pct": 0.19607843137255418,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 2.7584,
+          "rmse_med_pct": 0.060868867281453076,
+          "rmse_worst_pct": 0.09895175288544363,
+          "maxerr_worst_pct": 0.16986580601325374,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 1.2688,
+          "rmse_med_pct": 0.32153709252571533,
+          "rmse_worst_pct": 0.36855104561885454,
+          "maxerr_worst_pct": 0.8846669250949877,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 1.168,
+          "rmse_med_pct": 0.38838609197512086,
+          "rmse_worst_pct": 0.8482939249569006,
+          "maxerr_worst_pct": 2.626119916547959,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 0.14837015889340754,
+          "rmse_worst_pct": 0.39327825726724297,
+          "maxerr_worst_pct": 3.5675338858107706,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.0024280039335953896,
+          "rmse_worst_pct": 0.00411147898679679,
+          "maxerr_worst_pct": 0.012235194199095313,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.0025513589168931305,
+          "rmse_worst_pct": 0.004632224777218568,
+          "maxerr_worst_pct": 0.012254902207809774,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 2.086,
+          "rmse_med_pct": 0.11320641119065959,
+          "rmse_worst_pct": 0.11689575024827843,
+          "maxerr_worst_pct": 0.19607843137255418,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 5.4036,
+          "rmse_med_pct": 0.007046547391921577,
+          "rmse_worst_pct": 0.007251436843281109,
+          "maxerr_worst_pct": 0.012210012210016934,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 6.1104,
+          "rmse_med_pct": 0.0031345698158124933,
+          "rmse_worst_pct": 0.01336108604121872,
+          "maxerr_worst_pct": 0.022448859798783055,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 7.819333333333334,
+          "rmse_med_pct": 0.0006214366710142377,
+          "rmse_worst_pct": 0.0008842095899704593,
+          "maxerr_worst_pct": 0.001514898688431598,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 0.8146666666666667,
+          "rmse_med_pct": 0.6249008949563104,
+          "rmse_worst_pct": 0.8740784572532081,
+          "maxerr_worst_pct": 1.4898632081387582,
+          "B": 6
+        },
+        {
+          "bps": 1.784,
+          "rmse_med_pct": 0.15745494769938145,
+          "rmse_worst_pct": 0.22268241072459868,
+          "maxerr_worst_pct": 0.37344292816940533,
+          "B": 8
+        },
+        {
+          "bps": 2.8970666666666665,
+          "rmse_med_pct": 0.0394387106884245,
+          "rmse_worst_pct": 0.05572416228557459,
+          "maxerr_worst_pct": 0.09339800812698058,
+          "B": 10
+        },
+        {
+          "bps": 4.749066666666667,
+          "rmse_med_pct": 0.009881552229302636,
+          "rmse_worst_pct": 0.014008970423373741,
+          "maxerr_worst_pct": 0.023411257933148615,
+          "B": 12
+        },
+        {
+          "bps": 6.5628,
+          "rmse_med_pct": 0.0024940559363609447,
+          "rmse_worst_pct": 0.0034129468935511203,
+          "maxerr_worst_pct": 0.005909748602590987,
+          "B": 14
+        },
+        {
+          "bps": 7.819333333333334,
+          "rmse_med_pct": 0.0006214366710142377,
+          "rmse_worst_pct": 0.0008842095899704593,
+          "maxerr_worst_pct": 0.001514898688431598,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "UCI Hydraulic",
+      "series": "PS1_100Hz",
+      "label": "UCI Hydraulic (100 Hz)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 11.225733333333332,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 30.654,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 45.66706666666666,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.11405020166979722,
+          "rmse_worst_pct": 0.12367651212649525,
+          "maxerr_worst_pct": 0.19607843137507008,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 4.2844,
+          "rmse_med_pct": 0.11405020166979722,
+          "rmse_worst_pct": 0.12367651212649525,
+          "maxerr_worst_pct": 0.19607843137507008,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 2.6112,
+          "rmse_med_pct": 0.2568447890310096,
+          "rmse_worst_pct": 3.190099757038877,
+          "maxerr_worst_pct": 5.481727574764171,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 7.1597333333333335,
+          "rmse_med_pct": 0.3074184913740537,
+          "rmse_worst_pct": 0.3565302132204398,
+          "maxerr_worst_pct": 0.9491093701619536,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 3.2693333333333334,
+          "rmse_med_pct": 0.767764132659537,
+          "rmse_worst_pct": 1.4348652349572535,
+          "maxerr_worst_pct": 3.6433507151746634,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 0.7133892377180189,
+          "rmse_worst_pct": 8.564498690861067,
+          "maxerr_worst_pct": 60.36832297814131,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.0043407381294309245,
+          "rmse_worst_pct": 0.08483814902061275,
+          "maxerr_worst_pct": 0.19607843471123743,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.005082291663373526,
+          "rmse_worst_pct": 0.09608244571187621,
+          "maxerr_worst_pct": 0.1960784373044434,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 4.285733333333333,
+          "rmse_med_pct": 0.11405020166980412,
+          "rmse_worst_pct": 0.12367651212649525,
+          "maxerr_worst_pct": 0.19607843137507008,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 7.115866666666666,
+          "rmse_med_pct": 0.007165867982595653,
+          "rmse_worst_pct": 0.11465448276075108,
+          "maxerr_worst_pct": 0.19607843137507008,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 5.218666666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.038234350221855624,
+          "maxerr_worst_pct": 0.06654835847376389,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 10.5676,
+          "rmse_med_pct": 0.0006570785250102726,
+          "rmse_worst_pct": 0.0007785128332659259,
+          "maxerr_worst_pct": 0.0012627963373829402,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 1.8164,
+          "rmse_med_pct": 0.6646705070299301,
+          "rmse_worst_pct": 0.7828090198722288,
+          "maxerr_worst_pct": 1.2931034482746582,
+          "B": 6
+        },
+        {
+          "bps": 3.0996,
+          "rmse_med_pct": 0.16589671806195955,
+          "rmse_worst_pct": 0.19469180470011857,
+          "maxerr_worst_pct": 0.2939735423811969,
+          "B": 8
+        },
+        {
+          "bps": 4.547066666666667,
+          "rmse_med_pct": 0.0396209037859789,
+          "rmse_worst_pct": 0.046816435783273914,
+          "maxerr_worst_pct": 0.07349338559529922,
+          "B": 10
+        },
+        {
+          "bps": 5.164933333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.01112446607016352,
+          "maxerr_worst_pct": 0.0183733463988074,
+          "B": 12
+        },
+        {
+          "bps": 5.227333333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 14
+        },
+        {
+          "bps": 5.227333333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "UCI Power",
+      "series": "Global_active_power",
+      "label": "UCI Power (1 min)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 14.962533333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 46.42786666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 56.06666666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.11416955118177562,
+          "rmse_worst_pct": 0.11875550286375017,
+          "maxerr_worst_pct": 0.19607843137255224,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 4.225866666666667,
+          "rmse_med_pct": 0.11416955118177562,
+          "rmse_worst_pct": 0.11875550286375017,
+          "maxerr_worst_pct": 0.19607843137255224,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 1.4661333333333333,
+          "rmse_med_pct": 1.8763075298060519,
+          "rmse_worst_pct": 4.835501855036913,
+          "maxerr_worst_pct": 6.605691056910586,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 6.2965333333333335,
+          "rmse_med_pct": 0.2758060603385707,
+          "rmse_worst_pct": 0.3099094536443233,
+          "maxerr_worst_pct": 0.9471775722814787,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 3.8386666666666667,
+          "rmse_med_pct": 0.9820754732223337,
+          "rmse_worst_pct": 1.2258327347686004,
+          "maxerr_worst_pct": 3.813308843042203,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 4.8386273102400095,
+          "rmse_worst_pct": 9.151529245272071,
+          "maxerr_worst_pct": 64.89675045761813,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.024901989920652793,
+          "rmse_worst_pct": 0.07774411610797984,
+          "maxerr_worst_pct": 0.19607805492826264,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.03325430894893951,
+          "rmse_worst_pct": 0.09069104413703438,
+          "maxerr_worst_pct": 0.1960592880734703,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 4.2828,
+          "rmse_med_pct": 0.11416955118177557,
+          "rmse_worst_pct": 0.11875550286375028,
+          "maxerr_worst_pct": 0.19607843137255163,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 5.927066666666667,
+          "rmse_med_pct": 0.028435624987893978,
+          "rmse_worst_pct": 0.1148914494111255,
+          "maxerr_worst_pct": 0.19607843137254832,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 6.383333333333334,
+          "rmse_med_pct": 0.017922606883465354,
+          "rmse_worst_pct": 0.24942302225564356,
+          "maxerr_worst_pct": 0.4382244840260128,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 11.021066666666666,
+          "rmse_med_pct": 0.0006032308864653167,
+          "rmse_worst_pct": 0.0008946822823233378,
+          "maxerr_worst_pct": 0.0015076413097612437,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 2.404933333333333,
+          "rmse_med_pct": 0.6173774411851317,
+          "rmse_worst_pct": 0.9055674552675635,
+          "maxerr_worst_pct": 1.5225933202357578,
+          "B": 6
+        },
+        {
+          "bps": 3.828133333333333,
+          "rmse_med_pct": 0.1534526856652723,
+          "rmse_worst_pct": 0.23516395455351782,
+          "maxerr_worst_pct": 0.385956175298801,
+          "B": 8
+        },
+        {
+          "bps": 5.657733333333334,
+          "rmse_med_pct": 0.03912378737171453,
+          "rmse_worst_pct": 0.0547836325714538,
+          "maxerr_worst_pct": 0.09648904382469747,
+          "B": 10
+        },
+        {
+          "bps": 7.5308,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.013497096583628828,
+          "maxerr_worst_pct": 0.023399758454110738,
+          "B": 12
+        },
+        {
+          "bps": 7.621866666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 14
+        },
+        {
+          "bps": 7.621866666666667,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "UCI Appliances",
+      "series": "Press_mm_hg",
+      "label": "UCI Appliances (1/3 grid)",
+      "blocks": 19,
+      "samples": 19000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 12.903578947368421,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 6.7722105263157895,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 42.56505263157895,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.11305388045844617,
+          "rmse_worst_pct": 0.1177056810875419,
+          "maxerr_worst_pct": 0.19607843137237124,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 1.7507368421052631,
+          "rmse_med_pct": 0.11305388045844617,
+          "rmse_worst_pct": 0.1177056810875419,
+          "maxerr_worst_pct": 0.19607843137237124,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 1.983578947368421,
+          "rmse_med_pct": 0.0455163014829709,
+          "rmse_worst_pct": 0.10374630955760906,
+          "maxerr_worst_pct": 0.18037518037427747,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 1.4585263157894737,
+          "rmse_med_pct": 0.34056966713230136,
+          "rmse_worst_pct": 0.3879801599535403,
+          "maxerr_worst_pct": 0.9298842750162366,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 1.1772631578947368,
+          "rmse_med_pct": 0.5809410674804503,
+          "rmse_worst_pct": 1.2078161369840208,
+          "maxerr_worst_pct": 3.4247498533220018,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 0.41743463402730857,
+          "rmse_worst_pct": 1.117279164805485,
+          "maxerr_worst_pct": 4.224679458271745,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.0012420759541413322,
+          "rmse_worst_pct": 0.0022273789701273547,
+          "maxerr_worst_pct": 0.011883543426062097,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.001331773140746688,
+          "rmse_worst_pct": 0.002470535815009908,
+          "maxerr_worst_pct": 0.012253185615019847,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 1.8976842105263159,
+          "rmse_med_pct": 0.11305388045844632,
+          "rmse_worst_pct": 0.11770568108754134,
+          "maxerr_worst_pct": 0.19607843137237124,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 2.7149473684210528,
+          "rmse_med_pct": 0.007115395207114269,
+          "rmse_worst_pct": 0.007534799424517648,
+          "maxerr_worst_pct": 0.012210012210351248,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 1.0155789473684211,
+          "rmse_med_pct": 1.1770436657715366e-12,
+          "rmse_worst_pct": 3.0981567961901042e-12,
+          "maxerr_worst_pct": 5.167583532800711e-12,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 3.046315789473684,
+          "rmse_med_pct": 0.0005540224939357596,
+          "rmse_worst_pct": 0.000856525523138557,
+          "maxerr_worst_pct": 0.00141971703120033,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 0.8471578947368421,
+          "rmse_med_pct": 0.575235614482814,
+          "rmse_worst_pct": 0.865301968122959,
+          "maxerr_worst_pct": 1.5337423312883478,
+          "B": 6
+        },
+        {
+          "bps": 1.5928421052631578,
+          "rmse_med_pct": 0.1418297583687425,
+          "rmse_worst_pct": 0.21922442506290127,
+          "maxerr_worst_pct": 0.3894080996884733,
+          "B": 8
+        },
+        {
+          "bps": 1.823578947368421,
+          "rmse_med_pct": 0.03267682090001998,
+          "rmse_worst_pct": 0.0554365433648244,
+          "maxerr_worst_pct": 0.09086188992846736,
+          "B": 10
+        },
+        {
+          "bps": 1.416421052631579,
+          "rmse_med_pct": 1.36004499972876e-12,
+          "rmse_worst_pct": 0.01370440836836019,
+          "maxerr_worst_pct": 0.022715472482913713,
+          "B": 12
+        },
+        {
+          "bps": 1.0155789473684211,
+          "rmse_med_pct": 1.1770436657715366e-12,
+          "rmse_worst_pct": 3.0981567961901042e-12,
+          "maxerr_worst_pct": 5.167583532800711e-12,
+          "B": 14
+        },
+        {
+          "bps": 1.0155789473684211,
+          "rmse_med_pct": 1.1770436657715366e-12,
+          "rmse_worst_pct": 3.0981567961901042e-12,
+          "maxerr_worst_pct": 5.167583532800711e-12,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "ERA5 Weather",
+      "series": "temp_2m_f32",
+      "label": "ERA5 Weather (f32)",
+      "blocks": 8,
+      "samples": 8000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 13.206,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 12.139,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 24.672,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.1131884551063844,
+          "rmse_worst_pct": 0.12581132199580242,
+          "maxerr_worst_pct": 0.19607824797362913,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 5.922,
+          "rmse_med_pct": 0.1131884551063844,
+          "rmse_worst_pct": 0.12581132199580242,
+          "maxerr_worst_pct": 0.19607824797362913,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 3.065,
+          "rmse_med_pct": 1.0384193075263752,
+          "rmse_worst_pct": 1.4854795224183708,
+          "maxerr_worst_pct": 2.472540698409442,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 10.854,
+          "rmse_med_pct": 0.2513560585660894,
+          "rmse_worst_pct": 0.293178091972699,
+          "maxerr_worst_pct": 0.9174962844728543,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 5.154,
+          "rmse_med_pct": 1.3525608724482119,
+          "rmse_worst_pct": 1.446331925701347,
+          "maxerr_worst_pct": 3.7488142380677916,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 4.0335516556595685,
+          "rmse_worst_pct": 5.744871029077876,
+          "maxerr_worst_pct": 28.061835116733587,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.025403541753580162,
+          "rmse_worst_pct": 0.031778401974909415,
+          "maxerr_worst_pct": 0.19229535928520955,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.03277666350327334,
+          "rmse_worst_pct": 0.03877724167479653,
+          "maxerr_worst_pct": 0.18099441413822073,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 5.746,
+          "rmse_med_pct": 0.11318845510638466,
+          "rmse_worst_pct": 0.12581132199580186,
+          "maxerr_worst_pct": 0.19607824797362913,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 7.579,
+          "rmse_med_pct": 0.028278747867836806,
+          "rmse_worst_pct": 0.056884654010626735,
+          "maxerr_worst_pct": 0.09784277314839386,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 5.032,
+          "rmse_med_pct": 1.952798952830142e-06,
+          "rmse_worst_pct": 2.9948145525386998e-06,
+          "maxerr_worst_pct": 7.3359558832583305e-06,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 9.971,
+          "rmse_med_pct": 0.0005410086555530852,
+          "rmse_worst_pct": 0.0008573353158623051,
+          "maxerr_worst_pct": 0.001199406404994024,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 3.492,
+          "rmse_med_pct": 0.5554986947670887,
+          "rmse_worst_pct": 0.8798943272499786,
+          "maxerr_worst_pct": 1.2269986030718378,
+          "B": 6
+        },
+        {
+          "bps": 4.95,
+          "rmse_med_pct": 2.9510677034598633e-06,
+          "rmse_worst_pct": 0.21997116070220377,
+          "maxerr_worst_pct": 0.30674965076795946,
+          "B": 8
+        },
+        {
+          "bps": 5.032,
+          "rmse_med_pct": 1.952798952830142e-06,
+          "rmse_worst_pct": 2.9948145525386998e-06,
+          "maxerr_worst_pct": 7.3359558832583305e-06,
+          "B": 10
+        },
+        {
+          "bps": 5.032,
+          "rmse_med_pct": 1.952798952830142e-06,
+          "rmse_worst_pct": 2.9948145525386998e-06,
+          "maxerr_worst_pct": 7.3359558832583305e-06,
+          "B": 12
+        },
+        {
+          "bps": 5.032,
+          "rmse_med_pct": 1.952798952830142e-06,
+          "rmse_worst_pct": 2.9948145525386998e-06,
+          "maxerr_worst_pct": 7.3359558832583305e-06,
+          "B": 14
+        },
+        {
+          "bps": 5.032,
+          "rmse_med_pct": 1.952798952830142e-06,
+          "rmse_worst_pct": 2.9948145525386998e-06,
+          "maxerr_worst_pct": 7.3359558832583305e-06,
+          "B": 16
+        }
+      ]
+    },
+    {
+      "group": "Binance Trades",
+      "series": "BTCUSDT_price",
+      "label": "Binance BTC ($0.01)",
+      "blocks": 60,
+      "samples": 60000,
+      "codecs": {
+        "raw-zstd": {
+          "bps": 8.818,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "bshuf-zstd": {
+          "bps": 14.7912,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "lossless"
+        },
+        "gorilla-xor": {
+          "bps": 19.910933333333332,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "classic"
+        },
+        "quant8": {
+          "bps": 8.128,
+          "rmse_med_pct": 0.10323146972367296,
+          "rmse_worst_pct": 0.1299522007964629,
+          "maxerr_worst_pct": 0.19607843137941267,
+          "family": "classic"
+        },
+        "quant8-delta1-deflate": {
+          "bps": 1.4034666666666666,
+          "rmse_med_pct": 0.10323146972367296,
+          "rmse_worst_pct": 0.1299522007964629,
+          "maxerr_worst_pct": 0.19607843137941267,
+          "family": "classic"
+        },
+        "dpcm4-linear-deflate": {
+          "bps": 1.0309333333333333,
+          "rmse_med_pct": 0.2560036911074377,
+          "rmse_worst_pct": 2.17596087408534,
+          "maxerr_worst_pct": 4.530181902433894,
+          "family": "classic"
+        },
+        "swingdoor-0.5%": {
+          "bps": 1.8272,
+          "rmse_med_pct": 0.20903231731154437,
+          "rmse_worst_pct": 0.29500728129235115,
+          "maxerr_worst_pct": 0.9707638579805756,
+          "family": "classic"
+        },
+        "swingdoor-2%": {
+          "bps": 1.2629333333333332,
+          "rmse_med_pct": 0.6308201447427817,
+          "rmse_worst_pct": 0.9515948571267505,
+          "maxerr_worst_pct": 3.7306864427924946,
+          "family": "classic"
+        },
+        "dct-top64": {
+          "bps": 1.728,
+          "rmse_med_pct": 5.866840187858902,
+          "rmse_worst_pct": 14.380616770456514,
+          "maxerr_worst_pct": 44.96958759429104,
+          "family": "classic"
+        },
+        "cw8-delta1-bfp-e4-f4": {
+          "bps": 9.152,
+          "rmse_med_pct": 0.002876896963122404,
+          "rmse_worst_pct": 0.015827102982005244,
+          "maxerr_worst_pct": 0.1924096595820478,
+          "family": "constwidth"
+        },
+        "cw8-delta1-bfp-e4-f8": {
+          "bps": 8.656,
+          "rmse_med_pct": 0.0034444607431498896,
+          "rmse_worst_pct": 0.016848755673920728,
+          "maxerr_worst_pct": 0.18928470889489088,
+          "family": "constwidth"
+        },
+        "delta0123-zstd-8": {
+          "bps": 1.5501333333333334,
+          "rmse_med_pct": 0.10323146972367296,
+          "rmse_worst_pct": 0.1299522007964629,
+          "maxerr_worst_pct": 0.19607843137941267,
+          "family": "entropy"
+        },
+        "delta0123-zstd-12": {
+          "bps": 3.6353333333333335,
+          "rmse_med_pct": 0.006737245877801891,
+          "rmse_worst_pct": 0.029309538158345454,
+          "maxerr_worst_pct": 0.04851909725198588,
+          "family": "entropy"
+        },
+        "fluxcode-default": {
+          "bps": 3.1148,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "family": "flux"
+        },
+        "fluxcode-bin-nf0": {
+          "bps": 4.783066666666667,
+          "rmse_med_pct": 0.0006077618314756063,
+          "rmse_worst_pct": 0.0008161466838256241,
+          "maxerr_worst_pct": 0.001378271087322995,
+          "family": "flux"
+        }
+      },
+      "fluxcode_curve": [
+        {
+          "bps": 0.5816,
+          "rmse_med_pct": 0.5914816859730281,
+          "rmse_worst_pct": 1.0193743639425668,
+          "maxerr_worst_pct": 1.470155836518583,
+          "B": 6
+        },
+        {
+          "bps": 1.2849333333333333,
+          "rmse_med_pct": 0.1473309879245078,
+          "rmse_worst_pct": 0.24290407508845122,
+          "maxerr_worst_pct": 0.3528374007721616,
+          "B": 8
+        },
+        {
+          "bps": 2.1530666666666667,
+          "rmse_med_pct": 0.0383225117622384,
+          "rmse_worst_pct": 0.05894695032884823,
+          "maxerr_worst_pct": 0.088209350187692,
+          "B": 10
+        },
+        {
+          "bps": 3.085733333333333,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.01340783352338965,
+          "maxerr_worst_pct": 0.022052337546923,
+          "B": 12
+        },
+        {
+          "bps": 3.1148,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 14
+        },
+        {
+          "bps": 3.1148,
+          "rmse_med_pct": 0.0,
+          "rmse_worst_pct": 0.0,
+          "maxerr_worst_pct": 0.0,
+          "B": 16
+        }
+      ]
+    }
+  ]
+}
