@@ -41,7 +41,7 @@ from tslab.entropy.ratectl import (
     fixed_plan,
     window_plan,
 )
-from tslab.report.page import clean_outputs, save_fig, shell
+from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell
 
 OUT = Path(__file__).parent / "report"
 PER_KIND = PER_CHUNK // len(KINDS)  # seconds of each kind in a regime block group
@@ -138,39 +138,45 @@ def plot_blocks(results):
 def write_report(results, base):
     clean_outputs(OUT, ("rate.html", "rate-blocks.*"))
     chart = plot_blocks(results)
-    h = [f"""<p><a href="index.html">← codec comparison (index.html)</a></p>
-<p>Window = one block group: a minute of 60 blocks, 5 consecutive seconds of each of the 12 signal kinds, every block
-rescaled to [0, 1], standing in for one sensor passing through different regimes. {REPORT_MINUTES} groups
-(one per report seed); bits/sample are whole block groups, every byte counted. Errors are absolute, which equals % of each
-block's full scale; they are per block, summarized over all blocks (or a kind's blocks).
-<b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_rate_report.py</code>.</p>
-<h2 id="method">Method</h2>
+    intro = f"""<p>Each window is one block group spanning a minute (60 blocks): 5 consecutive seconds of each of the 12
+signal kinds, with every block rescaled to [0, 1] to simulate a single sensor moving through different operating
+regimes. Results are averaged over {REPORT_MINUTES} groups (one per report seed). Bits per sample are measured over full
+block groups with all framing overhead included, while errors are computed per block as absolute values (equivalent to a
+percentage of each block's full scale) and summarized across all blocks or by signal kind.</p>
+<p class='muted'><b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_rate_report.py</code>.</p>"""
+    h = [f"<h2 id='per-kind-chart'>Bits and error per signal kind</h2>{chart}"]
+    h.append("""<h2 id="method">Method</h2>
 <ul>
-<li><b>Pipeline per block:</b> q = round(x / Δ<sub>b</sub>) (the only lossy step, so |err| ≤ Δ<sub>b</sub>/2 is guaranteed),
-residual = diff(q, order) with order ∈ {0,1,2,3} chosen per block, then an entropy coder. Everything but the
-Rice/FLAC bit-packing is vectorized numpy.</li>
-<li><b>window:</b> one Δ for the whole block group, bisected so the block group averages 4 bits/sample including all headers.
-A block that would exceed 8 bits/sample on its own gets its own coarser step Δ·2<sup>e/8</sup> (1-byte e per block).
-With uniform quantization, one shared step is the MSE-optimal way to spend a total budget.</li>
-<li><b>fixed:</b> every block individually driven to 4 bits/sample coded on its own (same format), for comparison;
-the block group then costs what it costs.</li>
-<li><b>Framing:</b> the rice coder stores its block payloads back to back with a length each; zstd and deflate make one
-compressor call per block group (flags, then start values, then byte planes); flac is one stream per block group, one frame per block;
-<code>best: …</code> stores a coder id per block, then each coder's block group of the blocks it won.</li>
-<li><b>Coders:</b> <code>delta0123-rice</code> — FLAC-style partitioned Rice (2<sup>p</sup> partitions, own k each; order/p/k chosen by exact cost);
-<code>delta0123-zstd</code> (level 9) / <code>delta0123-deflate</code> — zigzag residuals, narrowest byte width, byte-stream-split, then compress;
-<code>flac</code> — real libFLAC level 8 (LPC up to order 12) on the same integers, frame bytes only;
-<code>best: …</code> — per block, keep the coder whose standalone encoding is smallest (+1 byte coder id);
-<code>0-order entropy</code> — zero-order entropy of the best residual + headers. A reference, not a codec and not a
-true floor: partitioned Rice, LPC and LZ matching adapt within a block and can beat it.</li>
-<li><b>delta0123-zstd-B:</b> no search — step = block range/(2<sup>B</sup>−1), order = argmin var(diff(q, k)),
-one zstd (level 3) call per block group; lowers B if a block's estimated size would exceed 8 bits/sample.
-<code>delta12-zstd-8</code> only considers orders 1 and 2 (performance option).</li>
-<li>All real coders are round-trip verified per block group.</li>
-</ul>"""]
-    h.append("<h2 id='summary'>Summary</h2><table><tr><th class='l'>coder</th><th class='l'>rate control</th><th>avg bits/sample</th>"
-             "<th>overall RMSE</th><th>median block RMSE</th><th>worst block RMSE</th><th>worst max |err|</th>"
-             "<th>capped blocks</th><th>encode µs/block</th></tr>")
+<li><b>Per-block pipeline.</b> Each block is uniformly quantized via q = round(x / Δ<sub>b</sub>)—the only lossy step,
+guaranteeing |err| ≤ Δ<sub>b</sub>/2—then differenced with order ∈ {0, 1, 2, 3} chosen per block and passed to an
+entropy coder. Everything except the Rice and FLAC bit-packing is vectorized NumPy.</li>
+<li><b>Window rate control.</b> A single shared step Δ is bisected across the entire block group so the group averages
+4 bits/sample including headers. Any block that would exceed 8 bits/sample on its own receives a coarser step
+Δ·2<sup>e/8</sup> (stored as a 1-byte exponent <i>e</i> per block). Under uniform quantization, a shared step is the
+MSE-optimal way to allocate a fixed total bit budget.</li>
+<li><b>Fixed rate control.</b> For comparison, every block is independently driven to 4 bits/sample in isolation using
+the same format, and the final block group takes whatever total size results.</li>
+<li><b>Framing.</b> The Rice coder concatenates length-prefixed block payloads. Both zstd and deflate make a single
+compressor call per block group over flags, starting values, and byte planes. FLAC writes one stream per block group
+with one frame per block. <code>best: …</code> stores a 1-byte coder ID per block followed by each coder's sub-group of
+the blocks it won.</li>
+<li><b>Coders.</b> <code>delta0123-rice</code> uses FLAC-style partitioned Rice coding (2<sup>p</sup> partitions, each
+with its own parameter <i>k</i>, choosing order, <i>p</i>, and <i>k</i> by exact bit cost). <code>delta0123-zstd</code>
+(level 9) and <code>delta0123-deflate</code> zigzag residuals into the narrowest byte width, apply byte-stream-split,
+and compress. <code>flac</code> runs libFLAC level 8 (LPC up to order 12) on the same integers, counting frame bytes
+only. <code>best: …</code> picks the smallest standalone coder per block plus a 1-byte coder ID.
+<code>0-order entropy</code> computes the zero-order entropy of the best residual plus headers; it is a reference rather
+than a real codec or lower bound, since partitioned Rice, LPC, and LZ matching adapt locally within a block and can beat
+it.</li>
+<li><b>One-shot codecs (<code>delta0123-zstd-B</code>).</b> Rather than searching for Δ, these set the step directly to
+block range / (2<sup>B</sup> − 1), pick the difference order minimizing var(diff(q, k)), and make one zstd level-3 call
+per block group, lowering B only if a block's estimated size would exceed 8 bits/sample. <code>delta12-zstd-8</code>
+restricts the order choice to 1 and 2 for speed.</li>
+<li>Every real coder is round-trip verified on every block group.</li>
+</ul>""")
+    summary_tbl = ["<table><tr><th class='l'>coder</th><th class='l'>rate control</th><th>avg bits/sample</th>"
+                   "<th>overall RMSE</th><th>median block RMSE</th><th>worst block RMSE</th><th>worst max |err|</th>"
+                   "<th>capped blocks</th><th>encode µs/block</th></tr>"]
     def overall(rows):
         return np.sqrt(np.mean([x["rmse"] ** 2 for x in rows]))
 
@@ -180,42 +186,43 @@ one zstd (level 3) call per block group; lowers B if a block's estimated size wo
         rows = r["rows"]
         cls = ' class="best"' if overall(rows) == best else ""
         capped = sum(1 for x in rows if x["e"]) if label in ("window", "one-shot") else "—"
-        h.append(f"<tr><td><code>{cname}</code></td><td class='l'>{label}</td><td>{r['bps']:.3f}</td><td{cls}>{100 * overall(rows):.4f}%</td>"
-                 f"<td>{100 * np.median([x['rmse'] for x in rows]):.4f}%</td>"
-                 f"<td>{100 * max(x['rmse'] for x in rows):.3f}%</td>"
-                 f"<td>{100 * max(x['maxabs'] for x in rows):.3f}%</td><td>{capped}</td>"
-                 f"<td>{r['us_per_block']:.0f}</td></tr>")
+        summary_tbl.append(f"<tr><td><code>{cname}</code></td><td class='l'>{label}</td><td>{r['bps']:.3f}</td><td{cls}>{100 * overall(rows):.4f}%</td>"
+                           f"<td>{100 * np.median([x['rmse'] for x in rows]):.4f}%</td>"
+                           f"<td>{100 * max(x['rmse'] for x in rows):.3f}%</td>"
+                           f"<td>{100 * max(x['maxabs'] for x in rows):.3f}%</td><td>{capped}</td>"
+                           f"<td>{r['us_per_block']:.0f}</td></tr>")
     br = base["rows"]
-    h.append(f"<tr><td class='muted'><code>quant8-delta1-deflate</code> (earlier codec)</td><td class='l muted'>none</td><td>{base['bps']:.3f}</td>"
-             f"<td>{100 * overall(br):.4f}%</td>"
-             f"<td>{100 * np.median([b['rmse'] for b in br]):.4f}%</td>"
-             f"<td>{100 * max(b['rmse'] for b in br):.3f}%</td>"
-             f"<td>{100 * max(b['maxabs'] for b in br):.3f}%</td><td>—</td><td>—</td></tr></table>"
-             "<p class='muted'>One-shot rows include each block's min and max, stored in the block group. "
-             "Encode time is the full rate-control search for window/fixed rows (Python, single thread), per block; "
-             "one-shot is a single pass. Every block spans [0, 1], so one-shot's per-block step "
-             "and the shared window step mean the same thing.</p>")
-    h.append(f"<h2 id='per-kind-chart'>Bits and error per signal kind</h2>{chart}")
+    summary_tbl.append(f"<tr><td class='muted'><code>quant8-delta1-deflate</code> (earlier codec)</td><td class='l muted'>none</td><td>{base['bps']:.3f}</td>"
+                       f"<td>{100 * overall(br):.4f}%</td>"
+                       f"<td>{100 * np.median([b['rmse'] for b in br]):.4f}%</td>"
+                       f"<td>{100 * max(b['rmse'] for b in br):.3f}%</td>"
+                       f"<td>{100 * max(b['maxabs'] for b in br):.3f}%</td><td>—</td><td>—</td></tr></table>"
+                       "<p class='muted'>One-shot rows include the per-block min and max stored in the block group. "
+                       "Encode time covers the full single-threaded Python rate-control search per block for window "
+                       "and fixed rows, whereas one-shot runs in a single pass. Because every block spans [0, 1], "
+                       "one-shot's per-block step and the shared window step are directly comparable.</p>")
+    h.append("<h2 id='summary'>Summary</h2>" + collapsible_table(f"Show summary table ({len(results) + 1} coders)", "".join(summary_tbl)))
 
     for key in PER_KIND_TABLES:
         r = results[key]
-        h.append(f"<h2 id='{sect_id(key)}'>Per signal kind: {key[0]} / {key[1]}</h2>"
-                 + (f"<p>Block group Δ = {', '.join(f'{d:.3g}' for d in r['delta'])}</p>" if r["delta"][0] else "")
-                 + f"<p class='muted'>Median over the kind's {PER_KIND * REPORT_MINUTES} blocks; bits/sample is the block "
-                 "coded on its own (inside the block group it only has a share of the total).</p>"
-                 "<table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th>"
-                 "<th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>")
+        ktbl = ["<table><tr><th>signal</th><th class='l'>order (most blocks)</th><th>step</th><th>bits/sample</th><th>RMSE</th>"
+                "<th>mean err</th><th>max err</th><th>min err</th><th>max |err|</th></tr>"]
         for kind, rows in kind_rows(r["rows"]).items():
             def med(k, rows=rows):
                 return np.median([x[k] for x in rows])
             common = Counter(x["order"] for x in rows).most_common(1)[0][0]
-            h.append(f"<tr><td>{kind}</td><td class='l'>{common}</td><td>{med('step'):.3g}</td><td>{med('bps'):.2f}</td>"
-                     f"<td>{100 * med('rmse'):.4f}%</td><td>{100 * med('mean'):+.4f}%</td><td>{100 * med('max'):+.4f}%</td>"
-                     f"<td>{100 * med('min'):+.4f}%</td><td>{100 * med('maxabs'):.4f}%</td></tr>")
-        h.append("</table>")
-    toc = [("method", "Method", []), ("summary", "Summary", []), ("per-kind-chart", "Bits and error per signal kind", [])] + [
+            ktbl.append(f"<tr><td>{kind}</td><td class='l'>{common}</td><td>{med('step'):.3g}</td><td>{med('bps'):.2f}</td>"
+                        f"<td>{100 * med('rmse'):.4f}%</td><td>{100 * med('mean'):+.4f}%</td><td>{100 * med('max'):+.4f}%</td>"
+                        f"<td>{100 * med('min'):+.4f}%</td><td>{100 * med('maxabs'):.4f}%</td></tr>")
+        ktbl.append("</table>")
+        h.append(f"<h2 id='{sect_id(key)}'>Per signal kind: {key[0]} / {key[1]}</h2>"
+                 + (f"<p>Block group Δ = {', '.join(f'{d:.3g}' for d in r['delta'])}</p>" if r["delta"][0] else "")
+                 + f"<p class='muted'>Medians are across the {PER_KIND * REPORT_MINUTES} blocks of each signal kind. "
+                 "Bits/sample reflects each block encoded standalone (inside a block group it only contributes a share of the group total).</p>"
+                 + collapsible_table(f"Show {key[0]} / {key[1]} table ({len(KINDS)} signal kinds)", "".join(ktbl)))
+    toc = [("per-kind-chart", "Bits and error per signal kind", []), ("method", "Method", []), ("summary", "Summary", [])] + [
         (sect_id(k), f"Per signal kind: {k[0]} / {k[1]}", []) for k in PER_KIND_TABLES]
-    (OUT / "rate.html").write_text(shell("Rate control: quantize → predict → entropy code", "", toc, "\n".join(h)))
+    (OUT / "rate.html").write_text(shell("Rate control: quantize → predict → entropy code", intro, toc, "\n".join(h), active="rate"))
     print(f"wrote {OUT / 'rate.html'}")
 
 

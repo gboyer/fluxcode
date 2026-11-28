@@ -49,7 +49,7 @@ from tslab.common.historian import TAG_INFO, TAGS, swinging_door
 from tslab.prune import baselines as B
 from tslab.prune import rules as R
 from tslab.prune.signals import EXTRA_INFO, GUARD, MAX_ERROR, NOISY, OFFSET, SIGNALS, blocks, pyrometer, scans
-from tslab.report.page import clean_outputs, save_fig, shell
+from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell
 
 OUT = Path(__file__).parent / "report"
 PREFIX = "prune-"
@@ -586,35 +586,35 @@ def theta_section(tuning):
     d = {label: [k for sig in out[label] for k in out[label][sig]["k"]] for label in TUNING["theta"]}
     over = 100 * np.mean(np.array(d["default"]) > CAP)
     body = (
-        "<p><code>error_per_point</code> (θ) is an exchange rate: prune adds points in order of how much they lower "
-        "the time-weighted RMSE and stops when a point no longer buys θ of it, the RMSE relative to the block's range "
-        "and read above the block's own white noise (the <a href='#noise'>noise floor</a>). Choose it first, as the "
-        "RMSE you would accept at some number of points divided by that number: θ = Y / X reads \"Y at X points\". "
-        "X is not a target: a block that needs fewer stops sooner, and a harder one goes on at a worse error. "
-        "The default is 0.1% of the range at a tenth of the input's points, θ = 0.001 / (n / 10): 2.8·10⁻⁶ for an "
-        "hour of 1 s scans. <code>max_points</code> is a hard cap on top; it drops the rmse pass's least "
-        "significant points. Three settings:</p><ul>"
-        "<li><b>default</b>: no cap (the same as θ = 2.8·10⁻⁶ on these blocks);</li>"
-        f"<li><b>default, max_points {CAP}</b>: a cap at a tenth of the scans;</li>"
-        f"<li><b>coarse</b>: θ = {COARSE:g}, half the range at {CAP} points or 5% at 36.</li></ul>"
-        "<p>One hour of eight signals (day 0, 09:00; the pyrometer's busiest hour, of which minutes 10-30 are "
-        "shown); each panel gives the points kept in the hour, whether the cap bound, the RMSE over the hour's "
-        "range and the largest error of any scan, in the signal's units.</p>"
+        "<p><code>error_per_point</code> (θ) acts as an exchange rate between error and point count. Prune adds points "
+        "in order of how much they reduce the time-weighted RMSE and stops once an additional point no longer saves θ of "
+        "that RMSE (measured relative to the block's range and above its white-noise floor; see "
+        "<a href='#noise'>the noise floor</a>). Pick θ first by taking the RMSE you would accept at some reference "
+        "point count and dividing by that count, so θ = Y / X reads as \"Y error at X points.\" Note that X is not a "
+        "fixed target: simpler blocks stop earlier, while busier blocks keep more points at a higher error. The default "
+        "is 0.1% of the range at a tenth of the input length, θ = 0.001 / (n / 10), which is 2.8·10⁻⁶ for an hour of "
+        "1 s scans. Adding <code>max_points</code> puts a hard ceiling on top by dropping the least significant points "
+        "from the RMSE pass. We compare three settings below:</p><ul>"
+        "<li><b>default</b> with no cap (equivalent to θ = 2.8·10⁻⁶ on these 1 h blocks);</li>"
+        f"<li><b>default, max_points {CAP}</b>, capping the output at a tenth of the 1 s scans;</li>"
+        f"<li><b>coarse</b>, with θ = {COARSE:g} (half the range at {CAP} points, or 5% at 36 points).</li></ul>"
+        "<p>The figure shows one hour of eight signals (day 0 at 09:00, and minutes 10–30 of the pyrometer's busiest "
+        "hour). Each panel reports the number of points kept in the hour, whether the cap bound, the RMSE as a "
+        "percentage of the hour's range, and the worst single-scan error in the signal's units.</p>"
         + plot_tuning("theta")
-        + f"<p>All {n} signals (<a href='#signals'>described below</a>), 1 h blocks of all {DAYS} days: mean points "
-        "per hour (the most in one block) and the share of blocks where the cap bound; below, the mean RMSE over the "
-        "block's range · the largest error of any block, in the signal's units. The default keeps "
-        f"{np.mean(d['default']):.0f} points per hour on average (median {np.median(d['default']):.0f}), and "
-        f"{over:.0f}% of the blocks want more than {CAP}: the noisy and fast-moving signals, which the cap holds at "
-        f"{CAP} for a larger RMSE. The coarse θ keeps {np.mean(d['coarse']):.0f} on average and lets the RMSE grow "
-        "to several per cent where a signal is busy, which mostly costs the largest error: "
-        "<a href='#max-error'>max_error</a> bounds that.</p>"
+        + f"<p>The table covers all {n} signals (<a href='#signals'>described below</a>) across 1 h blocks over all "
+        f"{DAYS} days, listing mean points per hour (with the worst block's max), the fraction of blocks where the cap "
+        "bound, and underneath, the mean RMSE over the block's range and the largest error across any block in signal "
+        f"units. The default keeps an average of {np.mean(d['default']):.0f} points per hour (median "
+        f"{np.median(d['default']):.0f}), and {over:.0f}% of blocks want more than {CAP} points—mostly noisy or "
+        f"fast-moving signals that the cap holds to {CAP} at the cost of higher RMSE. The coarse θ averages "
+        f"{np.mean(d['coarse']):.0f} points per hour and lets RMSE climb to several percent on busy signals, which "
+        "mainly shows up in the worst-case error (bounded by <a href='#max-error'>max_error</a>).</p>"
         + tuning_table(out, "theta")
-        + "<p>The pyrometer against its noise-free curve: points per hour in hours with spikes and in quiet ones, "
-        "points on a spike per hour, how far the kept lines' top is below each spike's (°C, mean and worst), and the "
-        "RMSE against the curve under the noise (°C). A time-weighted RMSE counts a narrow spike as cheap (a 600 °C "
-        "spike 4 s wide adds about 30 °C to an hour's RMSE), so the coarse θ cuts its tops; the default keeps "
-        "them.</p>"
+        + "<p>Below is the pyrometer scored against its underlying noise-free curve: points per hour in busy hours "
+        "(with spikes) and quiet hours, points landing on spikes per hour, mean and worst peak shortfall (°C), and RMSE "
+        "against the true curve (°C). Because time-weighted RMSE dilutes brief spikes (a 4 s spike of 600 °C adds only "
+        "about 30 °C to an hour's RMSE), the coarse θ clips their peaks, whereas the default preserves them.</p>"
         + pyrometer_table({label: pyro[label] for label in TUNING["theta"]}))
     return body
 
@@ -627,34 +627,36 @@ def max_error_section(tuning):
              if any(out[capped][sig]["capped"])}
     lo, hi = min(ratio, key=ratio.get), max(ratio, key=ratio.get)
     body = (
-        "<p><code>max_error</code> bounds the largest distance of any scan from the kept lines, in the signal's own "
-        "units. It only adds points: after the rmse pass, every line that strays further is split (the "
-        "<a href='#guards'>max_error pass</a>). It covers what an RMSE averages away: a narrow spike, a glitch, a "
-        "quiet block whose range is its own dither. Choose it against the sensor's noise σ (<code>Pruned.noise</code> "
-        "estimates it): lines through noisy scans can't stay closer than a few σ without keeping most of them. On "
-        f"white noise at θ = {COARSE:g}, max_error = "
+        "<p><code>max_error</code> puts an upper bound on how far any scan can deviate from the reconstructed line, in "
+        "the signal's own units. It only adds points: after the RMSE pass finishes, any segment that strays beyond the "
+        "bound is split (see <a href='#guards'>the max_error pass</a>). This catches features that RMSE averages away, "
+        "such as narrow spikes, glitches, or quiet blocks whose range is just dither. Set it relative to the sensor's "
+        "noise σ (estimated by <code>Pruned.noise</code>), because lines through noisy scans cannot stay within a few σ "
+        f"without retaining most of the data. On white noise at θ = {COARSE:g}, max_error = "
         + ", ".join(f"{m}σ keeps {w[m]:.0f}" for m in WHITE_SIGMAS)
-        + " points per hour of 3,600; below σ prune warns. With <code>max_points</code> as well, the cap goes to "
-        "max_error first and the rmse pass gets the rest; if max_error can't be met within the cap it is relaxed to "
-        "about the tightest bound the cap allows (<code>max_error_met</code> false). Four settings on top of the "
-        "coarse θ, with a max_error per signal (columns σ, loose and fine below):</p><ul>"
+        + " points per hour out of 3,600, and prune emits a warning if max_error is set below σ. When combined with "
+        "<code>max_points</code>, the budget goes to max_error first and the RMSE pass uses whatever remains; if "
+        "max_error cannot be met within the cap, it relaxes to roughly the tightest bound the cap permits (setting "
+        "<code>max_error_met</code> to false). Below we test four settings on top of the coarse θ using per-signal "
+        "tolerances (shown in the σ, loose, and fine columns):</p><ul>"
         f"<li><b>coarse</b>: θ = {COARSE:g} alone;</li>"
-        "<li><b>loose max_error</b>: about what an operator would notice;</li>"
-        "<li><b>fine max_error</b>: about twice the sensor's noise, or the resolution that matters for a signal "
-        "without noise;</li>"
-        f"<li><b>fine max_error, max_points {CAP}</b>: the same with the cap as a safety net.</li></ul>"
+        "<li><b>loose max_error</b>: roughly the threshold an operator would notice;</li>"
+        "<li><b>fine max_error</b>: around twice the sensor's noise, or the meaningful resolution for noise-free "
+        "signals;</li>"
+        f"<li><b>fine max_error, max_points {CAP}</b>: the same fine bound with a {CAP}-point safety cap.</li></ul>"
         + plot_tuning("max-error")
-        + "<p>All signals, 1 h blocks of all days, as above; σ is the median noise estimate (0 where the times have "
-        "no cadence or the signal no noise). A loose max_error adds points only where the coarse lines missed "
-        "something: the pyrometer's spikes, the furnace's dropouts, the grid frequency's swings. A fine one, at about "
-        "2σ, is expensive wherever there is noise: hundreds of points per hour that mostly trace it (temperature "
-        f"{np.mean(out[fine]['temperature']['k']):.0f}, white noise {np.mean(out[fine]['white-noise']['k']):.0f}; "
-        "the pyrometer's quiet hours, below, go from about ten to over a hundred). The cap holds them at "
-        f"{CAP} by relaxing the bound, in the worst block to {ratio[lo]:.2f}× the one asked ({lo}) to "
-        f"{ratio[hi]:.2f}× ({hi}). At 3σ or more the same signals need far fewer.</p>"
+        + "<p>Results across all signals and 1 h blocks for all days, using the same layout as above; σ is the median "
+        "noise estimate (0 where the signal has no noise or no regular cadence). A loose max_error only adds points "
+        "where the coarse approximation missed real features, such as pyrometer spikes, furnace dropouts, and grid "
+        "frequency swings. A fine bound around 2σ gets expensive on noisy signals, spending hundreds of points per hour "
+        f"mostly tracing noise (temperature averages {np.mean(out[fine]['temperature']['k']):.0f}, white noise "
+        f"{np.mean(out[fine]['white-noise']['k']):.0f}, and the pyrometer's quiet hours jump from around ten points to "
+        f"over a hundred). The {CAP}-point cap reins them in by relaxing the bound—in the worst block, from "
+        f"{ratio[lo]:.2f}× the target ({lo}) up to {ratio[hi]:.2f}× ({hi}). At 3σ or above, those same signals need "
+        "far fewer points.</p>"
         + tuning_table(out, "max-error", lambda sig: [f"{np.median(sigma[sig]):.2g}", f"{MAX_ERROR[sig][0]:g}",
                                                        f"{MAX_ERROR[sig][1]:g}"])
-        + "<p>The pyrometer, as above.</p>"
+        + "<p>Pyrometer metrics for the same four settings:</p>"
         + pyrometer_table({label: pyro[label] for label in TUNING["max-error"]}))
     return body
 
@@ -699,55 +701,59 @@ def noise_section(noise):
                     + [f"{np.mean(d[off]):.0f} → {np.mean(d[on]):.0f}<br><span class='muted'>"
                        f"{pct(np.mean(d['e_' + off]))} → {pct(np.mean(d['e_' + on]))}</span>"
                        for off, on in (("off", "on"), ("doff", "don"))])
-    body = ("<p>Lines through noisy samples leave about the noise's σ against them however many points are kept, until "
-            "nearly all are, so the rmse pass on a quiet, noisy block keeps buying points that trace the noise: its "
-            "range is a few σ, and relative to that the noise looks like signal. With the noise floor (the default) it "
-            "stops on √(e² − σ²) instead of e, an estimate of the error against the signal under the noise. σ is "
-            "estimated in one O(n) pass: each scan's distance from the chord of its two neighbours, divided by "
-            "√(1 + w² + (1 − w)²) (w its position between them in time), median, × 1.4826 "
-            "(<code>fluxprune/_noise.py</code>). Nothing is smoothed and the ranking is the same; only where it "
-            "stops moves. Per signal, 1 h blocks of all days: the median σ over the range, and at θ = 0.0015 (the old "
-            "default) and at the default (θ = 0.001 / (n / 10): 2.8e-6 for 3,600 scans) the points per hour without → "
-            "with the floor and, below, the mean RMSE over the range (against the scans).</p>"
+    body = ("<p>Straight lines through noisy samples always leave roughly σ of residual error until nearly every point "
+            "is kept. On a quiet, noisy block whose range is only a few σ, that noise looks like real signal relative "
+            "to the range, so the RMSE pass keeps spending points just to trace it. With the noise floor enabled (the "
+            "default), the stopping criterion uses √(e² − σ²) instead of e—an estimate of the error against the true "
+            "signal beneath the noise. σ is estimated in a single O(n) pass by taking each scan's distance from the "
+            "chord connecting its two neighbors, normalizing by √(1 + w² + (1 − w)²) (where w is its relative time "
+            "position between them), and scaling the median by 1.4826 (<code>fluxprune/_noise.py</code>). No smoothing "
+            "is applied and the point ranking stays unchanged; only the stopping point moves. The table shows, across "
+            "1 h blocks of all days, the median σ relative to block range, plus the points per hour (without → with "
+            "the floor) and mean RMSE over range against the scans underneath, at both θ = 0.0015 (the old default) "
+            "and the current default (θ = 0.001 / (n / 10), or 2.8e-6 for 3,600 scans).</p>"
             + table(["signal", "σ / range", "θ = 0.0015", "default"], rows))
     rows = [[tag, f"{np.mean(d['n']):.0f}", f"{100 * np.mean(np.array(d['sigma']) > 0):.0f}%",
              f"{np.mean(d['k']):.0f} · {pct(np.mean(d['e']))}", f"{np.mean(d['k_off']):.0f} · {pct(np.mean(d['e_off']))}",
              pct(np.mean(d["e_in"]))] for tag, d in per["archives"].items()]
-    body += ("<h3>Archives</h3><p>Every noise estimate assumes the times were chosen independently of the values; an "
-             "archive's weren't (swinging door or a deadband keeps a point because of its value), and on a smooth tag "
-             "its points pass tests of white noise as well as raw scans do, with σ read at about the CompDev. So the "
-             "floor runs only on a cadence: at least 90% of the intervals one scan (fluxcode's own test, "
-             "<code>fluxcode._noise.cadence</code>). The tags' swinging-door archives in 1 h blocks of all days: "
-             "points per hour in, the share of blocks with a floor, and the default prune's points per hour · RMSE "
-             "over the range against the 1 s scans, as is and with <code>noise_floor=False</code>, and the "
-             "archive's own RMSE (the tank level and the valve archive 2-5 points per hour: nothing to prune).</p>"
+    body += ("<h3>Archives</h3><p>Any noise estimator assumes sample times are independent of sample values, which is "
+             "false for historian archives where swinging door or a deadband retains points specifically because of "
+             "their values. Even on a smooth tag, archived points pass white-noise tests just like raw scans and yield "
+             "an apparent σ near CompDev. To prevent false triggers, the noise floor only runs when a block has a "
+             "regular cadence—at least 90% of intervals equal to one scan, using fluxcode's "
+             "<code>fluxcode._noise.cadence</code> check. The table evaluates the tags' swinging-door archives over 1 h "
+             "blocks across all days, showing archived points/h, the share of blocks activating the floor, and default "
+             "prune points/h and RMSE over range against the 1 s scans (with and without <code>noise_floor</code>) "
+             "alongside the archive's own RMSE. Tank level and valve are omitted because they only archive 2–5 points "
+             "per hour.</p>"
              + table(["tag", "archived/h", "blocks with a floor", "default", "noise_floor=False", "the archive"], rows))
     zero = per["white-noise"]["zero"]
-    body += (f"<p>Against the signal under the noise instead: on white noise (σ = 1, {len(zero[True])} hours) the kept "
-             f"lines' RMSE from zero is {np.mean(zero[True]):.2f}σ on average with the floor and "
-             f"{np.mean(zero[False]):.2f}σ without; in the worst hour {np.max(zero[True]):.2f}σ and "
-             f"{np.max(zero[False]):.2f}σ (with few points left, the lines from the required minimum and maximum "
-             "lean further).</p>")
+    body += (f"<p>Measuring against the underlying noise-free signal instead: on pure white noise (σ = 1 across "
+             f"{len(zero[True])} hours), the reconstructed lines average {np.mean(zero[True]):.2f}σ RMSE from zero "
+             f"with the floor versus {np.mean(zero[False]):.2f}σ without it, and {np.max(zero[True]):.2f}σ versus "
+             f"{np.max(zero[False]):.2f}σ in the worst hour (with very few points kept, lines anchored at the required "
+             "minimum and maximum lean slightly further).</p>")
     rows = [[name] + [f"{sweep_k[name, False][j]:.0f} → {sweep_k[name, True][j]:.0f}"
                       for j in range(len(NOISE_THETAS))] for name in NOISE_SHOWN]
     mean = [[np.mean([sweep_k[n, f][j] for n in SIGNALS]) for j in range(len(NOISE_THETAS))] for f in (False, True)]
     rows.append([f"<b>mean of the {len(SIGNALS)}</b>"] + [f"<b>{mean[0][j]:.0f} → {mean[1][j]:.0f}</b>"
                                                          for j in range(len(NOISE_THETAS))])
-    body += ("<h3>Lower θ</h3><p>Points per hour (day 0) without → with the floor as θ falls. Without it a lower θ "
-             "buys noise, so the count follows the noise; with it the noise-dominated signals level off at what "
-             "their content needs, and only signals with structure at finer scales keep more.</p>"
+    body += ("<h3>Lower θ</h3><p>Points per hour on day 0 (without → with the floor) as θ decreases. Without the "
+             "floor, tightening θ simply buys noise, so counts grow with the noise level. With the floor enabled, "
+             "noise-dominated signals level off once their real structure is captured, and only signals with fine "
+             "detail keep adding points.</p>"
              + table(["signal", *[f"θ = {th:g}" for th in NOISE_THETAS]], rows))
     n_spikes = len(next(iter(pyro.values()))["miss"])
-    body += ("<h3>A pyrometer</h3><p>The case that asked for it: a pyrometer at a furnace's exit conveyor reads its "
-             "noisy floor most of the time and a narrow spike (a / (b + t²), about 10 s wide) as each hot item passes, "
-             f"{n_spikes:,} spikes in {DAYS} days, with quiet hours between production runs "
-             "(<code>tslab/prune/signals.py</code>, <code>pyrometer</code>). Against its noise-free curve: points per "
-             "hour in hours with spikes and in quiet ones, points on a spike (3σ above the floor) per hour, how far the "
-             "kept lines' top is below each spike's (°C, mean and worst), and the RMSE against the curve under the "
-             "noise (°C) in busy and quiet hours. The floor takes the quiet hours from tracing noise to a handful of "
-             "points; it changes nothing on the spikes, which a time-weighted RMSE counts as cheap: a 600 °C spike "
-             "4 s wide adds only about 30 °C to an hour's RMSE. A lower θ (the default) or a <code>max_error</code> "
-             "of a few σ keeps them.</p>"
+    body += ("<h3>A pyrometer</h3><p>This signal motivated the noise floor: a pyrometer on a furnace exit conveyor "
+             "sits on a noisy baseline most of the time, punctuated by narrow spikes (a / (b + t²), roughly 10 s wide) "
+             f"as hot items pass—{n_spikes:,} spikes across {DAYS} days, separated by quiet hours between runs "
+             "(<code>pyrometer</code> in <code>tslab/prune/signals.py</code>). Scored against its noise-free curve, "
+             "the table lists points per hour in busy and quiet hours, points landing on spikes (more than 3σ above "
+             "baseline), mean and worst peak shortfall (°C), and RMSE against the true curve (°C). The floor cuts "
+             "quiet hours from tracing noise down to a handful of points. It does not change spike capture on its own, "
+             "since time-weighted RMSE weights narrow spikes lightly (a 4 s spike of 600 °C adds only ~30 °C to an "
+             "hour's RMSE); preserving spikes comes from using a tighter θ (like the default) or setting "
+             "<code>max_error</code> to a few σ.</p>"
              + pyrometer_table(pyro) + plot_pyrometer())
     return body
 
@@ -850,15 +856,16 @@ def max_error_pass_section(passes):
     rows.append(["<b>all</b>"] + [f"<b>{d['k'].mean():.0f} · {pct(d['rmse'].mean())}</b><br><span class='muted'>"
                                   f"{1e3 * d['ms'].mean():.0f} µs per block, at most {1e3 * d['ms'].max():,.0f} µs</span>"
                                   for d in f.values()])
-    return ("<h3>The max_error pass</h3><p>How <code>max_error</code> is met. Each line between the rmse pass's points "
-            "that strays further than max_error is split from its left end. Every scan after an anchor bounds the slope of a line "
-            "from the anchor that passes within max_error of it, from below and above. <i>Swinging door's rule</i> ends "
-            "the line at the first scan its chord can't reach. <i>Farthest reach</i>, fluxprune's, scans on while the "
-            "bounds still overlap (some line could still pass every scan so far), notes the last scan whose own chord "
-            "satisfies them, and when they cross makes that scan the next anchor: with noise, a scan after one the "
-            "chord can't reach is often reachable again. <i>Fewest points</i> is the exact minimum (dynamic "
-            "programming over every feasible chord). Cells: points per hour · RMSE over the span; the rmse pass's "
-            "points the same in each column; below, the max_error pass's time per 1 h block.</p>"
+    return ("<h3>The max_error pass</h3><p>After the RMSE pass, any segment that strays beyond <code>max_error</code> "
+            "is split starting from its left endpoint. Each subsequent scan constrains the upper and lower slope of a "
+            "line from the current anchor that passes within <code>max_error</code> of that scan. <i>Swinging door's "
+            "rule</i> terminates the segment at the first scan its chord cannot reach. <i>Farthest reach</i> (used by "
+            "fluxprune) keeps scanning as long as the upper and lower slope bounds still overlap, tracking the farthest "
+            "scan whose chord satisfies them; once the bounds cross, it makes that scan the next anchor. On noisy data, "
+            "a later scan is often reachable even after an earlier one was not. <i>Fewest points</i> finds the exact "
+            "minimum via dynamic programming over all feasible chords. Cells show points per hour and RMSE over the "
+            "signal's span (starting from the same RMSE-pass points in every column), with per-block runtime for the "
+            "max_error pass in the summary row.</p>"
             + table(["signal", *f.keys()], rows))
 
 
@@ -985,13 +992,13 @@ def pct(v, digits=2):
     return f"{100 * v:.{digits}g}%"
 
 
-def table(head, rows):
-    """Cells are HTML strings, or (class, HTML) pairs."""
+def table(head, rows, title=None):
+    """Cells are HTML strings, or (class, HTML) pairs. Wrapped in a closed-by-default collapsible table."""
     def td(c):
         return f"<td class='{c[0]}'>{c[1]}</td>" if isinstance(c, tuple) else f"<td>{c}</td>"
     th = "".join(f"<th>{html.escape(h)}</th>" for h in head)
     body = "".join("<tr>" + "".join(td(c) for c in row) + "</tr>" for row in rows)
-    return f"<table><tr>{th}</tr>{body}</table>"
+    return collapsible_table(title or f"Show data table ({len(rows)} rows)", f"<table><tr>{th}</tr>{body}</table>")
 
 
 def shade(ratio):
@@ -1003,9 +1010,9 @@ def shade(ratio):
 PARTS = [
     ("", "", "", ["tuning", "max-error", "signals", "noise"]),
     ("how", "How it works, and how it was chosen",
-     "<p>The studies behind the defaults: how good the ranking is, which stopping rule, what errors are relative to, "
-     "how max_error is met, refit, archives as input, and speed. Some use rules and settings that are only "
-     "experiments (<code>tslab/prune/rules.py</code>).</p>",
+     "<p>These sections cover the studies behind the defaults: ranking quality, stopping rules, error scaling, "
+     "<code>max_error</code> enforcement, refitting, archive inputs, and runtime. Several experiments use prototype "
+     "rules from <code>tslab/prune/rules.py</code>.</p>",
      ["quality", "curves", "rules", "scale", "guards", "refit", "intervals", "archives", "speed"]),
     ("", "", "", ["findings"]),
 ]
@@ -1021,38 +1028,40 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
         secs[anchor] = (title, body)
 
     n_blocks = len(items)
-    intro = ("<p><b>fluxprune</b> keeps a subset of a series' points, read as straight lines between them: the first and "
-             "last points (to stitch blocks), the minimum and maximum, then whichever points lower the time-weighted "
-             "RMSE of the lines most, until a point no longer buys enough. <code>prune(times, values)</code> works with "
-             "its defaults; three settings change what it keeps:</p><ul>"
-             "<li><code>error_per_point</code> (θ): the exchange rate between error and points, and the one to choose "
-             "first: the RMSE relative to the block's range you would accept at some number of points, divided by that "
-             "number. The default is 0.1% at a tenth of the input's points.</li>"
-             "<li><code>max_points</code>: a hard cap.</li>"
-             "<li><code>max_error</code>: the largest error of any scan, in the signal's units. It only adds "
-             "points.</li></ul>"
-             "<p>The first two sections show them on each signal; the rest is how it works and how it was chosen.</p>"
-             f"<p class='muted'>Data: {len(SIGNALS + OFFSET + NOISY)} synthetic signals × {DAYS} days of 1 s scans, cut "
-             "into 1 h storage blocks of 3,600 points (<code>tslab/prune/signals.py</code>; the studies of ranking and "
-             f"stopping rules use the first {len(names)}). Relative errors are relative to each block's range "
+    intro = ("<p><b>fluxprune</b> selects a subset of points from a time series to be read back as piecewise-linear "
+             "segments. It always keeps the first and last points (so adjacent blocks stitch cleanly) along with the "
+             "minimum and maximum, then adds whichever points reduce the time-weighted RMSE most until another point "
+             "no longer buys enough improvement. Calling <code>prune(times, values)</code> works out of the box with "
+             "its defaults, and three parameters control what gets kept:</p><ul>"
+             "<li><code>error_per_point</code> (θ) sets the exchange rate between error and point count—choose it "
+             "first by dividing the relative RMSE you would accept at some reference point count by that count. The "
+             "default is 0.1% of the block range at a tenth of the input points.</li>"
+             "<li><code>max_points</code> enforces a hard upper limit on the number of kept points.</li>"
+             "<li><code>max_error</code> bounds the worst single-scan error in the signal's own units, adding points "
+             "wherever needed.</li></ul>"
+             "<p>The first two sections show how these settings behave across signals; the rest of the report walks "
+             "through the algorithm and the experiments behind each design choice.</p>"
+             f"<p class='muted'>Dataset: {len(SIGNALS + OFFSET + NOISY)} synthetic signals × {DAYS} days of 1 s scans "
+             "split into 1 h blocks of 3,600 points (<code>tslab/prune/signals.py</code>; the ranking and stopping-rule "
+             f"studies use the first {len(names)} signals). Relative errors are normalized by each block's range "
              "(max − min). Regenerate with <code>uv run python make_prune_report.py</code> in "
              "<code>experimental/</code>.</p>")
 
     section("tuning", "Choosing θ and max_points", theta_section(tuning))
     section("max-error", "Adding max_error", max_error_section(tuning))
     rows = [[n, ("l", html.escape(describe(n)))] for n in SIGNALS + OFFSET + NOISY]
-    section("signals", "The signals", "<p>The first eighteen are the corpus of the ranking and stopping-rule studies; "
-            "the six after them are for <a href='#scale'>what errors are relative to</a> (small variations on a large "
-            "offset), and the pyrometer for the <a href='#noise'>noise floor</a>.</p>"
+    section("signals", "The signals", "<p>The first eighteen signals form the main corpus for the ranking and "
+            "stopping-rule studies. The next six test <a href='#scale'>error scaling</a> on small variations riding on "
+            "large offsets, and the pyrometer tests <a href='#noise'>the noise floor</a>.</p>"
             + table(["signal", "what it is"], rows))
 
     # quality
-    body = ("<p>Every method picks the same number of points per 1 h block (day 0, every 4th hour, so 6 blocks per "
-            "signal); cells are the geometric mean of the block's RMSE over fluxprune's (refined). fluxprune and "
-            "top-down keep the required points within k; swinging door's CompDev is searched for k points (the nearest "
-            "count at or above k); LTTB and min/max buckets are the plotting downsamplers; Visvalingam-Whyatt "
-            "(cartography's line simplification) is bottom-up by triangle area, and <i>+ refine</i> adds fluxprune's two "
-            "refinement passes to its points.</p>")
+    body = ("<p>Each method selects the same number of points per 1 h block (every 4th hour of day 0, giving 6 blocks "
+            "per signal), and cells report the geometric mean of each method's RMSE relative to refined fluxprune. "
+            "Both fluxprune and top-down include the required endpoints and extrema within k. For swinging door, "
+            "CompDev is binary-searched to land at or just above k points. LTTB and min/max buckets are standard "
+            "plotting downsamplers, while Visvalingam-Whyatt (cartographic line simplification) removes points "
+            "bottom-up by triangle area; <i>+ refine</i> applies fluxprune's two refinement passes to its output.</p>")
     methods = list(qual[QUALITY_KS[0]].keys())
     for k in QUALITY_KS:
         rows = []
@@ -1079,17 +1088,19 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
         body += f"<h3>{k} points per hour</h3>" + table(["method", *names, "all (RMSE)", "all (max error)"], rows)
     opt_rows = [[m] + [f"{gmean(opt[k][m]):.2f} (worst {max(opt[k][m]):.2f})" for k in QUALITY_KS]
                 for m in opt[QUALITY_KS[0]]]
-    body += ("<h3>Against the optimum</h3><p>On the same whole blocks (3,600 points), the optimal choice of k points that "
-             "include the required ones (dynamic programming, O(n²k): about 2 s a block, an oracle, not a method); each "
-             "greedy method's RMSE over the optimum's, geometric mean.</p>"
+    body += ("<h3>Against the optimum</h3><p>On the same 3,600-point blocks, we compute the globally optimal k points "
+             "(including the required ones) using O(n²k) dynamic programming—about 2 s per block, making it an oracle "
+             "rather than a practical method. The table reports each greedy method's geometric-mean RMSE relative to "
+             "that optimum.</p>"
              + table(["method", *[f"k = {k}" for k in QUALITY_KS]], opt_rows))
     section("quality", "Ranking quality at a fixed count", body)
 
     # curves
-    section("curves", "Error curves", "<p>What a rule sees: the relative RMSE of keeping k points (the ranking, "
-            f"before refinement), one hour of each signal. Smooth signals fall as k⁻² (sine), random walks as k⁻½ "
-            f"(temperature, pH), and white noise hardly at all until most points are kept; a step or ramp signal falls "
-            f"off a cliff and then sits on its noise. The dashed line is {pct(REF_EPS)} for scale.</p>" + plot_curves(items))
+    section("curves", "Error curves", "<p>These curves show what a stopping rule sees: relative RMSE versus points "
+            "kept (from the initial ranking, before refinement) for one hour of each signal. Smooth signals decay as "
+            "k⁻² (sine), random walks decay as k⁻½ (temperature, pH), and white noise barely drops until most points "
+            "are kept; step and ramp signals drop sharply and then flatten onto their noise floor. The dashed line "
+            f"marks {pct(REF_EPS)} for reference.</p>" + plot_curves(items))
 
     # rules
     rows = []
@@ -1104,42 +1115,46 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
                   f"{d['k'].max():,}"]
         rows.append(cells)
     img, slopes = plot_sublinear(res)
-    body = (f"<p>Each rule's one parameter is set so that all {n_blocks:,} blocks together keep {BUDGET} points per hour on "
-            f"average (1% of the scans), except knee, which can't be calibrated (its total is what its α gives). Cells are "
-            f"the mean points kept per hour and, below, the geometric mean RMSE of the blocks. The corpus columns are "
-            f"the mean points per block, the mean and median block RMSE, and the most points one block got.</p>"
+    body = (f"<p>Each rule's single parameter is calibrated so that all {n_blocks:,} blocks average {BUDGET} points per "
+            "hour (1% of the 1 s scans), except knee detection, which cannot be calibrated and keeps whatever its α "
+            "produces. Each signal cell shows mean points per hour above the geometric-mean block RMSE. The summary "
+            "columns on the right report overall mean points per block, mean and median block RMSE, and the largest "
+            "single block.</p>"
             + table(["rule", "what it does", "parameter", *names, "points/h", "mean", "median", "max k"], rows)
-            + "<h3>Sublinear?</h3><p>Each rule's points per block against the tolerance rule's at the same budget "
-            "(the tolerance rule follows complexity linearly by definition), every block of the corpus, and the slope "
-            "of a log-log fit: 0 is a fixed count, 1 the tolerance, ½ the plain geometric mean. All slopes: "
+            + "<h3>Sublinear?</h3><p>Here each rule's per-block point count is plotted against the tolerance rule at "
+            "the same total budget (the tolerance rule tracks complexity linearly by definition). A log-log fit gives "
+            "the scaling slope: 0 corresponds to a fixed count, 1 to fixed tolerance, and 0.5 to their plain "
+            "geometric mean. Fitted slopes: "
             + ", ".join(f"{rule} {s:.2f}" for rule, s in slopes.items()) + ".</p>" + img)
     sw_rows = [[rule] + [f"{pct(sw[b, rule]['mean'])} / {pct(sw[b, rule]['median'])}<br><span class='muted'>"
                          f"max k {sw[b, rule]['maxk']:,}</span>" for b in SWEEP_BUDGETS] for rule in RULES if rule != "knee"]
-    body += ("<h3>Other budgets</h3><p>The same calibration at other averages: mean / median block RMSE and, below, "
-             "the most points one block got.</p>"
+    body += ("<h3>Other budgets</h3><p>Repeating the same calibration across four target averages, showing mean / "
+             "median block RMSE above the maximum points kept in any single block.</p>"
              + table(["rule", *[f"{b}/h" for b in SWEEP_BUDGETS]], sw_rows) + plot_sweep(sw))
     rate_rows = [[rule] + [f"{rate[rule][n]:.2f}" for n in names] for rule in RULES]
     length_rows = [[rule] + [f"{length[rule][n]:.2f}" for n in names] for rule in RULES]
-    body += ("<h3>Sampling rate and block length</h3><p>A rule that adapts to the data, not to how it was stored, "
-             "should keep about as many points of an hour sampled every 10 s as of the same hour sampled every second "
-             "(ratio 1 when the signal is captured at both rates; noise can't be), and about as many in one 12 h block "
-             "as in twelve 1 h blocks (count and balance scale K with the block's hours). Median over day 0's hours "
-             "of k at 10 s over k at 1 s:</p>"
+    body += ("<h3>Sampling rate and block length</h3><p>A rule that adapts to the underlying signal rather than its "
+             "storage layout should keep roughly as many points when an hour is sampled every 10 s as when sampled "
+             "every second (ratio near 1 whenever both rates capture the signal, though white noise cannot be "
+             "captured), and roughly as many in one 12 h block as across twelve 1 h blocks (count and balance scale "
+             "K proportionally with block duration). Below is the median ratio of k at 10 s to k at 1 s across day 0's "
+             "hours:</p>"
              + table(["rule", *names], rate_rows)
-             + "<p>k of a 12 h block over the sum of k of its twelve 1 h blocks (day 0, mean of the two halves):</p>"
+             + "<p>Ratio of k in a 12 h block to the sum of k across its twelve 1 h blocks (mean of the two 12 h "
+             "halves on day 0):</p>"
              + table(["rule", *names], length_rows))
     section("rules", "How many points: the stopping rules", body)
 
     # scale
     s_items, s_names, study, slength = scale
     all_names = SIGNALS + OFFSET
-    body = ("<p>Errors so far are relative to each block's range, so a block's precision follows its own range whatever "
-            "the units or the offset: an hour of furnace that moves 4 °F around 2,115 °F gets the same relative precision "
-            "as an hour of a valve that moves 0-100%. The alternatives are the block's largest absolute value, the "
-            "geometric mean of the two, and a known span per series (here each signal's range over all its days, as a "
-            "historian's per-tag span would give, but which a store that knows nothing of the series lacks). The ranking "
-            "doesn't depend on the scale, only the rules' thresholds do. Six more <a href='#signals'>signals</a> "
-            "where it matters: " + ", ".join(OFFSET) + ".</p>")
+    body = ("<p>So far, errors have been normalized by each block's range, which keeps relative precision independent "
+            "of units and DC offset: a furnace drifting 4 °F around 2,115 °F receives the same relative precision as a "
+            "valve swinging from 0 to 100%. Alternatives include normalizing by the block's largest absolute value, "
+            "the geometric mean of range and max|x|, or a known per-series span (modeled here as each signal's range "
+            "across all days, similar to a historian's configured span—something a schema-free store does not have). "
+            "The choice of scale does not affect the point ranking, only the stopping thresholds. To test this, we add "
+            "six offset <a href='#signals'>signals</a>: " + ", ".join(OFFSET) + ".</p>")
     shown = SIGNALS + OFFSET
     rows = []
     for (rule, sc), d in study.items():
@@ -1151,18 +1166,20 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
             cells.append(f"{d['k'][sel].mean():.0f}<br><span class='muted'>{pct(per[-1])}</span>")
         cells += [pct(d["e"].mean()), pct(max(per)), f"{d['k'].max():,}"]
         rows.append(cells)
-    body += (f"<p>Each rule and scale calibrated to {BUDGET} points per hour over all {len(s_items):,} blocks of the "
-             f"{len(all_names)} signals (5 days each). Cells are the mean points kept per hour and, below, the mean RMSE "
-             f"<i>relative to the signal's span</i>: a measure that doesn't depend on the units, the offset or the block, "
-             f"so the scales can be compared (the furnace with dropouts is measured off its dropouts). The last row is the "
-             f"least mean RMSE over span possible for the total, which needs the span.</p>"
+    body += (f"<p>Each rule-and-scale pair is calibrated to {BUDGET} points per hour across all {len(s_items):,} blocks "
+             f"of the {len(all_names)} signals (5 days each). Cells report mean points per hour above the mean RMSE "
+             "<i>relative to each signal's full span</i>, giving a unit- and block-independent error metric so the "
+             "scales can be compared fairly (for the furnace with dropouts, error is measured on non-dropout samples). "
+             "The final row shows the lowest possible mean RMSE over span at this budget, which requires knowing the "
+             "span.</p>"
              + table(["rule", "errors relative to", *shown, "mean", "worst signal", "max k"], rows)
              + plot_scales(s_items, study))
     rows = [[rule, sc] + [f"{slength[rule, sc][n]:.2f}" for n in shown]
             + [f"<b>{gmean([slength[rule, sc][n] for n in shown]):.2f}</b>"] for rule, sc in slength]
-    body += ("<p>Block length: k of a 12 h block over the sum of k of its twelve 1 h blocks (all days), with θ / hours "
-             "for the amortized rule. A ratio below 1 is partly right: twelve blocks keep twelve sets of required points, "
-             "and a longer block can spend its points where they matter most.</p>"
+    body += ("<p>Block-length scaling across all days: ratio of k in a 12 h block to the sum of k across its twelve "
+             "1 h blocks, using θ / hours for the amortized rule. A ratio below 1 is partly expected because twelve "
+             "separate blocks pay for twelve sets of required endpoints and extrema, and a longer block can allocate "
+             "its points where they help most.</p>"
              + table(["rule", "errors relative to", *shown, "geometric mean"], rows))
     section("scale", "Relative to what?", body)
 
@@ -1181,15 +1198,15 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
     section("noise", "The noise floor", noise_section(noise))
 
     section("guards", "max_error and max_points against swinging door",
-            "<p>The rmse pass at θ = 0.0015 (the old default: coarse, so that the guards do the work) alone, then with <code>max_error</code> set to an engineer's value per "
-            "signal (the historian tags' CompDev, otherwise about what matters), then with a safety cap of "
-            f"<code>max_points</code> = {CAP} per hour (10% of the scans) as well. The max_error pass splits each "
-            "line between the rmse pass's points that strays further, by farthest reach (below). Swinging door at "
-            "CompDev = max_error / 2 has the same "
-            "guarantee: its doors pivot about the archived point, so at CompDev = max_error (last column) its line "
-            "strays up to twice that. Cells: mean points per hour · the largest error of any "
-            "block over max_error · mean RMSE over the signal's span; below, the share of blocks the cap bound "
-            "(<code>rmse_met</code> or <code>max_error_met</code> false).</p>"
+            "<p>Here we compare the RMSE pass alone at θ = 0.0015 (the old coarse default, chosen so the guards do "
+            "most of the work), with a per-signal <code>max_error</code> (each historian tag's CompDev, or an "
+            f"equivalent practical tolerance), and with an added <code>max_points</code> = {CAP}/h cap (10% of the "
+            "1 s scans). Any segment from the RMSE pass that exceeds <code>max_error</code> is split using the "
+            "farthest-reach pass described below. For comparison, swinging door at CompDev = max_error / 2 provides "
+            "the same worst-case guarantee, whereas at CompDev = max_error (last column) its lines can stray up to "
+            "twice the tolerance because the doors pivot around the archived point. Each cell shows mean points/h · "
+            "worst block error divided by max_error · mean RMSE over the signal's span, with the percentage of capped "
+            "blocks (where <code>rmse_met</code> or <code>max_error_met</code> is false) underneath.</p>"
             + table(["signal", "max_error", *g.keys()], rows)
             + max_error_pass_section(passes))
 
@@ -1201,12 +1218,12 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
                  f"<b>{gmean([v for d in refits.values() for v in d['max']]):.2f}</b>",
                  f"<b>{pct(np.mean([v for d in refits.values() for v in d['held']]), 3)}</b>"])
     section("refit", "Refit: values that aren't samples",
-            "<p><code>prune(refit=True)</code> keeps the same times but replaces the values with those whose lines fit the "
-            "input best in time-weighted L2 (a tridiagonal system over the kept points, O(n)), the first, last, minimum "
-            "and maximum points (and the points around gaps) keeping their samples. Per signal, over 1 h blocks of all "
-            "days with any error left: the geometric mean of the RMSE and the largest error with refit over without, at "
-            "the rmse pass's points; and with <code>max_error</code> = the signal's guard value, the share of blocks where "
-            "it still holds after the refit (it isn't checked again).</p>"
+            "<p><code>prune(refit=True)</code> keeps the same timestamps but solves an O(n) tridiagonal system to "
+            "replace the interior values with the best time-weighted L2 piecewise-linear fit, while leaving the "
+            "required endpoints, extrema, and gap-boundary points pinned to their original samples. Across all 1 h "
+            "blocks with non-zero error, the table reports the geometric-mean RMSE and max-error ratios (refit vs "
+            "raw samples) at the RMSE pass's points, along with how often the signal's <code>max_error</code> guard "
+            "still holds after refitting (since refit does not re-check the bound).</p>"
             + table(["signal", "RMSE, refit / samples", "largest error, refit / samples", "max_error still holds"], rows))
 
     # regular intervals
@@ -1226,19 +1243,18 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
                  f"<b>{np.sum(every['bought']) / hours / n_sig:+.1f}</b>",
                  f"<b>{gmean([v for d in intervals.values() for v in d['rmse']]):.3f}</b>"])
     section("intervals", "Regular intervals: each hour's first, minimum and maximum",
-            "<p><code>prune(include_regular_intervals=np.timedelta64(1, \"h\"))</code> also requires each clock hour's "
-            "first point, minimum and maximum, so a reader gets them back exactly from the kept points. Here on day "
-            f"blocks of every signal (all {DAYS} days) at a week-summary store's rate: at most "
-            f"{WEEK_POINTS:,} points per week and θ = 0.001 / {WEEK_POINTS:,} for a week (the same per hour: θ × 7 "
-            f"and at most {WEEK_POINTS // 7:,} points for a day). Per signal: points per hour without and with, how "
-            "many per hour were forced (beyond the block's own first, last, minimum and maximum), how many more or "
-            "fewer the rmse pass bought, and the geometric mean of the RMSE with over without. Forced points cost "
-            "nothing in the rate, and on most signals the rmse pass buys about as many points as without (a few "
-            "fewer: the forced points do part of its work). The exception is a quiet block at its noise floor: its "
-            "lines already leave about σ, so the pass stops at the required points; an hour's minimum and maximum are "
-            "noise extremes, lines pinned to them leave a little more than σ, and the pass then buys points all over "
-            "the block (most of them far from the forced ones) until the error is back at the floor. The cap bounds "
-            "it.</p>"
+            "<p>Passing <code>include_regular_intervals=np.timedelta64(1, \"h\")</code> forces prune to retain the "
+            "first point, minimum, and maximum of every clock hour so downstream queries can read exact hourly stats "
+            f"directly from the pruned series. Here we test day-long blocks across all {DAYS} days using a "
+            f"week-summary store's rate: up to {WEEK_POINTS:,} points per week and θ = 0.001 / {WEEK_POINTS:,} for a "
+            f"week (scaled to θ × 7 and at most {WEEK_POINTS // 7:,} points per day). The table lists points/h without "
+            "and with hourly intervals, forced points/h beyond the block's own required points, the net change in "
+            "points bought by the RMSE pass, and the geometric-mean RMSE ratio. Forced points do not count against "
+            "the exchange rate, so on most signals the RMSE pass buys about the same or slightly fewer points. The "
+            "exception is a quiet block sitting on its noise floor: normally its lines already sit near σ and the "
+            "pass stops immediately, but pinning hourly minima and maxima to noise extremes nudges the error slightly "
+            "above σ, prompting the pass to add points across the block until it drops back to the floor (bounded by "
+            "the cap).</p>"
             + table(["signal", "points/h", "points/h, hourly", "forced/h", "bought/h", "RMSE, hourly / without"],
                     rows))
 
@@ -1254,10 +1270,11 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
                          f"<span class='muted'>{pct(gmean(archive_res[rule]['rmse'][sel]))}</span>")
         rows.append(cells)
     section("archives", "Swinging-door archives as input",
-            "<p>The same rules with the same parameters on what each tag's swinging-door historian archived "
-            "(<code>tslab/common/historian.py</code>: exception + swinging-door filters at the tag's CompDev), in 1 h "
-            "blocks: points per hour in and kept (share of the archive), and below, the geometric-mean RMSE against "
-            "the archive's own straight lines (relative to the block's range).</p>"
+            "<p>Applying the same calibrated rules to each tag's swinging-door historian archive "
+            "(<code>tslab/common/historian.py</code>, using exception plus swinging-door filtering at the tag's "
+            "CompDev) in 1 h blocks. Cells show points kept per hour (and the percentage of archived points retained), "
+            "above the geometric-mean RMSE against the archive's own piecewise-linear trend relative to block "
+            "range.</p>"
             + table(["tag", "archived/h", "count", "tolerance", "balance", "tolerance+noise", "balance+noise"], rows))
 
     # speed
@@ -1269,11 +1286,12 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
                        for key in ("prune", "max_error", "refit", "hourly")])
     power = ("" if "AC Power" in subprocess.run(["pmset", "-g", "ps"], capture_output=True, text=True).stdout
              else "<b>Measured on battery power: indicative only, rerun on AC.</b> ") if sys.platform == "darwin" else ""
-    section("speed", "Speed", f"<p>{power}Apple M3, one thread, best of 3, 1 s scans. rank is the O(n log n) pass; "
-            "prune adds picking k (O(n)) and the two O(n) refinement passes, shown as the time it adds to rank; "
-            "max_error (1% of the range) adds the max_error pass on top of that, and refit the least-squares values, "
-            "both also against rank; hourly is prune with <code>include_regular_intervals</code> = 1 h. "
-            "<code>bench/prune.py</code> has the same per call for more signals.</p>"
+    section("speed", "Speed", f"<p>{power}Single-threaded timings on an Apple M3 (best of 3 runs on 1 s scans). "
+            "<code>rank</code> is the O(n log n) heap pass; <code>prune</code> adds the O(n) stopping selection and "
+            "two O(n) refinement passes, reported as time added over <code>rank</code>. <code>max_error</code> (at 1% "
+            "of range), <code>refit</code> (least-squares values), and <code>hourly</code> "
+            "(<code>include_regular_intervals</code> = 1 h) are likewise shown as overhead above <code>rank</code>. "
+            "See <code>bench/prune.py</code> for per-call timings across more signals.</p>"
             + table(["signal", "n", "rank", "per point", "prune (rmse pass)", "prune, max_error", "prune, refit",
                      "prune, hourly"], rows))
 
@@ -1293,138 +1311,133 @@ def write(items, params, res, sw, qual, opt, rate, length, scale, noise, tuning,
                 body = body.replace("<h3", "<h4").replace("</h3>", "</h4>")
             sections.append(f"<{level} id='{a}'>{html.escape(t)}</{level}>\n{body}")
     assert not secs, f"sections not on the page: {list(secs)}"
-    (OUT / "prune.html").write_text(shell("fluxprune: keeping the points that matter", intro, toc, "\n".join(sections)))
+    (OUT / "prune.html").write_text(shell("fluxprune: keeping the points that matter", intro, toc, "\n".join(sections), active="prune"))
 
 
 FINDINGS = """
 <ol>
-<li><b>Ranking: bottom-up, then refine.</b> Removing the cheapest point repeatedly (exact time-weighted L2, a heap,
-O(n log n)) gives a nested ranking of every point and the whole error curve in one pass, but greedy merging is myopic:
-about 30% above the optimum. Two O(n) passes that slide each kept point to its best spot between its neighbours bring
-it to 4-6% above the optimum on whole 1 h blocks at 12, 36 and 108 points (worst 1.4×), for +10-30% of the ranking's
-time. Top-down splitting (Douglas-Peucker's order, and that of perceptually important points) is better than plain
-bottom-up on step-like signals and much worse on others (up to 74× the optimum on the compressor). Visvalingam-Whyatt
-(bottom-up by triangle area) is 1.6-1.8× fluxprune's RMSE, and 1.03-1.07× with the same refinement passes: the
-passes do most of the work, and exact L2 is still the better order to start from. SWAB (Keogh et al. 2001) is bottom-up
-in a sliding window, for streams; on whole blocks it is plain bottom-up. At the same number of points, swinging door's
-RMSE is 1.3-1.5× fluxprune's, LTTB's 2-2.5×, and min/max buckets' and even spacing's 2-4×: the plotting downsamplers
-keep shape for the eye, not the interpolation.</li>
-<li><b>The error curve tells the signal apart from the noise.</b> Smooth signals fall as k⁻², random walks as k⁻½,
-noise stays flat until most points are kept. The curve at k = n/2 measures the white noise: it is 0.29σ for white
-noise at every block size (<code>tslab/prune/rules.py</code>, <code>noise</code>), regular or irregular times.</li>
-<li><b>Fixed count</b> spends the same on a valve that two points describe exactly as on white noise, and <b>fixed
-tolerance</b> is the opposite: calibrated to the same total it hands noise blocks everything (white noise 194 points/h
-against 36 average, a block up to 432) and its ε ends at 13% of the range for all the others: the worst mean
-error of all rules. Neither alone is a rate control for mixed data.</li>
-<li><b>The geometric mean of the two</b> (balance, √(K·k_ε)) is a real compromise (slope ~0.6 against the tolerance's
-counts) and bounded by √(K·n), but noise is still the most "complex" thing it sees: white noise gets 4× the average.
-<b>Raising ε to the block's own noise level</b> (balance+noise) fixes that and reaches nearly the least mean RMSE
-possible for the total at 36/h (3.4% vs 3.3%) with the smallest largest block of the adaptive rules (132); at large
-budgets it stops early on purpose (it won't trace noise), so its mean levels off. Its weakness is the noise estimate:
-correlated noise (flow: τ 5 s at 1 s scans) partly reads as signal, so the count depends on the sampling rate there (×0.25).</li>
-<li><b>The marginal rules</b> (stop when a point gains less than λ) give the least mean error for the total by
-construction (e + λk) but depend on the sampling rate: a noise point's gain scales as 1/n, so the same λ keeps
-13-25× more noise points at 10 s than at 1 s. The user's prediction holds: on noise they either give up at once or
-never.</li>
-<li><b>The amortized rule</b> (stop at the first k where the error left is under θ per point added) is the best
-one-knob rule here: on its own error curve (no floor) within 4-21% of the least mean RMSE at every budget, largest block
-2.4-3.7× the average, and the most stable under a change of sampling rate (×0.80-1.00 for every signal). It stops where
-the error curve meets the line θ·k: in effect error and points traded at a fixed rate, so it grows with complexity
-sublinearly (k ∝ c^⅓ for a smooth signal's k⁻² curve, ∝ σ for noise). It is <code>error_per_point</code> in the API.</li>
-<li><b>The noise floor</b> (the default): the same rule on √(e² − σ²), σ the block's white noise from each scan's
-distance to its neighbours' chord (median, one O(n) pass), so it stops buying points that only trace the noise. At
-θ = 0.0015 it keeps a fraction of the points on noise-dominated blocks (white noise 95 → 11 per hour, motor current
-67 → 12, the quiet level 77 → 19, vibration 47 → 18) and the same on smooth and quantized ones, for 0-10% more RMSE
-against the scans (mostly the noise the dropped points traced). Calibrated to 36/h it reaches the least mean RMSE
-possible for the total (3.3%, as marginal (RMSE)) with half the median (0.95% against 1.7%), where the rule without it
-is at 3.6%; at 324/h it levels off (2.8% against 1.9%), since it won't trace noise. A lower θ no longer buys noise:
-at θ = 1.5·10⁻⁶ white noise keeps 17 points per hour (3,142 without), while smooth signals keep refining. The pyrometer
-(narrow spikes on a noisy floor, quiet hours between production runs) shows both sides: at θ = 0.0015 its quiet hours go from 94
-points to 11, closer to the curve under the noise (0.56 °C RMSE against 0.66); its spikes, which a time-weighted RMSE
-counts as cheap, are kept by a lower θ (the default: 236 points per busy hour and 22 per quiet one, every peak within
-7 °C) or by <code>max_error</code> = 10σ (162, the same peaks), not by the floor. At the default θ the floor is what
-makes the low rate usable: without it the noise-dominated signals keep most of their scans (white noise 2,941 of 3,600
-per hour, motor current 2,705, the pyrometer's quiet hours 2,933), with it 18, 22 and 22. Its costs: correlated noise reads partly as
-signal at the sampling rate (flow, τ 5 s: at 10 s scans the same noise reads as noise and keeps 0.14× as many points;
-temperature and pH 0.66-0.69×), so it is less stable under a change of sampling rate than the rule without it; and on
-pure noise the lines from the required minimum and maximum lean on the few points left (the worst of 120 hours of
-white noise 0.48σ from the zero under it, against 0.38σ without the floor; 0.26σ against 0.33σ on average). Every noise
-estimate assumes the times were chosen independently of the values, which an archive's weren't: on the tags'
-swinging-door archives the estimate read about the CompDev (temperature 3× its scans' noise) and passed tests of
-white noise (residuals near zero, their lag-1 correlation) as well as the scans, and the floor doubled the error
-against the scans (temperature 3.3% of the range against 1.9%). No test on the values tells them apart, so the floor
-runs only on a cadence (at least 90% of the intervals one scan, fluxcode's own test): the archives get none, and keep
-what they kept without it. Scoring the
-ranking against a smoothed copy of the scans was tried and dropped: a line through noisy samples is no closer to a
-smooth curve, so it keeps as many points on noise, needs a window, and shaves narrow peaks.</li>
-<li><b>Knee detection</b> (stop when doubling the points stops paying) is unusable: periodic signals have plateaus at
-small k (12 h of a sine: 4 points) and random walks never stop (temperature: 3,061 of 3,600).</li>
-<li><b>Block length.</b> Every rule but the fixed count keeps fewer points in one 12 h block than in twelve 1 h blocks,
-for two reasons. A parameter per block is spread over a longer block: with θ / hours for the amortized rule (as K · hours
-for a count) its geometric mean over the 18 signals is 0.30 (0.03-0.90, the low end the quiet level and the dropouts,
-whose range a single event sets, and white noise, which the noise floor holds at about the same count however long the
-block). And a longer block has a wider range: with a known span per series instead, the same rule reaches 0.55. The rest is as it should be: twelve
-blocks keep twelve sets of required points, and one block can place its points where they matter most.</li>
-<li><b>Relative to what?</b> Of the scales that need no knowledge of the series, the block's own range is the best:
-with the amortized rule at 36/h, the mean error over each signal's span is 1.2%, against 1.0% with known spans and 1.0%
-the least possible. It gives small variations on a large offset the precision they need by itself: the furnace (4 °F
-an hour around 2,115) and the grid frequency keep 29 and 100 points per hour, where known spans give 23 and 126.
-<b>The largest |value|</b> depends on where zero is: the same ambient temperature keeps 74 points per hour in °C and 14
-in kelvin, and it starves exactly the signals that have little range for their offset (furnace and grid frequency: 9
-and 8 per hour, at 1.2% and 4.7% of their span, against 0.32% and 1.5%). <b>√(range · max|x|)</b> halves both effects
-but keeps them (64 against 26 points for °C and K, grid 2.7% of span), and it helps block length less than a known span
-(0.40 against 0.55). The range has two costs: a quiet block makes its own dither look like signal (the quiet level keeps
-37 points per hour tracing one 0.01 step, against 6 with its span; 77 without the noise floor), and a glitch that sets
-the range takes its block's precision (furnace with dropouts: 1.1% of span against 0.32%). A known span fixes both, and so does an
-absolute <code>max_error</code> guard (next).</li>
-<li><b>Swinging-door archives as input</b> prune further, depending on what the archive kept: a tag whose CompDev is
-below its noise (flow, motor current: 1,300-3,000 archived points per hour) drops to 0.6-6% of the archive at the
-same settings, a smooth tag (temperature, pH: ~330/h) to 2-11%, and an archive that already has two points per hour
-stays as it is.</li>
-<li><b>max_error</b> only adds points: the max_error pass splits each line between the rmse pass's points that strays
-further than max_error from the scans by farthest reach: from each anchor, the line to the farthest scan it can reach
-while every scan between stays within max_error. Swinging door's rule (the line ends at the first scan the chord can't
-reach) keeps
-1.1-5× as many points on the noisy signals (vibration 176 against 36 per hour, batch 73 against 23, temperature 766
-against 509), the exact minimum 4% fewer overall at about 38× the time (13 against 490 µs per block, up to 8.4 ms). At the same guarantee as
-swinging door (CompDev = max_error / 2, since at CompDev = max_error its line strays up to 1.6-2× that), fluxprune keeps
-fewer points on 12 of the 18 signals (batch 23 against 228 per hour, vibration 36 against 422, temperature 509 against
-1,136, grid frequency 282 against 597) and as many on two; more only where the rmse pass already wanted more than
-the guard needs (the quiet level's dither: 19 against 2). A max_error below a signal's noise keeps most of the scans,
-as swinging door does (motor current: 3,160 per hour): at max_error = σ about half the scans, at 0.6σ two thirds, at
-2.5σ an eighth, so prune() warns below σ (the noise floor's estimate).
-<b>max_points</b> (here 360 per hour) caps that. The budget goes in a fixed order: the required points; then max_error,
-if it can be met within the cap, with the rmse pass taking what is left (its least significant points give way first,
-by a bisection on their number); and if it can't, max_error relaxed to about the tightest bound the cap allows (a
-bisection over the max_error pass), with no points from the rmse pass. The max_error pass always comes last, since
-adding a point can make the error worse. The cap bound only on the five
-noise-dominated signals; in their worst block the bound reached is 1.2× max_error for temperature, 1.3× for pH, 2.1×
-for white noise, 2.7× for flow and 11× for motor current, whose noise is five times max_error. Measured and not
-adopted: splitting the worst segment at its worst point when the cap binds (1.3-1.7× larger errors: it anchors on
-noise spikes); the max_error pass first and ranking again with its points fixed (the same RMSE at the same number of
-points, 3-5× slower); a secant search for the relaxed bound (9.4 max_error passes on average against 12.8, but up to 28
-against 14); trying every number of the rmse pass's points instead of bisecting (0.4% lower RMSE on average).</li>
-<li><b>Refit</b> (<code>refit=True</code>): least-squares values at the same kept times, the required points pinned to
-their samples, lower the RMSE by about a tenth overall, almost all of it on smooth or step-like signals (sine,
-compressor, batch: 0.5-0.8×) where a chord cuts a curve's corner; on noisy ones by 1-3%. It costs one O(n) tridiagonal
-solve. The values are then no longer readings, and it doesn't mix with max_error: a least-squares line through noise
-moves away from the scans that set the bound, so max_error still holds in only 41% of the blocks (none on the noisy
-signals, all on the smooth or quiet ones). It stays an option to measure on real data. Choosing the times and the values together (a free-knot fit, or Imai and Iri's 1986 fewest-segments algorithm
-for max_error with corners off the samples) could gain more and wasn't tried.</li>
+<li><b>Bottom-up ranking plus refinement gets close to optimal.</b> Repeatedly removing the cheapest point under exact
+time-weighted L2 using a heap (O(n log n)) produces a nested ranking and the full error curve in one pass, though greedy
+merging alone sits about 30% above the global optimum. Two O(n) refinement passes—sliding each kept point to the best
+position between its neighbors—close that gap to 4–6% above optimal on 1 h blocks at 12, 36, and 108 points (worst case
+1.4×) while adding only 10–30% to ranking time. Top-down splitting (the Douglas-Peucker / PIP order) beats plain
+bottom-up on step-like signals but can blow up badly elsewhere (up to 74× optimal on the compressor).
+Visvalingam-Whyatt (bottom-up by triangle area) yields 1.6–1.8× fluxprune's RMSE on its own and 1.03–1.07× after the
+same refinement passes, confirming that refinement does most of the heavy lifting while exact L2 still provides a better
+starting order. SWAB (Keogh et al. 2001) runs bottom-up inside a sliding window for streaming, which reduces to plain
+bottom-up on full blocks. At matched point counts, swinging door has 1.3–1.5× fluxprune's RMSE, LTTB has 2–2.5×, and
+min/max buckets and uniform spacing have 2–4×, since plotting downsamplers preserve visual silhouette rather than linear
+interpolation accuracy.</li>
+<li><b>The error curve separates signal from noise.</b> Smooth signals decay as k⁻², random walks decay as k⁻½, and
+white noise stays flat until nearly all points are kept. Evaluating the curve at k = n/2 gives a clean white-noise
+estimate of 0.29σ across all block sizes (<code>noise</code> in <code>tslab/prune/rules.py</code>), whether timestamps
+are regular or irregular.</li>
+<li><b>Neither fixed count nor fixed tolerance works for mixed data.</b> Fixed count spends the same budget on a valve
+that needs two points as on pure white noise. Fixed tolerance fails in the opposite direction: calibrated to a 36/h
+average, it pours budget into noisy blocks (194 points/h on white noise, up to 432 in one block) and pushes ε up to 13%
+of range for everything else, yielding the worst mean error of any rule.</li>
+<li><b>Geometric-mean balancing helps, especially with a noise floor.</b> Taking the geometric mean of fixed count and
+fixed tolerance (<code>balance</code>, √(K·k_ε)) produces a genuine compromise (scaling slope ~0.6 against tolerance,
+bounded by √(K·n)), but white noise still reads as the most "complex" signal and takes 4× the average budget. Raising ε
+to each block's noise level (<code>balance+noise</code>) fixes that, nearly matching the lowest possible mean RMSE at
+36/h (3.4% vs 3.3%) with the smallest worst-case block among adaptive rules (132 points). At high budgets it
+intentionally levels off rather than tracing noise, though correlated noise (flow with τ = 5 s at 1 s scans) partially
+reads as signal and makes point counts sensitive to sampling rate (0.25× at 10 s).</li>
+<li><b>Marginal stopping rules break under resampling.</b> Stopping when a point saves less than λ achieves the lowest
+possible mean error for a fixed total budget by construction (minimizing e + λk), but a noise point's marginal gain
+scales as 1/n. As a result, the same λ keeps 13–25× more noise points at 10 s sampling than at 1 s, and on noisy data
+marginal rules tend to either quit immediately or keep almost everything.</li>
+<li><b>The amortized rule is the best single-knob default.</b> Stopping at the first k where remaining error per added
+point drops below θ (exposed as <code>error_per_point</code>) stays within 4–21% of the lowest possible mean RMSE at
+every budget without a noise floor, caps the largest block at 2.4–3.7× the average, and is the most stable across
+sampling rates (0.80–1.00× across all signals). Geometrically, it stops where the error curve crosses the line θ·k,
+trading error for points at a constant rate so counts grow sublinearly with complexity (k ∝ c^⅓ for smooth k⁻² curves,
+and k ∝ σ for noise).</li>
+<li><b>Adding the noise floor makes low θ practical.</b> By evaluating the amortized rule on √(e² − σ²)—estimating σ in
+one O(n) pass from the median distance of each scan to its neighbors' chord—prune stops spending points on white noise.
+At θ = 0.0015 it slashes points on noisy blocks (white noise 95 → 11/h, motor current 67 → 12/h, quiet level 77 → 19/h,
+vibration 47 → 18/h) while leaving smooth and quantized signals unchanged, at a cost of 0–10% higher RMSE against the
+noisy scans. Calibrated to 36/h it matches the optimal mean RMSE (3.3%, tying <code>marginal (RMSE)</code>) with half
+the median error (0.95% vs 1.7%, compared to 3.6% mean without the floor), and at 324/h it levels off at 2.8% vs 1.9%
+rather than chasing noise. Lowering θ no longer wastes points on noise: at θ = 1.5·10⁻⁶, white noise stays at 17/h
+instead of 3,142/h while smooth signals keep refining. On the pyrometer, the floor trims quiet hours from 94 to 11
+points at θ = 0.0015 (improving true-curve RMSE from 0.66 °C to 0.56 °C), while narrow spikes are preserved by a tighter
+θ (default: 236 points/busy hour, 22/quiet hour, every peak within 7 °C) or <code>max_error</code> = 10σ (162 points,
+same peaks). At the default θ, the floor is essential: without it, noisy signals keep most of their scans (white noise
+2,941/h, motor current 2,705/h, pyrometer quiet hours 2,933/h) versus 18, 22, and 22 with it. There are two trade-offs:
+correlated noise still looks partly like signal at fast scan rates (making flow drop to 0.14× at 10 s scans, and
+temperature/pH to 0.66–0.69×), and on pure white noise the few remaining lines anchored at the required min and max lean
+slightly further (worst of 120 hours is 0.48σ from zero vs 0.38σ without the floor, though the mean improves from 0.33σ
+to 0.26σ). Because value-dependent archive timestamps violate the white-noise assumption—causing SDT archives to look
+like white noise with σ ≈ CompDev (3× raw noise on temperature) and doubling scan RMSE from 1.9% to 3.3%—the floor only
+activates when at least 90% of intervals match the scan cadence (using fluxcode's cadence test), leaving SDT archives
+untouched. Scoring against a smoothed copy of the scans was also tested and rejected because chords between noisy
+samples are no closer to a smooth curve, requiring a tuning window and shaving narrow peaks.</li>
+<li><b>Knee detection is not viable.</b> Stopping when doubling the point count stops paying off fails on both ends:
+periodic signals hit early plateaus (4 points for 12 h of a sine wave), while random walks never stop (3,061 of 3,600
+points on temperature).</li>
+<li><b>Longer blocks keep fewer points per hour.</b> Every rule except fixed count uses fewer points in one 12 h block
+than in twelve 1 h blocks. With θ / hours for the amortized rule (analogous to K · hours for count), the geometric-mean
+ratio across the 18 signals is 0.30 (ranging from 0.03 to 0.90, lowest on quiet-level/dropout signals where one event
+sets the range and on white noise where the floor holds counts roughly constant). Wider block ranges account for part of
+the drop—using a known per-series span raises the ratio to 0.55—and the rest is expected, since twelve blocks store
+twelve sets of required endpoints/extrema while one long block allocates points where they matter most.</li>
+<li><b>Block range is the best schema-free error scale.</b> Calibrated to 36/h with the amortized rule, normalizing by
+block range yields 1.2% mean RMSE over signal span, close to the 1.0% achieved with known spans (and the 1.0% theoretical
+minimum). It automatically gives small variations on large offsets appropriate precision: furnace (4 °F/h around
+2,115 °F) and grid frequency keep 29 and 100 points/h, close to 23 and 126 with known spans. Normalizing by
+<b>max|x|</b> depends arbitrarily on where zero sits (ambient temperature keeps 74 points/h in °C vs 14 in kelvin) and
+starves high-offset signals (furnace and grid frequency drop to 9 and 8 points/h, pushing error to 1.2% and 4.7% of span
+vs 0.32% and 1.5%). Using <b>√(range · max|x|)</b> cuts both distortions in half without eliminating them (64 vs 26
+points for °C vs K, grid frequency 2.7% of span) and improves block-length scaling less than a known span (0.40 vs
+0.55). Block range has two weaknesses—quiet blocks treat dither as signal (37 points/h tracing a 0.01 step on
+<code>level-quiet</code> vs 6 with known span, or 77 without the noise floor) and glitches widen the range and coarsen
+precision (<code>furnace-dropout</code> rises to 1.1% of span vs 0.32%)—both of which are solved by a known span or an
+absolute <code>max_error</code> guard.</li>
+<li><b>Swinging-door archives prune further depending on noise.</b> Tags whose CompDev sits below their noise floor
+(flow and motor current, archiving 1,300–3,000 points/h) shrink to 0.6–6% of the archive at the same settings; smooth
+tags (temperature and pH at ~330/h) shrink to 2–11%; and already-sparse archives (~2 points/h) pass through unchanged.</li>
+<li><b><code>max_error</code> and <code>max_points</code> outperform swinging door.</b> The <code>max_error</code> pass
+splits any segment exceeding the tolerance using farthest reach: extending from each anchor to the farthest scan whose
+chord keeps every intermediate scan within <code>max_error</code>. Standard swinging door (stopping at the first
+unreachable scan) keeps 1.1–5× as many points on noisy signals (vibration 176 vs 36/h, batch 73 vs 23/h, temperature 766
+vs 509/h), while exact dynamic programming saves only 4% more points at roughly 38× the runtime (490 µs vs 13 µs per
+block, up to 8.4 ms). At the same worst-case guarantee as swinging door (CompDev = max_error / 2, since CompDev =
+max_error allows 1.6–2× excursions), fluxprune uses fewer points on 12 of 18 signals (batch 23 vs 228/h, vibration 36 vs
+422/h, temperature 509 vs 1,136/h, grid frequency 282 vs 597/h), ties on two, and uses more only where the RMSE pass
+already wanted extra points (19 vs 2 on <code>level-quiet</code>'s dither). Setting <code>max_error</code> below the
+noise level forces any method to keep most scans (3,160/h on motor current; roughly half at σ, two-thirds at 0.6σ, and
+one-eighth at 2.5σ), which is why <code>prune()</code> warns below σ. Adding <code>max_points</code> (360/h here)
+allocates points in strict priority: required points first, then <code>max_error</code> if feasible within the cap (with
+the RMSE pass taking any leftover budget via bisection on its least significant points), or else relaxing
+<code>max_error</code> via bisection to the tightest bound the cap allows with zero RMSE-pass points. The
+<code>max_error</code> pass always runs last because inserting a point can increase error elsewhere. The cap only bound
+on the five noise-dominated signals, relaxing the worst block to 1.2× max_error on temperature, 1.3× on pH, 2.1× on
+white noise, 2.7× on flow, and 11× on motor current (where σ is 5× max_error). Alternatives tested and rejected:
+splitting the worst segment at its worst point under a cap (1.3–1.7× higher error from anchoring on noise spikes),
+running <code>max_error</code> before ranking with its points pinned (same RMSE at equal count, 3–5× slower), secant
+search for the relaxed bound (9.4 passes mean vs 12.8, but up to 28 vs 14 worst-case), and sweeping every RMSE-pass
+count instead of bisecting (only 0.4% lower mean RMSE).</li>
+<li><b>Refit (<code>refit=True</code>) helps smooth signals but breaks <code>max_error</code>.</b> Solving an O(n)
+tridiagonal least-squares fit for interior values (keeping required points pinned) cuts RMSE by roughly 10% overall—most
+of it on smooth or step-like signals (sine, compressor, batch at 0.5–0.8×) where chords clip corners, and only 1–3% on
+noisy signals. Because refit values are no longer original readings and least-squares lines shift away from scans that
+defined the tolerance, <code>max_error</code> continues to hold in only 41% of blocks (0% on noisy signals, 100% on
+smooth or quiet ones). It remains an optional flag for evaluation on real data; joint time-and-value optimization (such
+as free-knot splines or Imai–Iri 1986 fewest-segments) could improve further and was not tested.</li>
 </ol>
-<p><b>The API.</b> <code>prune(t, x)</code> returns the kept times and values, the RMSE and largest error they leave,
-and <code>rmse_met</code>, <code>max_error_met</code> and <code>max_points_met</code>. The rmse pass is the default
-(<code>error_per_point</code>: an exchange rate, best chosen as the RMSE one would accept at a number of points
-divided by that number, θ = Y / X; the error relative to each block's range and read above its white noise,
-<code>noise_floor=True</code>). Its default is 0.1% at a tenth of the input's points, θ = 0.001 / (n / 10)
-(2.8·10⁻⁶ for 1 h of 1 s scans; ~4% of the scans on this corpus, the median block 2%): scaled by the length, it keeps
-about the same density in long blocks, but fewer points per hour at a slower sampling rate. Two optional guards bound it:
-<code>max_points</code>, a hard cap, and <code>max_error</code>, the largest error of any scan in value units, which
-also takes care of quiet blocks, glitches and the block length for a configured signal. θ = 0 with
-<code>max_points</code> keeps the best <code>max_points</code>; θ = ∞ with <code>max_error</code> runs the max_error
-pass alone. A run of non-finite values keeps its first point and the finite points around it (a forward hold), past
-<code>max_points</code> if need be. The other rules on this page (count, tolerance, balance, ε raised to the noise,
-marginal, knee) are experiments in <code>tslab/prune/rules.py</code>.</p>
+<p><b>API summary.</b> <code>prune(t, x)</code> returns the kept timestamps and values, the resulting RMSE and max
+error, and the status flags <code>rmse_met</code>, <code>max_error_met</code>, and <code>max_points_met</code>. By
+default it runs the RMSE pass with <code>noise_floor=True</code> and <code>error_per_point</code> (θ) set to 0.1% of
+block range at a tenth of the input length, θ = 0.001 / (n / 10) (2.8·10⁻⁶ for 1 h of 1 s scans, keeping ~4% of scans on
+average and 2% on the median block). Scaling θ by input length keeps density consistent across longer blocks, though a
+slower sampling rate keeps fewer points per hour. Two optional guards layer on top: <code>max_points</code> sets a hard
+ceiling, and <code>max_error</code> caps single-scan error in signal units (handling quiet blocks, glitches, and long
+blocks for configured tags). Setting θ = 0 with <code>max_points</code> keeps the best <code>max_points</code> points,
+while θ = ∞ with <code>max_error</code> runs only the <code>max_error</code> pass. Runs of non-finite values always
+retain their first point and the adjacent finite points (forward hold), even past <code>max_points</code> if necessary.
+The other stopping rules evaluated on this page (count, tolerance, balance, noise-raised ε, marginal, and knee) are
+experimental baselines in <code>tslab/prune/rules.py</code>.</p>
 """
 
 

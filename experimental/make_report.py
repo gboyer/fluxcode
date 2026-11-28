@@ -62,7 +62,7 @@ from tslab.report.order import (
     ordered,
     palette,
 )
-from tslab.report.page import clean_outputs, save_fig, shell
+from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell
 
 CODECS = ordered(CLASSIC_CODECS + RATECTL_CODECS + DELTA_ZSTD_CODECS + CONSTWIDTH_CODECS + DELTA_TREE_CODECS
                  + FLUX_CODECS)
@@ -110,8 +110,12 @@ def check_bounds(codec, x, y, info):
         elif info["decimal"]:  # values within a quarter power-of-two step (< 10^p / 4) of the grid
             assert err <= 10.0 ** info["param"] / 4 * tol, c.name
         else:
-            # The grid is absolute (snapped): the min decodes to the grid point nearest it, within half a step
-            assert err <= 2.0 ** info["param"] / 2 * tol, c.name
+            # The grid is absolute (snapped): the min decodes to the grid point nearest it, within half a step.
+            # When outliers are escaped (BLOCK_FLAG_SPECIAL), they are bounded by the block's full-range step.
+            step = 2.0 ** info["param"]
+            if info.get("special") and fs > 0:
+                step = max(step, 2.0 ** np.ceil(np.log2(fs / ((1 << c.params.max_quantize_bits) - 1))))
+            assert err <= step / 2 * tol, c.name
 
 
 def summarize(r):
@@ -478,90 +482,98 @@ def plot_rd(results, curves):
 
 
 def write_report(results):
-    clean_outputs(OUT, ("*.png", "*.svg", "index.html"), keep_prefix=("rate", "time", "historian-", "prune-", "public-"))  # the other scripts' pages and charts
+    clean_outputs(OUT, ("*.png", "*.svg", "codecs.html"), keep_prefix=("rate", "time", "historian-", "prune-", "public-"))  # the other scripts' pages and charts
     body = []
-    body.append("<h2 id='legend'>Codec legend</h2><p>One row per codec, in the order used by every table and chart: family "
-                "(classic, constant width, entropy, fluxcode), then nominal bits per sample. The colored bar is the family's "
-                "chart color. “Lossless?”: bit-exact on any input; fluxcode is bit-exact when the data sits on a decimal grid. "
-                "“Constant width”: the same number of bytes for every block.</p>" + legend_table())
-
-    body.append("<h2 id='matrix'>Summary matrix</h2><p>Codecs × datasets: bits per sample over whole one-minute block groups "
-                "(everything the decoder reads), and the median block RMSE (% of block range). Shading is by RMSE: green "
-                "&lt; 0.03%, none 0.03–0.2%, yellow 0.2–1%, orange 1–5%, red ≥ 5%. Sizes differ, so read both numbers.</p>"
-                + summary_matrix(results))
 
     curves = curve_stats()
     default, fast, small = (curves[e] for e in CURVE_EFFORTS)
     total = lambda curve: sum(curve[kind][-1][0] for kind in KINDS)  # bits/sample at B = 16, summed over the datasets
-    effort_gap = (f"At B = 16, summed over the datasets, effort 1 is {100 * (total(fast) / total(default) - 1):+.1f}% and "
-                  f"effort 9 {100 * (total(small) / total(default) - 1):+.1f}% against the default effort; the encode "
-                  "times behind each effort are in docs/TUNING.md (Effort). ")
+    effort_gap = (f"At B = 16, summed across all 12 datasets, effort 1 is {100 * (total(fast) / total(default) - 1):+.1f}% "
+                  f"and effort 9 is {100 * (total(small) / total(default) - 1):+.1f}% relative to the default effort "
+                  "(see <code>docs/TUNING.md</code> for encode timings). ")
     scatter = plot_scatter(results, curves)
     rd = plot_rd(results, curves)
-    body.append("<h2 id='scatter'>Size vs error</h2><p>Every codec except the fluxcode variants, one marker per family "
-                "(shade by position in the family). Bits/sample and RMSE are medians over the 12 datasets, so this is a "
-                "summary; the per-dataset panels below show the spread. gorilla-xor (lossless, about 65 bits/sample) is left "
-                "out of the charts; it's in the tables. fluxcode is the purple lines: B = 4..16 with the noise floor and the bits target off, since both only steer the quantization that B sets "
-                f"directly; one line per <code>effort</code>, darker for more effort, the default effort {DEFAULT_EFFORT} heavy. "
-                f"The diamond is the all-defaults codec (<code>{DEFAULT_CODEC}</code>: B = 16, noise floor 0.25): the noise detector "
-                "coarsens the step on white-noise blocks, so it sits left of the B = 16 end of the line. "
-                "The three lines "
-                "nearly coincide: effort trades encode time for a few percent of size. " + effort_gap +
-                "The other B and noise-floor variants of fluxcode are in the matrix and the per-dataset tables.</p>" + scatter
-                + f"<h3 id='scatter-kinds'>Per dataset</h3><p>Each panel is one dataset: bits/sample over its {REPORT_MINUTES} "
-                "one-minute block groups, RMSE the median over their blocks. The lines are fluxcode at B = 4..16, noise floor and bits target off, "
-                f"at efforts {DEFAULT_EFFORT} (heavy, the default), 1 and 9; the diamond is all defaults. A marker below "
-                "the heavy line beats fluxcode at equal size. "
-                "Lossless points (RMSE ≤ 10<sup>−7</sup>%) sit on the 0* row. The dotted line is 4 bits/sample. Errors are against the "
-                "input, which for noisy-sine counts the noise as signal.</p>" + rd)
+    body.append("<h2 id='scatter'>Size vs error</h2>"
+                "<p>This chart plots median bits per sample against median RMSE across all 12 datasets. Each marker shape "
+                "represents a codec family, shaded by position within the family; the per-dataset panels below show the spread "
+                "behind these medians. <code>gorilla-xor</code> (lossless, ~65 bits/sample) is omitted from the charts to keep "
+                "the x-axis readable, though it appears in all tables.</p>"
+                "<p>The purple lines trace <code>fluxcode</code> across B = 4..16 with the noise floor and bit-rate target disabled "
+                f"(since both only adjust the quantization that B controls directly). Darker lines use higher <code>effort</code>, "
+                f"with the default (effort {DEFAULT_EFFORT}) drawn thicker. The diamond marks the all-defaults configuration "
+                f"(<code>{DEFAULT_CODEC}</code>: B = 16, noise floor 0.25); because the noise detector coarsens the step on "
+                "white-noise blocks, it lands to the left of the B = 16 endpoint. The three effort curves nearly overlap, trading "
+                "encode time for a few percent in size. " + effort_gap +
+                "Other B and noise-floor variants of fluxcode are included in the summary matrix and per-dataset tables.</p>" + scatter
+                + f"<h3 id='scatter-kinds'>Per dataset</h3>"
+                f"<p>Each panel shows one signal kind: bits per sample across its {REPORT_MINUTES} one-minute block groups, and "
+                "median RMSE across those blocks. The purple curves show fluxcode across B = 4..16 (noise floor and bit-rate target "
+                f"off) at efforts {DEFAULT_EFFORT} (thick, default), 1, and 9, while the diamond marks all defaults. Any marker below "
+                "the thick line achieves lower error than fluxcode at the same size. Lossless results (RMSE ≤ 10<sup>−7</sup>%) "
+                "are placed on the 0* row, and the dotted vertical line marks 4 bits/sample. Errors are measured against the input, "
+                "so for <code>noisy-sine</code> the added noise counts as part of the signal.</p>" + rd)
 
-    body.append("<h2 id='datasets'>Per-dataset results</h2>")
+    body.append("<h2 id='datasets'>Per-dataset waveforms &amp; errors</h2>")
     for kind in KINDS:
         res = results[kind]
         seed, b, window, x, pk = plotted(kind)
         body.append(f"<h3 id='{kind}'>{kind}</h3><p>{html.escape(KIND_INFO[kind][0])}. "
-                    f"{REPORT_MINUTES} one-minute signals; the plots show second {b} of the first (seed {seed}), "
-                    f"full scale {x.max() - x.min():.4g}. Rows are in legend order.</p>")
-        body.append("<table><tr><th>codec</th><th>bytes/block</th><th>ratio</th><th>RMSE<br>median / worst</th>"
-                    "<th>mean err<br>median / worst</th><th>max err<br>median / worst</th><th>min err<br>median / worst</th>"
-                    "<th>max |err|<br>median / worst</th>"
-                    + ("<th>peak shift (samples, plotted second)</th>" if pk else "") + "<th class='l'>notes</th></tr>")
+                    f"Measured over {REPORT_MINUTES} one-minute signals; the plots show second {b} of the first "
+                    f"(seed {seed}, full scale {x.max() - x.min():.4g}).</p>")
+        body.append(plot_kind(kind, x, res, window, b, seed))
+        tbl = ["<table><tr><th>codec</th><th>bytes/block</th><th>ratio</th><th>RMSE<br>median / worst</th>"
+               "<th>mean err<br>median / worst</th><th>max err<br>median / worst</th><th>min err<br>median / worst</th>"
+               "<th>max |err|<br>median / worst</th>"
+               + ("<th>peak shift (samples, plotted second)</th>" if pk else "") + "<th class='l'>notes</th></tr>"]
         for c in CODECS:
             r = res[c.name]
             base = res.get(c.name.rsplit("-f", 1)[0]) if isinstance(c, FluxCodec) and "-f" in c.name else None
-            body.append(f"<tr{fam_style(c)}><td><code>{c.name}</code></td><td>{r['bytes_block']:.0f}</td><td>{RAW_BYTES / r['bytes_block']:.1f}×</td>"
-                        f"<td>{med_worst(r, 'rmse', lambda v: f'{100 * v:.3g}%')}</td><td>{med_worst(r, 'mean', pct)}</td>"
-                        f"<td>{med_worst(r, 'max', pct)}</td><td>{med_worst(r, 'min', pct)}</td>"
-                        f"<td>{med_worst(r, 'maxabs', lambda v: f'{100 * v:.3g}%')}</td>"
-                        + (f"<td>{', '.join(f'{s:+d}' for s in r['peak_shift'])}</td>" if pk else "")
-                        + f"<td class='l muted'>{notes(c, r, base)}</td></tr>")
-        body.append("</table>")
-        body.append(plot_kind(kind, x, res, window, b, seed))
+            tbl.append(f"<tr{fam_style(c)}><td><code>{c.name}</code></td><td>{r['bytes_block']:.0f}</td><td>{RAW_BYTES / r['bytes_block']:.1f}×</td>"
+                       f"<td>{med_worst(r, 'rmse', lambda v: f'{100 * v:.3g}%')}</td><td>{med_worst(r, 'mean', pct)}</td>"
+                       f"<td>{med_worst(r, 'max', pct)}</td><td>{med_worst(r, 'min', pct)}</td>"
+                       f"<td>{med_worst(r, 'maxabs', lambda v: f'{100 * v:.3g}%')}</td>"
+                       + (f"<td>{', '.join(f'{s:+d}' for s in r['peak_shift'])}</td>" if pk else "")
+                       + f"<td class='l muted'>{notes(c, r, base)}</td></tr>")
+        tbl.append("</table>")
+        body.append(collapsible_table(f"Show {kind} table ({len(CODECS)} codecs)", "".join(tbl)))
 
     body.append("<h2 id='sweeps'>Parameter sweeps</h2>")
     body.append(fluxcode_section())
     body.append(noise_section())
     body.append(dpcm_sweep())
+
+    body.append("<h2 id='matrix'>Summary matrix</h2><p>Each cell shows bits per sample over whole one-minute block groups "
+                "(counting every byte the decoder reads) and median block RMSE as a percentage of the block's range. "
+                "Cells are shaded by RMSE: green below 0.03%, unshaded for 0.03–0.2%, yellow for 0.2–1%, orange for 1–5%, "
+                "and red at 5% or higher. Because sizes vary widely across codecs, read both numbers together.</p>"
+                + collapsible_table(f"Show summary matrix ({len(CODECS)} codecs × {len(KINDS)} datasets)", summary_matrix(results)))
+
+    body.append("<h2 id='legend'>Codec legend</h2><p>Codecs are listed in the same order used across all tables and charts: "
+                "grouped by family (classic, constant width, entropy, fluxcode) and sorted by nominal bits per sample. "
+                "The colored bar matches each codec's chart color. “Lossless?” indicates whether a codec is bit-exact on "
+                "arbitrary inputs (fluxcode is bit-exact when the data lies on a detected grid). “Constant width” means "
+                "every block produces the exact same number of bytes.</p>"
+                + collapsible_table(f"Show codec legend ({len(CODECS)} codecs)", legend_table()))
+
     body.append(DECISIONS)
 
-    intro = f"""<p><b>See also:</b> <a href="rate.html">rate-controlled quantize → predict → entropy code experiment</a>; <a href="time.html">fluxcode timestamps: the time axis</a>; <a href="sdt.html">fluxcode on swinging-door historian data</a>; <a href="prune.html">fluxprune: keeping the points that matter</a>; <a href="public.html">fluxcode on public real-world datasets</a>.</p>
-<p>A comparison of {len(CODECS)} time-series codecs on synthetic 1 kHz signals. <b>Data:</b> {REPORT_MINUTES} one-minute
-signals of each of the {len(KINDS)} kinds ({REPORT_MINUTES * 60 * len(KINDS):,} blocks of 1000 samples, fixed seeds). Every codec
-encodes whole one-minute block groups (60 blocks) and is charged every byte needed to decode the block group from those bytes alone;
-anything that depends on a range (quantizer grids, % of range thresholds) works per 1-second block. Raw is 1000 × float64 =
-8000 bytes per block.</p>
-<p><b>Metrics:</b> all errors are signed, per block, and a percentage of that block's range (max − min); tables give the
-median and the worst over the dataset's blocks. “Max err” is decoded max − true max (negative = peak clipped). Bits/sample
-counts whole block groups.</p>
-<p><b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_report.py</code> (writes this page and its SVGs
-into <code>report/</code>; <code>make_rate_report.py</code> writes rate.html, <code>make_time_report.py</code> time.html, <code>make_sdt_report.py</code> sdt.html, <code>make_prune_report.py</code> prune.html, <code>make_public_report.py</code> public.html).</p>"""
-    toc = [("legend", "Codec legend", []), ("matrix", "Summary matrix", []),
-           ("scatter", "Size vs error", [("scatter-kinds", "per dataset")]),
-           ("datasets", "Per-dataset results", [(k, k) for k in KINDS]),
+    intro = f"""<p>This benchmark compares {len(CODECS)} time-series codecs on synthetic 1 kHz signals across {len(KINDS)} signal
+kinds, using {REPORT_MINUTES} one-minute recordings per kind ({REPORT_MINUTES * 60 * len(KINDS):,} one-second blocks of 1,000 samples
+with fixed random seeds). Every codec encodes whole one-minute block groups (60 blocks) and is charged for every byte its decoder
+needs to reconstruct the group. Range-dependent operations, such as quantizer grids and percentage-of-range thresholds, operate
+per 1-second block. Uncompressed input is 1,000 × <code>float64</code> (8,000 bytes per block).</p>
+<p>Errors are computed per block as a signed percentage of that block's range (max − min), and the tables report both the median
+and worst block for each dataset. “Max err” is decoded max minus true max, so a negative value indicates peak clipping.
+Bits per sample is measured over complete block groups.</p>
+<p class='muted'>To regenerate this page, run <code>cd experimental &amp;&amp; uv run python make_report.py</code>.</p>"""
+    toc = [("scatter", "Size vs error", [("scatter-kinds", "Per dataset")]),
+           ("datasets", "Per-dataset waveforms & errors", [(k, k) for k in KINDS]),
            ("sweeps", "Parameter sweeps", [("fluxcode-sweep", "fluxcode B sweep"), ("noise-floor", "Noise floor sweep"),
                                             ("dpcm-sweep", "DPCM sweep")]),
+           ("matrix", "Summary matrix", []),
+           ("legend", "Codec legend", []),
            ("notes", "Design notes", [])]
-    (OUT / "index.html").write_text(shell("Time series codecs", intro, toc, "\n".join(body)))
+    (OUT / "codecs.html").write_text(shell("Codec comparison", intro, toc, "\n".join(body), active="codecs"))
 
 
 F_SWEEP_RD = (0.0, 0.01, 0.03, 0.1, 0.25, 0.5, 1.0)
@@ -595,45 +607,49 @@ def fluxcode_section():
     fig.tight_layout()
     img = save_fig(fig, OUT, 'fluxcode', 'fluxcode B sweep')
 
-    h = ["<h3 id='fluxcode-sweep'>fluxcode B sweep: power-of-two only vs decimal detection, order 1 vs orders 0–3, B = 9..16</h3>"
-         "<p>The <code>fluxcode</code> package (at the repo root, format in <code>docs/SPEC.md</code>): "
-         "quantize on a power-of-two step (min exact, step = 2<sup>e</sup> with the range in "
-         "[2<sup>B−1</sup>, 2<sup>B</sup>) steps), residuals mod 2<sup>16</sup> as int16 → zigzag → <b>16 bit planes</b> "
-         "XX B is <code>max_quantize_bits</code>; the noise floor is off "
-         "here and has its own sweep below. "
-         "<b>Decimal detect</b>: if every value is within a quarter power-of-two step of a multiple of 10<sup>p</sup> "
-         "(coarsest p whose step is still coarser than the power-of-two step), quantize on that grid instead and "
-         "reconstruct K / 10<sup>−p</sup>, bit-exact for decimal data; values that were float32 are rounded back to float32. "
-         "Otherwise (ADC counts, other steps) it falls back to the power-of-two grid. <b>Order 1</b> fixes the predictor; "
-         "<b>orders 0–3</b> picks the lowest-variance one per block, from its first 250 samples. Continuous data: the 7,200 "
-         "blocks of 12 signal types used by the benchmarks. Discretized: 9 signals rounded to a quantum (0.001, 0.01, "
-         "0.1, 2<sup>−4</sup>, a 12-bit ADC step, decimals via float32), 600 blocks each. Sizes are whole block groups (header, "
-         "per-block anchors, zstd frame). Timings: one thread, µs per 1000-sample block, including zstd and the Python API.</p>",
+    h = ["<h3 id='fluxcode-sweep'>fluxcode B sweep: power-of-two vs decimal detection, order 1 vs orders 0–3 (B = 9..16)</h3>"
+         "<p>This sweep tests the <code>fluxcode</code> package (format specified in <code>docs/SPEC.md</code>) across "
+         "<code>max_quantize_bits</code> B = 9..16 with the noise floor disabled (covered separately below). "
+         "By default, each block is quantized onto a power-of-two step 2<sup>e</sup> chosen so the block's range spans "
+         "[2<sup>B−1</sup>, 2<sup>B</sup>) steps; residuals wrap mod 2<sup>16</sup> as <code>int16</code>, are zigzag-encoded "
+         "into <b>16 bit planes</b>, and compressed with zstd.</p>"
+         "<p>With <b>decimal detection</b> enabled, if every sample lies within a quarter power-of-two step of a multiple of "
+         "10<sup>p</sup> (using the coarsest p whose step exceeds the power-of-two step), fluxcode quantizes onto that decimal "
+         "grid and reconstructs <code>K / 10<sup>−p</sup></code>, which is bit-exact for decimal data and rounds float32-originated "
+         "values back to <code>float32</code>. Non-decimal steps such as ADC counts fall back to the power-of-two grid. "
+         "<b>Order 1</b> uses a fixed first-order predictor, while <b>orders 0–3</b> selects the lowest-variance predictor per block "
+         "from its first 250 samples.</p>"
+         "<p>Continuous data consists of the 7,200 blocks across 12 signal types used above. Discretized data consists of 9 signals "
+         "rounded to a fixed quantum (0.001, 0.01, 0.1, 2<sup>−4</sup>, a 12-bit ADC step, and decimals cast through float32), "
+         "with 600 blocks each. Sizes cover whole block groups (headers, per-block anchors, and the zstd frame), and timings are "
+         "single-threaded µs per 1,000-sample block including zstd and the Python API.</p>",
          img]
-    h.append("<table><tr><th>version</th><th>B</th><th>continuous bits/sample</th><th>continuous median RMSE</th>"
-             "<th>continuous worst max err</th><th>discretized bits/sample</th><th>discretized median RMSE</th>"
-             "<th>discretized worst max err</th><th>bit-exact samples</th><th>encode µs (cont / disc)</th><th>decode µs</th></tr>")
+    t1 = ["<table><tr><th>version</th><th>B</th><th>continuous bits/sample</th><th>continuous median RMSE</th>"
+          "<th>continuous worst max err</th><th>discretized bits/sample</th><th>discretized median RMSE</th>"
+          "<th>discretized worst max err</th><th>bit-exact samples</th><th>encode µs (cont / disc)</th><th>decode µs</th></tr>"]
     for l in labels:
         for B in bits:
             rc, rd = res[l, B]
-            h.append(f"<tr><td>{l}</td><td>{B}</td><td>{rc['bps']:.2f}</td><td>{rc['rmse_med']:.3g}%</td>"
-                     f"<td>{rc['maxerr_max']:.3g}%</td><td>{rd['bps']:.2f}</td><td>{rd['rmse_med']:.3g}%</td>"
-                     f"<td>{rd['maxerr_max']:.3g}%</td><td>{100 * rd['exact']:.1f}%</td>"
-                     f"<td>{rc['enc']:.1f} / {rd['enc']:.1f}</td><td>{rc['dec']:.1f}</td></tr>")
-    h.append("</table>")
-    h.append("<h4>Discretized signals at B = 16 (bits/sample)</h4><table><tr><th>signal</th>"
-             "<th>lossless at the true quantum</th>" + "".join(f"<th>{l}</th>" for l in labels) + "</tr>")
+            t1.append(f"<tr><td>{l}</td><td>{B}</td><td>{rc['bps']:.2f}</td><td>{rc['rmse_med']:.3g}%</td>"
+                      f"<td>{rc['maxerr_max']:.3g}%</td><td>{rd['bps']:.2f}</td><td>{rd['rmse_med']:.3g}%</td>"
+                      f"<td>{rd['maxerr_max']:.3g}%</td><td>{100 * rd['exact']:.1f}%</td>"
+                      f"<td>{rc['enc']:.1f} / {rd['enc']:.1f}</td><td>{rc['dec']:.1f}</td></tr>")
+    t1.append("</table>")
+    h.append(collapsible_table(f"Show B sweep table ({len(labels) * len(bits)} rows)", "".join(t1)))
+    t2 = ["<table><tr><th>signal</th>"
+          "<th>lossless at the true quantum</th>" + "".join(f"<th>{l}</th>" for l in labels) + "</tr>"]
     for name, _, _ in adapters.DISCRETE:
         cells = [res[l, 16][1]["per_signal"][name] for l in labels]
         best = min(cells)
-        h.append(f"<tr><td>{name}</td><td>{ideal[name]:.2f}</td>"
-                 + "".join(f"<td{' class=best' if c == best else ''}>{c:.2f}</td>" for c in cells) + "</tr>")
-    h.append("</table>")
-    h.append("<p class='muted'>“Lossless at the true quantum” is the same pipeline told the quantum in advance. "
-             "Decimal detection reaches it on every decimal signal; the ADC and 2<sup>−4</sup> steps aren't decimal "
-             "and fall back to the power-of-two grid. random-walk q0.001 only partly: blocks whose range exceeds "
-             "65,535 × 0.001 can't be exact in 16 bits. Byte and nibble plane layouts, which fluxcode dropped for "
-             "bit planes, are compared in REPORT.md §11.</p>")
+        t2.append(f"<tr><td>{name}</td><td>{ideal[name]:.2f}</td>"
+                  + "".join(f"<td{' class=best' if c == best else ''}>{c:.2f}</td>" for c in cells) + "</tr>")
+    t2.append("</table>")
+    t2.append("<p class='muted'>“Lossless at the true quantum” runs the same pipeline with the true quantum given in advance. "
+              "Decimal detection matches it on every decimal signal, while the ADC and 2<sup>−4</sup> steps are non-decimal "
+              "and fall back to the power-of-two grid. <code>random-walk q0.001</code> is only partially exact because blocks "
+              "whose range exceeds 65,535 × 0.001 cannot fit in 16 bits. Byte and nibble plane layouts, which fluxcode replaced "
+              "with bit planes, are compared in <code>REPORT.md</code> §11.</p>")
+    h.append(collapsible_table(f"Show discretized signals at B = 16 ({len(adapters.DISCRETE)} signals)", "".join(t2)))
     return "".join(h)
 
 
@@ -661,22 +677,24 @@ def noise_section():
         ax.legend(fontsize=7)
     fig.tight_layout()
     img = save_fig(fig, OUT, 'noise', 'noise floor sweep')
-    h = ["<h3 id='noise-floor'>Noise floor sweep: fluxcode-16, f = 0 … 1</h3>"
-         "<p>On blocks whose second differences look like white noise (lag-1 autocorrelation &lt; −0.6), the step "
-         "becomes at most f·σ, with σ a robust estimate from the same differences (docs/ENCODER.md §5.2). B stays 16; "
-         "on these signals the noise-floor step is coarser than the 16-bit step for every f ≥ 0.01, so f alone sets "
-         "the size. fluxcode's default is f = 0.25. Noisy signals only (600 blocks each, minute block groups); clean signals are unaffected at every f. Errors "
-         "are median RMS over blocks in units of the true noise σ, against the input and against the same signal "
-         "generated without noise.</p>",
-         img,
-         "<table><tr><th>signal</th>" + "".join(f"<th>f = {f:g}</th>" for f in NOISE_F) + "</tr>"]
+    tbl = ["<table><tr><th>signal</th>" + "".join(f"<th>f = {f:g}</th>" for f in NOISE_F) + "</tr>"]
     for name, rows in res.items():
-        h.append(f"<tr><td>{name}</td>" + "".join(
+        tbl.append(f"<tr><td>{name}</td>" + "".join(
             f"<td>{r['bps']:.2f} b/s<br><span class='muted'>+{r['in']:.3f}σ / {r['clean']:.3f}σ</span></td>"
             for r in rows) + "</tr>")
-    h.append("</table><p class='muted'>Each cell: bits/sample, then RMS error vs input / vs clean signal (σ). "
-             "Lossless points (noisy-sine q0.1 at f ≤ 0.01, still on its decimal grid) are left off the log axis. "
-             "The step is 2^floor(log2(f·σ)), so f values between powers of two can give the same step.</p>")
+    tbl.append("</table><p class='muted'>Each cell reports bits per sample, followed by RMS error against the input and against "
+               "the clean signal (in units of σ). Lossless points (<code>noisy-sine q0.1</code> at f ≤ 0.01, where it stays on "
+               "its decimal grid) are omitted from the log axis. Because the step snaps to 2<sup>⌊log₂(f·σ)⌋</sup>, adjacent "
+               "values of f between powers of two can select the same step.</p>")
+    h = ["<h3 id='noise-floor'>Noise floor sweep: fluxcode-16, f = 0 … 1</h3>"
+         "<p>When a block's second differences look like white noise (lag-1 autocorrelation &lt; −0.6), fluxcode coarsens "
+         "the quantization step to at most f·σ, where σ is estimated robustly from those differences (<code>docs/ENCODER.md</code> §5.2). "
+         "Here B remains 16, and for every f ≥ 0.01 the noise-floor step is coarser than the 16-bit step, so f alone controls "
+         "the compressed size (fluxcode defaults to f = 0.25). This sweep covers only the noisy signals (600 blocks each, in "
+         "one-minute block groups), as clean signals are unaffected at any f. Errors are median block RMS in units of the true "
+         "noise σ, measured both against the noisy input and against the underlying noise-free signal.</p>",
+         img,
+         collapsible_table(f"Show noise-floor sweep table ({len(res)} signals × {len(NOISE_F)} values)", "".join(tbl))]
     return "".join(h)
 
 
@@ -691,24 +709,18 @@ def dpcm_sweep():
               (4, "nibble", 1.0, "cubic c=0.8", cubic_expander(0.8))]
     kind_rows = by_kind()
     pts = []
-    h = ["<h3 id='dpcm-sweep'>DPCM sweep: code bits, packing, curve, step scale (all signal kinds, + deflate)</h3>"
-         "<p>D = step scale × max |x[i] − x[i−1]| per block. “nibble” packs two 4-bit codes per byte before deflate. "
-         "One deflate call per one-minute block group. Per-kind median RMSE in % FS.</p><table><tr><th>bits</th><th class='l'>packing</th>"
-         "<th class='l'>curve</th><th>D scale</th><th>bits/sample</th><th>median RMSE</th><th>worst RMSE</th><th>worst max |err|</th>"
-         + "".join(f"<th>{k}</th>" for k in KINDS) + "</tr>"]
+    tbl = ["<table><tr><th>bits</th><th class='l'>packing</th>"
+           "<th class='l'>curve</th><th>D scale</th><th>bits/sample</th><th>median RMSE</th><th>worst RMSE</th><th>worst max |err|</th>"
+           + "".join(f"<th>{k}</th>" for k in KINDS) + "</tr>"]
     for bits, pack, ds, label, g in cands:
         codec = SharedBackend(CompandedDpcm(label, label, g, ds, bits, pack))
         rs = [run_codec(codec, kind_rows[k]) for k in KINDS]
         bps = np.mean([r["bps"] for r in rs])
         pts.append((bps, 100 * np.median([r["rmse"] for r in rs]), bits, pack, label))
-        h.append(f"<tr><td>{bits}</td><td class='l'>{pack}</td><td class='l'>{label}</td><td>{ds:g}</td><td>{bps:.2f}</td>"
-                 f"<td>{100 * np.median([r['rmse'] for r in rs]):.3g}%</td><td>{100 * max(r['rmse_worst'] for r in rs):.3g}%</td>"
-                 f"<td>{100 * max(r['maxabs_worst'] for r in rs):.3g}%</td>" + "".join(f"<td>{100 * r['rmse']:.2g}</td>" for r in rs) + "</tr>")
-    h.append("</table><p class='muted'>D below the largest step causes slope overload on smooth signals "
-             "(a line rising 1/sample can't be tracked with a max step of 0.5), regardless of curve. "
-             "Fewer levels means less resolved noise, hence less entropy for deflate: "
-             "4-bit codes land near quant6-delta1-deflate's size with much lower error on smooth signals. Nibble packing "
-             "doesn't help because deflate matches on byte boundaries.</p>")
+        tbl.append(f"<tr><td>{bits}</td><td class='l'>{pack}</td><td class='l'>{label}</td><td>{ds:g}</td><td>{bps:.2f}</td>"
+                   f"<td>{100 * np.median([r['rmse'] for r in rs]):.3g}%</td><td>{100 * max(r['rmse_worst'] for r in rs):.3g}%</td>"
+                   f"<td>{100 * max(r['maxabs_worst'] for r in rs):.3g}%</td>" + "".join(f"<td>{100 * r['rmse']:.2g}</td>" for r in rs) + "</tr>")
+    tbl.append("</table>")
     fig, ax = plt.subplots(figsize=(9, 4.4))
     for bits, mk in ((6, "o"), (4, "s")):
         sel = [p for p in pts if p[2] == bits]
@@ -721,76 +733,98 @@ def dpcm_sweep():
     ax.grid(alpha=0.3, lw=0.4, which="both")
     ax.legend(fontsize=8, loc="upper right")
     fig.tight_layout()
-    h.append(save_fig(fig, OUT, "dpcm-sweep", "DPCM candidates, size vs error"))
+    h = ["<h3 id='dpcm-sweep'>DPCM sweep: code width, packing, companding curve, and step scale (+ deflate)</h3>"
+         "<p>Each block sets D = step scale × max |x[i] − x[i−1]|, with one deflate call per one-minute block group. "
+         "In “nibble” mode, two 4-bit codes are packed into each byte before deflate. Per-kind columns show median RMSE "
+         "as a percentage of full scale.</p>",
+         save_fig(fig, OUT, "dpcm-sweep", "DPCM candidates, size vs error"),
+         "<p class='muted'>Setting D smaller than the largest step causes slope overload on smooth signals "
+         "(for example, a ramp rising by 1 per sample cannot be tracked with a max step of 0.5), regardless of the curve. "
+         "Using fewer quantization levels resolves less noise and gives deflate lower entropy, so 4-bit codes achieve roughly "
+         "the same size as <code>quant6-delta1-deflate</code> with much lower error on smooth signals. Nibble packing does not "
+         "help because deflate matches on byte boundaries.</p>",
+         collapsible_table(f"Show DPCM sweep table ({len(cands)} configs × {len(KINDS)} datasets)", "".join(tbl))]
     return "".join(h)
 
 
 DECISIONS = """<h2 id='notes'>Design notes: decisions made where the spec was open</h2><ul>
-<li><b>Framing:</b> each codec encodes a one-minute block group (60 blocks). Codecs with a general-purpose back end
-(deflate, zstd, FLAC) make one stream per block group: per-block headers first, interleaved by field, then the per-block
-bodies, with one compressor call (FLAC: one stream, one frame per block). Codecs without one store the per-block
-encodings back to back, with a LEB128 length per block only where the size depends on the data (the knot codecs and
-Gorilla). fluxcode is one real block group per minute. Per-block headers such as min and max are inside the block group.</li>
-<li><b>Binary tree:</b> tree built bottom-up by pairing (odd node out gets a unary parent) →
-internal levels 1+2+4+8+16+32+63+125+250+500 = 1001 nodes, 1000 leaves, 3002 bits + 16-byte header = 392 bytes.
-Every internal node (including the root, which is always 00) gets a 2-bit code applied to the range it inherits.
-Encoder picks the narrowing that still <i>contains</i> all samples under the node (ties → the one centred on the data), else 00.
-Leaf bit selects lower/upper half of its final range and decodes to that half's <i>centre</i> (¼ or ¾) in <code>bintree-center</code>, or to the literal bottom/top of the range in <code>bintree-edge</code> (same bytes; better peaks, worse RMSE).</li>
-<li><b>Min/max piecewise:</b> two knots per 16-sample group (one if argmin = argmax), plus sample 0 and 999 as anchors.
-Knot-to-knot gaps can reach ~30 samples, which a 4-bit offset (max 16) can't express, so filler knots (actual sample value)
-are inserted every 16 samples when needed. Knot values are 12-bit relative to the global min/max; each knot costs 2 bytes.
-The stream ends when a knot lands on sample 999, so no count is stored.</li>
-<li><b>Consolidation:</b> drop the first point of block i+1 when block i's last point is its final sample, block i+1's first
-point is its first sample, they are opposite extremes, and the series keeps going the same direction across the boundary
-(so real reversals are never dropped).</li>
-<li><b>PCHIP:</b> same knots and bytes as <code>pwlinear-minmax16</code>; only the decoder's interpolation differs.</li>
-<li><b>Industrial-historian bounded-error piecewise linear (swinging door):</b> implemented as swinging-door trending, the standard historian algorithm. Deviation is
-a fraction of full scale (0.5% and 2% shown). Stored in the same knot format, so a knot is forced at least every 16 samples.
-Archived knots are real samples, so a single-sample impulse lands on the right index (see <code>impulses</code> peak shift).
-Error can slightly exceed the deviation: classic SDT anchors to the last in-band sample, and knots are then 12-bit quantized.</li>
-<li><b>Gorilla:</b> the value half of Facebook’s Gorilla (XOR with previous, reuse leading/trailing-zero window). Lossless; verified bit-exact.
-Timestamps are implicit here; Gorilla’s delta-of-delta timestamps would add ≈1 bit/sample (≈125 B) for a regular 1 ms clock.</li>
-<li><b>Extras:</b> <code>quant8-delta1-deflate</code> (same samples as quant8, delta + raw deflate — lossless on top of quant8, shows how much
-entropy coding buys), <code>dct-top64</code> (64 largest DCT coefficients, 10-bit index + 16-bit value; frequency-domain contrast).</li>
-<li><b>quant6-delta1-deflate:</b> same as quant8-delta1-deflate with 64 levels; still one byte per sample before deflate.</li>
-<li><b>Companded DPCM (dpcm6-*-deflate):</b> the S-curve is applied to the <i>residual</i> against the decoder's own running
-reconstruction (closed loop), so a coarsely-quantized big jump is corrected over the next samples instead of accumulating.
-Code k ∈ −31..31 (6 bits, signed byte so “no change” = 0x00) decodes to D·g(k/31), with g an odd expander that is flat near 0.
-Your cubic c·u³+(1−c)·u is used as that expander (code → delta); a true sigmoid is the compressor side, and its inverse
-blows up at ±1, so μ-law is used as the standard signed S-curve. Header: x[0] and D as float64.
-<code>dpcm4-*-deflate</code> use 4-bit codes (k ∈ −7..7), still one signed byte per code before deflate.</li>
-<li><b>ratectl-delta0123-zstd-4b / ratectl-flac-4b:</b> the rate-controlled pipelines from the <a href="rate.html">rate-control experiment</a>
-as block group codecs: rescale each block to [0,1], quantize with one step Δ for the block group, per-block predictor, then zstd (byte-split
-residuals, one call per block group) or libFLAC (one stream per block group). Δ is bisected so each one-minute block group lands at ≤ 4 bits/sample
-including its header (Δ, and min and max of every block). Max error is Δ/2 of the block's range, guaranteed.</li>
-<li><b>delta0123-zstd-8 / -10 / -12:</b> no search. Step = (max − min)/(2<sup>B</sup> − 1) on the block's own range
-(min and max decode exactly), predictor order = argmin var(diff(q, k)) for k = 0..3 (counts in the notes column), one zstd (level 3) call
-per block group. If a block's estimated size (from the residual variance) would exceed 8 bits/sample, B drops by the excess and the
-block is requantized. <code>delta12-zstd-8</code> is the performance option: B = 8, only orders 1 and 2 considered.
-Each block's min and max are in the block group.</li>
-<li><b>cw8-delta1-linear / cw8-delta1-sqrt (constant width):</b> exactly one byte per sample, no entropy coding.
-<code>cw8-delta1-linear</code> is closed-loop DPCM with 255 uniform levels D·k/127 (D = largest step in the block).
-<code>cw8-delta1-sqrt</code> is the "semi-quadratic" delta: a 32-bit grid over [min, max], one byte = [odd_shift | 7-bit signed
-dampened value], decoded with CLZ so delta resolution scales like √|delta| (7 bits for the largest jumps, ~13 for small ones),
-wrapping mod 2<sup>32</sup>. Encoder is closed loop and picks the nearest decodable delta.
-<code>cw8-delta1-bfp-e2</code> is 8-bit deltas (all 256 codes) with a 2-bit step exponent per 16-sample frame: step = 2<sup>−e</sup>
-of the 8-bit step, decoded with a shift. e = 0 is exactly the quant8 grid with rollover across the block's full range, so max
-error never exceeds quant8's (range/510); quiet frames get up to 3 extra bits. <code>cw8-delta1-bfp-e4</code> uses 4-bit exponents
-(e = 0..15, up to 15 extra bits; 8.41 bits/sample). <code>cw4-delta1-bfp-e4</code> / <code>cw6-delta1-bfp-e4</code> are the same
-design with 4-bit / 6-bit codes (base grid 16 / 64 levels, max error bounded by q4's / q6's: range/30, range/126) and 4-bit
-exponents: 4.42 / 6.42 bits/sample including the 20-byte header. See <code>tslab/constwidth/</code>.</li>
-<li><b>cw-delta1-tree-2 / -4 / -7:</b> hierarchical block floating point over the deltas. The original tree codec's
-binary tree over the 999 deltas, 1 bit per internal node (1 = halve the scale for that subtree), and sign-relative leaf
-codes: decoded delta = c · s · direction of the last nonzero delta, a negative code flips direction. 2-bit leaves use
-{−1, 0, 1, 2}; wider leaves use two's-complement ranges (−8..7, −64..63). A node halves if every leaf below still fits,
-sized for the direction each leaf will actually have. Leaves are closed loop with integer residuals. 7-bit leaves
+<li><b>Framing:</b> Each codec encodes a one-minute block group (60 blocks). Codecs with a general-purpose entropy back end
+(deflate, zstd, FLAC) produce one stream per block group: per-block headers are stored first (interleaved by field), followed by
+the block bodies in a single compressor call (FLAC uses one stream with one frame per block). Codecs without a shared back end
+store their per-block payloads back to back, prefixing each block with a LEB128 length only when the block size is data-dependent
+(the knot codecs and Gorilla). <code>fluxcode</code> writes one native block group per minute, and per-block headers such as min
+and max are always accounted for inside the group.</li>
+<li><b>Binary tree:</b> The tree is built bottom-up by pairing nodes (with any odd node receiving a unary parent), giving
+1+2+4+8+16+32+63+125+250+500 = 1001 internal nodes and 1000 leaves (3002 bits plus a 16-byte header, or 392 bytes total).
+Each internal node—including the root, which is always 00—gets a 2-bit code that narrows its inherited range. The encoder picks
+the narrowing that still <i>contains</i> all samples under that node (breaking ties toward the one centered on the data), or 00
+if none fits. Each leaf bit selects the lower or upper half of its final range and decodes to that half's <i>center</i> (¼ or ¾)
+in <code>bintree-center</code>, or to the literal bottom/top edge in <code>bintree-edge</code> (identical bytes, sharper peaks,
+higher RMSE).</li>
+<li><b>Min/max piecewise:</b> Stores two knots per 16-sample group (one if argmin equals argmax), plus samples 0 and 999 as
+anchors. Because knot-to-knot gaps can reach ~30 samples—exceeding a 4-bit offset (max 16)—filler knots using the actual sample
+value are inserted every 16 samples when needed. Knot values are 12-bit relative to the block's global min and max, so each knot
+takes 2 bytes. The stream terminates as soon as a knot lands on sample 999, avoiding a separate count.</li>
+<li><b>Consolidation:</b> Drops the first point of block i+1 when block i's last point is its final sample, block i+1's first
+point is its first sample, the two are opposite extremes, and the series continues in the same direction across the boundary,
+ensuring real reversals are never dropped.</li>
+<li><b>PCHIP:</b> Uses the exact same knots and bytes as <code>pwlinear-minmax16</code>; only the decoder's interpolation differs.</li>
+<li><b>Industrial-historian bounded-error piecewise linear (swinging door):</b> Implemented as swinging-door trending (SDT), the
+standard historian algorithm, with deviation set as a fraction of full scale (0.5% and 2% shown). It uses the same knot format,
+so a knot is forced at least every 16 samples. Archived knots are actual samples, so single-sample impulses stay at the right
+index (see <code>impulses</code> peak shift). Error can slightly exceed the nominal deviation because classic SDT anchors to the
+last in-band sample and knots are 12-bit quantized.</li>
+<li><b>Gorilla:</b> Implements the value half of Facebook's Gorilla (XOR with the previous value, reusing leading/trailing-zero
+windows), verified bit-exact. Timestamps are implicit here; Gorilla's delta-of-delta timestamps would add roughly 1 bit/sample
+(≈125 B per block) on a regular 1 ms clock.</li>
+<li><b>Extras:</b> <code>quant8-delta1-deflate</code> applies first-order delta coding and raw deflate losslessly on top of
+<code>quant8</code> to show how much entropy coding saves. <code>dct-top64</code> keeps the 64 largest DCT coefficients
+(10-bit index + 16-bit value) as a frequency-domain baseline.</li>
+<li><b>quant6-delta1-deflate:</b> Same pipeline as <code>quant8-delta1-deflate</code> with 64 quantization levels, still using
+one byte per sample before deflate.</li>
+<li><b>Companded DPCM (<code>dpcm6-*-deflate</code>):</b> Applies the companding curve to the <i>residual</i> against the
+decoder's running reconstruction (closed loop), so a coarsely quantized jump is corrected over subsequent samples rather than
+accumulating. Each 6-bit code k ∈ −31..31 (stored as a signed byte so “no change” is 0x00) decodes to D·g(k/31), where g is an
+odd expander that is flat near 0. The cubic c·u³+(1−c)·u serves as the expander (code → delta); because a true sigmoid is a
+compressor whose inverse blows up at ±1, μ-law is used as the standard signed S-curve. The header stores x[0] and D as
+<code>float64</code>. <code>dpcm4-*-deflate</code> uses 4-bit codes (k ∈ −7..7), still stored as one signed byte per code before
+deflate.</li>
+<li><b><code>ratectl-delta0123-zstd-4b</code> / <code>ratectl-flac-4b</code>:</b> The rate-controlled pipelines from the
+<a href="rate.html">rate-control experiment</a> wrapped as block-group codecs. Each block is rescaled to [0, 1], quantized with
+one shared step Δ for the whole block group, predicted per block, and compressed with either zstd (byte-split residuals, one call
+per block group) or libFLAC (one stream per block group). Δ is bisected so each one-minute block group fits within 4 bits/sample
+including its header (Δ plus every block's min and max), guaranteeing max error ≤ Δ/2 of each block's range.</li>
+<li><b><code>delta0123-zstd-8</code> / <code>-10</code> / <code>-12</code>:</b> Fixed-budget encoding with no rate search.
+Each block uses step (max − min)/(2<sup>B</sup> − 1) on its own range (so min and max decode exactly), picks predictor order
+k = argmin var(diff(q, k)) over k = 0..3 (counts appear in the notes column), and compresses the block group with one zstd
+(level 3) call. If a block's variance-based size estimate exceeds 8 bits/sample, B is lowered by the excess and the block is
+requantized. <code>delta12-zstd-8</code> is the faster variant: B = 8, considering only orders 1 and 2. Every block's min and max
+are stored in the block group.</li>
+<li><b><code>cw8-delta1-linear</code> / <code>cw8-delta1-sqrt</code> (constant width):</b> Exactly one byte per sample with no
+entropy coding. <code>cw8-delta1-linear</code> is closed-loop DPCM with 255 uniform levels D·k/127, where D is the largest step
+in the block. <code>cw8-delta1-sqrt</code> uses a “semi-quadratic” delta on a 32-bit grid over [min, max]: each byte packs
+[odd_shift | 7-bit signed dampened value] and decodes via CLZ so delta resolution scales as √|delta| (7 bits for large jumps,
+~13 bits for small ones), wrapping mod 2<sup>32</sup>; the encoder runs closed-loop and picks the nearest decodable delta.
+<code>cw8-delta1-bfp-e2</code> uses 8-bit deltas (all 256 codes) with a 2-bit step exponent per 16-sample frame, giving step
+2<sup>−e</sup> of the 8-bit step via a bit shift. At e = 0 it matches the <code>quant8</code> grid with rollover across the
+block's full range, so max error never exceeds range/510, while quiet frames gain up to 3 extra bits.
+<code>cw8-delta1-bfp-e4</code> widens the exponent to 4 bits (e = 0..15, up to 15 extra bits, 8.41 bits/sample).
+<code>cw4-delta1-bfp-e4</code> and <code>cw6-delta1-bfp-e4</code> follow the same design with 4-bit and 6-bit codes (base grids
+of 16 and 64 levels, max error bounded by range/30 and range/126) and 4-bit exponents, taking 4.42 and 6.42 bits/sample including
+the 20-byte header. See <code>tslab/constwidth/</code>.</li>
+<li><b><code>cw-delta1-tree-2</code> / <code>-4</code> / <code>-7</code>:</b> Hierarchical block floating point over the 999
+deltas, structured as a binary tree with 1 bit per internal node (1 halves the scale for that subtree) and sign-relative leaf
+codes: each decoded delta is c · s · (direction of the last nonzero delta), where a negative code flips direction. 2-bit leaves
+use {−1, 0, 1, 2}, while wider leaves use two's-complement ranges (−8..7 and −64..63). An internal node halves whenever every
+leaf beneath it still fits for its actual direction. Leaves are encoded closed-loop with integer residuals, and 7-bit leaves
 amortize to ~8 bits/sample. See <code>tslab/constwidth/delta_tree.py</code>.</li>
-<li>Periodic signals use irrational frequencies (√17, π², 16π Hz, …) so cycles never land on whole samples; integer Hz at 1 kHz repeats exactly and made deflate look far better than it would on real data.</li>
-<li>Uniform noise used for “±10” noise. Random seeds are fixed so runs are reproducible.</li>
+<li><b>Periodic signals:</b> Frequencies are irrational (√17, π², 16π Hz, …) so cycles never align with whole samples; integer
+Hz at 1 kHz repeats identically and artificially inflates deflate's compression ratio.</li>
+<li><b>Noise and seeds:</b> Uniform noise is used for the “±10” noise signals, and all random seeds are fixed for reproducibility.</li>
 </ul>"""
 
 
 if __name__ == "__main__":
     results = run()
     write_report(results)
-    print(f"wrote {OUT / 'index.html'}")
+    print(f"wrote {OUT / 'codecs.html'}")

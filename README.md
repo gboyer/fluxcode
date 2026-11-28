@@ -1,77 +1,29 @@
 # fluxcode
 
-Compression for float64 time series, geared towards scientific and engineering usage.
+Bounded-error compression for float64 time series, built for scientific and engineering data.
 
-Guarantees a maximum error using quantization, and automatically preserves values
-that lie on exact binary, decimal, or rational-step grids (such as 0.01, 0.05, thirds,
-or ADC/calibration steps) when the bit range allows.
+Fluxcode compresses float64 streams into self-describing block groups with a hard per-sample error bound, while automatically detecting and preserving values on exact binary, decimal, or rational-step grids (such as `0.01`, `0.05`, thirds, or calibrated ADC counts) whenever the bit range allows.
 
-High level properties:
+**Live benchmarks & documentation:** [gboyer.github.io/fluxcode/report/](https://gboyer.github.io/fluxcode/report/) — interactive results across synthetic signals ([Codec Comparison](https://gboyer.github.io/fluxcode/report/codecs.html)) and 14 real-world public dataset families ([Public Datasets](https://gboyer.github.io/fluxcode/report/public.html)), plus the [Format Specification](https://gboyer.github.io/fluxcode/report/spec.html), [Timestamps](https://gboyer.github.io/fluxcode/report/time.html), [Historian](https://gboyer.github.io/fluxcode/report/sdt.html), [Fluxprune](https://gboyer.github.io/fluxcode/report/prune.html), and [Rate Control](https://gboyer.github.io/fluxcode/report/rate.html).
 
-* **Fast**: A single MacBook Air M3 core decodes at 4.4 GiB/s, and encodes at 1.2 GiB/s at the
-  default effort (about a third faster at effort 1).
-* **Blocks**: Each block holds 0 to 65,535 samples: fixed-size blocks of regularly sampled
-  data (usually 1000 samples/block), explicit sizes, or blocks of a fixed duration of time
-  for data that arrives late or with gaps.
-* **Min-Max Quantization**: Each block is quantized up to 2^16 steps between its min and
-  max value. Blocks with tight range preserve accuracy better than wide ranges.
-* **Decimals**: If the block's samples fall close to a decimal grid, it is stored as exact
-  decimals if the bit range allows. For example, 14.32 will be compressed as 1432e-2.
-* **Grids you don't know**: A sensor's own step is found and stored exactly when it is a fraction
-  N / D (each up to 65,535) of a power of ten or two, with an offset: 0.05 or 0.18 (°F from 0.1 °C)
-  steps, thirds, ADC counts of 10 V / 4096 or 10 V / 4095, a calibration's gain and offset. Such
-  data compresses 10–48% smaller in the benchmarks and decodes bit for bit.
-* **Multi-Order Delta Encoding**: Stores raw samples or their first, second, or third
-  difference, whichever has the lowest variance.
-* **Group-Compressed zstd**: Blocks are assembled into block groups; for example, a minute might
-  be a single block group with 60 blocks, each with 1000 samples (the block group records every
-  block's size). Their bit planes are
-  interleaved and compressed with zstd to separate high and low entropy signals.
-* **Full Range**: Supports the full dynamic range of IEEE 754 64-bit floats, including
-  subnormal ranges, +/- Infinity, and NaN.
-* **Timestamps**: Optionally stores exact timestamps (s, ms, µs or ns) for irregular sampling.
-  Regular intervals store very cheaply, but noisy timestamps dramatically
-  increase compressed size, unless you allow a time error (below).
+## Key properties
 
-Encoding features to balance size, accuracy, and performance depending on data
-type:
+- **Fast**: On a single Apple M3 core, fluxcode decodes at ~4.4 GiB/s and encodes at ~1.5 GiB/s at default effort (~2.2 GiB/s at `effort=1`). Kernels are compiled with Numba and release the GIL across threads.
+- **Self-describing block groups**: Each block holds 0 to 65,535 samples (fixed-size blocks, explicit sizes, or fixed time durations for late/gapped arrivals). Blocks are grouped into a single zstd frame with bit- or byte-shuffled residuals; decoding needs only the payload bytes.
+- **Per-block quantization & exact grids**: Each block quantizes to up to 2¹⁶ steps across its range. Blocks on exact decimal grids (`10^p`) or rational-step grids (`N / D` times a power of 10 or 2, `N, D ≤ 65,535`, with an offset — e.g. `0.05`, `0.18`, thirds, `10 V / 4095`) are detected automatically and round-trip bit for bit.
+- **Multi-order delta prediction**: Picks raw samples or 1st, 2nd, or 3rd differences per block by residual variance.
+- **Full IEEE 754 float64 range**: Round-trips `NaN` (canonical quiet NaN), `±inf`, subnormals, and extreme magnitudes; isolated outliers/error codes are escaped so they do not coarsen neighboring samples.
+- **Optional timestamps**: Stores exact `s`, `ms`, `us`, or `ns` timestamps (~65 bytes per regular block group), or lossy timestamps within a configurable fraction of the sample interval (`time_error`) to collapse clock jitter back onto a regular grid.
 
-* **Noise floor**: Detail finer than a block's own finest-scale variation (its spectral density at
-  the top of the band: sensor noise at 1 kHz, the process's move between samples at one a minute)
-  isn't kept: the step is a share f of that level, 0.25 by default, so the error stays about 23 dB
-  under the signal's spectrum at every frequency and the shape survives. It reads that level under
-  a busy signal (a motor's 60 Hz, a gearbox's resonance, turbulence) and on random walks, and
-  leaves clean periodic data alone (below about 0.39 of the sample rate). With irregular timestamps, it applies only where nearly
-  every interval is one scan (a jittered clock, or one with gaps), measured on consecutive scans: a
-  historian's swinging-door archive looks like white noise without being noise, and gets none.
-  Without timestamps the samples are taken as evenly spaced, so store an archive with its times
-  (or with the noise floor off). It only applies to blocks of at least 128 samples, so a fixed
-  `block_len` under 128 never gets one.
-* **Time error**: Optionally lets timestamps move by up to a share of their interval
-  (`time_error`, off by default): each block's times round to a coarse grid of a 1-2-5 step
-  (1, 2, 5, 10, ... ticks) for which 95% of them move by at most that share of their own interval
-  (none more than that share of the mean interval), at the clock's own phase, so a jittered clock
-  lands back on its own grid and stores as a regular one. A time error of about 5× the jitter (σ
-  over the interval) does that: 0.05 for 1% jitter, 120 KB → 63–74 bytes a minute at 1 kHz, on
-  round times or free-running. Smaller ones still save most of the jitter's cost. A clock whose
-  period no 1-2-5 step divides (1024 Hz, 60 Hz) goes onto a lattice of its own instead (154 and
-  267 bytes a minute at 0.5% jitter and 0.05). Times are rounded once, from the values given:
-  update a block group with a time error with `replace_time_blocks`, from the source data.
-* **Target bit rate**: Uses an entropy estimator to determine if the above would likely
-  exceed your bit rate after compression. By default, off, to preserve quality.
-* **Effort**: `effort=1` (fastest) to `9` (smallest), default 4, trades encode time for size
-  without changing the decoded values. It picks bit or byte planes for the residuals (by a
-  one-pass heuristic at efforts 1–2, or by compressing both from 3), from effort 5 gives each dense
-  plane its own zstd block, and at effort 9 also tries zstd 9. Against the default, effort 1 encodes
-  about a third faster for 1.5–2.5% more bytes; effort 5 is about 2% smaller for about 18% more
-  time; effort 9 is about 3% smaller for about 5× the time ([docs/TUNING.md](docs/TUNING.md#effort)).
-  Efforts 5 and up scale poorly across threads with python-zstandard (it holds the GIL while ending
-  a block); the optional Rust extension ([rust/](rust/): `uv sync --extra rust` from a checkout; not on PyPI
-  yet) fixes that and gives the same block groups.
+### Encoding controls
 
-**Status:** version 0.1, alpha. The block group format is version 1 and specified in
-[docs/SPEC.md](docs/SPEC.md); decoders reject other versions. The API and format may
-still change before 1.0.
+- **Noise floor** (`noise_floor_sigma=0.25`, `0` to disable): Estimates each block's high-frequency noise σ and avoids keeping detail finer than `f · σ` (bounding error at `f · σ / 2`, ~23 dB below the noise spectrum), while leaving clean periodic signals, short blocks (< 128 samples), and irregular sparse archives untouched.
+- **Absolute tolerance** (`absolute_tolerance=0.0`): Optional per-series absolute error allowance in the data's own units (e.g. sensor accuracy), letting quiet blocks coarsen up to `2 × absolute_tolerance`.
+- **Time error** (`time_error=0.0`, up to `0.5`): Rounds jittered timestamps to a 1-2-5 step or fitted clock lattice at the clock's own phase so 95% of timestamps move by at most `time_error` of their own interval. Update groups with `time_error` via `replace_time_blocks` from source data.
+- **Target bit rate** (`target_bits_per_sample=None`, `≥ 6.0` when set): Soft per-group size cap guided by an entropy estimator.
+- **Effort** (`effort=4`, range `1–9`): Trades encode time for size without changing decoded values — choosing bit vs. byte planes, per-plane zstd blocks (from effort 5), and zstd level 9 (at effort 9). An optional Rust extension ([rust/](rust/), `uv sync --extra rust`) avoids Python's GIL during zstd block flushes at efforts 5+.
+
+**Status:** `0.1.0` (alpha). The wire format is version 1 ([docs/SPEC.md](docs/SPEC.md)); decoders reject unknown versions. Both API and format may change before 1.0.
 
 ## Install
 
@@ -81,7 +33,7 @@ pip install git+https://github.com/gboyer/fluxcode
 uv add git+https://github.com/gboyer/fluxcode
 ```
 
-Python 3.10 or later. Dependencies: numpy, numba, zstandard.
+Requires Python 3.10+ (`numpy`, `numba`, `zstandard`).
 
 ## Quickstart
 
@@ -93,7 +45,7 @@ rng = np.random.default_rng(0)
 t = np.arange(30_000) / 1000  # 30 s at 1 kHz: 30 blocks of 1000
 x = 100 * np.sin(2 * np.pi * 3.3 * t) + rng.normal(0, 1, t.size)
 
-# One block group = one storage row, here 30 blocks of 1000 samples. Block groups are self-describing.
+# One block group = one storage row, self-describing on decode.
 encoded = fluxcode.encode_group(x, block_len=1000)
 decoded = fluxcode.decode_group(
     encoded.payload
@@ -103,39 +55,33 @@ print(
     f"max error {np.abs(decoded.values - x).max():.3f}"
 )
 
-# Decimal / rational-step data (here a price rounded to cents) decodes to the identical float64.
+# Decimal / rational-step data (here prices rounded to cents) decodes bit for bit.
 price = np.round(20 + np.cumsum(rng.normal(0, 0.05, 5_000)), 2)
 assert np.array_equal(
     fluxcode.decode_group(fluxcode.encode_group(price, block_len=1000).payload).values,
     price,
 )
 
-# Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are stored exactly
-# (or, with Params(time_error=...), rounded within that share of their interval).
+# Timestamps (datetime64 in s/ms/us/ns, or integer ticks with time_unit) are exact by default.
 stamps = np.datetime64("2026-09-27T00:00", "ns") + np.arange(x.size) * np.timedelta64(
     1, "ms"
 )
 stamps[12_345:] += np.timedelta64(2, "s")  # a gap: only its block pays for it
 timed = fluxcode.encode_group(x, block_len=1000, times=stamps)
 assert np.array_equal(fluxcode.decode_group(timed.payload).times, stamps)
-# Per-block start timestamps align 1:1 with block_min / block_max / block_mean.
 assert timed.block_start_times.shape == timed.block_min.shape
 
-# Replace block 3 and append block 30 as more of the stream arrives: blocks by index, any size.
+# Replace block 3 and append block 30 without re-encoding untouched blocks.
 new_blocks = 100 * np.sin(
     2 * np.pi * 3.3 * (np.arange(2000).reshape(2, 1000) / 1000 + 30)
 )
 updated = fluxcode.update(encoded.payload, {3: new_blocks[0], 30: new_blocks[1][:700]})
 assert fluxcode.decode_group(updated.payload).values.size == 30_700
 
-# Blocks of a fixed duration (here one second): blocks with no data are empty, and the block group
-# grows as data arrives. update_time_blocks upserts samples and deletes time ranges.
+# Fixed-duration time blocks (1 s each) with upserts and range deletion.
 ms = np.datetime64("2026-09-27T00:00", "ms") + np.arange(x.size)
 hour = {"start_time": ms[0], "block_duration": np.timedelta64(1, "s")}
-first, late = (
-    slice(0, 10_000),
-    slice(10_000, 20_000),
-)  # 20 s of 30; seconds 10-19 come later
+first, late = slice(0, 10_000), slice(10_000, 20_000)
 enc_tb = fluxcode.encode_time_blocks(x[first], ms[first], **hour)
 gap = (ms[10_000], ms[20_000])  # [start, end)
 upd_tb = fluxcode.update_time_blocks(
@@ -145,265 +91,135 @@ assert fluxcode.decode_group(upd_tb.payload).block_sizes.tolist() == [1000] * 20
 
 # Long series: encode() splits into block groups; decode() accepts EncodedSeries or payloads.
 series = fluxcode.encode(np.tile(x, 5), block_len=1000, blocks_per_group=60)
-assert sum(len(decoded.values) for decoded in fluxcode.decode(series)) == 5 * x.size
+assert sum(len(d.values) for d in fluxcode.decode(series)) == 5 * x.size
 ```
 
-This prints `5.77 bits/sample, max error 0.125`: the noise (σ = 1) triggered the noise floor,
-which set the step to 0.25σ.
+This prints `5.77 bits/sample, max error 0.125`: the σ = 1 noise triggers the noise floor, setting the step to 0.25σ.
 
-- `encode_group(x, params, *, block_len, times=None, time_unit=None)`: one block group (an
-  8-byte header and a zstd frame) of blocks of `block_len` samples (1 to 65,535; the last block
-  holds the rest). Returns a frozen `EncodedGroup(payload, block_min, block_max, block_mean,
-  block_start_times)`: the summary statistics come free with encoding, and decoding doesn't need
-  them. `times` optionally stores one timestamp per sample, exactly (or within `time_error`):
-  `datetime64[s|ms|us|ns]`, or integer ticks with `time_unit="s" | "ms" | "us" | "ns"`. They must
-  be naive (store UTC) and non-decreasing; equal timestamps are fine. A regular grid costs about
-  65 bytes per block group.
-- `encode_blocks(x, block_sizes, params, *, times=None, time_unit=None)`: one block group of blocks
-  of the given sizes (0 to 65,535 each), as one flat array and each block's size, like Arrow list
-  arrays. An empty block stores nothing (NaN statistics, NaT start time if timed). Blocks of at most
-  8 samples skip the analysis: they are stored at the finest step, without differences (decimal
-  data still stays exact).
-- `encode_time_blocks(x, times, params, *, start_time, block_duration, time_unit=None)`: one block
-  group in which block b holds the samples timed in `[start_time + b·block_duration, start_time +
-  (b+1)·block_duration)`; blocks without samples are empty. `start_time` (`datetime64`, naive
-  `datetime` or ticks) and `block_duration` (`timedelta64`, `timedelta` or ticks) aren't stored:
-  keep them with the block group, e.g. the start in its storage key.
-- `encode(x, params, *, block_len, blocks_per_group, times=None, time_unit=None)` /
-  `decode(groups)`: bulk versions. `encode` splits a long series (and its times, non-decreasing
-  across block group boundaries too) into block groups of `blocks_per_group` blocks and returns
-  `EncodedSeries(groups: list[EncodedGroup])`, with flattening properties `payloads`, `block_min`,
-  `block_max`, `block_mean`, and `block_start_times`; `decode` accepts an `EncodedSeries` or a
-  sequence of payload bytes and returns one `DecodedGroup` per block group. A block group holds at
-  most 65,535 blocks and 2^26 = 67,108,864 samples (the bound decoders accept).
-- `decode_group(payload)`: returns `DecodedGroup(values, times, block_sizes)`. `times` is
-  `datetime64` in the encoded block group, or `None` for a block group encoded without times. The
-  block group records everything needed.
-- `update(group, blocks, params, *, times=None)`: replace or append whole blocks, given as a dict
-  `{index: samples}` of any sizes (skipped indices past the end are appended empty); untouched
-  blocks decode to identical values. `times` (a dict with the same keys) is required exactly when
-  the block group has a time axis. The update functions return `UpdatedGroup(group, indices,
-  block_min, block_max, block_mean)`: the new block group and the statistics of the blocks they
-  re-encoded.
-- `update_time_blocks(group, x, times, params, *, start_time, block_duration, delete_ranges=None,
-  time_unit=None)`: an upsert plus a range deletion. It first deletes the block group's samples in
-  `delete_ranges` (`[start, end)` pairs: one pair, a list, or a `(k, 2)` array), then adds the new
-  samples, which may be timed anywhere: an existing sample with the same timestamp as a new one is
-  replaced, and new samples sharing a timestamp are all kept. Samples only is an upsert, ranges
-  only a deletion, both a range replacement. New times are stored exactly: with `time_error`,
-  new samples are an error (use `replace_time_blocks`). Blocks that no range meets and no new sample falls in
-  are carried over without being decoded; the others are decoded, merged and re-encoded: their kept samples are grid points, so they come back bit for
-  bit unless the block's step coarsens, and stay within one step of the coarsest grid it has
-  used however often it is updated.
-- `replace_time_blocks(group, blocks, x, times, params, *, start_time, block_duration,
-  time_unit=None)`: re-encodes the declared blocks (indices, e.g. `range(12, 14)`) from the
-  samples timed in them; every sample must fall in a declared block, and a declared block without
-  samples is emptied. With `time_error` the times are rounded as `encode_time_blocks` would round
-  them, each block continuing the clock of the stored block before it: re-sending the open block
-  whole as it fills gives the bytes of encoding at once. This is how to update a block group with
-  a time error.
-- `Params`: `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders={0,1,2,3}`,
-  `noise_floor_sigma=0.25` (0 turns it off), `target_bits_per_sample=None`
-  (≥ 6 when set), `grids="rational"` (binary, decimal, rational), `effort=4` (1–9), `time_error=0` (0–0.5), `absolute_tolerance=0` (per tag: an absolute error
-  acceptable for its values, in its units, such as a sensor's accuracy; a permission, not a bound;
-  0.1% of span saves 30% on the realistic corpus). [docs/TUNING.md](docs/TUNING.md) has the measurements behind the defaults.
+## API overview
+
+All encode functions return per-block summary statistics alongside the compressed payload; decoding does not need them. A block group holds up to 65,535 blocks and 2²⁶ (67,108,864) samples.
+
+- `encode_group(samples, params=Params(), *, block_len, times=None, time_unit=None) -> EncodedGroup`
+  Encodes a 1D series into fixed-size blocks (`1..65,535`; final block may be short). Returns `EncodedGroup(payload, block_min, block_max, block_mean, block_start_times)`.
+- `encode_blocks(samples, block_sizes, params=Params(), *, times=None, time_unit=None) -> EncodedGroup`
+  Encodes explicit block sizes (`0..65,535` each) from a flat sample array (like Arrow list arrays). Empty blocks get `NaN` stats and `NaT` start times; blocks of ≤ 8 samples skip analysis and use the finest step.
+- `encode_time_blocks(samples, times, params=Params(), *, start_time, block_duration, time_unit=None) -> EncodedGroup`
+  Partitions timed samples into fixed-duration buckets `[start_time + b·block_duration, start_time + (b+1)·block_duration)`. `start_time` and `block_duration` are not stored in the payload; keep them alongside the group (e.g. in its storage key).
+- `encode(samples, params=Params(), *, block_len, blocks_per_group, times=None, time_unit=None) -> EncodedSeries`
+  Splits a long series into multiple block groups, returning `EncodedSeries(groups)` with flattening properties `payloads`, `block_min`, `block_max`, `block_mean`, and `block_start_times`.
+- `decode_group(payload) -> DecodedGroup` / `decode(groups) -> list[DecodedGroup]`
+  Returns `DecodedGroup(values, times, block_sizes)`. `times` is a `datetime64` array in the encoded unit (`s`, `ms`, `us`, or `ns`), or `None` if untimed.
+- `update(payload, blocks, params=Params(), *, times=None, time_unit=None) -> UpdatedGroup`
+  Replaces or appends whole blocks by index (`{index: samples}`) without decoding untouched blocks. Returns `UpdatedGroup(payload, indices, block_min, block_max, block_mean, block_start_times)` for the re-encoded blocks.
+- `update_time_blocks(payload, samples, times, params=Params(), *, start_time, block_duration, delete_ranges=None, time_unit=None) -> UpdatedGroup`
+  Deletes samples in `delete_ranges` (`[start, end)` pairs) and upserts new samples (exact timestamps only; untouched blocks are carried over directly).
+- `replace_time_blocks(payload, blocks, samples, times, params=Params(), *, start_time, block_duration, time_unit=None) -> UpdatedGroup`
+  Re-encodes the specified block indices from source samples; use this to update time-block groups when `time_error > 0`.
+- `Params`:
+  `min_quantize_bits=6`, `max_quantize_bits=16`, `diff_orders=frozenset({0, 1, 2, 3})`, `noise_floor_sigma=0.25`, `target_bits_per_sample=None`, `grids="rational"` (`"binary" | "decimal" | "rational"`), `effort=4` (`1–9`), `time_error=0.0` (`0–0.5`), `absolute_tolerance=0.0`. See [docs/TUNING.md](docs/TUNING.md) for the rationale behind the defaults.
+
+Timestamps must be naive (store UTC) and non-decreasing; duplicate timestamps are allowed. Pass `datetime64[s|ms|us|ns]` directly, or integer ticks with `time_unit`.
 
 ## Numbers
 
-1 GiB of synthetic 1 kHz signals through the public API with default parameters, one thread, on an
-Apple M3 (MacBook Air), Python 3.11, numpy 2.4. Error is the worst block's max error as a
-percentage of that block's range. Full tables (noise floor off, a 6-bit target, thread scaling) are
-in [bench/RESULTS.md](bench/RESULTS.md); the signal generators are in
-[tests/_signals.py](tests/_signals.py).
+### Synthetic 1 GiB benchmark
+
+1.00 GiB of synthetic 1 kHz float64 signals (15 signal types, 134,100 blocks) with default parameters, single-threaded on an Apple M3 (Python 3.11, NumPy 2.4). Error is the worst block's max error as a percentage of that block's range. Full tables (noise floor off, 6-bit target, efforts 1/5/9, thread scaling) are in [bench/RESULTS.md](bench/RESULTS.md); signal generators are in [tests/_signals.py](tests/_signals.py).
 
 | signal | bits/sample | worst max error (% of range) | encode µs/block | decode µs/block |
-|---|---|---|---|---|
-| linear ramp | 0.02 |0.0000%| 2.53 | 1.20 |
-| square wave | 0.04 |0.0000%| 4.43 | 1.52 |
-| sine, 4.12 Hz | 2.40 |0.0010%| 5.75 | 2.01 |
-| sine, 50.3 Hz | 6.73 |0.0010%| 5.96 | 2.10 |
-| chirp | 7.80 |0.0010%| 7.18 | 1.91 |
-| random walk | 5.63 |0.3303%| 5.92 | 1.71 |
-| random walk rounded to 0.01 | 5.63 |0.3501%| 5.92 | 1.72 |
-| sensor drift rounded to 0.1 | 1.71 |0% (exact)| 7.76 | 2.33 |
-| noisy sine (σ = 5) | 5.22 |0.2334%| 5.76 | 1.61 |
-| Gaussian spikes on uniform noise | 6.04 |1.4661%| 6.36 | 2.02 |
-| **all 15 signals** | **4.01** | | **5.71** | **1.75** |
-| random walk on thirds (not in the 15) | 3.92 |0% (exact)| 12.23 | 2.25 |
+|---|---:|---:|---:|---:|
+| linear ramp | 0.02 | 0.0000% | 2.40 | 1.36 |
+| square wave | 0.04 | 0.0000% | 2.96 | 1.57 |
+| sine, 4.12 Hz | 2.40 | 0.0010% | 6.10 | 2.12 |
+| sine, 50.3 Hz | 6.74 | 0.0010% | 6.06 | 2.16 |
+| chirp | 7.81 | 0.0010% | 7.48 | 2.05 |
+| random walk | 12.62 | 0.0015% | 5.63 | 1.82 |
+| random walk rounded to 0.01 | 9.28 | 0% (exact) | 6.32 | 1.88 |
+| sensor drift rounded to 0.1 | 1.78 | 0% (exact) | 6.23 | 2.19 |
+| noisy sine (σ = 5) | 5.24 | 0.2334% | 4.26 | 1.58 |
+| Gaussian spikes on uniform noise | 6.60 | 1.4661% | 5.06 | 1.86 |
+| **all 15 signals (1.00 GiB)** | **4.76** | | **5.12** | **1.79** |
+| random walk on thirds (not in the 15) | 3.97 | 0% (exact) | 10.82 | 2.36 |
 
-Clean signals keep 16 bits of their range (error ≤ 0.0015%). The noisy ones have larger errors
-relative to the range because the noise floor sets their step to 0.25σ of the noise, which bounds
-the error at 0.125σ; `min_quantize_bits` keeps even those under 1.6% of the range. The random walks
-are floored too: their finest-scale variation (a step's σ_e) reads as a noise of σ_e/2, so they are
-stored within σ_e/16 (0.35% of the range at most here), and the walk on 0.01 loses its last digit
-(`noise_floor_sigma=0` keeps it). The default effort compresses each block group with bit and with
-byte planes and keeps the smaller. The whole set at effort 1 is 4.11 bits/sample at 4.50 µs/block to
-encode, and at effort 5 3.95 at 6.78
-([bench/RESULTS.md](bench/RESULTS.md)); byte planes gain much more at lower `max_quantize_bits` (see
-the [research report](experimental/report/index.html#scatter-kinds)).
+Clean signals keep 16-bit range precision (≤ 0.0015% error); exact decimal and rational-step signals decode bit for bit; noisy blocks coarsen to 0.25σ (bounded by `min_quantize_bits` to < 1.6% of range). Against the default (`4.76` bits/sample at `5.12 µs/block`), `effort=1` gives `4.83` at `3.53 µs/block`, `effort=5` gives `4.66` at `5.96 µs/block`, and `effort=9` gives `4.62` at `22.87 µs/block`. Byte planes gain more at lower `max_quantize_bits` (see [Codec Comparison](https://gboyer.github.io/fluxcode/report/codecs.html#scatter-kinds)). Across 4 threads on M3, throughput reaches ~5.2 GB/s encode and ~14.7 GB/s decode (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for a 1,000-channel × 1-day stress run).
 
-Decoding runs at about 4.5 GB/s per core, and the kernels release the GIL:
-4 threads encode about 5 GB/s and decode about 15 GB/s (8 threads add little: 4 of the 8 cores
-are "efficiency cores").
-[docs/PERFORMANCE.md](docs/PERFORMANCE.md) has a sample industrial-scale run
-(1000 channels × 1 day at 1 kHz) and where the time goes.
-The implementation is fully in numba, SIMD optimized, and tuned for ARM NEON.
+### Real-world public datasets
+
+Evaluated across **94 series** (**29.2M float64 samples**, 233.8 MB uncompressed) spanning **14 public dataset families** — CWRU bearing vibration, MIT-BIH ECG, IRIS seismic, BIDMC clinical monitors, UCI household power, hydraulics, SKAB industrial, air quality, appliances, NOAA buoys, ERA5 weather, Binance trades, smartphone IMU, and the Elf corpus. Across these families, default fluxcode averages **3.03–9.41 bits/sample** (6.8×–21.2× compression vs. float64), beating both raw zstd and byte-shuffled zstd on every family, with exact decimal/rational grid detection saving up to 57% over binary-only quantization (e.g. MIT-BIH ECG at 4.14 bits/sample, exact). See the [Public Datasets report](https://gboyer.github.io/fluxcode/report/public.html) and [experimental/public_datasets/RESULTS.md](experimental/public_datasets/RESULTS.md) for full per-series tables and timestamp-axis results.
 
 ## Guarantees
 
-From [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees), which states them exactly:
+Stated formally in [docs/ENCODER.md §6](docs/ENCODER.md#6-guarantees):
 
-- **Bounded error.** Every sample decodes within half the block's step, and never further than
-  range / (2^`min_quantize_bits` − ½) (1.6% of the block's range at the default of 6), whatever
-  the noise floor or the size target do. Blocks at full precision are within about
-  2^−`max_quantize_bits` of their range (0.0015% at 16); noise-floor blocks within f·σ/2.
-- **Min and max decode within half a step.** The power-of-two grid is absolute (multiples of the
-  step), so the decoded minimum is the grid point nearest the minimum. The `block_min` and
-  `block_max` that encode returns are the samples' own: allow half a step either way if you use
-  them as hard bounds on decoded values.
-- **Updates don't drift.** Decoded values are grid points, so re-encoding them on the same or a
-  finer step returns them bit for bit. Samples an `update_time_blocks` keeps in a block it re-encodes stay within
-  one step of the coarsest grid their block has used, however many times it runs.
-- **Decimal data is lossless** unless it is noisier than its decimals. Values that are decimals of
-  p places (as parsed from text) decode to the identical float64 when the block spans fewer than
-  2^15 decimal steps (2^(B−1); up to 2^B for some p), has no `target_bits_per_sample`, and isn't
-  coarsened by the noise floor. The noise floor stores a block whose top-band level σ is above 1/f
-  to 2/f decimal steps (4–8 at the default f; 6.25 for cents) at its own step, like any noisy block:
-  its last digit is noise. σ is white noise's, or half a random walk's step σ_e: a decimal walk
-  moving 8–16 places a sample or more is floored too. `noise_floor_sigma=0` keeps such data exact. Decimals
-  stored as float32 upstream decode as the decimal itself when the block is wide enough for float32's
-  rounding to sit within a quarter of its power-of-two step; a narrower block encodes the float32
-  values like any other data.
-- **Data on a scaled grid is lossless too** when it is the doubles nearest its rationals (thirds as
-  k / 3, ADC counts as 10·c / 4095); computed as a float product it decodes within a few ulps.
-- **Glitches don't cost their neighbours.** An outlier such as an error code (−9999, 1e6) is
-  stored apart, exactly when float32 holds it, so the rest of its block keeps its fine step; never
-  worse than half the step of the block's full range.
-- **Any float64 encodes.** NaN, +inf and −inf round-trip exactly (every NaN as the canonical quiet
-  NaN; −0.0 decodes as +0.0), as do subnormal ranges and blocks spanning ±DBL_MAX.
-- **Stable under edits and re-encoding.** `update` leaves the other blocks' bytes unchanged, so they
-  decode identically. Decoded data is a fixed point: re-encoding it gives the same bytes.
-- **Timestamps decode exactly** by default. With `time_error` = e, in each rounded block none
-  moves more than e times the block's mean interval (2% more at most; an `update` clamped to a
-  stored neighbour, by the neighbour's), at most 5% move more than e times their own interval,
-  they stay in order and inside their time blocks (a time rounded up to its block's end stays in
-  the block, at the end), and no time is rounded twice. `update_time_blocks` matches and deletes
-  by time, so it finds a time stored at its block's end; a reader that takes a time range by
-  block index should filter the decoded times, as that time comes with the block before.
+- **Bounded error**: Every sample decodes within half its block's step, and never further than `range / (2^min_quantize_bits − ½)` (~1.6% at the default of 6), regardless of noise floor or rate target. Full-precision blocks stay within ~2⁻¹⁶ of range (0.0015%); noise-floor blocks within `f · σ / 2`.
+- **Summary stats**: `block_min` and `block_max` are computed from the input samples; decoded values can sit up to half a step outside them.
+- **No update drift**: Untouched blocks in `update` carry over byte-for-byte. Decoded values are grid points, so re-encoding on the same or finer step returns identical bytes, and repeated `update_time_blocks` merges stay within one step of the coarsest grid the block has used.
+- **Exact decimal & rational grids**: Values on decimal steps `10^p` or rational steps (`k / 3`, `10 · c / 4095`) decode bit for bit when the block fits in the bit budget, has no `target_bits_per_sample`, and is not floored by white noise (`noise_floor_sigma=0` keeps noisy decimals exact too).
+- **Outlier isolation**: Isolated glitches or error codes (e.g. `-9999`, `1e6`) are escaped separately so the rest of the block keeps its fine step.
+- **Full float64 support**: `NaN` (as canonical quiet NaN), `±inf`, subnormals, and `±DBL_MAX` ranges all encode cleanly (`-0.0` decodes as `+0.0`).
+- **Timestamps**: Exact by default. With `time_error=e`, timestamps stay ordered and inside their time blocks, none moves more than `e` times the block's mean interval (+2% margin), at most 5% move more than `e` times their own interval, and no timestamp is rounded twice.
 
-To check them in production, `fluxcode.verify` takes a call's result and arguments and returns
-what it broke: `verify.encode_group(result, x, params, times=t)` is `[]` when the result keeps
-them (pass `decimals=p` for data of p decimal places to check their exactness too). It costs about as much as the encode, so check a sample of block groups
-([docs/ENCODER.md §7](docs/ENCODER.md#7-conformance-tests)).
+To verify these invariants in production or tests, `fluxcode.verify` checks any call's result against its inputs and returns a list of violations (empty when all guarantees hold):
+
+```python
+violations = fluxcode.verify.encode_group(encoded, x, params, times=t)
+```
 
 ## How it works
 
-Per block of 1000 samples (details and pseudocode in [docs/ENCODER.md](docs/ENCODER.md)):
+Per block (details and pseudocode in [docs/ENCODER.md](docs/ENCODER.md)):
 
-- **[Quantization](https://en.wikipedia.org/wiki/Quantization_(signal_processing))** to a
-  power-of-two step 2^e with at most 2^16 steps across the block's range, or to the coarsest exact
-  decimal step 10^p every sample sits on. Power-of-two steps keep the grid stable when an edit
-  changes the range.
-- **Scaled grids:** the gcd N of a block's grid indices scales its grid (0.05 = 5 × 0.01); a block
-  on neither grid is searched for a step N / D · 10^p or N / D · 2^e (an approximate gcd of its
-  differences, then the simplest fraction within the fitted step's uncertainty), stored with an
-  integer anchor on the fine grid and decoded with one rounding.
-- **Noise floor:** a robust (clipped [mean absolute deviation](https://en.wikipedia.org/wiki/Average_absolute_deviation))
-  estimate of the level in the 12th differences, which see only the top of the band, plus their
-  lag-1 and lag-2 autocorrelations (−12/13 and 0.725 for white noise), capped by the first
-  differences' level (steps a few samples apart). Blocks flat at the top get a step of at most
-  0.25σ (a third of the quietest part's σ where the noise varies within the block). Blocks under
-  128 samples keep their finest step: a single step or spike is too much of their differences. With irregular times, a block needs 90% of its intervals within ±50% of the median one,
-  and only consecutive scans count, so sparse archives and events keep their values.
-- **Fixed polynomial predictors** of order 0–3, picked per block by residual variance, as in
-  [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)) and
-  [FLAC's fixed predictors](https://www.rfc-editor.org/rfc/rfc9639#name-fixed-predictor-subframe).
-  Residuals wrap mod 2^16, so they always fit in 16 bits.
-- **[Zigzag](https://protobuf.dev/programming-guides/encoding/#signed-ints)** maps signed
-  residuals to unsigned, so small magnitudes have leading zero bits.
-- **[Bit-shuffle](https://github.com/kiyo-masui/bitshuffle)**
-  ([paper](https://arxiv.org/abs/1503.00638)) across the whole block group: bit plane j of every
-  residual is stored together, so the high planes are long runs of zeros.
-- **[Zstandard](https://www.rfc-editor.org/rfc/rfc8878)** compresses the whole block group as one
-  frame (zstd level 3, or 1 at `effort=1`; at `effort=9` the smaller of levels 3 and 9), from effort
-  5 with a zstd block, and so its own Huffman table, per dense plane.
+1. **Grid selection & quantization**: Picks a power-of-two step `2^e` (up to 2¹⁶ steps across the block's range), the coarsest exact decimal step `10^p`, or a scaled rational step `N / D · 10^p` (or `2^e`) found via approximate GCD of sample differences. Outliers are escaped separately.
+2. **Noise floor**: Estimates top-band noise via clipped MAD of 12th differences with lag-1/lag-2 autocorrelation whiteness checks (plus lower-subband checks for band-limited DAQs and a first-difference cap). Skipped on blocks < 128 samples and on irregular/sparse timestamp cadences.
+3. **Fixed polynomial predictors**: Selects difference order 0–3 per block by residual variance (as in Shorten and FLAC), wrapping residuals mod 2¹⁶.
+4. **Zigzag & plane shuffle**: Zigzag-encodes signed residuals so small magnitudes have leading zero bits, then transposes across the block group into bit planes (or byte planes) so high planes become long zero runs.
+5. **Zstandard framing**: Compresses the entire block group in one zstd frame (with per-plane zstd blocks at `effort >= 5`).
 
 ## Documentation
 
-- [docs/SPEC.md](docs/SPEC.md): the format: layout, decoding and conformance tests.
-- [docs/ENCODER.md](docs/ENCODER.md): the reference encoder: parameters, algorithm, guarantees and
-  its conformance tests.
-- [docs/PERFORMANCE.md](docs/PERFORMANCE.md): speed, the day-scale stress run, implementation notes.
-- [docs/TUNING.md](docs/TUNING.md): measurements behind the parameter defaults and the time axis
-  design, and what to check on your data.
-- [docs/design/api-plan.md](docs/design/api-plan.md): the original API design plan (history).
-- [bench/](bench/): `bench_gb.py` (size, error and speed per signal), `estimate.py` (the size
-  target's estimate against actual size), `decimal_near_miss.py` (the encode cost of a
-  decimal-detection near miss), `stress.py` (1000 channels × 1 day, multiple workers), `prune.py`
-  (fluxprune's speed), and their results.
-- [fluxprune/](fluxprune/README.md): a lossy prepass that keeps the points of a series that carry its
-  shape (automatic, with optional max_error and max_points guards).
+- [Live report & spec site](https://gboyer.github.io/fluxcode/report/): interactive benchmarks, public dataset results, and rendered spec.
+- [docs/SPEC.md](docs/SPEC.md): wire format v1 layout, decoding rules, and conformance tests.
+- [docs/ENCODER.md](docs/ENCODER.md): reference encoder algorithm, parameters, guarantees, and verification.
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md): throughput, day-scale stress run, and Numba/SIMD notes.
+- [docs/TUNING.md](docs/TUNING.md): measurements behind the parameter defaults and timestamp design.
+- [bench/](bench/): benchmark scripts (`bench_gb.py`, `estimate.py`, `decimal_near_miss.py`, `stress.py`, `time_axis.py`, `update.py`, `prune.py`) and saved results.
+- [fluxprune/](fluxprune/README.md): optional lossy prepass that retains only the shape-carrying points of a series.
+- [experimental/](experimental/): historical codec exploration and public dataset benchmark scripts (reference only; not covered by main package guarantees).
 
 ## Related work
 
-- [Gorilla](https://www.vldb.org/pvldb/vol8/p1816-teller.pdf) (VLDB 2015): lossless XOR of
-  consecutive float64 values, the classic time-series float codec.
-- [Chimp](https://www.vldb.org/pvldb/vol15/p3058-liakos.pdf) (VLDB 2022): Gorilla-style XOR
-  encoding that also exploits trailing zeros and earlier values.
-- [ALP](https://doi.org/10.1145/3626717) ([code](https://github.com/cwida/ALP)) (SIGMOD 2024):
-  lossless floats by detecting decimals and encoding them as integers, the closest relative of
-  fluxcode's decimal grids.
-- [Bitshuffle](https://github.com/kiyo-masui/bitshuffle) and [Blosc](https://www.blosc.org/): bit-
-  and byte-shuffle filters in front of a general-purpose compressor, the layout fluxcode uses.
-- [FLAC](https://xiph.org/flac/format.html): lossless audio with fixed and LPC predictors and Rice
-  coding; fluxcode's predictor orders are its fixed predictors.
-
-## Research
-
-[experimental/](experimental/) holds the investigation that led to this design: dozens of codec
-variants (classic DPCM and piecewise schemes, constant-width formats, rate-controlled
-predict-and-entropy-code pipelines, and the fluxcode prototype), their benchmarks, and a report
-comparing them. It's kept for reference and isn't maintained or covered by CI.
+- [Gorilla](https://www.vldb.org/pvldb/vol8/p1816-teller.pdf) (VLDB 2015) and [Chimp](https://www.vldb.org/pvldb/vol15/p3058-liakos.pdf) (VLDB 2022): lossless XOR float64 time-series codecs.
+- [ALP](https://doi.org/10.1145/3626717) ([code](https://github.com/cwida/ALP)) (SIGMOD 2024): lossless float compression via decimal detection, the closest relative to fluxcode's decimal grids.
+- [Bitshuffle](https://github.com/kiyo-masui/bitshuffle) ([paper](https://arxiv.org/abs/1503.00638)) and [Blosc](https://www.blosc.org/): bit- and byte-shuffle filters in front of general-purpose compressors.
+- [FLAC](https://www.rfc-editor.org/rfc/rfc9639#name-fixed-predictor-subframe) and [Shorten](https://en.wikipedia.org/wiki/Shorten_(file_format)): fixed polynomial predictors for integer residual coding.
 
 ## Development
 
 ```sh
-uv sync
-uv run pytest
-uv run ruff check
-uv run mypy fluxcode
-uv run ty check
-uv run python bench/bench_gb.py --gib 0.05   # a quick benchmark; the full run is 1 GiB
+make init          # install locked root and experimental environments
+make check         # CI checks: ruff check/format, experimental smoke, mypy --strict, ty, offline pytest
+make check-rust    # rustfmt, clippy, and SIMD bit-plane tests
+make test          # offline unit test suite
+make test-public   # opt-in tests against downloaded public datasets
+make datasets      # download & verify public real-world datasets (honors FLUXCODE_DATA_DIR)
+make public-bench  # benchmark fluxcode on public datasets
+make public-report # render public dataset HTML/SVG report
+uv run python bench/bench_gb.py --gib 0.05  # quick synthetic benchmark (full run is 1 GiB)
 ```
 
-Code layout (`fluxcode/`), from the public API down:
+### Code layout (`fluxcode/`)
 
-- `_api.py`: the public functions (encode, decode, update); `_types.py`: `Params` and the result
-  tuples; `_args.py`: argument validation and coercion.
-- `_group.py`: building and parsing block groups from flat sample arrays and block sizes;
-  `_time_blocks.py`: dividing timed samples into blocks of a fixed duration.
-- `_compress.py`: the compression policy (efforts, layout choice, flush points, framing, candidate
-  choice); `rust/src/compress.rs` is its port.
-- `_encoder.py`, `_decoder.py`: the per-block kernels (ENCODER §5, SPEC §5); `_time.py`: exact
-  timestamp encoding/decoding and cadence detection (§4); `_time_rounding.py`: lossy `time_error`
-  timestamp rounding and clock-lattice fitting; `_grids.py`, `_rational.py`, `_noise.py`,
-  `_escapes.py` and `_extreme_magnitudes.py`: quantization grids, noise estimation, sample
-  exception codes and escaped values, and extreme-magnitude handling.
-- `verify.py`: checks a call's result against the guarantees (ENCODER §6), from the decoded
-  output; nothing on the encode path uses it.
-- `_format.py`: the header, field offsets and column structs (`EncodedBlockColumns`,
-  `EncodedTimeColumns`, `BodyLayout`, SPEC §6); `_body.py`: body serialization, time-field
-  reading/validation, and binary splicing for `update`; `_bitpacking.py`: bit/byte-plane
-  transposition, zigzag, and sample-code & time-residual plane codecs. `rust/src/` has the
-  same-named `format.rs` and `bitpacking.rs`, plus `planes.rs`.
+- `_api.py`, `_types.py`, `_args.py`: public functions, `Params` / result dataclasses, argument validation.
+- `_group.py`, `_time_blocks.py`, `_basic_stats.py`: block-group assembly/parsing, fixed-duration time bucketing, summary statistics.
+- `_compress.py`: compression policy (efforts, plane layout, flush points, framing); `rust/src/compress.rs` is its Rust port.
+- `_encoder.py`, `_decoder.py`: per-block Numba kernels (`ENCODER.md §5`, `SPEC.md §5`).
+- `_time.py`, `_time_rounding.py`: exact timestamp coding, cadence detection, and `time_error` rounding / lattice fitting.
+- `_grids.py`, `_rational.py`, `_noise.py`, `_escapes.py`, `_extreme_magnitudes.py`: quantization grids, noise-floor estimation, outlier escapes, extreme magnitudes.
+- `verify.py` (with `_verify_common.py`, `_verify_decode.py`, `_verify_times.py`, `_verify_values.py`): guarantee verifier (`ENCODER.md §6`); not imported on the encode path.
+- `_format.py`, `_body.py`, `_bitpacking.py`: wire-format constants/layout, body serialization & `update` splicing, bit/byte-plane transposition (`rust/src/format.rs`, `bitpacking.rs`, `planes.rs`).
 
-The kernels are compiled by numba with `cache=True`, which checks only the timestamp of the file
-defining each kernel, not the constants and helpers it inlines from other modules. After editing
-`fluxcode/_format.py` (for example), a script can run stale compiled code. The tests always compile
-from source (`tests/conftest.py`), and the benchmarks and report generators import
-`bench/_fresh_numba_cache.py` first, which keys numba's cache directory on a hash of the
-`fluxcode` sources (an edit anywhere starts a fresh cache). For your own scripts, import it too,
-or clear the cache with `find fluxcode -name '*.nb[ic]' -delete`.
+> **Numba cache note:** Kernels use `cache=True`, which tracks only the defining file's mtime, not inlined helpers or constants from other modules. Tests always compile fresh (`tests/conftest.py`), and benchmark scripts import `bench/_fresh_numba_cache.py` to key the cache on a hash of `fluxcode/` sources. If you run standalone scripts after editing internals, clear stale caches with `find fluxcode -name '*.nb[ic]' -delete`.
 
 ## License
 

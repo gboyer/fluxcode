@@ -22,7 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from tslab.report.page import clean_outputs, save_fig, shell
+from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell
 
 HERE = Path(__file__).resolve().parent
 PUB_DIR = HERE / "public_datasets"
@@ -258,7 +258,7 @@ def render_group_summary_table(groups: dict[str, dict[str, float]]) -> str:
         f"<td><b>{64.0 / tot_avg['default']:.1f}×</b></td></tr>"
     )
     h.append("</table>")
-    return "".join(h)
+    return collapsible_table(f"Show group summary table ({len(groups)} families)", "".join(h))
 
 
 def render_timestamp_table(ts_rows: list[dict[str, Any]]) -> str:
@@ -280,19 +280,18 @@ def render_timestamp_table(ts_rows: list[dict[str, Any]]) -> str:
             f"<td>{t05:.2f}</td><td{cls}>{t15:.2f}</td></tr>"
         )
     h.append("</table>")
-    return "".join(h)
+    return collapsible_table(f"Show timestamp table ({len(ts_rows)} channels)", "".join(h))
 
 
 def render_series_tables(groups: dict[str, dict[str, float]], series_rows: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for gname, gavg in groups.items():
         rows = [r for r in series_rows if r["group"] == gname]
-        parts.append(f"<h3 id='{slug(gname)}'>{html.escape(gname)}</h3>")
-        parts.append(
+        tbl: list[str] = [
             "<table><tr><th class='l'>series</th><th>N</th><th>NaN%</th><th>raw zstd</th><th>bshuf zstd</th>"
             "<th>fc default</th><th>err% (def)</th><th>fc nf=0</th><th>exact? (nf=0)</th>"
             "<th>fc bin nf=0</th><th>grid gain</th><th>enc/dec MB/s (def)</th></tr>"
-        )
+        ]
         for r in rows:
             res = r["results"]
             d_def = res["default"]
@@ -304,7 +303,7 @@ def render_series_tables(groups: dict[str, dict[str, float]], series_rows: list[
             def_err = "EXACT" if d_def["exact"] else f"{float(d_def['worst_pct']):.3f}%"
             nf0_err = "EXACT" if d_nf0["exact"] else f"{float(d_nf0['worst_pct']):.4f}%"
             spd = f"{float(d_def['enc_mbs']):.0f} / {float(d_def['dec_mbs']):.0f}"
-            parts.append(
+            tbl.append(
                 f"<tr><td><code>{html.escape(r['series'])}</code></td><td>{int(r['n']):,}</td>"
                 f"<td>{float(r['nan_pct']):.1f}%</td><td>{float(r['raw_zstd']):.2f}</td>"
                 f"<td>{float(r['bshuf_zstd']):.2f}</td><td class='best'>{float(d_def['bps']):.2f}</td>"
@@ -312,13 +311,15 @@ def render_series_tables(groups: dict[str, dict[str, float]], series_rows: list[
                 f"<td>{bin_bps:.2f}</td><td>{gain:+.1f}%</td><td>{spd}</td></tr>"
             )
         g_gain = 100.0 * (gavg["bin_nf0"] - gavg["nf0"]) / gavg["bin_nf0"] if gavg["bin_nf0"] > 0 else 0.0
-        parts.append(
+        tbl.append(
             f"<tr><td><b>group avg ({int(gavg['n']):,})</b></td><td></td><td></td>"
             f"<td><b>{gavg['raw']:.2f}</b></td><td><b>{gavg['bshuf']:.2f}</b></td>"
             f"<td class='best'><b>{gavg['default']:.2f}</b></td><td></td>"
             f"<td><b>{gavg['nf0']:.2f}</b></td><td></td><td><b>{gavg['bin_nf0']:.2f}</b></td>"
             f"<td><b>{g_gain:+.1f}%</b></td><td></td></tr></table>"
         )
+        summary = f"{gname} ({len(rows)} series, avg {gavg['default']:.2f} bps)"
+        parts.append(f"<div id='{slug(gname)}'>{collapsible_table(summary, ''.join(tbl))}</div>")
     return "".join(parts)
 
 
@@ -359,7 +360,7 @@ def render_provenance_table(groups: dict[str, dict[str, float]], manifest: dict[
         f"<td class='l'></td><td class='l muted'>All {tot_files} files verified by SHA-256 in "
         f"<code>experimental/public_datasets/datasets.json</code>.</td></tr></table>"
     )
-    return "".join(h)
+    return collapsible_table(f"Show dataset provenance & licenses ({len(groups)} families, {tot_files} files)", "".join(h))
 
 
 def main() -> None:
@@ -379,119 +380,117 @@ def main() -> None:
     tot_samples = sum(int(r["n"]) for r in series_rows)
     tot_mb = 8.0 * tot_samples / 1e6
 
-    intro = f"""<p><a href="index.html">← codec comparison (index.html)</a> ·
-<a href="time.html">timestamps (time.html)</a> ·
-<a href="sdt.html">historian (sdt.html)</a> ·
-<a href="prune.html">fluxprune (prune.html)</a></p>
-<p>Real-world evaluation of <code>fluxcode</code> across <b>{len(groups)} public dataset families</b>
-(<b>{tot_series} series</b>, <b>{tot_samples:,} float64 samples</b>, {tot_mb:.1f} MB uncompressed):
-high-frequency bearing vibration, clinical ECG/PPG waveforms, 24-bit sigma-delta broadband seismology,
+    intro = f"""<p>This report evaluates <code>fluxcode</code> on <b>{len(groups)} public dataset families</b>
+(<b>{tot_series} series</b>, <b>{tot_samples:,} float64 samples</b>, {tot_mb:.1f} MB uncompressed).
+The corpus covers high-frequency bearing vibration, clinical ECG/PPG waveforms, 24-bit sigma-delta broadband seismology,
 multi-rate industrial PLC telemetry, residential smart-meter power, oceanographic buoys, float32-originated
-ERA5 weather, irregular millisecond exchange trades, jittered smartphone IMU clocks, and the standard
-VLDB/SIGMOD floating-point compression corpus (Elf / Chimp / ALP).
-Every tested block group passed <code>fluxcode.verify.encode_group</code> with <b>0 errors</b>.</p>
-<p><b>Regenerate:</b> <code>make datasets &amp;&amp; make public-bench &amp;&amp; make public-report</code>
-(or <code>cd experimental &amp;&amp; uv run python make_public_report.py</code> to re-render HTML/SVGs from
-<code>experimental/public_datasets/results.json</code>).</p>"""
+ERA5 weather, irregular millisecond exchange trades, jittered smartphone IMU clocks, and the
+VLDB/SIGMOD floating-point compression benchmark (Elf / Chimp / ALP).
+Every block group passed <code>fluxcode.verify.encode_group</code> with <b>0 errors</b>.</p>
+<p class='muted'>To regenerate, run <code>make datasets &amp;&amp; make public-bench &amp;&amp; make public-report</code>,
+or <code>cd experimental &amp;&amp; uv run python make_public_report.py</code> using an existing
+<code>experimental/public_datasets/results.json</code>.</p>"""
 
     body: list[str] = []
 
     # 1. Summary & bshuf vs raw zstd insight
     body.append(f"""<h2 id='summary'>Group summary &amp; compression ratios</h2>
-<p>All numbers are sample-weighted <b>bits per sample</b> over whole block groups (60 blocks of 1,000 samples,
-float64 = 64 bits/sample). Baselines are <code>raw zstd</code> (zstd level 3 on raw float64 bytes) and
-<code>bshuf zstd</code> (byte-shuffled float64 + zstd level 3).</p>
+<p>All sizes are sample-weighted <b>bits per sample</b> over whole block groups (60 blocks of 1,000 samples,
+where raw <code>float64</code> is 64 bits/sample). The baselines are <code>raw zstd</code> (zstd level 3 on
+raw <code>float64</code> bytes) and <code>bshuf zstd</code> (byte-shuffled <code>float64</code> followed by
+zstd level 3).</p>
 {fig_bps}
 {render_group_summary_table(groups)}
 <h3>Why byte-shuffled zstd loses to raw zstd on calibrated-ADC &amp; decimal float64s</h3>
-<p>A striking pattern across the table is that <code>bshuf zstd</code> is often <b>2–3× larger</b> than
-<code>raw zstd</code> (e.g. CWRU Vibration: 52.48 vs 18.33 bps; MIT-BIH ECG: 29.63 vs 9.48 bps;
-UCI Power: 16.63 vs 6.93 bps). On calibrated-ADC and decimal-rounded float64 series with relatively few unique
-values (for example, CWRU <code>normal_48k_DE</code> has only 2,254 unique values across 485,643 samples),
-<code>raw zstd</code>'s LZ77 matcher finds whole 8-byte float64 repeats in a single match. Byte-shuffling tears
-those 8-byte values apart, pushing the 6 low mantissa bytes of non-power-of-two decimals (such as
-<code>0.005</code> or <code>2.086e-4</code>) into independent near-random byte streams that LZ77 can no longer
-match together. <code>fluxcode</code> beats both baselines by <b>2–7×</b> by recovering the underlying integer
-grid first, then applying per-block delta coding (orders 0–3) and bit-plane zstd.</p>""")
+<p>Across several datasets, <code>bshuf zstd</code> is <b>2–3× larger</b> than <code>raw zstd</code>—for example,
+52.48 vs 18.33 bps on CWRU Vibration, 29.63 vs 9.48 bps on MIT-BIH ECG, and 16.63 vs 6.93 bps on UCI Power.
+Calibrated-ADC and decimal-rounded series tend to have relatively few distinct values (CWRU
+<code>normal_48k_DE</code> has only 2,254 unique values across 485,643 samples), so <code>raw zstd</code>'s
+LZ77 matcher can copy entire repeated 8-byte floats in a single match. Byte-shuffling splits those 8-byte values
+across separate streams, and for non-power-of-two steps like <code>0.005</code> or <code>2.086e-4</code>, the
+six low mantissa bytes look nearly random on their own and no longer match together. <code>fluxcode</code>
+improves on both baselines by <b>2–7×</b> because it recovers the underlying integer grid first, then applies
+per-block delta coding (orders 0–3) and bit-plane zstd.</p>""")
 
     # 2. Hidden rational/ADC grids & float32 recovery
     body.append(f"""<h2 id='grids'>Hidden rational/ADC grids &amp; float32 recovery</h2>
 <p>Comparing <code>fluxcode nf=0</code> (<code>Params(noise_floor_sigma=0)</code>) against
-<code>fluxcode bin nf=0</code> (<code>grids='binary'</code>) isolates the gain from decimal, rational, and
-scaled-ADC grid detection in the wild.</p>
+<code>fluxcode bin nf=0</code> (<code>grids='binary'</code>) isolates the savings from decimal, rational, and
+scaled-ADC grid detection on real data.</p>
 {fig_grid}
 <ul>
-<li><b>CWRU Vibration (hidden ADC calibration step):</b> raw accelerometer waveforms sit on a ~<code>2.086e-4</code>
+<li><b>CWRU Vibration (ADC calibration step):</b> Raw accelerometer waveforms sit on a ~<code>2.086e-4</code>
 calibration step. Scaled-grid detection saves <b>+24.5%</b> across the group (up to <b>+32.1%</b> on
 <code>normal_48k_DE</code>) at ~1 ULP (<code>2.8e-17</code>) error when <code>noise_floor_sigma=0</code>.</li>
 <li><b>MIT-BIH ECG (<code>0.005</code> mV ADC step):</b> 11-bit WFDB-212 counts scaled by 200 counts/mV land
-on an exact scaled decimal grid, achieving <b>4.14 bps bit-exact</b> across all 2.6M samples —
+on an exact scaled decimal grid, compressing to <b>4.14 bps bit-exact</b> across all 2.6M samples, which is
 <b>+56.7%</b> smaller than binary-only grids (9.57 bps).</li>
 <li><b>UCI Appliances (averaged <code>1/3</code> &amp; <code>1/4</code> rational grids):</b> 10-minute averaged
 weather and indoor sensors (<code>T_out</code>, <code>Press_mm_hg</code>, <code>Windspeed</code>) sit on exact
-rational multiples of 1/3 and 1/4, compressing to <b>0.92–1.31 bps</b> at 0.0000% error —
-<b>+54.6% to +66.7%</b> smaller than binary grids.</li>
-<li><b>UCI Hydraulic (multi-rate industrial PLC):</b> all 5 channels (100 Hz pressure/motor power, 10 Hz flow,
+rational multiples of 1/3 and 1/4, compressing to <b>0.92–1.31 bps</b> at 0.0000% error (<b>+54.6% to +66.7%</b>
+smaller than binary grids).</li>
+<li><b>UCI Hydraulic (multi-rate industrial PLC):</b> All 5 channels (100 Hz pressure/motor power, 10 Hz flow,
 1 Hz temperature/vibration; 3.99M samples) decode <b>bit-exact</b> at <code>nf=0</code> with a
 <b>+33.4%</b> group-wide grid gain (up to +54.7% on <code>VS1_1Hz</code>).</li>
 <li><b>ERA5 Weather (float32-to-decimal recovery):</b> <code>temp_2m_f32</code> and <code>pressure_f32</code>
-are cast through <code>float32</code> and promoted back to <code>float64</code> (introducing ~10<sup>−7</sup>
-binary rounding noise). <code>fluxcode</code> recovers the exact decimal grid at <b>identical</b> bit rates
-to the clean float64 originals (<b>4.95 bps</b> and <b>4.10 bps</b>, <b>+52.4%</b> and <b>+57.9%</b> over
+are cast through <code>float32</code> and promoted back to <code>float64</code>, introducing ~10<sup>−7</sup>
+binary rounding noise. <code>fluxcode</code> recovers the exact decimal grid at the <b>same</b> bit rates as
+the clean float64 originals (<b>4.95 bps</b> and <b>4.10 bps</b>, <b>+52.4%</b> and <b>+57.9%</b> smaller than
 binary grids).</li>
 </ul>""")
 
     # 3. Hardware anti-alias, effort tradeoffs, sentinels vs NaN
     body.append("""<h2 id='insights'>Real-world signal findings</h2>
 <ul>
-<li><b>Sigma-delta anti-alias hardware validation (IRIS 24-bit seismic):</b> The 40 Hz broadband seismometer
+<li><b>Band-limited sigma-delta ADCs (IRIS 24-bit seismic):</b> The 40 Hz broadband seismometer
 (<code>IU.ANMO.00</code> during the 2023-02-06 M7.8 Kahramanmaras earthquake) uses a 24-bit sigma-delta ADC
-with a steep hardware anti-alias filter. That band-limited smoothness lets higher-order delta prediction shine:
-raw counts compress to <b>4.16–4.37 bps</b> (0.002% max error), and calibrated ground velocity
-(<code>ANMO_BHZ_mps</code>, ~10<sup>−4</sup> m/s scale) compresses to <b>4.96 bps</b> (0.023% max error) —
-<b>7× smaller</b> than <code>raw zstd</code> (34.46 bps) and <b>9× smaller</b> than <code>bshuf zstd</code>
-(44.95 bps).</li>
-<li><b>Effort tradeoffs (BIDMC clinical):</b> On most datasets, <code>effort=1</code> (fastest) is within 1–2%
-of the default <code>effort=4</code>. On 125 Hz clinical waveforms (BIDMC PPG, respiration, and ECG), however,
-<code>effort=4</code> reaches <b>4.84 bps</b> vs <b>5.57 bps</b> at <code>effort=1</code> — a <b>13%</b>
-savings from better predictor/codec selection — while <code>effort=5</code> adds only a further 0.8%
-(4.80 bps).</li>
-<li><b>Rare decimal sentinels vs <code>NaN</code> (NOAA Buoy):</b> Legacy telemetry encodes missing values as
-in-band decimal sentinels (<code>99.0</code>, <code>999.0</code>, <code>9999.0</code>). Replacing those sentinels
-with IEEE <code>NaN</code> lets <code>fluxcode</code> store missingness in its dedicated non-finite mask
-instead of blowing up block range and delta residuals: <code>WTMP</code> drops from <b>1.92 bps</b>
-(<code>WTMP_raw</code>) to <b>1.28 bps</b> (<code>WTMP_nan</code>, −33%), and <code>WVHT</code> (66.7% missing)
-drops from <b>4.08 bps</b> to <b>2.79 bps</b> (−32%), while staying <b>bit-exact</b> on every finite sample.</li>
+with a steep hardware anti-alias filter. Because the signal is smooth and band-limited, higher-order delta
+predictors work well: raw counts compress to <b>4.16–4.37 bps</b> (0.002% max error), and calibrated ground
+velocity (<code>ANMO_BHZ_mps</code>, ~10<sup>−4</sup> m/s scale) compresses to <b>4.96 bps</b> (0.023% max
+error), which is <b>7× smaller</b> than <code>raw zstd</code> (34.46 bps) and <b>9× smaller</b> than
+<code>bshuf zstd</code> (44.95 bps).</li>
+<li><b>Effort tradeoffs (BIDMC clinical):</b> On most datasets, <code>effort=1</code> (fastest) lands within
+1–2% of the default <code>effort=4</code>. On 125 Hz clinical waveforms (BIDMC PPG, respiration, and ECG),
+<code>effort=4</code> reaches <b>4.84 bps</b> versus <b>5.57 bps</b> at <code>effort=1</code> (a <b>13%</b>
+reduction from better predictor and codec selection), while <code>effort=5</code> improves that by only
+0.8% (4.80 bps).</li>
+<li><b>Decimal sentinels vs <code>NaN</code> (NOAA Buoy):</b> Legacy buoy feeds encode missing values as
+in-band sentinels (<code>99.0</code>, <code>999.0</code>, <code>9999.0</code>), which inflate the block range
+and create large delta spikes. Replacing those sentinels with IEEE <code>NaN</code> moves missingness into
+<code>fluxcode</code>'s non-finite mask: <code>WTMP</code> drops from <b>1.92 bps</b> (<code>WTMP_raw</code>)
+to <b>1.28 bps</b> (<code>WTMP_nan</code>, −33%), and <code>WVHT</code> (66.7% missing) drops from
+<b>4.08 bps</b> to <b>2.79 bps</b> (−32%), while remaining <b>bit-exact</b> on every finite sample.</li>
 </ul>""")
 
     # 4. Throughput
     body.append(f"""<h2 id='throughput'>Encode &amp; decode throughput</h2>
-<p>Single-threaded throughput (<code>NUMBA_NUM_THREADS=1</code>, default <code>Params()</code>) measured in
-MB/s of uncompressed float64 input (8 bytes/sample). Decode routinely runs at <b>2.5–5.0 GB/s</b> and encode at
-<b>400–1,000 MB/s</b> on full-length series. Smartphone IMU is the sole outlier (140 / 480 MB/s) only because
-each trial has just 761–1,008 samples, so per-call Python/zstd setup dominates.</p>
+<p>Single-threaded throughput (<code>NUMBA_NUM_THREADS=1</code>, default <code>Params()</code>) is measured in
+MB/s of uncompressed <code>float64</code> input (8 bytes/sample). On full-length series, decode runs at
+<b>2.5–5.0 GB/s</b> and encode at <b>400–1,000 MB/s</b>. Smartphone IMU is slower (140 MB/s encode, 480 MB/s
+decode) because each trial contains only 761–1,008 samples, so per-call Python and zstd setup overhead dominates.</p>
 {fig_tp}""")
 
     # 5. Timestamp axis on real clocks
     body.append(f"""<h2 id='timestamps'>Timestamp axis on real clocks</h2>
-<p>Values-only vs values + exact timestamps vs <code>time_error=0.05</code> and <code>time_error=0.15</code>
-across regular, gapped, jittered hardware, and irregular event clocks.</p>
+<p>This comparison measures the extra bits per sample needed to store timestamps alongside values, comparing
+exact timestamps against tolerance-rounded timestamps (<code>time_error=0.05</code> and <code>0.15</code>)
+across regular, gapped, jittered, and event-driven clocks.</p>
 {fig_ts}
 {render_timestamp_table(ts_rows)}
 <ul>
-<li><b>Regular &amp; gapped clocks are effectively free:</b> UCI Power (2.08M rows, 1-min), UCI AirQuality (1-h),
+<li><b>Regular and gapped clocks add minimal overhead:</b> UCI Power (2.08M rows, 1-min), UCI AirQuality (1-h),
 UCI Appliances (10-min), ERA5 (1-h), and NOAA Buoy (10-min with gaps) add only <b>+0.006 to +0.028 bps</b>.
-SKAB's 1 Hz industrial PLC clock has occasional drops/drift and adds <b>+0.863 bps</b>.</li>
-<li><b>Jittered smartphone IMU clocks respond cleanly to <code>time_error</code>:</b> Real ~50 Hz phone
-clocks (<code>dt</code> 16–177 ms) cost <b>+7.92 to +8.98 bps</b> exact; enabling
-<code>Params(time_error=0.15)</code> rounds away hardware jitter and saves <b>~1.65–1.68 bps</b> while
-preserving sample order and guaranteeing every timestamp stays within the tolerance.</li>
-<li><b>Timestamp cadence rule (Binance irregular ticks):</b> Untimed Binance trades average <b>4.14 bps</b>
-across price &amp; quantity (with <code>BTCUSDT_price</code> at <b>3.03 bps bit-exact</b> on the $0.01 grid).
-Adding 1.11M exact irregular millisecond arrival timestamps adds <b>+5.973 bps</b> (<b>9.00 bps</b> total for
-exact cent prices + exact ms timestamps). Because exchange arrivals have no underlying periodic cadence,
-<code>time_error=0.05</code> and <code>0.15</code> rightly leave them untouched rather than distorting event
-timing.</li>
+SKAB's 1 Hz industrial PLC clock has occasional drops and drift, adding <b>+0.863 bps</b>.</li>
+<li><b>Jittered smartphone IMU clocks benefit from <code>time_error</code>:</b> Real ~50 Hz phone clocks
+(<code>dt</code> 16–177 ms) cost <b>+7.92 to +8.98 bps</b> when stored exactly. Setting
+<code>Params(time_error=0.15)</code> smooths out the hardware jitter and saves <b>~1.65–1.68 bps</b> while
+preserving sample order and keeping every timestamp within tolerance.</li>
+<li><b>Irregular event clocks are left exact (Binance trades):</b> Without timestamps, Binance trades average
+<b>4.14 bps</b> across price and quantity, with <code>BTCUSDT_price</code> at <b>3.03 bps bit-exact</b> on
+the $0.01 grid. Adding 1.11M exact irregular millisecond arrival timestamps adds <b>+5.973 bps</b>
+(<b>9.00 bps</b> total for exact cent prices and millisecond timestamps). Because trade arrivals have no
+periodic cadence, <code>time_error=0.05</code> and <code>0.15</code> leave them unmodified instead of
+distorting event timing.</li>
 </ul>""")
 
     # 6. Per-series tables
@@ -520,7 +519,10 @@ source URLs, extraction modes, and SHA-256 checksums. Run <code>make datasets</c
     ]
 
     out_html = OUT / "public.html"
-    out_html.write_text(shell("fluxcode on public real-world datasets", intro, toc, "\n".join(body)), encoding="utf-8")
+    out_html.write_text(
+        shell("fluxcode on public real-world datasets", intro, toc, "\n".join(body), active="public"),
+        encoding="utf-8",
+    )
     print(f"Wrote {out_html} (+ 4 SVG charts)")
 
 

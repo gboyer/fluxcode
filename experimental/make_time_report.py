@@ -35,7 +35,7 @@ from _signals import CLOCKS, MINUTE, clock_minute, minute  # noqa: E402
 from fluxcode import _format, _group  # noqa: E402
 from time_axis import patterns  # noqa: E402
 
-from tslab.report.page import clean_outputs, save_fig, shell  # noqa: E402
+from tslab.report.page import clean_outputs, collapsible_table, save_fig, shell  # noqa: E402
 
 OUT = Path(__file__).parent / "report"
 BLOCK, BLOCKS = 1000, 60
@@ -233,124 +233,104 @@ def write_report(examples, others, sweep, rounded, rounding_sweep, plain_bytes, 
     rounding_chart = plot_rounding(rounding_sweep)
     noisy_rounded = next(rows for label, rows in rounded if label == SHAPE_LABELS["noisy"])
     grid_bytes = examples[0][2]["bytes"]
-    h = [f"""<p><a href="index.html">← codec comparison (index.html)</a> ·
-<a href="https://github.com/gboyer/fluxcode/blob/main/docs/SPEC.md#3-time-axis">SPEC §3: time axis</a></p>
-<p>fluxcode can store each sample's timestamp <b>exactly</b> next to its values (by default; the
-<a href="#rounding">last section</a> lets them move by a share of an interval). This page covers only that time
-axis: what the timestamps add to a one-minute block group (60 blocks of 1,000 samples, nominally 1 kHz, int64 ns ticks).
-Every number here is the block group with times minus the same block group without them. For scale, that block group's values alone take
-{plain_bytes:,} bytes (a 4.12 Hz sine at the default settings), {plain_times[0]:.0f} µs to encode and
-{plain_times[1]:.0f} µs to decode.
-<b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_time_report.py</code>.</p>
-<h2 id="how">How timestamps are stored</h2>
-<ul>
-<li><b>Per block: a start, a step and a reference.</b> The step is the GCD of the block's intervals, and each
-interval divided by it is a quotient: the reference plus a residual. A block whose 999 intervals are all equal is
-<b>regular</b>: every quotient equals the reference, so it stores nothing else (24 bytes before compression, a few
-after). Any other block is <b>irregular</b> and stores the residuals, zigzagged, as 32 bit planes (64 in the rare
-<i>long</i> block, with a residual of 2<sup>32</sup> or more: in ns ticks, a gap of seconds). Most of those planes are
-zero, and zstd removes them.</li>
-<li><b>The reference is the rounded mean or the minimum,</b> chosen per block. The mean suits jitter around a
-center; the minimum suits skewed intervals (a gap, events, deadband logging), whose mean sits away from most of
-them. Without a reference, intervals near 1000 flip several bit planes together as they wobble, which costs about
-a bit per sample.</li>
-<li><b>A gap costs only its own block.</b> The blocks before and after it stay regular.</li>
-<li><b>The resolution is free.</b> The GCD takes out the grid, so a millisecond grid costs the same in ns, µs or ms
-ticks.</li>
-<li>Block starts are stored as increases over the previous start, so a regular block group's 60 starts compress to a few
-bytes.</li>
-</ul>
-<h2 id="shapes">The common shapes</h2>
-<p>A perfect grid, and a perfect grid with a few gaps, are by far the most common timestamps in practice. A noisy
-clock (host timestamps on arrival) is the third common shape, and the only one of the three where the timestamps
-cost more than the values (here about two and a half times as much).</p>
-{chart}
-<table><tr><th class='l'>shape</th><th class='l'>what it is</th><th>bytes (example)</th><th>bits/sample</th>
-<th>irregular blocks</th><th>vs values</th><th>bytes over {SEEDS} groups: median</th><th>max</th>
-<th>encode time added</th><th>decode time added</th></tr>"""]
+    intro = f"""<p>By default, fluxcode stores each sample's timestamp <b>exactly</b> alongside its values (the
+<a href="#rounding">last section</a> covers optional rounding by a fraction of an interval). This report isolates the time
+axis (<a href="spec.html#3-time-axis">SPEC §3</a>) and measures what timestamps add to a one-minute block group
+(60 blocks of 1,000 samples at a nominal 1 kHz, stored as int64 nanosecond ticks). Every figure below is the difference
+between encoding the block group with timestamps and encoding it without them. For reference, the values alone (a 4.12 Hz
+sine wave at default settings) take {plain_bytes:,} bytes, {plain_times[0]:.0f} µs to encode, and
+{plain_times[1]:.0f} µs to decode.</p>
+<p class='muted'><b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_time_report.py</code>.</p>"""
+    shapes_tbl = [f"<table><tr><th class='l'>shape</th><th class='l'>what it is</th><th>bytes (example)</th><th>bits/sample</th>"
+                  f"<th>irregular blocks</th><th>vs values</th><th>bytes over {SEEDS} groups: median</th><th>max</th>"
+                  "<th>encode time added</th><th>decode time added</th></tr>"]
     for shape, _, row in examples:
         sizes = row["sizes"]
-        h.append(f"<tr><td>{SHAPE_LABELS[shape]}</td><td class='l'>{SHAPE_NOTES[shape]}</td>"
-                 f"<td>{row['bytes']:,}</td><td>{8 * row['bytes'] / MINUTE:.3f}</td>"
-                 f"<td>{int(row['irregular'].sum())}/60</td><td>{100 * row['bytes'] / plain_bytes:.1f}%</td>"
-                 f"<td>{int(np.median(sizes)):,}</td><td>{int(sizes.max()):,}</td>"
-                 f"<td>{added(row['encode_us'], plain_times[0])}</td><td>{added(row['decode_us'], plain_times[1])}</td></tr>")
-    h.append(f"""</table>
-<p class='muted'>The example is the median-size block group of {SEEDS} seeds per shape. Times are single thread, best of
-{reps}, Apple M3 on AC power; each added time's percentage is of the same block group's values-only encode
-({plain_times[0]:.0f} µs) or decode ({plain_times[1]:.0f} µs). <i>vs values</i> is the timestamps' bytes as a share
-of the values' {plain_bytes:,}.</p>
+        shapes_tbl.append(f"<tr><td>{SHAPE_LABELS[shape]}</td><td class='l'>{SHAPE_NOTES[shape]}</td>"
+                          f"<td>{row['bytes']:,}</td><td>{8 * row['bytes'] / MINUTE:.3f}</td>"
+                          f"<td>{int(row['irregular'].sum())}/60</td><td>{100 * row['bytes'] / plain_bytes:.1f}%</td>"
+                          f"<td>{int(np.median(sizes)):,}</td><td>{int(sizes.max()):,}</td>"
+                          f"<td>{added(row['encode_us'], plain_times[0])}</td><td>{added(row['decode_us'], plain_times[1])}</td></tr>")
+    shapes_tbl.append(f"</table><p class='muted'>Each example is the median-size block group across {SEEDS} seeds for that shape. "
+                      f"Timings are single-threaded, best of {reps} runs on an Apple M3 on AC power; added-time percentages "
+                      f"are relative to the values-only encode ({plain_times[0]:.0f} µs) and decode ({plain_times[1]:.0f} µs). "
+                      f"<i>vs values</i> shows timestamp bytes as a percentage of the {plain_bytes:,} value bytes.</p>")
+
+    h = [f"""<h2 id="how">How timestamps are stored</h2>
 <ul>
-<li><b>Perfect grid:</b> {grid_bytes} bytes for 60,000 timestamps, whatever the start, step or tick unit. Decoding
-writes the 60,000 int64 ticks, and that is most of its cost.</li>
-<li><b>A few gaps:</b> each gap makes one block irregular. Its intervals are all 1 except one, so the block's
-planes are nearly all zero and it costs about 20 to 60 bytes (next section).</li>
-<li><b>Noisy clock:</b> the jitter is real entropy, and no lossless coder can remove it: σ = 20 µs at µs
-resolution carries about 6.4 bits per sample, and the block group spends 7.1. The rest comes from storing intervals
-(each the difference of two jitters) with each bit plane coded on its own. If the jitter is measurement noise
-rather than information, let fluxcode round it away: with <code>Params(time_error=0.1)</code> the same clock
-costs {noisy_rounded[3]['bytes']:,} bytes (<a href="#rounding">last section</a>).</li>
+<li>Each block records a start timestamp, a step, and a reference. The step is the GCD of the block's intervals, and
+dividing each interval by that step produces a quotient written as the reference plus a residual. When all 999 intervals
+in a block are equal, every quotient matches the reference and the block is <b>regular</b>, needing no residual data
+(24 bytes before compression, and only a few bytes after). Any other block is <b>irregular</b> and stores its zigzagged
+residuals across 32 bit planes—or 64 in the rare <i>long</i> block where a residual reaches 2<sup>32</sup> or more (a
+multi-second gap in nanosecond ticks). Most planes are zero, and zstd strips them away.</li>
+<li>The reference is chosen per block as either the rounded mean or the minimum. The mean works best for symmetric
+jitter around a center, while the minimum suits skewed distributions (such as gaps, events, or deadband logging) where
+the mean sits away from most intervals. Without a reference, intervals wobbling near 1,000 flip several bit planes at
+once, costing roughly a bit per sample.</li>
+<li>A gap only affects its own block; the blocks before and after it remain regular.</li>
+<li>Tick resolution is effectively free because the GCD factors out the grid, so a 1 ms grid costs the same whether
+stored in nanoseconds, microseconds, or milliseconds.</li>
+<li>Block starts are delta-encoded from the previous block's start, so the 60 starts of a regular block group compress
+to just a few bytes.</li>
 </ul>
-<h2 id="gaps">Cost per gap</h2>
-<p>A grid with <i>k</i> gaps per minute, each 5 ms to 3 s; median of 16 block groups per row.</p>
-<table><tr><th>gaps per minute</th><th>irregular blocks</th><th>bytes</th><th>bits/sample</th><th>bytes per gap</th></tr>""")
+<h2 id="shapes">The common shapes</h2>
+<p>In practice, most time series fall on either a perfect grid or a grid with occasional gaps. A noisy clock—such as
+host arrival timestamps—is the third common case, and the only one where timestamps take more space than the values
+themselves (about two and a half times as much here).</p>
+{chart}
+{collapsible_table(f"Show common shapes table ({len(examples)} shapes)", "".join(shapes_tbl))}
+<ul>
+<li><b>Perfect grid</b> takes {grid_bytes} bytes for 60,000 timestamps regardless of the start time, step size, or tick
+unit. Most of the decode time is simply writing out the 60,000 int64 ticks.</li>
+<li><b>A few gaps</b> turn only the affected blocks irregular. Because all but one interval in each affected block equals
+1, its bit planes are almost entirely zero, adding roughly 20 to 60 bytes per gap (see the next section).</li>
+<li><b>Noisy clock</b> jitter is genuine entropy that no lossless coder can eliminate. At µs resolution, σ = 20 µs
+carries about 6.4 bits of entropy per sample, and the block group uses 7.1 bits; the extra overhead comes from encoding
+intervals (each the difference of two jittered times) with independent bit planes. When that jitter is measurement noise
+rather than signal, <code>Params(time_error=0.1)</code> lets fluxcode round it away, bringing the same clock down to
+{noisy_rounded[3]['bytes']:,} bytes (<a href="#rounding">last section</a>).</li>
+</ul>"""]
+
+    gaps_tbl = ["<table><tr><th>gaps per minute</th><th>irregular blocks</th><th>bytes</th><th>bits/sample</th><th>bytes per gap</th></tr>"]
     base = sweep[0][2]
     for num_gaps, irregular, size in sweep:
         per_gap = f"{(size - base) / num_gaps:.0f}" if num_gaps else "—"
-        h.append(f"<tr><td>{num_gaps}</td><td>{irregular:.0f}/60</td><td>{size:,.0f}</td>"
-                 f"<td>{8 * size / MINUTE:.3f}</td><td>{per_gap}</td></tr>")
-    h.append("""</table>
-<h2 id="harder">Harder shapes</h2>
-<p>For comparison, shapes with many more irregular blocks (from <code>bench/time_axis.py</code>). Only the
-cases with random intervals cost more than the values. Percentages are of the values-only encode and decode, as
-above.</p>
-<table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>
-<th>encode time added</th><th>decode time added</th></tr>""")
+        gaps_tbl.append(f"<tr><td>{num_gaps}</td><td>{irregular:.0f}/60</td><td>{size:,.0f}</td>"
+                        f"<td>{8 * size / MINUTE:.3f}</td><td>{per_gap}</td></tr>")
+    gaps_tbl.append("</table>")
+    h.append(f"<h2 id='gaps'>Cost per gap</h2><p>A 1 ms grid with <i>k</i> gaps per minute (each lasting 5 ms to 3 s), showing the median across 16 block groups per row.</p>"
+             + collapsible_table(f"Show gap sweep table ({len(sweep)} rows)", "".join(gaps_tbl)))
+
+    harder_tbl = ["<table><tr><th class='l'>timestamps</th><th>bytes</th><th>bits/sample</th><th>irregular blocks</th>"
+                  "<th>encode time added</th><th>decode time added</th></tr>"]
     for name, row in others:
-        h.append(f"<tr><td>{name}</td><td>{row['bytes']:,}</td><td>{8 * row['bytes'] / MINUTE:.3f}</td>"
-                 f"<td>{int(row['irregular'].sum())}/60</td><td>{added(row['encode_us'], plain_times[0])}</td>"
-                 f"<td>{added(row['decode_us'], plain_times[1])}</td></tr>")
-    h.append("""</table>
-<p class='muted'>1% dropped and a drifting clock stay cheap: their intervals take two or three values. Jitter,
-Poisson events and deadband logging have random intervals, and ns resolution costs more than µs when the jitter
-really is at ns resolution.</p>""")
-    h.append(f"""<h2 id="rounding">Rounding timestamps: Params.time_error</h2>
-<p>When the jitter is measurement noise, <code>Params(time_error=e)</code> lets fluxcode round the timestamps
-(0 to 0.5; the default 0 keeps them exact). Each block gets a coarse consistent step at which 95% of its
-times keep within <i>e</i> of their own interval, and none moves more than <i>e</i> of the block's mean interval.
-The values are kept as measured, and the format doesn't change: the decoder sees ordinary times.</p>
-<ul>
-<li><b>The check.</b> No time moves more than <i>e</i> mean intervals (the block's span over its intervals, 2%
-slack), and at most one in 20 moves more than <i>e</i> times its own interval, the smaller of the two either
-side of it. Only unusually close times may be off by more than <i>e</i> of their own interval, and by no more
-than the others.</li>
-<li><b>Candidates</b>, the first that passes is taken: the lattice continuing the block before, when it is
-regular on the same clock; then the block's own 1-2-5 grid (1, 2, 5, 10, 20, … ticks): the coarsest step of at
-most 2<i>e</i> mean intervals if the check passes there (clocks do), else from the step of a short interval (the
-3rd smallest of 15 sampled) down until it passes, at the clock's own phase (a multiple of a tenth
-of the step, kept from the previous block unless another fits clearly better), so a free-running or drifting
-clock rounds onto its own grid, not the epoch's; then, for a clock no 1-2-5 step divides (1024 Hz, 60 Hz),
-whose rounded intervals alternate, a lattice of its own (its typical interval as the period).</li>
-<li><b>A jittered clock becomes regular</b> once <i>e</i> is about 5 times its jitter (σ over the interval):
-every time stays on its own grid point, and the block stores no residuals. Below that the size falls in steps,
-one at each 1-2-5 step, and each step pays off on its own: there is no threshold below which rounding stops
-helping.</li>
-<li><b>Regular blocks are left alone,</b> and times already on a grid don't change.</li>
-<li><b>Order is kept</b> across blocks and block groups, and in time blocks every time stays in its block
-(a time that rounds up to the block's end stays at the end). Times are rounded once, as they are encoded:
-<code>update_time_blocks</code> stores new times exactly, and <code>replace_time_blocks</code> re-encodes
-whole blocks from the samples given.</li>
-</ul>
-{rounding_chart}
-<table><tr><th class='l'>timestamps</th>""" + "".join(
-        f"<th>{'exact' if e == 0 else f'e = {e:g}'}</th>" for e in TIME_ERRORS) + "</tr>")
+        harder_tbl.append(f"<tr><td>{name}</td><td>{row['bytes']:,}</td><td>{8 * row['bytes'] / MINUTE:.3f}</td>"
+                          f"<td>{int(row['irregular'].sum())}/60</td><td>{added(row['encode_us'], plain_times[0])}</td>"
+                          f"<td>{added(row['decode_us'], plain_times[1])}</td></tr>")
+    harder_tbl.append("</table>")
+    h.append("""<h2 id="harder">Harder shapes</h2>
+<p>For comparison, here are patterns from <code>bench/time_axis.py</code> that produce many more irregular blocks. Only
+patterns with random intervals end up larger than the values. As above, percentages are relative to the values-only
+encode and decode times.</p>"""
+             + collapsible_table(f"Show harder shapes table ({len(others)} patterns)", "".join(harder_tbl))
+             + """<p class='muted'>A 1% drop rate and a drifting clock stay compact because their intervals only take
+two or three distinct values. Jitter, Poisson events, and deadband logging have random intervals, and nanosecond
+resolution costs more than microsecond resolution whenever the jitter actually extends down to nanoseconds.</p>""")
+
+    round_tbl = ["<table><tr><th class='l'>timestamps</th>" + "".join(
+        f"<th>{'exact' if e == 0 else f'e = {e:g}'}</th>" for e in TIME_ERRORS) + "</tr>"]
     for label, rows in rounded:
         cells = []
         for e, row in zip(TIME_ERRORS, rows):
             moved = "" if e == 0 else f" · max {row['moved']:.3f}"
             cells.append(f"<td>{row['bytes']:,} B · {int(row['irregular'].sum())}/60<br><span class='muted'>"
                          f"{added(row['encode_us'], plain_times[0])}{moved}</span></td>")
-        h.append(f"<tr><td>{label}</td>{''.join(cells)}</tr>")
+        round_tbl.append(f"<tr><td>{label}</td>{''.join(cells)}</tr>")
+    round_tbl.append(f"</table><p class='muted'>Each cell shows the bytes added by timestamps and the number of irregular "
+                     f"blocks out of 60, followed by the added encode time (as a percentage of the {plain_times[0]:.0f} µs "
+                     f"values-only encode) and the largest timestamp shift in mean intervals. Timings are single-threaded, "
+                     f"best of {reps} runs on an Apple M3 on AC power. The chart samples <i>e</i> every 0.0025.</p>")
     by_label = dict(rounded)
     col = {e: idx for idx, e in enumerate(TIME_ERRORS)}
 
@@ -368,37 +348,64 @@ whole blocks from the samples given.</li>
     lattice_text = "; ".join(
         f"{label.split(',')[0]}: {cell(label, 0.0):,} → {cell(label, 0.05):,} bytes at 0.05 and {cell(label, 0.1):,} at 0.1"
         for label in lattice_labels)
-    h.append(f"""</table>
-<p class='muted'>Each cell: bytes the timestamps add · irregular blocks of 60, then the encode time they add
-(percentage of the values-only encode, {plain_times[0]:.0f} µs) and the largest move in mean intervals.
-Single thread, best of {reps}, Apple M3 on AC power. The chart samples e every 0.0025.</p>
+    h.append(f"""<h2 id="rounding">Rounding timestamps: Params.time_error</h2>
+<p>When timestamp jitter is just measurement noise, <code>Params(time_error=e)</code> allows fluxcode to round
+timestamps (<i>e</i> ranges from 0 to 0.5, with 0 keeping them exact). Each block gets a coarse, consistent step where
+at least 95% of timestamps stay within <i>e</i> of their own adjacent interval and no timestamp moves more than <i>e</i>
+of the block's mean interval. Sample values are left untouched and the wire format stays identical, so the decoder simply
+reads ordinary timestamps.</p>
 <ul>
-<li><b>Jittered clocks</b> drop from about 120 KB to {min(jitter_bytes)}–{max(jitter_bytes)} bytes once e reaches
-about 5σ (0.05 here), on round times or free-running. With drift as well, the phase follows the clock block by
-block: {cell(drift, 0.05):,} bytes at 0.05 and {cell(drift, 0.1):,} at 0.1. Once regular they also encode faster:
-a regular block skips the residuals.</li>
-<li><b>Clocks no 1-2-5 step divides</b> go onto lattices of their own once e covers the jitter (about 5σ):
-{lattice_text}.</li>
-<li><b>Times already on a grid</b> don't change, but checking them costs time: {check_cost("Perfect grid")} per
-block group on a perfect grid (its blocks are regular and aren't rounded, but the ticks are checked for order and
-regularity) and {check_cost("Grid with a few gaps")} with a few gaps (rounding the irregular blocks).</li>
-<li><b>The noisy clock</b> (σ = 20 µs, 2%) needs e = 0.1 to land on its grid; at 0.05 about 1% of its
-times fall to a neighbouring grid point.</li>
-<li><b>Events and deadband logging</b> have no grid to land on. Rounding still takes out the low bits
-(events get {events_ratio:.1f} times smaller at 0.05). Events have many close pairs, and 95% of times must keep
-within <i>e</i> of their own interval, so their step is finer than a clock's at the same <i>e</i>. Deadband
-logging's times are already on a 1 ms grid and mostly a few ms apart: any coarser step moves too many of them
-by more than <i>e</i> of their own interval, so it gains nothing below <i>e</i> = 0.5, and the attempt costs
-{added(cell("Deadband logging, ms grid", 0.05, "encode_us") - cell("Deadband logging, ms grid", 0.0, "encode_us"), plain_times[0])}
-per block group at 0.05.</li>
+<li><b>Validation rule.</b> No timestamp may move by more than <i>e</i> mean intervals (the block span divided by its
+interval count, with 2% slack), and at most 1 in 20 may move by more than <i>e</i> times its own local interval (the
+shorter of the two intervals on either side). Only unusually close timestamps can exceed <i>e</i> relative to their local
+interval, and even then they remain bounded by the block mean.</li>
+<li><b>Candidate search.</b> The encoder tries candidates in order and takes the first one that passes. First, it checks
+the lattice continuing the previous block if that block was regular on the same clock. Next, it tries a 1-2-5 grid
+(1, 2, 5, 10, 20, … ticks), starting at the coarsest step up to 2<i>e</i> mean intervals (which clocks usually pass) or
+stepping down from a short sampled interval (the 3rd smallest of 15) until it passes. Each grid uses the clock's own
+phase—a multiple of one-tenth of the step, carried over from the previous block unless another fits clearly better—so
+free-running and drifting clocks snap to their own grids rather than the epoch's. Finally, for clocks whose period no
+1-2-5 step divides (such as 1024 Hz or 60 Hz, where rounded intervals would alternate), it tries a custom lattice using
+the clock's typical interval as the period.</li>
+<li><b>Smooth degradation.</b> Once <i>e</i> reaches roughly 5× the clock's relative jitter (σ divided by the interval),
+a jittered clock snaps onto a regular grid and stores no residuals. Below that point, size drops in discrete steps as
+each finer 1-2-5 grid becomes eligible, so even a small tolerance still helps.</li>
+<li><b>No-op on clean grids.</b> Regular blocks are skipped entirely, and timestamps already on a grid are never
+altered.</li>
+<li><b>Ordering and mutations.</b> Timestamp order is preserved across blocks and block groups, and within time blocks
+every sample stays in its original block (a timestamp that would round past the end is clamped to the end). Rounding
+happens once during encoding: <code>update_time_blocks</code> stores newly added timestamps exactly, whereas
+<code>replace_time_blocks</code> re-encodes whole blocks from the supplied samples.</li>
 </ul>
-<p class='muted'>Measurements behind the choices (1-2-5 steps over powers of two, no interpolation of values, no
-resampling, per-block phases): <a href="https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md#time-error">docs/TUNING.md,
-Time error</a>.</p>""")
+{rounding_chart}
+{collapsible_table(f"Show time_error table ({len(rounded)} patterns × {len(TIME_ERRORS)} values)", "".join(round_tbl))}
+<ul>
+<li><b>Jittered clocks</b> drop from roughly 120 KB to {min(jitter_bytes)}–{max(jitter_bytes)} bytes once <i>e</i>
+reaches about 5σ (0.05 here), whether aligned to round times or free-running. When drift is also present, the phase
+tracks the clock block by block, reaching {cell(drift, 0.05):,} bytes at 0.05 and {cell(drift, 0.1):,} bytes at 0.1.
+Becoming regular speeds up encoding as well because regular blocks skip residual coding.</li>
+<li><b>Non-1-2-5 clocks</b> snap to their own custom lattices once <i>e</i> covers the jitter (around 5σ):
+{lattice_text}.</li>
+<li><b>Already-regular grids</b> do not change, though verifying them has a small CPU cost: {check_cost("Perfect grid")}
+per block group on a perfect grid (checking order and regularity) and {check_cost("Grid with a few gaps")} when there
+are a few gaps (attempting to round the irregular blocks).</li>
+<li><b>The noisy clock</b> (σ = 20 µs, or 2%) needs <i>e</i> = 0.1 to land cleanly on its grid; at 0.05, about 1% of its
+timestamps still fall onto a neighboring grid point.</li>
+<li><b>Events and deadband logging</b> have no underlying clock grid, though rounding still trims low-order bits
+(Poisson events shrink by {events_ratio:.1f}× at 0.05). Because Poisson events contain many tight pairs and 95% of
+timestamps must stay within <i>e</i> of their local interval, they get a finer step than a periodic clock at the same
+<i>e</i>. Deadband timestamps already sit on a 1 ms grid mostly a few milliseconds apart, so any coarser step violates
+the local-interval bound for too many points; below <i>e</i> = 0.5 it saves nothing and costs
+{added(cell("Deadband logging, ms grid", 0.05, "encode_us") - cell("Deadband logging, ms grid", 0.0, "encode_us"), plain_times[0])}
+per block group at 0.05 to check.</li>
+</ul>
+<p class='muted'>For the measurements behind these design choices (1-2-5 steps over powers of two, no value
+interpolation or resampling, and per-block phases), see
+<a href="https://github.com/gboyer/fluxcode/blob/main/docs/TUNING.md#time-error">docs/TUNING.md (Time error)</a>.</p>""")
     toc = [("how", "How timestamps are stored", []), ("shapes", "The common shapes", []),
            ("gaps", "Cost per gap", []), ("harder", "Harder shapes", []),
            ("rounding", "Rounding timestamps: Params.time_error", [])]
-    (OUT / "time.html").write_text(shell("fluxcode timestamps: the time axis", "", toc, "\n".join(h)))
+    (OUT / "time.html").write_text(shell("fluxcode timestamps: the time axis", intro, toc, "\n".join(h), active="time"))
     print(f"wrote {OUT / 'time.html'}")
 
 

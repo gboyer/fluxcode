@@ -39,7 +39,7 @@ class FluxCodec:
         params = [int(_format.get_int16(parsed.body, _format.grid_exponents_start(nb), nb, b)) for b in range(nb)]
         scales = [int(_format.get_uint32(parsed.body, _format.grid_scales_start(nb), nb, b)) for b in range(nb)]
         infos = [{"order": int(f & _format.BLOCK_FLAG_ORDER), "decimal": bool(f & _format.BLOCK_FLAG_DECIMAL),
-                  "param": p,
+                  "special": bool(f & _format.BLOCK_FLAG_SAMPLE_CODES), "param": p,
                   "scale": (s & _format.SCALE_MASK, s >> _format.SCALE_SHIFT) if f & _format.BLOCK_FLAG_SCALED else None}
                  for f, p, s in zip(parsed.block_flags, params, scales)]
         return group, infos
