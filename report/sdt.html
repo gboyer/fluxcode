@@ -1,221 +1,158 @@
 <!doctype html>
 <html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>fluxcode on swinging-door historian data</title><style>
-:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--hl:#dcefdc;--l1:#e8f3e8;--l2:#fff3cc;--l3:#ffe0cc;--l4:#ffcccc}
-@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--muted:#999;--line:#333;--hl:#254025;--l1:#1f2e1f;--l2:#3a3418;--l3:#40291a;--l4:#452020}}
-body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;max-width:1200px;margin:0 auto;padding:16px}
-table{border-collapse:collapse;margin:8px 0 16px;font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
-th,td{border:1px solid var(--line);padding:3px 7px;text-align:right;white-space:nowrap}
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--surface:#f7f7f8;--surface-hover:#eeeef0;--accent:#2a5bd7;--accent-bg:#eaf0ff;--hl:#dcefdc;--l1:#e8f3e8;--l2:#fff3cc;--l3:#ffe0cc;--l4:#ffcccc}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e8;--muted:#999;--line:#333;--surface:#202022;--surface-hover:#2a2a2e;--accent:#7aa2ff;--accent-bg:#1c2740;--hl:#254025;--l1:#1f2e1f;--l2:#3a3418;--l3:#40291a;--l4:#452020}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,sans-serif;max-width:1200px;margin:0 auto;padding:0 20px 48px}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+header.site-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;margin-bottom:20px;border-bottom:1px solid var(--line)}
+header.site-header .brand{font-weight:700;font-size:16px;color:var(--fg);letter-spacing:-0.01em}
+header.site-header .brand:hover{text-decoration:none}
+nav.site-nav{display:flex;flex-wrap:wrap;gap:4px}
+nav.site-nav a{padding:4px 10px;border-radius:6px;font-size:13.5px;color:var(--muted);font-weight:500}
+nav.site-nav a:hover{background:var(--surface-hover);color:var(--fg);text-decoration:none}
+nav.site-nav a.active{background:var(--accent-bg);color:var(--accent);font-weight:600}
+h1{font-size:28px;line-height:1.2;margin:8px 0 12px;letter-spacing:-0.02em}
+h2{margin-top:36px;border-top:1px solid var(--line);padding-top:16px;font-size:20px}
+h3{margin-top:24px;font-size:16.5px}
+table{border-collapse:collapse;margin:8px 0 12px;font-size:13.5px;font-variant-numeric:tabular-nums;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:4px 8px;text-align:right;white-space:nowrap}
+th{background:var(--surface)}
 th:first-child,td:first-child,td.l,th.l{text-align:left}
 td.best{background:var(--hl);font-weight:600}
 td.r1{background:var(--l1)}td.r2{background:var(--l2)}td.r3{background:var(--l3)}td.r4{background:var(--l4)}
 tr.fam td:first-child{border-left:4px solid var(--c,var(--line))}
-img{max-width:100%;background:#fff}
-nav ul{columns:2;list-style:none;padding-left:0}nav li{margin:2px 0;break-inside:avoid}nav ul ul{columns:1;padding-left:16px}
-.muted{color:var(--muted)} code{font-size:13px} h2{margin-top:32px;border-top:1px solid var(--line);padding-top:12px}
+img{max-width:100%;height:auto;background:#fff;border-radius:4px}
+nav.toc{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:18px 0 24px}
+nav.toc h2{margin:0 0 8px;padding:0;border:0;font-size:14px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted)}
+nav.toc ul{columns:2;list-style:none;padding-left:0;margin:0;font-size:14px}
+nav.toc li{margin:3px 0;break-inside:avoid}
+nav.toc ul ul{columns:1;padding-left:16px;font-size:13px}
+@media (max-width:640px){nav.toc ul{columns:1}}
+details.data-table{margin:12px 0 18px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+details.data-table>summary{cursor:pointer;padding:8px 12px;font-size:13.5px;font-weight:500;color:var(--muted);user-select:none}
+details.data-table>summary:hover{color:var(--fg)}
+details.data-table[open]>summary{border-bottom:1px solid var(--line);color:var(--fg)}
+details.data-table>.table-wrap{padding:8px 12px;background:var(--bg);border-radius:0 0 6px 6px}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin:20px 0 28px}
+.card{display:block;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);transition:border-color 0.15s}
+.card:hover{border-color:var(--accent);text-decoration:none}
+.card h3{margin:0 0 6px;font-size:16px;color:var(--accent)}
+.card p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.45}
+.figure-card{margin:18px 0 24px;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.figure-card figcaption{margin-top:8px;font-size:13.5px;color:var(--muted)}
+pre{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto;font-size:13px;line-height:1.45}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.9em}
+pre code{font-size:13px}
+blockquote{margin:12px 0;padding:8px 14px;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:24px 0}
+.muted{color:var(--muted)}
 </style></head><body>
+<header class='site-header'><a class='brand' href='index.html'>fluxcode</a><nav class='site-nav' aria-label='Site navigation'><a href='index.html'>Overview</a><a href='codecs.html'>Codecs</a><a href='public.html'>Public Data</a><a href='time.html'>Timestamps</a><a href='sdt.html' class='active'>Historian</a><a href='prune.html'>Fluxprune</a><a href='rate.html'>Rate Control</a><a href='spec.html'>Spec</a></nav></header>
 <h1>fluxcode on swinging-door historian data</h1>
-
-<nav><h2 id='contents'>Contents</h2><ul><li><a href='#findings'>Findings</a></li><li><a href='#tags'>The tags</a></li><li><a href='#size'>Size</a></li><li><a href='#accuracy'>Accuracy against the scans</a></li><li><a href='#noise-floor'>Noise floor</a></li><li><a href='#sweep'>Size vs accuracy</a></li><li><a href='#layout'>Block layout</a></li><li><a href='#timestamps'>Timestamps</a></li><li><a href='#resampled'>Resampled exports</a></li><li><a href='#no-sdt'>SDT or every scan?</a></li></ul></nav>
-<p><a href="index.html">← codec comparison (index.html)</a> · <a href="time.html">the time axis (time.html)</a></p>
-<p>Process historians that compress with <b>swinging-door trending</b> (SDT; PI's compression, and many others) scan each
-tag at a fixed rate, drop scans that are within an exception deadband (ExcDev) of the last reported one, and archive only
-the points that swinging door keeps: actual scans, at irregular times, such that straight lines between them stay
-close to every snapshot (nominally within CompDev; <a href="#tags">in practice up to twice that</a>). That is what an export of the archive gives you, and what this page encodes: one block group per tag
-and day, values and exact timestamps. The data are six simulated tags (5 days each, 1 s scans) chosen to cover what SDT
-archives look like: from 1 point in 2,000 scans (a valve) to nearly every scan (a noisy tag with a tight CompDev).</p>
-<p>Store the archived points themselves. A historian can also export a regular series (interpolated, or held as a
-forward fill gives), but that throws the points away and costs more: <a href="#resampled">resampled exports</a>.</p>
-<p><b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_sdt_report.py</code> (a few minutes; sizes and
-errors only, no timings). The simulator is <a href="../tslab/common/historian.py"><code>tslab/common/historian.py</code></a>.</p>
+<p>Process historians that use <b>swinging-door trending</b> (SDT, as in PI and similar systems) scan each
+tag at a fixed rate, drop readings within an exception deadband (ExcDev) of the last reported value, and archive only
+the points that swinging door retains. The result is an irregular series of actual scans whose connecting straight lines
+stay close to every snapshot (nominally within CompDev, though <a href="#tags">up to about twice that in practice</a>).
+This report measures fluxcode on those exported archives, encoding one block group per tag-day with exact timestamps.
+The test set covers six simulated tags (5 days each at 1 s scans), ranging from a valve that keeps 1 point per 2,000
+scans to a noisy tag with a tight CompDev that keeps nearly every scan.</p>
+<p>Always store the archived points themselves. Historians can also export a resampled regular grid (interpolated or
+forward-filled), but that discards the original points and takes more space—see
+<a href="#resampled">resampled exports</a>.</p>
+<p class='muted'><b>Regenerate:</b> <code>cd experimental &amp;&amp; uv run python make_sdt_report.py</code> (sizes and
+errors only, no timings). The simulator lives in <a href="../tslab/common/historian.py"><code>tslab/common/historian.py</code></a>.</p>
+<nav class='toc'><h2 id='contents'>Contents</h2><ul><li><a href='#findings'>Findings</a></li><li><a href='#tags'>The tags</a></li><li><a href='#size'>Size</a></li><li><a href='#accuracy'>Accuracy against the scans</a></li><li><a href='#noise-floor'>Noise floor</a></li><li><a href='#sweep'>Size vs accuracy</a></li><li><a href='#layout'>Block layout</a></li><li><a href='#timestamps'>Timestamps</a></li><li><a href='#resampled'>Resampled exports</a></li><li><a href='#no-sdt'>SDT or every scan?</a></li></ul></nav>
 <h2 id="findings">Findings</h2>
 <ul>
-<li><b>The noise floor applies only where the historian kept nearly every scan.</b> Swinging door's points look like
-white noise without being noise, so a block needs 90% of its intervals one scan. At each tag's own CompDev,
-no archive gets it: the densest,
-motor-current, has 80%–84% of intervals one scan, and the decimal tags decode exactly as with
-the floor off. In the CompDev sweep it applies to motor-current at 0.25× its CompDev (94%–96% one scan): -41% in size, max error 0.6 of its own CompDevs; motor-current at 0.5× its CompDev (89%–92% one scan): -33% in size, max error 0.6 of its own CompDevs:
-CompDev is set far below the noise there (<a href="#noise-floor">noise floor</a>). At the defaults the float32 tag is within
-0.0008 CompDevs at 2.47 bytes per point.</li>
-<li><b>Store the archived points, not a resampled export.</b> Read back at the 1 s scan rate, the same archive takes
-0.6–6.3× the bytes interpolated and 0.6–2.0× held
-(<a href="#resampled">resampled exports</a>), and fluxcode can't recover the points from either.</li>
-<li><b>Against lossless coders,</b> on the dense tags fluxcode is 1.7–2.3× smaller than zstd of the
-columns and 1.7–6.1× smaller than Gorilla. On the sparse tags (tank-level, valve: about 50 points a
-day) a day costs a few hundred bytes whatever the coder, and block overhead decides: hourly blocks cost
-2.2–2.5× what one block per day does (<a href="#layout">layout</a>). Fixed time buckets keep a
-store simple, and the inflation only hits data that is tiny anyway.</li>
-<li><b>Timestamps are cheap when scan-aligned:</b> 0.13–0.70 bytes per point on the dense tags, since every interval
-is a whole number of scans. Device timestamps at ms resolution add 1.11–1.31 bytes per point.</li>
-<li><b>fluxcode adds almost nothing to SDT's error:</b> at the defaults, the trend through the decoded points
-has the historian's own max error (<a href="#accuracy">accuracy</a>), which is about 2 CompDevs from swinging door
-itself.</li>
-<li><b>SDT doesn't always pay.</b> At the same max error, fluxcode on every scan is smaller than SDT + fluxcode on
-flow, ph-float32, motor-current (<a href="#no-sdt">SDT or every scan</a>): on noisy tags SDT keeps
-most scans anyway, and a regular grid's times cost almost nothing. On smooth or flat tags SDT wins by a wide margin.</li>
+<li><b>The noise floor only activates when the historian kept nearly every scan.</b> Because swinging-door points look
+like white noise without actually being noise, a block must have at least 90% one-scan intervals before the floor turns
+on. At each tag's nominal CompDev, no archive triggers it;
+even the densest tag (motor-current) has 80%–84% one-scan intervals, so all decimal tags
+decode identically to having the floor off. Across the CompDev sweep, the floor activates on
+motor-current at 0.25× its CompDev (94%–96% one scan): -46% in size, max error 0.6 of its own CompDevs; motor-current at 0.5× its CompDev (89%–92% one scan): -35% in size, max error 0.6 of its own CompDevs, where CompDev is set well below the noise
+(<a href="#noise-floor">noise floor</a>). At defaults, the float32 tag stays within
+0.0008 CompDevs at 2.45 bytes per point.</li>
+<li><b>Store archived points rather than resampled exports.</b> Reading the same archive back on a 1 s grid uses
+0.6–7.4× more bytes when interpolated and 0.6–2.3× more
+when forward-filled (<a href="#resampled">resampled exports</a>), and neither format preserves the original archived
+points.</li>
+<li><b>Strong gains over lossless coders on dense tags.</b> On dense tags, fluxcode is 1.8–2.3× smaller
+than columnar zstd and 1.7–6.4× smaller than Gorilla. Sparse tags (tank-level, valve, roughly 50
+points/day) only take a few hundred bytes per day under any coder, so block overhead dominates: hourly blocks take
+1.7–1.9× the space of one block per day (<a href="#layout">layout</a>). Fixed time buckets
+keep storage management simple, and that overhead only affects tags that are already tiny.</li>
+<li><b>Scan-aligned timestamps are cheap.</b> Because every interval is a whole number of scans, timestamps add only
+0.13–0.70 bytes per point on dense tags. Millisecond-resolution device timestamps add 1.11–1.32 bytes per point.</li>
+<li><b>Negligible error added to SDT.</b> At default settings, the trend reconstructed from fluxcode-decoded points has
+essentially the same worst-case error as the raw historian archive (<a href="#accuracy">accuracy</a>), which is already
+around 2 CompDevs from swinging door itself.</li>
+<li><b>SDT is not always smaller than storing every scan.</b> At matched max error, encoding every 1 s scan directly
+with fluxcode beats SDT + fluxcode on flow, ph-float32, motor-current
+(<a href="#no-sdt">SDT or every scan</a>). On noisy tags, SDT retains most scans anyway while paying for irregular
+timestamps, whereas a regular grid's timestamps cost almost nothing. On smooth or flat tags, SDT still wins easily.</li>
 </ul>
 <h2 id="tags">The tags</h2>
-<p>Each tag is scanned every second for a day, then filtered by exception (ExcDev = CompDev / 2, the usual rule; the scan
-before each exception is reported too) and by swinging door (CompMax 8 h). Times are whole seconds, as a scan class gives.
-Errors are in CompDevs, CompDev being the historian's nominal tolerance. The historian's trend (straight lines between
-archived points) strays from the scans by up to about 2.5 CompDevs: swinging door archives the real scan where the doors
-close, and the line to it is only guaranteed within CompDev at that scan, so earlier snapshots can be up to 2 CompDevs off
-it (about 1.9 here); the exception filter adds the rest.</p>
-<table><tr><th class='l'>tag</th><th class='l'>what it is</th><th>CompDev</th><th>points per day</th>
-<th>scans per point</th><th>trend vs scans: max</th><th>RMS</th></tr>
-<tr><td>temperature</td><td class='l'>Daily cycle + slow drift (τ 30 min) + noise σ 0.03 °C, 0.01 °C resolution</td><td>0.1</td><td>7,802</td><td>11.1</td><td>2.45</td><td>0.68</td></tr>
-<tr><td>flow</td><td class='l'>Setpoint steps (6/day) through a 60 s lag + process noise (σ 1.5, τ 5 s) + measurement noise σ 0.8, 0.1 resolution: noise above CompDev</td><td>1</td><td>32,678</td><td>2.6</td><td>2.25</td><td>0.65</td></tr>
-<tr><td>tank-level</td><td class='l'>Fill and drain ramps (0.01–0.05 %/s) between holds + noise σ 0.02 %, 0.01 % resolution</td><td>0.2</td><td>51</td><td>1,707.5</td><td>2.79</td><td>0.68</td></tr>
-<tr><td>valve</td><td class='l'>Position commands in 5 % steps (30/day), 2 %/s travel, no noise, 0.1 % resolution</td><td>0.5</td><td>57</td><td>1,505.2</td><td>1.96</td><td>0.06</td></tr>
-<tr><td>ph-float32</td><td class='l'>pH 7 + slow drift (τ 10 min) + noise σ 0.004, stored as float32 (not decimal)</td><td>0.02</td><td>8,153</td><td>10.6</td><td>2.46</td><td>0.69</td></tr>
-<tr><td>motor-current</td><td class='l'>Load steps (24/day) through a 10 s lag + noise σ 1 A, 0.01 A resolution: CompDev far below the noise, so most scans are archived</td><td>0.2</td><td>70,974</td><td>1.2</td><td>1.82</td><td>0.37</td></tr>
-</table><p class='muted'>Points per day: mean over the days. Trend vs scans: the worst over the days, and the mean RMS, in CompDevs, before any fluxcode.</p>
-<img src='historian-tags.svg' alt='One hour of each tag: scans, archived points and the trend'>
+<p>Each tag is scanned once per second for a day, then passed through an exception filter (ExcDev = CompDev / 2, the
+standard rule, also reporting the scan just before each exception) and swinging-door compression (CompMax = 8 h).
+Timestamps are whole seconds, matching a regular scan class, and errors are expressed in multiples of CompDev. Because
+swinging door archives the scan where its doors close, the resulting line is only guaranteed to stay within CompDev at
+that closing scan; earlier snapshots along the segment can stray by up to 2 CompDevs (about 1.9 here), and the exception
+filter pushes the total worst-case deviation to roughly 2.5 CompDevs.</p><img src='historian-tags.svg' alt='One hour of each tag: scans, archived points and the trend'><details class='data-table'><summary>Show tag summary table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th class='l'>what it is</th><th>CompDev</th><th>points per day</th><th>scans per point</th><th>trend vs scans: max</th><th>RMS</th></tr><tr><td>temperature</td><td class='l'>Daily cycle + slow drift (τ 30 min) + noise σ 0.03 °C, 0.01 °C resolution</td><td>0.1</td><td>7,802</td><td>11.1</td><td>2.45</td><td>0.68</td></tr><tr><td>flow</td><td class='l'>Setpoint steps (6/day) through a 60 s lag + process noise (σ 1.5, τ 5 s) + measurement noise σ 0.8, 0.1 resolution: noise above CompDev</td><td>1</td><td>32,678</td><td>2.6</td><td>2.25</td><td>0.65</td></tr><tr><td>tank-level</td><td class='l'>Fill and drain ramps (0.01–0.05 %/s) between holds + noise σ 0.02 %, 0.01 % resolution</td><td>0.2</td><td>51</td><td>1,707.5</td><td>2.79</td><td>0.68</td></tr><tr><td>valve</td><td class='l'>Position commands in 5 % steps (30/day), 2 %/s travel, no noise, 0.1 % resolution</td><td>0.5</td><td>57</td><td>1,505.2</td><td>1.96</td><td>0.06</td></tr><tr><td>ph-float32</td><td class='l'>pH 7 + slow drift (τ 10 min) + noise σ 0.004, stored as float32 (not decimal)</td><td>0.02</td><td>8,153</td><td>10.6</td><td>2.46</td><td>0.69</td></tr><tr><td>motor-current</td><td class='l'>Load steps (24/day) through a 10 s lag + noise σ 1 A, 0.01 A resolution: CompDev far below the noise, so most scans are archived</td><td>0.2</td><td>70,974</td><td>1.2</td><td>1.82</td><td>0.37</td></tr></table><p class='muted'>Points per day is the mean across all days. Trend vs scans shows the worst daily max error and mean RMS error in CompDevs, measured before applying fluxcode.</p></div></details>
 <h2 id="size">Size</h2>
-<p>Bytes per archived point over all 5 days, everything a decoder needs included. Raw is an int64 time and a float64 value
-(16 bytes). zstd and Gorilla are lossless: zstd-3 of the time deltas and the values as two int64/float64 columns; Gorilla
-with its own delta-of-delta timestamps (in seconds) and XOR values. fluxcode is one block group per tag-day in 1 h blocks
-(<a href="#layout">layout</a>), with exact times; its <i>values</i> and <i>times</i> columns split its bytes, the
-times' being those of the same blocks with the noise floor off minus the same blocks without times.</p>
-<table><tr><th class='l'>tag</th><th>points per day</th><th>raw</th><th>zstd</th><th>Gorilla</th>
-<th>fluxcode defaults</th><th>values</th><th>times</th><th>max error</th><th>exact</th><th>kB per day</th>
-<th>noise floor off</th><th>max error</th></tr>
-<tr><td>temperature</td><td>7,802</td><td>16</td><td>3.52</td><td>7.73</td><td><b>1.54</b></td><td>0.84</td><td>0.70</td><td>exact</td><td>100%</td><td>12.04</td><td>1.54</td><td>exact</td></tr>
-<tr><td>flow</td><td>32,678</td><td>16</td><td>2.64</td><td>7.77</td><td><b>1.28</b></td><td>0.87</td><td>0.41</td><td>exact</td><td>100%</td><td>41.69</td><td>1.28</td><td>exact</td></tr>
-<tr><td>tank-level</td><td>51</td><td>16</td><td>11.08</td><td>10.03</td><td><b>11.51</b></td><td>5.40</td><td>6.11</td><td>exact</td><td>100%</td><td>0.58</td><td>11.51</td><td>exact</td></tr>
-<tr><td>valve</td><td>57</td><td>16</td><td>6.64</td><td>4.52</td><td><b>7.74</b></td><td>2.63</td><td>5.11</td><td>exact</td><td>100%</td><td>0.44</td><td>7.74</td><td>exact</td></tr>
-<tr><td>ph-float32</td><td>8,153</td><td>16</td><td>5.01</td><td>4.08</td><td><b>2.47</b></td><td>1.81</td><td>0.66</td><td>0.00076</td><td>3%</td><td>20.12</td><td>2.47</td><td>0.00076</td></tr>
-<tr><td>motor-current</td><td>70,974</td><td>16</td><td>2.40</td><td>7.44</td><td><b>1.37</b></td><td>1.24</td><td>0.13</td><td>exact</td><td>100%</td><td>97.58</td><td>1.37</td><td>exact</td></tr>
-</table><p class='muted'>Max error: the worst |decoded − archived| over the days, in CompDevs. Exact:
-the share of points that decode bit-exact. Values and times: the times' bytes are those of the same blocks with the noise
-floor off minus the same without times. The <a href="#noise-floor">noise floor</a> section explains where the defaults
-and the noise floor off differ.</p>
+<p>Total bytes per archived point across all 5 days, including all headers and framing needed to decode. Raw storage is
+an int64 timestamp plus a float64 value (16 bytes). Both zstd and Gorilla are lossless: zstd-3 compresses the time
+deltas and values as two columns, while Gorilla uses its delta-of-delta timestamps (in seconds) and XOR value coding.
+fluxcode encodes one block group per tag-day using 1 h blocks (<a href="#layout">layout</a>) with exact timestamps; the
+<i>values</i> and <i>times</i> columns break down that total.</p><details class='data-table'><summary>Show size comparison table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>points per day</th><th>raw</th><th>zstd</th><th>Gorilla</th><th>fluxcode defaults</th><th>values</th><th>times</th><th>max error</th><th>exact</th><th>kB per day</th><th>noise floor off</th><th>max error</th></tr><tr><td>temperature</td><td>7,802</td><td>16</td><td>3.52</td><td>7.73</td><td><b>1.52</b></td><td>0.83</td><td>0.70</td><td>exact</td><td>100%</td><td>11.89</td><td>1.52</td><td>exact</td></tr><tr><td>flow</td><td>32,678</td><td>16</td><td>2.64</td><td>7.77</td><td><b>1.22</b></td><td>0.82</td><td>0.40</td><td>exact</td><td>100%</td><td>39.86</td><td>1.22</td><td>exact</td></tr><tr><td>tank-level</td><td>51</td><td>16</td><td>11.08</td><td>10.03</td><td><b>9.34</b></td><td>5.45</td><td>3.89</td><td>exact</td><td>100%</td><td>0.47</td><td>9.34</td><td>exact</td></tr><tr><td>valve</td><td>57</td><td>16</td><td>6.64</td><td>4.52</td><td><b>5.98</b></td><td>2.84</td><td>3.14</td><td>exact</td><td>100%</td><td>0.34</td><td>5.98</td><td>exact</td></tr><tr><td>ph-float32</td><td>8,153</td><td>16</td><td>5.01</td><td>4.08</td><td><b>2.45</b></td><td>1.80</td><td>0.64</td><td>0.00076</td><td>3%</td><td>19.95</td><td>2.45</td><td>0.00076</td></tr><tr><td>motor-current</td><td>70,974</td><td>16</td><td>2.40</td><td>7.44</td><td><b>1.33</b></td><td>1.19</td><td>0.13</td><td>exact</td><td>100%</td><td>94.12</td><td>1.33</td><td>exact</td></tr></table><p class='muted'><i>Max error</i> is the worst |decoded − archived| across all days in
+CompDevs, and <i>exact</i> is the fraction of points decoded bit-for-bit identically. Timestamp bytes are measured as
+the difference between encoding the same blocks with and without timestamps (with the noise floor off). See the
+<a href="#noise-floor">noise floor</a> section for when default settings diverge from having the floor off.</p></div></details>
 <h2 id="accuracy">Accuracy against the scans</h2>
-<p>What matters downstream is the trend: straight lines between the decoded points, compared with the scans the historian
-saw. SDT alone is the historian's own error; fluxcode's is added on top. In CompDevs, worst over the 5 days.</p>
-<table><tr><th class='l'>tag</th><th>SDT alone: max</th><th>RMS</th><th>+ fluxcode defaults: max</th><th>RMS</th>
-<th>+ fluxcode, noise floor off: max</th><th>RMS</th></tr>
-<tr><td>temperature</td><td>2.445</td><td>0.679</td><td>2.445</td><td>0.679</td><td>2.445</td><td>0.679</td></tr>
-<tr><td>flow</td><td>2.250</td><td>0.650</td><td>2.250</td><td>0.650</td><td>2.250</td><td>0.650</td></tr>
-<tr><td>tank-level</td><td>2.785</td><td>0.678</td><td>2.785</td><td>0.678</td><td>2.785</td><td>0.678</td></tr>
-<tr><td>valve</td><td>1.958</td><td>0.058</td><td>1.958</td><td>0.058</td><td>1.958</td><td>0.058</td></tr>
-<tr><td>ph-float32</td><td>2.455</td><td>0.694</td><td>2.455</td><td>0.694</td><td>2.455</td><td>0.694</td></tr>
-<tr><td>motor-current</td><td>1.817</td><td>0.368</td><td>1.817</td><td>0.368</td><td>1.817</td><td>0.368</td></tr>
-</table>
+<p>Downstream consumers see the reconstructed trend—straight lines connecting the decoded points—compared against the
+original 1 s scans. The table reports worst-case errors in CompDevs over the 5 days, showing the historian's own SDT
+error alongside the combined error after fluxcode.</p><details class='data-table'><summary>Show trend accuracy table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>SDT alone: max</th><th>RMS</th><th>+ fluxcode defaults: max</th><th>RMS</th><th>+ fluxcode, noise floor off: max</th><th>RMS</th></tr><tr><td>temperature</td><td>2.445</td><td>0.679</td><td>2.445</td><td>0.679</td><td>2.445</td><td>0.679</td></tr><tr><td>flow</td><td>2.250</td><td>0.650</td><td>2.250</td><td>0.650</td><td>2.250</td><td>0.650</td></tr><tr><td>tank-level</td><td>2.785</td><td>0.678</td><td>2.785</td><td>0.678</td><td>2.785</td><td>0.678</td></tr><tr><td>valve</td><td>1.958</td><td>0.058</td><td>1.958</td><td>0.058</td><td>1.958</td><td>0.058</td></tr><tr><td>ph-float32</td><td>2.455</td><td>0.694</td><td>2.455</td><td>0.694</td><td>2.455</td><td>0.694</td></tr><tr><td>motor-current</td><td>1.817</td><td>0.368</td><td>1.817</td><td>0.368</td><td>1.817</td><td>0.368</td></tr></table></div></details>
 <h2 id="noise-floor">Noise floor</h2>
-<p>fluxcode's noise floor (default 0.25σ) coarsens the step of blocks whose samples look like white measurement noise.
-An SDT archive's sparse points look like that without being noise: swinging door keeps exactly the points a straight
-line can't predict. So a block with irregular times gets a floor only if it has a cadence: at least 90% of its
-intervals one scan (between half and 1.5 times the median of 15 evenly spaced intervals). Then the noise is measured on
-consecutive scans only. An archive that kept nearly every scan is raw sensor data, and gets the floor; any sparser
-one gets none and keeps its values. Below, each tag's archive at five CompDevs (ExcDev half of it), 1 h blocks, all
-5 days, against the same with the noise floor off.</p>
-<table><tr><th class='l'>tag</th><th>CompDev</th><th>points per day</th><th>one-scan share</th><th>blocks floored</th>
-<th>kB per day</th><th>noise floor off</th><th>max error</th><th>exact</th></tr>
-<tr><td>temperature</td><td>0.025</td><td>48,119</td><td>51%–56%</td><td>0 of 120</td><td>47.57</td><td>47.57</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.05</td><td>27,252</td><td>23%–32%</td><td>0 of 120</td><td>32.16</td><td>32.16</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.1</td><td>7,802</td><td>1%–6%</td><td>0 of 120</td><td>12.04</td><td>12.04</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.2</td><td>1,668</td><td>–</td><td>–</td><td>3.60</td><td>3.60</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.4</td><td>385</td><td>–</td><td>–</td><td>1.30</td><td>1.30</td><td>exact</td><td>100%</td></tr>
-<tr><td>flow</td><td>0.25</td><td>67,577</td><td>75%–79%</td><td>0 of 120</td><td>68.74</td><td>68.74</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.5</td><td>52,838</td><td>57%–61%</td><td>0 of 120</td><td>59.86</td><td>59.86</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>1</td><td>32,678</td><td>33%–39%</td><td>0 of 120</td><td>41.69</td><td>41.69</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>2</td><td>10,030</td><td>5%–11%</td><td>0 of 120</td><td>15.52</td><td>15.52</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>4</td><td>844</td><td>–</td><td>–</td><td>2.05</td><td>2.05</td><td>exact</td><td>100%</td></tr>
-<tr><td>tank-level</td><td>0.05</td><td>1,651</td><td>–</td><td>–</td><td>3.88</td><td>3.88</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.1</td><td>52</td><td>–</td><td>–</td><td>0.60</td><td>0.60</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.2</td><td>51</td><td>–</td><td>–</td><td>0.58</td><td>0.58</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.4</td><td>51</td><td>–</td><td>–</td><td>0.60</td><td>0.60</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.8</td><td>51</td><td>–</td><td>–</td><td>0.60</td><td>0.60</td><td>exact</td><td>100%</td></tr>
-<tr><td>valve</td><td>0.125</td><td>71</td><td>–</td><td>–</td><td>0.46</td><td>0.46</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.25</td><td>71</td><td>–</td><td>–</td><td>0.46</td><td>0.46</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.5</td><td>57</td><td>–</td><td>–</td><td>0.44</td><td>0.44</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>1</td><td>57</td><td>–</td><td>–</td><td>0.46</td><td>0.46</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>2</td><td>54</td><td>–</td><td>–</td><td>0.47</td><td>0.47</td><td>exact</td><td>100%</td></tr>
-<tr><td>ph-float32</td><td>0.005</td><td>46,078</td><td>46%–52%</td><td>0 of 120</td><td>87.70</td><td>87.70</td><td>0.00076</td><td>3%</td></tr>
-<tr><td></td><td>0.01</td><td>25,292</td><td>19%–26%</td><td>0 of 120</td><td>53.62</td><td>53.62</td><td>0.00076</td><td>3%</td></tr>
-<tr><td></td><td>0.02</td><td>8,153</td><td>0%–4%</td><td>0 of 120</td><td>20.12</td><td>20.12</td><td>0.00076</td><td>3%</td></tr>
-<tr><td></td><td>0.04</td><td>1,936</td><td>–</td><td>–</td><td>5.90</td><td>5.90</td><td>0.00076</td><td>3%</td></tr>
-<tr><td></td><td>0.08</td><td>475</td><td>–</td><td>–</td><td>2.00</td><td>2.00</td><td>0.00038</td><td>4%</td></tr>
-<tr><td>motor-current</td><td>0.05</td><td>82,351</td><td>94%–96%</td><td>120 of 120</td><td>62.49</td><td>106.44 (-41%)</td><td>0.6</td><td>4%</td></tr>
-<tr><td></td><td>0.1</td><td>78,248</td><td>89%–92%</td><td>99 of 120</td><td>69.30</td><td>103.74 (-33%)</td><td>0.6</td><td>21%</td></tr>
-<tr><td></td><td>0.2</td><td>70,974</td><td>80%–84%</td><td>0 of 120</td><td>97.58</td><td>97.58</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.4</td><td>58,601</td><td>64%–70%</td><td>0 of 120</td><td>85.89</td><td>85.89</td><td>exact</td><td>100%</td></tr>
-<tr><td></td><td>0.8</td><td>39,837</td><td>45%–51%</td><td>0 of 120</td><td>64.26</td><td>64.26</td><td>exact</td><td>100%</td></tr>
-</table><p class='muted'>One-scan share: the range over the 1 h blocks of at least 256 points (smaller
-blocks get no noise floor). Blocks floored: those that decode differently with the noise floor off, of the blocks of at
-least 256 points. Max error: the worst |decoded − archived| at the defaults, in CompDevs of the tag's own (the first table),
-so that the rows of a tag compare. Exact: the share of points that decode bit-exact at the defaults.</p>
+<p>fluxcode's noise floor (0.25σ by default) coarsens the quantization step on blocks whose samples look like white
+measurement noise. Sparse SDT points mimic white noise without actually being noise, because swinging door specifically
+retains points that a straight line cannot predict. To avoid misclassifying them, an irregular-time block only enables
+the noise floor if it has a regular cadence—at least 90% of its intervals equal to one scan (within 0.5× to 1.5× the
+median of 15 evenly spaced intervals)—and noise is then estimated strictly from consecutive scans. As a result, an
+archive that retained nearly every scan is treated like raw sensor data and gets the floor, while sparser archives keep
+their exact values. The table below sweeps five CompDev multipliers per tag (with ExcDev = CompDev / 2, 1 h blocks,
+across all 5 days) against the same data with the noise floor disabled.</p><details class='data-table'><summary>Show noise-floor sweep table (30 rows)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>CompDev</th><th>points per day</th><th>one-scan share</th><th>blocks floored</th><th>kB per day</th><th>noise floor off</th><th>max error</th><th>exact</th></tr><tr><td>temperature</td><td>0.025</td><td>48,119</td><td>51%–56%</td><td>0 of 120</td><td>47.35</td><td>47.35</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.05</td><td>27,252</td><td>23%–32%</td><td>0 of 120</td><td>31.95</td><td>31.95</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.1</td><td>7,802</td><td>1%–6%</td><td>0 of 120</td><td>11.89</td><td>11.89</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.2</td><td>1,668</td><td>–</td><td>–</td><td>3.49</td><td>3.49</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.4</td><td>385</td><td>–</td><td>–</td><td>1.22</td><td>1.22</td><td>exact</td><td>100%</td></tr><tr><td>flow</td><td>0.25</td><td>67,577</td><td>75%–79%</td><td>0 of 120</td><td>63.09</td><td>63.09</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.5</td><td>52,838</td><td>57%–61%</td><td>0 of 120</td><td>56.49</td><td>56.49</td><td>exact</td><td>100%</td></tr><tr><td></td><td>1</td><td>32,678</td><td>33%–39%</td><td>0 of 120</td><td>39.86</td><td>39.86</td><td>exact</td><td>100%</td></tr><tr><td></td><td>2</td><td>10,030</td><td>5%–11%</td><td>0 of 120</td><td>14.94</td><td>14.94</td><td>exact</td><td>100%</td></tr><tr><td></td><td>4</td><td>844</td><td>–</td><td>–</td><td>1.98</td><td>1.98</td><td>exact</td><td>100%</td></tr><tr><td>tank-level</td><td>0.05</td><td>1,651</td><td>–</td><td>–</td><td>3.74</td><td>3.74</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.1</td><td>52</td><td>–</td><td>–</td><td>0.48</td><td>0.48</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.2</td><td>51</td><td>–</td><td>–</td><td>0.47</td><td>0.47</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.4</td><td>51</td><td>–</td><td>–</td><td>0.48</td><td>0.48</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.8</td><td>51</td><td>–</td><td>–</td><td>0.49</td><td>0.49</td><td>exact</td><td>100%</td></tr><tr><td>valve</td><td>0.125</td><td>71</td><td>–</td><td>–</td><td>0.37</td><td>0.37</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.25</td><td>71</td><td>–</td><td>–</td><td>0.37</td><td>0.37</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.5</td><td>57</td><td>–</td><td>–</td><td>0.34</td><td>0.34</td><td>exact</td><td>100%</td></tr><tr><td></td><td>1</td><td>57</td><td>–</td><td>–</td><td>0.37</td><td>0.37</td><td>exact</td><td>100%</td></tr><tr><td></td><td>2</td><td>54</td><td>–</td><td>–</td><td>0.37</td><td>0.37</td><td>exact</td><td>100%</td></tr><tr><td>ph-float32</td><td>0.005</td><td>46,078</td><td>46%–52%</td><td>0 of 120</td><td>87.51</td><td>87.51</td><td>0.00076</td><td>3%</td></tr><tr><td></td><td>0.01</td><td>25,292</td><td>19%–26%</td><td>0 of 120</td><td>53.45</td><td>53.45</td><td>0.00076</td><td>3%</td></tr><tr><td></td><td>0.02</td><td>8,153</td><td>0%–4%</td><td>0 of 120</td><td>19.95</td><td>19.95</td><td>0.00076</td><td>3%</td></tr><tr><td></td><td>0.04</td><td>1,936</td><td>–</td><td>–</td><td>5.84</td><td>5.84</td><td>0.00076</td><td>3%</td></tr><tr><td></td><td>0.08</td><td>475</td><td>–</td><td>–</td><td>1.93</td><td>1.93</td><td>0.00038</td><td>4%</td></tr><tr><td>motor-current</td><td>0.05</td><td>82,351</td><td>94%–96%</td><td>120 of 120</td><td>55.10</td><td>102.38 (-46%)</td><td>0.6</td><td>4%</td></tr><tr><td></td><td>0.1</td><td>78,248</td><td>89%–92%</td><td>99 of 120</td><td>64.68</td><td>100.00 (-35%)</td><td>0.6</td><td>21%</td></tr><tr><td></td><td>0.2</td><td>70,974</td><td>80%–84%</td><td>0 of 120</td><td>94.12</td><td>94.12</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.4</td><td>58,601</td><td>64%–70%</td><td>0 of 120</td><td>83.02</td><td>83.02</td><td>exact</td><td>100%</td></tr><tr><td></td><td>0.8</td><td>39,837</td><td>45%–51%</td><td>0 of 120</td><td>61.41</td><td>61.41</td><td>exact</td><td>100%</td></tr></table><p class='muted'><i>One-scan share</i> is the range across 1 h blocks with at least 256 points
+(smaller blocks skip the noise floor). <i>Blocks floored</i> counts how many of those blocks decode differently when the
+noise floor is off. <i>Max error</i> is the worst |decoded − archived| at default settings, measured in each tag's own
+baseline CompDev so rows within a tag remain comparable. <i>Exact</i> is the percentage of points decoded bit-exact at
+default settings.</p></div></details>
 <h2 id="sweep">Size vs accuracy</h2>
-<p>fluxcode's B (<code>max_quantize_bits</code>) from 4 to 16 with the noise floor off, and the defaults (diamond: B = 16
-and the noise floor).
-The error is the worst |decoded − archived| over the 5 days, in CompDevs; exact decodes sit on the bottom line. B sets the
-step from each block's range, so the same B gives a different error on each tag: there is no B that means "a tenth of
-CompDev".</p>
-<img src='historian-bsweep.svg' alt='Bytes per archived point vs max error per tag, B sweep'>
-<table><tr><th class='l'>tag</th><th>B = 4</th><th>B = 6</th><th>B = 8</th><th>B = 10</th><th>B = 12</th><th>B = 14</th><th>B = 16</th></tr>
-<tr><td>temperature</td><td>0.93 B<br><span class='muted'>5</span></td><td>1.15 B<br><span class='muted'>1.2</span></td><td>1.40 B<br><span class='muted'>0.3</span></td><td>1.54 B<br><span class='muted'>0.075</span></td><td>1.54 B<br><span class='muted'>exact</span></td><td>1.54 B<br><span class='muted'>exact</span></td><td>1.54 B<br><span class='muted'>exact</span></td></tr>
-<tr><td>flow</td><td>0.83 B<br><span class='muted'>4</span></td><td>1.08 B<br><span class='muted'>1</span></td><td>1.25 B<br><span class='muted'>0.2</span></td><td>1.28 B<br><span class='muted'>0.05</span></td><td>1.28 B<br><span class='muted'>exact</span></td><td>1.28 B<br><span class='muted'>exact</span></td><td>1.28 B<br><span class='muted'>exact</span></td></tr>
-<tr><td>tank-level</td><td>10.52 B<br><span class='muted'>19</span></td><td>11.03 B<br><span class='muted'>5</span></td><td>11.44 B<br><span class='muted'>1.2</span></td><td>11.83 B<br><span class='muted'>0.3</span></td><td>11.93 B<br><span class='muted'>0.075</span></td><td>11.51 B<br><span class='muted'>exact</span></td><td>11.51 B<br><span class='muted'>exact</span></td></tr>
-<tr><td>valve</td><td>7.83 B<br><span class='muted'>8</span></td><td>8.02 B<br><span class='muted'>2</span></td><td>7.74 B<br><span class='muted'>exact</span></td><td>7.74 B<br><span class='muted'>exact</span></td><td>7.74 B<br><span class='muted'>exact</span></td><td>7.74 B<br><span class='muted'>exact</span></td><td>7.74 B<br><span class='muted'>exact</span></td></tr>
-<tr><td>ph-float32</td><td>0.93 B<br><span class='muted'>3.1</span></td><td>1.16 B<br><span class='muted'>0.78</span></td><td>1.42 B<br><span class='muted'>0.2</span></td><td>1.67 B<br><span class='muted'>0.049</span></td><td>1.94 B<br><span class='muted'>0.012</span></td><td>2.19 B<br><span class='muted'>0.0031</span></td><td>2.47 B<br><span class='muted'>0.00076</span></td></tr>
-<tr><td>motor-current</td><td>0.53 B<br><span class='muted'>10</span></td><td>0.79 B<br><span class='muted'>2.5</span></td><td>1.04 B<br><span class='muted'>0.6</span></td><td>1.28 B<br><span class='muted'>0.15</span></td><td>1.37 B<br><span class='muted'>0.038</span></td><td>1.37 B<br><span class='muted'>exact</span></td><td>1.37 B<br><span class='muted'>exact</span></td></tr>
-</table><p class='muted'>Each cell: bytes per archived point (values + times), and below it the max error in CompDevs.</p>
+<p>Sweeping fluxcode's <code>max_quantize_bits</code> (B) from 4 to 16 with the noise floor off, compared against the
+defaults (diamond marker: B = 16 with the noise floor enabled). Error is the worst |decoded − archived| across the
+5 days in CompDevs, with bit-exact decodes plotted along the bottom line. Because B derives the quantization step from
+each block's range, the same B produces a different error in CompDevs on each tag—there is no single B that maps
+directly to a fixed fraction of CompDev.</p><img src='historian-bsweep.svg' alt='Bytes per archived point vs max error per tag, B sweep'><details class='data-table'><summary>Show B sweep table (6 tags × 7 values)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>B = 4</th><th>B = 6</th><th>B = 8</th><th>B = 10</th><th>B = 12</th><th>B = 14</th><th>B = 16</th></tr><tr><td>temperature</td><td>0.92 B<br><span class='muted'>5</span></td><td>1.13 B<br><span class='muted'>1.2</span></td><td>1.38 B<br><span class='muted'>0.3</span></td><td>1.52 B<br><span class='muted'>0.075</span></td><td>1.52 B<br><span class='muted'>exact</span></td><td>1.52 B<br><span class='muted'>exact</span></td><td>1.52 B<br><span class='muted'>exact</span></td></tr><tr><td>flow</td><td>0.75 B<br><span class='muted'>4</span></td><td>1.00 B<br><span class='muted'>1</span></td><td>1.19 B<br><span class='muted'>0.2</span></td><td>1.22 B<br><span class='muted'>0.05</span></td><td>1.22 B<br><span class='muted'>exact</span></td><td>1.22 B<br><span class='muted'>exact</span></td><td>1.22 B<br><span class='muted'>exact</span></td></tr><tr><td>tank-level</td><td>8.32 B<br><span class='muted'>19</span></td><td>8.88 B<br><span class='muted'>5</span></td><td>9.25 B<br><span class='muted'>1.2</span></td><td>9.55 B<br><span class='muted'>0.3</span></td><td>9.72 B<br><span class='muted'>0.075</span></td><td>9.34 B<br><span class='muted'>exact</span></td><td>9.34 B<br><span class='muted'>exact</span></td></tr><tr><td>valve</td><td>6.23 B<br><span class='muted'>8</span></td><td>6.51 B<br><span class='muted'>2</span></td><td>5.98 B<br><span class='muted'>exact</span></td><td>5.98 B<br><span class='muted'>exact</span></td><td>5.98 B<br><span class='muted'>exact</span></td><td>5.98 B<br><span class='muted'>exact</span></td><td>5.98 B<br><span class='muted'>exact</span></td></tr><tr><td>ph-float32</td><td>0.92 B<br><span class='muted'>3.1</span></td><td>1.14 B<br><span class='muted'>0.78</span></td><td>1.40 B<br><span class='muted'>0.2</span></td><td>1.66 B<br><span class='muted'>0.049</span></td><td>1.92 B<br><span class='muted'>0.012</span></td><td>2.17 B<br><span class='muted'>0.0031</span></td><td>2.45 B<br><span class='muted'>0.00076</span></td></tr><tr><td>motor-current</td><td>0.49 B<br><span class='muted'>10</span></td><td>0.73 B<br><span class='muted'>2.5</span></td><td>0.98 B<br><span class='muted'>0.6</span></td><td>1.23 B<br><span class='muted'>0.15</span></td><td>1.32 B<br><span class='muted'>0.038</span></td><td>1.33 B<br><span class='muted'>exact</span></td><td>1.33 B<br><span class='muted'>exact</span></td></tr></table><p class='muted'>Each cell shows bytes per archived point (values + times) above the max error in CompDevs.</p></div></details>
 <h2 id="layout">Block layout</h2>
-<p>An archive has few points per hour, so how a day is cut into blocks matters more than for 1 kHz data: every block
-stores its own anchors, sizes and time reference. Bytes per point at the defaults, all 5 days.</p>
-<table><tr><th class='l'>tag</th><th>points per day</th><th>10 min blocks</th><th>1 h blocks</th><th>1000-point blocks</th><th>one block per day</th></tr>
-<tr><td>temperature</td><td>7,802</td><td>1.71</td><td>1.54</td><td>1.51</td><td class=best>1.50</td></tr>
-<tr><td>flow</td><td>32,678</td><td>1.28</td><td>1.28</td><td class=best>1.27</td><td>1.34</td></tr>
-<tr><td>tank-level</td><td>51</td><td>21.48</td><td>11.51</td><td class=best>4.68</td><td class=best>4.68</td></tr>
-<tr><td>valve</td><td>57</td><td>13.09</td><td>7.74</td><td class=best>3.49</td><td class=best>3.49</td></tr>
-<tr><td>ph-float32</td><td>8,153</td><td>2.79</td><td>2.47</td><td>2.38</td><td class=best>2.30</td></tr>
-<tr><td>motor-current</td><td>70,974</td><td class=best>1.33</td><td>1.37</td><td>1.34</td><td>1.39</td></tr>
-</table><p class='muted'>Time blocks come from <code>encode_time_blocks</code> (empty hours cost almost
-nothing); point blocks from <code>encode_group(block_len=…)</code>. One block per day is 65,535 points at most, so the
-densest tag gets two.</p>
+<p>Because an SDT archive often has only a few points per hour, block boundaries matter much more here than on 1 kHz
+data—every block carries its own anchors, sizes, and time reference. The table compares bytes per point at default
+settings across all 5 days.</p><details class='data-table'><summary>Show block layout table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>points per day</th><th>10 min blocks</th><th>1 h blocks</th><th>1000-point blocks</th><th>one block per day</th></tr><tr><td>temperature</td><td>7,802</td><td>1.62</td><td>1.52</td><td>1.51</td><td class=best>1.50</td></tr><tr><td>flow</td><td>32,678</td><td>1.23</td><td>1.22</td><td class=best>1.22</td><td>1.25</td></tr><tr><td>tank-level</td><td>51</td><td>17.08</td><td>9.34</td><td class=best>4.83</td><td class=best>4.83</td></tr><tr><td>valve</td><td>57</td><td>8.77</td><td>5.98</td><td class=best>3.53</td><td class=best>3.53</td></tr><tr><td>ph-float32</td><td>8,153</td><td>2.73</td><td>2.45</td><td>2.38</td><td class=best>2.30</td></tr><tr><td>motor-current</td><td>70,974</td><td>1.31</td><td>1.33</td><td class=best>1.30</td><td>1.35</td></tr></table><p class='muted'>Time-based blocks use <code>encode_time_blocks</code> (empty hours add
+almost no overhead), while fixed-count blocks use <code>encode_group(block_len=…)</code>. Since a single block holds at
+most 65,535 points, the densest tag splits into two blocks under the one-block-per-day setting.</p></div></details>
 <h2 id="timestamps">Timestamps</h2>
-<p>Scan-aligned times are whole seconds; with <i>source timestamps</i> each point keeps the device's time, a scan delayed
-by 0–200 ms at ms resolution (as OPC timestamps often are). The values are the same. Bytes per point for the times only
-(fluxcode defaults, the block group minus the same blocks without times), and Gorilla's whole size for comparison.</p>
-<table><tr><th class='l'>tag</th><th>fluxcode times: scan-aligned</th><th>source timestamps</th>
-<th>Gorilla (all): scan-aligned</th><th>source timestamps</th></tr>
-<tr><td>temperature</td><td>0.70</td><td>2.02</td><td>7.73</td><td>10.69</td></tr>
-<tr><td>flow</td><td>0.41</td><td>1.62</td><td>7.77</td><td>9.67</td></tr>
-<tr><td>tank-level</td><td>6.11</td><td>7.61</td><td>10.03</td><td>11.77</td></tr>
-<tr><td>valve</td><td>5.11</td><td>6.76</td><td>4.52</td><td>5.74</td></tr>
-<tr><td>ph-float32</td><td>0.66</td><td>1.94</td><td>4.08</td><td>7.00</td></tr>
-<tr><td>motor-current</td><td>0.13</td><td>1.24</td><td>7.44</td><td>8.67</td></tr>
-</table>
+<p>Scan-aligned timestamps fall on whole seconds. With <i>source timestamps</i>, each point keeps the originating
+device's timestamp—delayed by 0–200 ms at millisecond resolution, as is common with OPC—while the values remain
+unchanged. The table shows fluxcode's timestamp-only bytes per point (default settings) alongside Gorilla's total bytes
+per point for comparison.</p><details class='data-table'><summary>Show timestamps table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>fluxcode times: scan-aligned</th><th>source timestamps</th><th>Gorilla (all): scan-aligned</th><th>source timestamps</th></tr><tr><td>temperature</td><td>0.70</td><td>2.01</td><td>7.73</td><td>10.69</td></tr><tr><td>flow</td><td>0.40</td><td>1.59</td><td>7.77</td><td>9.67</td></tr><tr><td>tank-level</td><td>3.89</td><td>5.71</td><td>10.03</td><td>11.77</td></tr><tr><td>valve</td><td>3.14</td><td>5.11</td><td>4.52</td><td>5.74</td></tr><tr><td>ph-float32</td><td>0.64</td><td>1.94</td><td>4.08</td><td>7.00</td></tr><tr><td>motor-current</td><td>0.13</td><td>1.24</td><td>7.44</td><td>8.67</td></tr></table></div></details>
 <h2 id="resampled">Resampled exports</h2>
-<p>A historian can also be read at a fixed rate: interpolated (straight lines between the archived points) or held
-(each scan takes the last archived value, as a forward fill gives). If that is all you have, fluxcode stores the regular
-series (defaults, 1000-scan blocks, its 1 s times included), but the archived points are cheaper and keep the
-information: an interpolated series is off the decimal grid, and its rounded ramps leave residuals of a step or so. kB per
-day, mean over the 5 days; errors are max |decoded − read-back| in CompDevs.</p>
-<table><tr><th class='l'>tag</th><th>archived points + times: kB/day</th><th>interpolated at 1 s: kB/day</th><th>max error</th><th>held at 1 s: kB/day</th><th>max error</th></tr>
-<tr><td>temperature</td><td>12.04</td><td>46.35</td><td>0.00061</td><td>17.22</td><td>exact</td></tr>
-<tr><td>flow</td><td>41.69</td><td>96.52</td><td>0.00096</td><td>46.35</td><td>0.05</td></tr>
-<tr><td>tank-level</td><td>0.58</td><td>3.70</td><td>0.0024</td><td>1.16</td><td>exact</td></tr>
-<tr><td>valve</td><td>0.44</td><td>0.85</td><td>0.0019</td><td>0.57</td><td>exact</td></tr>
-<tr><td>ph-float32</td><td>20.12</td><td>47.76</td><td>0.00038</td><td>37.07</td><td>0.00038</td></tr>
-<tr><td>motor-current</td><td>97.58</td><td>63.34</td><td>0.62</td><td>61.64</td><td>0.6</td></tr>
-</table>
+<p>Historians can also export data on a fixed 1 s grid, either linearly interpolated between archived points or
+forward-filled (held at the last archived value). fluxcode can compress those regular series (using defaults, 1,000-scan
+blocks, and 1 s timestamps), but storing the raw archived points is both smaller and more faithful. Interpolated values
+fall off the original decimal grid, and rounding along those ramps leaves small residuals. Figures are mean kB/day over
+the 5 days, with max |decoded − read-back| error in CompDevs.</p><details class='data-table'><summary>Show resampled exports table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>archived points + times: kB/day</th><th>interpolated at 1 s: kB/day</th><th>max error</th><th>held at 1 s: kB/day</th><th>max error</th></tr><tr><td>temperature</td><td>11.89</td><td>40.11</td><td>0.0024</td><td>16.90</td><td>exact</td></tr><tr><td>flow</td><td>39.86</td><td>52.30</td><td>0.062</td><td>44.66</td><td>0.1</td></tr><tr><td>tank-level</td><td>0.47</td><td>3.49</td><td>0.0024</td><td>1.07</td><td>exact</td></tr><tr><td>valve</td><td>0.34</td><td>0.75</td><td>0.0019</td><td>0.49</td><td>exact</td></tr><tr><td>ph-float32</td><td>19.95</td><td>39.60</td><td>0.0031</td><td>35.89</td><td>0.0031</td></tr><tr><td>motor-current</td><td>94.12</td><td>57.39</td><td>0.62</td><td>56.74</td><td>0.6</td></tr></table></div></details>
 <h2 id="no-sdt">SDT or every scan?</h2>
-<p>If the scans are still available (at the source, or before the historian compresses), fluxcode can store every one
-of them instead. Here every scan of the day is one block group (1000-scan blocks, the 1 s times included): at the defaults, and
-at the coarsest B (noise floor off) whose max error is within a budget: one CompDev (SDT's nominal tolerance), or the
-error SDT actually made that day (the same max error, a fair comparison). The SDT route is the archive with fluxcode
-(defaults), its error that of the trend. kB per day, mean over the 5 days; errors are the worst max |decoded −
-scan| in CompDevs.</p>
-<table><tr><th class='l'>tag</th><th>SDT + fluxcode: kB/day</th><th>max error</th>
-<th>every scan, defaults: kB/day</th><th>max error</th><th>within 1 CompDev: kB/day</th><th>B</th><th>max error</th>
-<th>within SDT's error: kB/day</th><th>B</th><th>max error</th></tr>
-<tr><td>temperature</td><td>12.04</td><td>2.45</td><td>54.86</td><td>exact</td><td>30.26</td><td>6</td><td>0.6</td><td>20.82</td><td>5</td><td>1.2</td></tr>
-<tr><td>flow</td><td>41.69</td><td>2.25</td><td>61.93</td><td>0.1</td><td>46.45</td><td>5–6</td><td>1</td><td>35.81</td><td>4–5</td><td>2</td></tr>
-<tr><td>tank-level</td><td>0.58</td><td>2.79</td><td>47.77</td><td>exact</td><td>20.54</td><td>8</td><td>0.6</td><td>11.52</td><td>6</td><td>2.5</td></tr>
-<tr><td>valve</td><td>0.44</td><td>1.96</td><td>0.75</td><td>exact</td><td>0.74</td><td>7–8</td><td>exact</td><td>0.74</td><td>7–8</td><td>exact</td></tr>
-<tr><td>ph-float32</td><td>20.12</td><td>2.45</td><td>136.66</td><td>0.049</td><td>20.21</td><td>5</td><td>0.78</td><td>13.98</td><td>4</td><td>1.6</td></tr>
-<tr><td>motor-current</td><td>97.58</td><td>1.82</td><td>62.67</td><td>0.6</td><td>73.41</td><td>7–8</td><td>0.6</td><td>62.03</td><td>6–7</td><td>1.2</td></tr>
-</table><p>The same comparison as CompDev changes (ExcDev stays half of it), mean kB per day:</p>
-<img src='historian-compdev.svg' alt='kB per day vs CompDev per tag, SDT + fluxcode vs every scan'>
+<p>If raw scans are still available upstream of the historian, fluxcode can encode every scan directly instead of
+running SDT first. Here each day's full scan stream is stored as one block group (1,000-scan blocks with 1 s timestamps)
+under three settings: defaults, the coarsest B (noise floor off) staying within 1 CompDev (SDT's nominal tolerance), and
+the coarsest B matching SDT's actual worst-case error for that day. The SDT baseline is the SDT archive encoded with
+fluxcode defaults, scored by its trend error. Figures are mean kB/day over the 5 days, and errors are the worst
+|decoded − scan| in CompDevs.</p><img src='historian-compdev.svg' alt='kB per day vs CompDev per tag, SDT + fluxcode vs every scan'><details class='data-table'><summary>Show SDT vs every-scan table (6 tags)</summary><div class='table-wrap'><table><tr><th class='l'>tag</th><th>SDT + fluxcode: kB/day</th><th>max error</th><th>every scan, defaults: kB/day</th><th>max error</th><th>within 1 CompDev: kB/day</th><th>B</th><th>max error</th><th>within SDT's error: kB/day</th><th>B</th><th>max error</th></tr><tr><td>temperature</td><td>11.89</td><td>2.45</td><td>54.48</td><td>exact</td><td>29.82</td><td>6</td><td>0.6</td><td>20.51</td><td>5</td><td>1.2</td></tr><tr><td>flow</td><td>39.86</td><td>2.25</td><td>60.67</td><td>0.1</td><td>45.96</td><td>5–6</td><td>1</td><td>35.11</td><td>4–5</td><td>2</td></tr><tr><td>tank-level</td><td>0.47</td><td>2.79</td><td>43.86</td><td>exact</td><td>16.97</td><td>8</td><td>0.6</td><td>9.42</td><td>6</td><td>2.5</td></tr><tr><td>valve</td><td>0.34</td><td>1.96</td><td>0.55</td><td>exact</td><td>0.55</td><td>7</td><td>exact</td><td>0.55</td><td>7</td><td>exact</td></tr><tr><td>ph-float32</td><td>19.95</td><td>2.45</td><td>63.45</td><td>0.049</td><td>19.86</td><td>5</td><td>0.78</td><td>13.51</td><td>4</td><td>1.6</td></tr><tr><td>motor-current</td><td>94.12</td><td>1.82</td><td>56.83</td><td>0.6</td><td>67.54</td><td>7–8</td><td>0.6</td><td>57.86</td><td>6–7</td><td>1.2</td></tr></table></div></details>
 </body></html>

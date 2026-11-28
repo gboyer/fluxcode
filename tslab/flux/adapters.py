@@ -11,7 +11,7 @@ import time
 import fluxcode
 import numpy as np
 import zstandard
-from fluxcode import Params, _bitpacking, _encoder, _format, _group
+from fluxcode import Params, _bitpacking, _body, _encoder, _format, _group
 
 from tslab.common.datasets import DISCRETE, load, load_discrete
 
@@ -30,16 +30,16 @@ class FluxCodec:
                       + (f", noise floor f = {noise_f:g}" if noise_f else ""))
 
     def group(self, X):
-        return fluxcode.encode_group(np.ascontiguousarray(X).ravel(), self.params).group
+        return fluxcode.encode_group(np.ascontiguousarray(X).ravel(), self.params, block_len=X.shape[1]).payload
 
     def encode_group(self, X):
         group = self.group(X)
         parsed = _group.decompress(group)  # the package's own reader: no layout assumptions here
         nb = parsed.header.num_blocks
-        params = [int(_format.get_int16(parsed.raw_body, _format.grid_params_start(nb), nb, b)) for b in range(nb)]
-        scales = [int(_format.get_uint32(parsed.raw_body, _format.grid_scale_start(nb), nb, b)) for b in range(nb)]
+        params = [int(_format.get_int16(parsed.body, _format.grid_exponents_start(nb), nb, b)) for b in range(nb)]
+        scales = [int(_format.get_uint32(parsed.body, _format.grid_scales_start(nb), nb, b)) for b in range(nb)]
         infos = [{"order": int(f & _format.BLOCK_FLAG_ORDER), "decimal": bool(f & _format.BLOCK_FLAG_DECIMAL),
-                  "param": p,
+                  "special": bool(f & _format.BLOCK_FLAG_SAMPLE_CODES), "param": p,
                   "scale": (s & _format.SCALE_MASK, s >> _format.SCALE_SHIFT) if f & _format.BLOCK_FLAG_SCALED else None}
                  for f, p, s in zip(parsed.block_flags, params, scales)]
         return group, infos
@@ -89,14 +89,16 @@ def ideal_quantum(mins):
         resid = np.empty((nb, 1000), np.int16)
         for b in range(nb):
             q = np.rint((X[b] - lo[b]) / qt).astype(np.int32)
-            head[b] = _encoder.pick_order(q, 1000, 0b1111)
-            _encoder.residual(q, head[b], resid[b])
+            head[b] = _encoder.select_predictor_order(q, 0b1111)
+            _encoder.compute_residuals(q, head[b], resid[b])
         anchors = np.ascontiguousarray(lo, np.float64).view(np.int64)  # where each block's grid starts
-        sizes = np.full(nb, 1000)
-        offsets = _format.layout(head, sizes)
-        byte_body = _bitpacking.write_group(head, sizes, np.zeros(nb, np.int64), np.zeros(nb, np.int64), anchors,
-                                            resid.ravel(), np.zeros(0, np.uint8), None, offsets)
-        bit_body = _bitpacking.to_bit_planes(byte_body, nb, int(offsets.octet_offsets[-1]), False)
+        sizes = np.full(nb, 1000, np.int64)
+        offsets = _format.compute_body_layout(head, sizes)
+        byte_body = _body.write_body(
+            head, sizes, np.zeros(nb, np.int64), np.zeros(nb, np.int64), anchors,
+            resid.ravel(), np.zeros(0, np.uint8), None, offsets,
+        )
+        bit_body = _bitpacking.to_bit_planes(byte_body, nb, int(offsets.plane_byte_offsets[-1]), False)
         total += len(zc.compress(bit_body))
         nblocks += nb
     return 8 * total / (nblocks * 1000)
